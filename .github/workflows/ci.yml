@@ -1,0 +1,87 @@
+# CI — proves the README quick-start flow on a clean ubuntu-latest runner.
+#
+# The point of this workflow is that it mirrors the documented user flow exactly
+# (README §1b build/install and §8 test invocations); if a README step drifts,
+# CI breaks. Two independent jobs:
+#   * rust   — the native crates' own unit suites (cargo test, release).
+#   * python — build the native extensions + run the pytest suite the way §8 says.
+#
+# LFS note: no test reads the shipped weights under models/ (the whole tests/
+# tree has zero references to models/hexfield*.pt), so both jobs check out with
+# lfs: false — pulling the ~124 MB of .pt objects would only slow CI. If a test
+# ever starts loading the shipped weights, flip that job's checkout to lfs: true.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  rust:
+    name: rust (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: cargo test (release)
+        run: cargo test -p hexo_engine -p hexo_utils -p hexfield --release
+
+  python:
+    name: python (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('packages/*/pyproject.toml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      # README §1b: build + install into a repo-root venv exactly as documented.
+      - name: Build and install (README §1b)
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install maturin numpy pytest
+          # CPU PyTorch is enough for the test suite (no GPU on the runner).
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # Build the three native crates (hexo_engine, hexo_utils, hexfield).
+          HEXO_VENV=$PWD/.venv bash scripts/build_native.sh
+          # Install the pure-Python packages (hexfield stays import-from-tree).
+          pip install --no-deps -e packages/hexo_runner -e packages/hexo_train -e packages/hexo_frontend
+
+      # README §8: run the suite from the repo root with hexfield on PYTHONPATH.
+      - name: Run tests (README §8)
+        run: |
+          . .venv/bin/activate
+          export PYTHONPATH=$PWD/packages/hexfield/python
+          python -m pytest tests/ -q

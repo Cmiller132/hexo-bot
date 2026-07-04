@@ -1,0 +1,17 @@
+runs/*
+!runs/.gitkeep
+target/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.so
+*.pyd
+.venv/
+*.log
+.claude/
+
+# Data caches — keep only scaffolding .gitkeep files
+data/*
+!data/*/
+data/*/*
+!data/*/.gitkeep

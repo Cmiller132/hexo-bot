@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hexo-runner"
+version = "0.1.0"
+description = "Generic turn-based match and self-play runner for Hexo bots (game loop, .hxr records, SealBot adapter)."
+requires-python = ">=3.11"
+dependencies = [
+  "hexo-engine==0.1.0",
+  "hexo-utils==0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/hexo_runner"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"

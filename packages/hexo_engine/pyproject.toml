@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "hexo-engine"
+version = "0.1.0"
+description = "Python package boundary for the Rust Hexo engine."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+
+[tool.maturin]
+python-source = "python"
+module-name = "hexo_engine._rust"
+features = ["python"]

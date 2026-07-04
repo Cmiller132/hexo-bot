@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "packages/hexo_engine",
+    "packages/hexo_utils",
+    "packages/hexfield",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+ahash = { version = "0.8", features = ["serde"] }
+hexo_engine = { path = "packages/hexo_engine" }
+hexo_utils = { path = "packages/hexo_utils" }
+pyo3 = { version = "0.28", features = ["extension-module"] }
+rand = "0.8"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+zstd = "0.13"

@@ -1,0 +1,554 @@
+<!doctype html>
+<!--
+  Single page hosting all three dashboard screens (#matchScreen / #historyScreen
+  / #debugScreen), served by hexo_frontend/web.py; app.js switches them via the
+  URL hash (#match / #history / #debug?...). Full static DOM: app.js binds by
+  element id, so renaming/removing an id here breaks the matching app.js section
+  (its on() helper warns instead of throwing).
+
+  Cache-bust contract: the ?v= token on BOTH asset references below must be
+  bumped together with APP_VERSION in app.js on every static change. web.py
+  serves this file no-store and the assets no-cache+ETag, so the token mainly
+  defeats intermediary/SW caches and keeps the on-screen version tag honest.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hexo Match</title>
+<link rel="stylesheet" href="/static/styles.css?v=20260617-dbgattn8">
+</head>
+<body>
+<header>
+  <h1>Hexo Match</h1>
+  <nav class="app-nav" aria-label="Dashboard screens">
+    <button type="button" data-screen="match">Match</button>
+    <button type="button" data-screen="history">Game History</button>
+    <button type="button" data-screen="debug">Debug</button>
+  </nav>
+  <div class="status"><span class="dot"></span><span id="statusText">Ready</span></div>
+</header>
+<main id="matchScreen" class="app-screen match-screen">
+  <section class="mt-grid">
+
+    <!-- Region 1: setup strip (mirrors .dbg-ctx) -->
+    <section id="mtSetup" class="mt-setup" aria-label="Match setup">
+      <div class="mt-seat" data-seat="player0">
+        <div class="mt-seat-head"><span class="mt-seat-dot" style="background:var(--p0)"></span>P0</div>
+        <select id="mtKind0" aria-label="Player 0 kind">
+          <option value="manual">Manual</option>
+          <option value="sealbot-current">SealBot current</option>
+          <option value="sealbot-best">SealBot best</option>
+          <option value="checkpoint">Checkpoint</option>
+        </select>
+        <div class="mt-ckpt-cfg" data-seat="player0" hidden>
+          <select id="mtRun0" aria-label="Player 0 checkpoint run"></select>
+          <select id="mtCkpt0" aria-label="Player 0 checkpoint"></select>
+          <input id="mtVisits0" type="number" min="8" max="2048" step="1" value="256" aria-label="Player 0 search visits">
+          <select id="mtSearchMode0" aria-label="Player 0 search mode">
+            <option value="search">search</option>
+            <option value="policy">policy</option>
+          </select>
+        </div>
+      </div>
+      <div class="mt-vs" aria-hidden="true">vs</div>
+      <div class="mt-seat" data-seat="player1">
+        <div class="mt-seat-head"><span class="mt-seat-dot" style="background:var(--p1)"></span>P1</div>
+        <select id="mtKind1" aria-label="Player 1 kind">
+          <option value="manual">Manual</option>
+          <option value="sealbot-current" selected>SealBot current</option>
+          <option value="sealbot-best">SealBot best</option>
+          <option value="checkpoint">Checkpoint</option>
+        </select>
+        <div class="mt-ckpt-cfg" data-seat="player1" hidden>
+          <select id="mtRun1" aria-label="Player 1 checkpoint run"></select>
+          <select id="mtCkpt1" aria-label="Player 1 checkpoint"></select>
+          <input id="mtVisits1" type="number" min="8" max="2048" step="1" value="256" aria-label="Player 1 search visits">
+          <select id="mtSearchMode1" aria-label="Player 1 search mode">
+            <option value="search">search</option>
+            <option value="policy">policy</option>
+          </select>
+        </div>
+      </div>
+      <div class="mt-opts">
+        <label>Time <input id="mtTimeLimit" type="number" min="0.01" max="30" step="0.01" value="0.05"></label>
+        <label>Seed <input id="mtSeed" type="number" step="1" placeholder="Auto"></label>
+        <label>Series <select id="mtSeriesGames">
+          <option value="1">1 game</option>
+          <option value="3">3</option>
+          <option value="5">5</option>
+          <option value="9">9</option>
+          <option value="15">15</option>
+          <option value="25">25</option>
+        </select></label>
+        <label class="mt-check"><input id="mtAlternate" type="checkbox"> alternate seats</label>
+      </div>
+      <div class="mt-actions">
+        <button id="mtStartBtn" class="primary-action" type="button">Start match</button>
+        <button id="mtStopBtn" type="button">Stop</button>
+        <span id="mtSetupNote" class="mt-muted"></span>
+      </div>
+    </section>
+
+    <!-- Region 2: board stage -->
+    <section id="mtBoardStage" class="mt-board-stage" aria-label="Game board">
+      <div class="board-area" id="boardArea">
+        <svg id="boardSvg"></svg>
+        <div class="turn-overlay" id="turnOverlay" hidden>
+          <div class="turn-overlay-card">
+            <div class="thinking-mark" aria-hidden="true"></div>
+            <div>
+              <div class="turn-overlay-title" id="turnOverlayTitle">Bot thinking</div>
+              <div class="turn-overlay-sub" id="turnOverlaySub">Waiting for the next move</div>
+            </div>
+          </div>
+        </div>
+        <div class="board-view-controls" aria-label="Board view controls">
+          <button id="zoomInBtn" type="button" aria-label="Zoom in">+</button>
+          <button id="zoomOutBtn" type="button" aria-label="Zoom out">-</button>
+          <button id="mtFitBtn" type="button" aria-label="Fit board">Fit</button>
+        </div>
+        <div class="board-hud" id="cellHud">
+          <div><span>Q:</span> <strong>0</strong> <span>R:</span> <strong>0</strong></div>
+          <div>Cell: empty</div>
+        </div>
+        <div class="tip" id="tip"></div>
+        <div class="legend">
+          <span><span class="ldot" style="background:var(--p0)"></span>P0</span>
+          <span><span class="ldot" style="background:var(--p1)"></span>P1</span>
+          <span><span class="ldot" style="background:#101924;border:1px solid var(--border)"></span>Legal</span>
+        </div>
+      </div>
+      <div class="replay-bar" aria-label="Replay controls">
+        <div class="replay-row">
+          <div class="replay-buttons">
+            <button id="replayStartBtn" type="button" aria-label="Jump to start">|&lt;</button>
+            <button id="replayPrevBtn" type="button" aria-label="Previous move">&lt;</button>
+            <button id="replayPlayBtn" type="button" aria-label="Play replay">Play</button>
+            <button id="replayNextBtn" type="button" aria-label="Next move">&gt;</button>
+            <button id="replayLiveBtn" type="button" aria-label="Jump to latest move">&gt;|</button>
+          </div>
+          <div class="replay-status">
+            <div id="replayLabel">0 / 0</div>
+            <div id="replaySub">Opening</div>
+          </div>
+          <div class="slider-wrap">
+            <input id="replaySlider" type="range" min="0" max="0" value="0" step="1" aria-label="Move position" aria-describedby="replayLabel">
+            <div class="slider-ticks"><span>0</span><span id="replayMidTick">0</span><span id="replayMaxTick">0</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Region 3: side rail -->
+    <aside id="mtSide" class="mt-side" aria-label="Match status">
+      <section class="panel-card" id="mtStatusCard">
+        <div class="mt-turn-banner" id="mtTurnBanner">
+          <span id="mtTurnDot"></span>
+          <strong id="mtTurnTitle">Loading</strong>
+          <span id="mtTurnSub">Waiting for state</span>
+        </div>
+        <div class="mt-facts" id="mtFacts"></div>
+      </section>
+      <section class="panel-card" id="mtPlayersCard">
+        <div class="section-title">Players</div>
+        <div id="mtPlayers"></div>
+      </section>
+      <section class="panel-card" id="mtInsightCard">
+        <div class="mt-insight-head"><span>Insight</span><button id="mtOpenDebugBtn" type="button">Open in Debug</button></div>
+        <div id="mtValueChart" class="mt-value-chart"></div>
+      </section>
+      <section class="panel-card" id="mtSeriesCard" hidden>
+        <div class="section-title">Series</div>
+        <div id="mtSeries"></div>
+      </section>
+    </aside>
+  </section>
+
+  <section class="bottom-dock" aria-label="Move history">
+    <div class="history-panel">
+      <div class="dock-title">Move History</div>
+      <div class="move-history" id="moveHistory"></div>
+    </div>
+  </section>
+</main>
+<main id="historyScreen" class="app-screen history-screen" hidden>
+  <section class="history-page">
+    <div class="history-page-head">
+      <div>
+        <div class="section-title page-title">Game History</div>
+        <div class="page-subtitle">Training and evaluation games with epoch context, outcomes, player setup, and diagnostics.</div>
+      </div>
+      <div class="history-page-actions">
+        <select id="historyRunSelect" aria-label="Training run for game history"></select>
+        <button id="historyRefreshBtn" type="button">Refresh</button>
+      </div>
+    </div>
+
+    <div id="histStatusBand" class="hist-status-band"></div>
+    <div id="histHealthDrawer" class="hist-health-drawer" hidden></div>
+    <div id="histStrength" class="hist-strength" hidden></div>
+    <div id="histTrends" class="hist-trends"></div>
+    <div id="histRatingTable" class="hist-rating-table" hidden></div>
+    <div id="histEvalPool" class="hist-eval-pool" hidden></div>
+    <div id="histEpochTable" class="hist-epoch-table"></div>
+    <div id="histEpochInspector" class="hist-epoch-inspector" hidden></div>
+
+    <div class="history-filters" aria-label="Game history filters">
+      <input id="historySearchInput" type="search" placeholder="Filter by game, path, player, epoch, source">
+      <select id="historySourceSelect" aria-label="History source">
+        <option value="all">All sources</option>
+        <option value="evaluation">Evaluation</option>
+        <option value="selfplay">Selfplay</option>
+        <option value="history">History</option>
+      </select>
+      <select id="historyWinnerSelect" aria-label="Winner">
+        <option value="all">All winners</option>
+        <option value="player0">Winner P0</option>
+        <option value="player1">Winner P1</option>
+        <option value="none">No winner</option>
+      </select>
+      <select id="historySortSelect" aria-label="Sort game history">
+        <option value="newest">Newest first</option>
+        <option value="longest">Longest games</option>
+        <option value="shortest">Shortest games</option>
+        <option value="oldest">Oldest first</option>
+        <option value="winner">Winner</option>
+      </select>
+      <span id="histEpochChip" class="hist-epoch-chip" hidden></span>
+    </div>
+
+    <div class="history-layout">
+      <section class="history-table-panel" aria-label="Game history list">
+        <div class="hist-list-head" aria-hidden="true">
+          <span class="hist-h-game">Game</span>
+          <span class="hist-h-src">Src</span>
+          <span class="hist-h-len">Len</span>
+          <span class="hist-h-players">Players</span>
+          <span class="hist-h-date">Modified</span>
+          <span class="hist-h-act"></span>
+        </div>
+        <div id="gameHistoryList" class="game-history-list"></div>
+      </section>
+
+      <aside class="history-detail-panel" aria-label="Selected game details">
+        <div class="section-title">Selected Game</div>
+        <div id="gameHistoryDetail" class="game-history-detail"></div>
+      </aside>
+    </div>
+  </section>
+</main>
+<main id="debugScreen" class="app-screen debug-screen" hidden>
+  <div id="debugStatus" class="debug-status" hidden></div>
+  <section class="dbg-grid">
+
+    <!-- Region 1 — context strip -->
+    <section id="dbgCtx" class="dbg-ctx" aria-label="Debug context">
+      <div class="dbg-ctx-controls">
+        <label class="select-field"><span>Run</span><select id="dbgCtxRun" aria-label="Run"></select></label>
+        <label class="select-field"><span>Source</span>
+          <select id="dbgCtxSource" aria-label="Game source">
+            <option value="selfplay">Self-play</option>
+            <option value="evaluation">Evaluation</option>
+          </select>
+        </label>
+        <label class="select-field"><span>Game file</span><select id="dbgCtxFile" aria-label="Game file"></select></label>
+        <label class="select-field"><span>Game #</span><select id="dbgCtxRecord" aria-label="Game record"></select></label>
+        <label class="select-field"><span>Checkpoint A</span><select id="dbgCtxCkptA" aria-label="Checkpoint A"></select></label>
+        <label class="select-field"><span>Checkpoint B</span><select id="dbgCtxCkptB" aria-label="Checkpoint B (compare)"><option value="">—</option></select></label>
+        <label class="select-field" id="dbgCtxRadiusField"><span>Radius</span>
+          <select id="dbgCtxRadius" aria-label="Model support radius" title="Support radius the model runs at — Auto detects from the run's eval (hexfield only)">
+            <option value="0">Auto</option>
+            <option value="4">R=4</option>
+            <option value="8">R=8</option>
+          </select>
+        </label>
+        <button id="dbgCtxRefresh" type="button">Refresh</button>
+        <span id="dbgCtxWorkerDot" class="dbg-worker-dot" role="img" aria-label="Worker status" title="Debug worker: unknown"></span>
+      </div>
+      <div class="dbg-ctx-side">
+        <span id="dbgCtxCrumb" class="dbg-ctx-crumb">no position loaded</span>
+        <button id="dbgPaletteBtn" type="button" class="dbg-mini-btn" aria-label="Command palette" title="Command palette (K)">Go to&#8230;</button>
+        <button id="dbgHelpBtn" type="button" class="dbg-mini-btn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
+        <button id="dbgCtxCollapse" type="button" aria-label="Collapse context strip" title="Collapse context strip">&#9662;</button>
+      </div>
+    </section>
+
+    <!-- Region 2 — ply rail -->
+    <section id="dbgPlyRail" class="dbg-ply-rail" aria-label="Ply navigation">
+      <div id="dbgPlyReadout" class="dbg-ply-readout">0/0</div>
+      <div class="dbg-ply-transport">
+        <button id="dbgPlyFirst" type="button" aria-label="First ply">|&lt;</button>
+        <button id="dbgPlyPrev" type="button" aria-label="Previous ply">&lt;</button>
+        <button id="dbgPlyNext" type="button" aria-label="Next ply">&gt;</button>
+        <button id="dbgPlyLast" type="button" aria-label="Last ply">&gt;|</button>
+        <button id="dbgBlunderPrev" type="button" aria-label="Previous blunder" title="Previous blunder (Shift+&#8592;)">&#171;!</button>
+        <button id="dbgBlunderNext" type="button" aria-label="Next blunder" title="Next blunder (Shift+&#8594;)">!&#187;</button>
+      </div>
+      <div class="dbg-ply-slider-wrap">
+        <input id="dbgPlySlider" type="range" min="0" max="0" value="0" step="1" aria-label="Ply">
+      </div>
+      <div id="dbgPlyStrip" class="dbg-ply-strip" aria-label="Per-ply error strip" title="Run a game error sweep to color this strip"></div>
+      <button id="dbgPlySweepBtn" type="button" class="dbg-ply-sweep" title="Run game error sweep">Swp</button>
+      <details id="dbgJournal" class="dbg-journal">
+        <summary title="Session journal">&#9998;</summary>
+        <div class="dbg-journal-body">
+          <div class="dbg-journal-head">Session journal <button type="button" class="dbg-journal-clear">Clear</button></div>
+          <div class="dbg-journal-list dbg-empty-note">No analyses logged yet</div>
+        </div>
+      </details>
+    </section>
+
+    <!-- Region 3 — board stage -->
+    <section id="dbgBoardStage" class="dbg-board-stage" aria-label="Debug board">
+      <div id="dbgModeBar" class="dbg-mode-bar" aria-label="Board heat modes">
+        <div class="seg dbg-mode-seg" role="radiogroup" aria-label="Base heat mode">
+          <button type="button" data-mode="none" title="No heat (0)">None</button>
+          <button type="button" data-mode="prior" class="active" title="Policy prior (1)">Prior</button>
+          <button type="button" data-mode="visits" title="Search visits (2)">Visits</button>
+          <button type="button" data-mode="delta" title="&#916; visits&#8722;prior (3)">&#916;</button>
+          <button type="button" data-mode="opp" title="Opponent policy (4)">Opp</button>
+          <button type="button" data-mode="target" title="Recorded visit-policy target (5)">Target</button>
+          <button type="button" data-mode="mismatch" title="Prior&#8722;target mismatch (6)">Mismatch</button>
+          <button type="button" data-mode="childq" title="Root-child Q from last debug tree (7)">Child Q</button>
+          <button type="button" data-mode="cellq" title="Per-cell Q (action-value head) — hexfield v3 lineage only">Q</button>
+          <button type="button" data-mode="attn" title="Attention (8) — hexfield lineage only">Attn</button>
+          <button type="button" data-mode="plane" title="Input plane, dense lineage only (9)">Plane</button>
+        </div>
+        <select id="dbgPlaneSelect" aria-label="Input plane" hidden></select>
+        <div class="dbg-toggles" aria-label="Additive overlays">
+          <label><input type="checkbox" id="dbgTglThreats"> Threats</label>
+          <label><input type="checkbox" id="dbgTglNumbers" checked> Move #</label>
+          <label><input type="checkbox" id="dbgTglLast" checked> Last move</label>
+          <label><input type="checkbox" id="dbgTglLegalDim"> Dim illegal</label>
+          <label title="Shade engine-legal cells outside the model's support radius (hidden from the model)"><input type="checkbox" id="dbgTglBlind" checked> Model-blind</label>
+        </div>
+      </div>
+
+      <div class="dbg-board-wrap">
+        <div class="board-area">
+          <svg id="debugBoardSvg"></svg>
+          <svg id="dbgBoardSvgB" hidden></svg>
+          <div class="board-hud" id="debugBoardHud"><div>Hover a cell</div></div>
+          <div class="board-view-controls dbg-zoom" aria-label="Board zoom">
+            <button id="dbgZoomIn" type="button" aria-label="Zoom in">+</button>
+            <button id="dbgZoomOut" type="button" aria-label="Zoom out">-</button>
+            <button id="dbgZoomReset" type="button" aria-label="Reset view">&#8634;</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="dbgLegend" class="dbg-legend" aria-label="Heat legend">
+        <span id="dbgLegendMin" class="dbg-legend-end">&#8212;</span>
+        <span class="dbg-legend-scale" aria-hidden="true"></span>
+        <span id="dbgLegendMax" class="dbg-legend-end">&#8212;</span>
+        <label class="dbg-legend-log" title="Log color scale (L)"><input type="checkbox" id="dbgLegendLog"> log</label>
+        <label class="dbg-legend-opacity">opacity <input id="dbgOpacity" type="range" min="0.2" max="1" step="0.05" value="0.9" aria-label="Heat opacity"></label>
+      </div>
+
+      <div id="dbgBranchBar" class="dbg-branch-bar" hidden>
+        <span class="dbg-branch-chips"></span>
+        <button id="dbgBranchReturn" type="button" title="Clear injected moves (G)">Return to game</button>
+      </div>
+    </section>
+
+    <!-- Region 4 — inspector -->
+    <section id="dbgInspector" class="dbg-inspector" aria-label="Inspector">
+      <div id="dbgTabs" class="dbg-tabs" role="tablist" aria-label="Inspector tabs">
+        <button type="button" data-tab="heads" class="active">Heads</button>
+        <button type="button" data-tab="search">Search</button>
+        <button type="button" data-tab="targets">Targets</button>
+        <button type="button" data-tab="compare">Compare</button>
+        <button type="button" data-tab="inputs">Inputs</button>
+        <button type="button" data-tab="ckpt">Ckpt</button>
+        <button type="button" data-tab="attn" id="dbgTabAttnBtn">Attention</button>
+      </div>
+      <div class="dbg-tab-panels">
+
+        <section id="dbgTabHeads" class="dbg-tab-panel active" aria-label="Model heads">
+          <header class="dbg-panel-head">
+            <span class="dbg-panel-title">Heads</span>
+            <span class="dbg-stale" hidden title="Stale &#8212; rendered for a previous position"></span>
+            <button type="button" class="dbg-panel-refresh" aria-label="Refresh panel">&#8635;</button>
+          </header>
+          <div class="dbg-value-scalar">Value <strong>&#8212;</strong> <span id="dbgValueChip" class="dbg-chip">&#8212;</span></div>
+          <div id="dbgValueDist" class="dbg-vdist-wrap"><div class="dbg-empty-note">Analyze to fill the value distribution</div></div>
+          <div class="dbg-ownerswap" hidden>
+            <div class="dbg-subhead">Owner-swap consistency probe <span class="dbg-muted">(off-distribution; not an optimism metric)</span></div>
+            <div class="dbg-ownerswap-body dbg-empty-note">&#8212;</div>
+          </div>
+          <div id="dbgStvRows" class="dbg-stv"><div class="dbg-empty-note">Short-term value horizons</div></div>
+          <div id="dbgMovesLeft" class="dbg-moves-left dbg-empty-note">Moves-left: &#8212;</div>
+          <div id="dbgTopMoves" class="dbg-top-moves"><div class="dbg-empty-note">Top moves appear after analyze</div></div>
+          <div id="dbgOppList" class="dbg-opp-list"><div class="dbg-empty-note">Opponent policy top-k</div></div>
+        </section>
+
+        <section id="dbgTabSearch" class="dbg-tab-panel" aria-label="Search">
+          <header class="dbg-panel-head">
+            <span class="dbg-panel-title">Search</span>
+            <span class="dbg-stale" hidden title="Stale &#8212; rendered for a previous position"></span>
+            <button type="button" class="dbg-panel-refresh" aria-label="Refresh panel">&#8635;</button>
+          </header>
+          <div class="dbg-search-controls">
+            <label class="field-block"><span>Visits</span><input id="dbgSearchVisits" type="number" min="1" max="20000" step="1" value="512"></label>
+            <label class="field-block"><span>c_puct</span><input id="dbgSearchCpuct" type="number" min="0.1" max="10" step="0.1" value="1.5"></label>
+            <label class="field-block"><span>Seed</span><input id="dbgSearchSeed" type="number" step="1" value="0"></label>
+          </div>
+          <div class="dbg-search-actions">
+            <button id="dbgSearchRun" type="button" title="Production-style root search (S)">Run search</button>
+            <button id="dbgTreeRun" type="button" title="Debug search (Python; may not match engine tie-breaking) (T)">Debug tree</button>
+          </div>
+          <div class="dbg-search-summary dbg-empty-note">No search yet</div>
+          <div id="dbgTree" class="dbg-tree"><div class="dbg-empty-note">Debug tree (Python; may not match engine tie-breaking)</div></div>
+          <div id="dbgScatter" class="dbg-scatter"><div class="dbg-empty-note">Q vs prior scatter after a tree run</div></div>
+          <div id="dbgLadder" class="dbg-ladder"><div class="dbg-empty-note">Visit ladder (64 &#8594; 1024)</div></div>
+        </section>
+
+        <section id="dbgTabTargets" class="dbg-tab-panel" aria-label="Training targets">
+          <header class="dbg-panel-head">
+            <span class="dbg-panel-title">Targets</span>
+            <span class="dbg-stale" hidden title="Stale &#8212; rendered for a previous position"></span>
+            <button type="button" class="dbg-panel-refresh" aria-label="Refresh panel">&#8635;</button>
+          </header>
+          <div id="dbgTargetsNote" class="dbg-note dbg-muted">No training row loaded</div>
+          <div class="dbg-targets-body"></div>
+        </section>
+
+        <section id="dbgTabCompare" class="dbg-tab-panel" aria-label="Compare checkpoints">
+          <header class="dbg-panel-head">
+            <span class="dbg-panel-title">Compare A/B</span>
+            <span class="dbg-stale" hidden title="Stale &#8212; rendered for a previous position"></span>
+            <button type="button" class="dbg-panel-refresh" aria-label="Refresh panel">&#8635;</button>
+          </header>
+          <div class="dbg-cmp-controls">
+            <button id="dbgCmpHeat" type="button" title="Push per-cell prior &#916;(A&#8722;B) to the board">&#916; heat on board</button>
+            <label><input type="checkbox" id="dbgCmpSplit"> A/B split board</label>
+          </div>
+          <div class="dbg-cmp-body"><div class="dbg-empty-note">Select checkpoint B in the context strip to compare</div></div>
+        </section>
+
+        <section id="dbgTabInputs" class="dbg-tab-panel" aria-label="Input planes">
+          <header class="dbg-panel-head">
+            <span class="dbg-panel-title">Inputs</span>
+            <span class="dbg-stale" hidden title="Stale &#8212; rendered for a previous position"></span>
+            <button type="button" class="dbg-panel-refresh" aria-label="Refresh panel">&#8635;</button>
+          </header>
+          <div id="dbgPlanes" class="dbg-planes"><div class="dbg-empty-note">Featurizer input planes (dense lineage only) load on first open</div></div>
+        </section>
+
+        <section id="dbgTabCkpt" class="dbg-tab-panel" aria-label="Checkpoint provenance">
+          <header class="dbg-panel-head">
+            <span class="dbg-panel-title">Checkpoint</span>
+            <span class="dbg-stale" hidden title="Stale &#8212; rendered for a previous position"></span>
+            <button type="button" class="dbg-panel-refresh" aria-label="Refresh panel">&#8635;</button>
+          </header>
+          <div id="dbgCkptInfo" class="dbg-ckpt-info"><div class="dbg-empty-note">Checkpoint provenance loads here without an analyze</div></div>
+        </section>
+
+        <section id="dbgTabAttn" class="dbg-tab-panel" aria-label="Attention">
+          <header class="dbg-panel-head">
+            <span class="dbg-panel-title">Attention</span>
+            <span class="dbg-stale" hidden title="Stale &#8212; previous position"></span>
+            <button type="button" class="dbg-panel-refresh" aria-label="Refresh">&#8635;</button>
+          </header>
+          <div id="dbgAttnBody" class="dbg-attn-body">
+            <div class="dbg-attn-ctrls">
+              <label>Block <select id="dbgAttnBlockSel"><option>0</option><option>1</option><option>2</option></select></label>
+              <label>Head <select id="dbgAttnHeadSel"><option value="">mean</option><option value="max">max</option><option>0</option><option>1</option><option>2</option><option>3</option></select></label>
+            </div>
+            <div id="dbgAttnQueryReadout" class="dbg-attn-readout"></div>
+            <div id="dbgAttnTokens" class="dbg-attn-tokens" role="group" aria-label="Token queries"></div>
+            <div id="dbgAttnTokenBars" class="dbg-attn-bars"></div>
+            <div id="dbgAttnIncoming" class="dbg-attn-incoming"></div>
+            <div id="dbgAttnNote" class="dbg-empty-note">Select board cell or token (Attn mode)</div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- Region 6 — pin tray -->
+    <section id="dbgPinTray" class="dbg-pin-tray" aria-label="Pinned positions">
+      <div class="dbg-pin-actions">
+        <button id="dbgPinAdd" type="button" title="Pin current position (P)">Pin</button>
+        <button id="dbgPinExport" type="button" title="Export pins as JSON">Export</button>
+        <label class="dbg-file-btn" title="Import pins from JSON">Import<input id="dbgPinImport" type="file" accept="application/json,.json" hidden></label>
+      </div>
+      <div class="dbg-pin-chips"><span class="dbg-empty-note">No pinned positions</span></div>
+    </section>
+
+    <!-- Region 5 — bottom dock -->
+    <section id="dbgDock" class="dbg-dock" aria-label="Game analysis dock">
+      <div class="dbg-dock-head">
+        <div id="dbgDockTabs" class="dbg-tabs dbg-dock-tabs" aria-label="Dock tabs">
+          <button type="button" data-dock-tab="trajectory" class="active">Trajectory</button>
+          <button type="button" data-dock-tab="ckptsweep">Checkpoint sweep</button>
+          <button type="button" data-dock-tab="regret" hidden>Worst plies</button>
+        </div>
+        <div class="dbg-dock-actions">
+          <button id="dbgSweepBtn" type="button" title="Game error sweep (chunked, abortable)">Sweep game</button>
+          <span id="dbgSweepProgress" class="dbg-muted"></span>
+          <button id="dbgTrajBtn" type="button" title="Legacy trajectory plot (no sweep)">Plot</button>
+          <button id="dbgDockToggle" type="button" aria-label="Collapse dock" title="Collapse dock">&#9662;</button>
+        </div>
+      </div>
+      <div class="dbg-dock-body">
+        <div id="dbgDockChart" class="dbg-dock-panel active"><div class="dbg-empty-note">Sweep the game (or Plot) to fill the per-ply value / KL chart</div></div>
+        <div id="dbgCkptSweep" class="dbg-dock-panel">
+          <div class="dbg-ckpt-sweep-head">
+            <span class="dbg-muted">Evaluates this position across all checkpoints of the run &#8212; loads each into the worker's 3-model LRU; slow.</span>
+            <button id="dbgCkptSweepStop" type="button">Stop</button>
+          </div>
+          <div class="dbg-ckpt-sweep-chart"><div class="dbg-empty-note">Not run</div></div>
+        </div>
+        <div id="dbgRegretList" class="dbg-dock-panel">
+          <div class="dbg-regret-head">
+            <span class="dbg-muted">Worst plies by Q-regret (best legal Q &#8722; played Q, mover POV). Click a row to jump to that ply.</span>
+            <span id="dbgMissedWinBadge" class="dbg-missed-win-badge" hidden></span>
+          </div>
+          <div class="dbg-regret-rows"><div class="dbg-empty-note">Sweep the game to compute per-ply regret</div></div>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- Shortcut overlay -->
+  <div id="dbgHelp" class="dbg-overlay" hidden role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+    <div class="dbg-overlay-card">
+      <div class="dbg-overlay-title">Keyboard shortcuts</div>
+      <div class="dbg-help-grid">
+        <kbd>&#8592; / &#8594;</kbd><span>step ply &#8722;1 / +1</span>
+        <kbd>Home / End</kbd><span>first / last ply</span>
+        <kbd>Shift+&#8592; / &#8594;</kbd><span>prev / next blunder ply</span>
+        <kbd>[ / ]</kbd><span>prev / next record</span>
+        <kbd>{ / }</kbd><span>prev / next game file</span>
+        <kbd>A</kbd><span>analyze now</span>
+        <kbd>S</kbd><span>run root search</span>
+        <kbd>T</kbd><span>run / toggle debug tree</span>
+        <kbd>1..9</kbd><span>heat base modes (8=Attn, 9=Plane)</span>
+        <kbd>0</kbd><span>mode none + clear toggles</span>
+        <kbd>Shift+1..9</kbd><span>solo (mode + clear additive toggles)</span>
+        <kbd>L</kbd><span>log color scale</span>
+        <kbd>U</kbd><span>undo last injected move</span>
+        <kbd>G</kbd><span>return to recorded game</span>
+        <kbd>P</kbd><span>pin current position</span>
+        <kbd>C</kbd><span>focus COMPARE tab</span>
+        <kbd>I</kbd><span>focus INPUTS tab</span>
+        <kbd>K / Ctrl+K</kbd><span>command palette</span>
+        <kbd>?</kbd><span>this overlay</span>
+        <kbd>Esc</kbd><span>close palette / overlay</span>
+      </div>
+      <div class="dbg-muted">Every shortcut has a button equivalent.</div>
+    </div>
+  </div>
+
+  <!-- Command palette -->
+  <div id="dbgPalette" class="dbg-overlay" hidden role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="dbg-overlay-card dbg-palette-card">
+      <input id="dbgPaletteInput" type="text" placeholder="Jump to game, record, checkpoint, ply N, pin, or action&#8230;" aria-label="Command palette input">
+      <div class="dbg-palette-list"><div class="dbg-empty-note">Type to search</div></div>
+    </div>
+  </div>
+</main>
+<script src="/static/app.js?v=20260617-dbgattn8"></script>
+</body>
+</html>

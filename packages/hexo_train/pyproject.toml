@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hexo-train"
+version = "0.1.0"
+description = "Shared config-driven training orchestration for Hexo models."
+requires-python = ">=3.11"
+dependencies = [
+  # hexo-engine and hexo-runner are declared for the plugin ecosystem but the
+  # package itself never imports them; game execution is reached only through
+  # plugin.generate_selfplay (see python/hexo_train/epoch/selfplay.py).
+  "hexo-engine==0.1.0",
+  "hexo-runner==0.1.0",
+  "hexo-utils==0.1.0",
+]
+
+[project.scripts]
+hexo-train-model = "hexo_train.cli.train_model:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/hexo_train"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"

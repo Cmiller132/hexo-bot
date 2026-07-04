@@ -1,0 +1,55 @@
+# Optional Linux convenience unit for the training supervisor.
+# scripts/supervise.sh (and scripts/launch_training.sh) work standalone — this
+# unit is only for those who want systemd auto-start / restart management.
+#
+# To use: replace /path/to/hexo-bot with your checkout, adjust the venv path,
+# `systemctl enable --now hexo-bot-supervisor` (as root, or install as a --user
+# unit). The architecture env below is LOAD-BEARING — a checkpoint only loads
+# into a net built with the same CHANNELS/HEADS/TRUNK (these match models/).
+[Unit]
+Description=hexfield self-play training supervisor
+After=network.target
+StartLimitIntervalSec=200
+StartLimitBurst=5
+
+[Service]
+Type=simple
+KillMode=control-group
+Environment=ROOT=/path/to/hexo-bot
+Environment=HEXO_VENV=/path/to/hexo-bot/.venv
+Environment=CONFIG=/path/to/hexo-bot/configs/hexfield_main_7.toml
+Environment=RUNDIR=/path/to/hexo-bot/runs/hexfield_main_7
+# Architecture (LOAD-BEARING).
+Environment=HEXFIELD_SUPPORT_RADIUS=4
+Environment=HEXFIELD_CHANNELS=192
+Environment=HEXFIELD_ATTENTION_HEADS=3
+Environment=HEXFIELD_TRUNK=CCACCACCACCACCA
+# Parity-gated serve/train perf kernels.
+# ASYNC_EVAL is presence-gated: any value enables it; delete the line to disable.
+Environment=HEXFIELD_ASYNC_EVAL=1
+Environment=HEXFIELD_DEFER_DECODE=1
+Environment=HEXFIELD_SERVE_FLEX=1
+Environment=HEXFIELD_TRITON_CONV=1
+Environment=HEXFIELD_TRITON_CONV_LN=1
+Environment=HEXFIELD_TRITON_ATTN=1
+Environment=HEXFIELD_FLEX_PAIR=1
+Environment=HEXFIELD_SERVE_HALF=1
+Environment=HEXFIELD_RUST_PACK=1
+Environment=HEXFIELD_COPY_STREAM=1
+Environment=HEXFIELD_TRAIN_FLEX=1
+Environment=HEXFIELD_TRAIN_COMPILE=1
+Environment=MALLOC_TRIM_THRESHOLD_=536870912
+Environment=MALLOC_MMAP_THRESHOLD_=536870912
+Environment=MALLOC_TOP_PAD_=134217728
+# Optional external SealBot reference opponent (see README):
+# Environment=SEALBOT_PATH=/path/to/SealBot
+ExecStartPre=/usr/bin/test -f /path/to/hexo-bot/scripts/supervise.sh
+ExecStartPre=-/usr/bin/rm -f /path/to/hexo-bot/runs/hexfield_main_7/supervisor.lock
+ExecStart=/usr/bin/bash /path/to/hexo-bot/scripts/supervise.sh
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=45
+RestartPreventExitStatus=1
+
+[Install]
+WantedBy=multi-user.target

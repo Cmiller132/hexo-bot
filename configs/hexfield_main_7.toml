@@ -1,0 +1,191 @@
+# hexfield main config — c=192, heads 3x64, trunk CC A CC A CC A CC A CC A
+# (~8.1M params). Gumbel-AlphaZero self-play training for Hexo. The per-knob
+# annotations below are teaching material: they explain *why* each value is set.
+#
+# ARCHITECTURE COMES FROM ENV, NOT THIS FILE (the constants are read at import
+# time), and it is LOAD-BEARING — a checkpoint only loads into a net built with
+# the same values. Set these before launching (scripts/launch_training.sh sets
+# them for you; they match the shipped weights in models/):
+#   HEXFIELD_CHANNELS=192
+#   HEXFIELD_ATTENTION_HEADS=3
+#   HEXFIELD_TRUNK=CCACCACCACCACCA
+#   HEXFIELD_SUPPORT_RADIUS=4
+# Head_dim 64 (= 192 / 3) is deliberate: every fast attention kernel wants d=64.
+#
+# PERF ENV FLAGS the launcher also sets (parity-gated GPU serve/train kernels;
+# leave unset for a plain CPU/eager run):
+#   HEXFIELD_ASYNC_EVAL=1 HEXFIELD_DEFER_DECODE=1 HEXFIELD_SERVE_FLEX=1
+#   HEXFIELD_TRITON_CONV=1 HEXFIELD_TRITON_CONV_LN=1 HEXFIELD_TRITON_ATTN=1
+#   HEXFIELD_FLEX_PAIR=1 HEXFIELD_SERVE_HALF=1 HEXFIELD_RUST_PACK=1
+#   HEXFIELD_COPY_STREAM=1 HEXFIELD_TRAIN_FLEX=1 HEXFIELD_TRAIN_COMPILE=1
+#
+# WARM START is optional. To create one, run a behavior-cloning prefit on a game
+# corpus (scripts/prefit_launch.sh) and point checkpoint.initialize_from at its
+# output (see README). Without it, training starts from a random net.
+#
+# Search budget: 1024 visits, gumbel_m 32. A stronger net needs fewer visits for
+# equal move quality — recalibrate the visit / gumbel_m budget once the run
+# stabilizes (~epoch 20-30) before spending throughput on redundant visits.
+
+[model]
+name = "hexfield"
+module = "hexfield.plugin"
+
+[model.config]
+device = "cuda"
+
+[model.config.selfplay]
+search_visits = 1024
+pcr_full_proportion = 0.33
+pcr_fast_visits = 192
+# Gentle exploration on the value-only Fast plies (67% of moves): T=0.1 samples
+# the guard-filtered delta-visit histogram at exponent 1/T=10 (near-argmax). At
+# T>0 Fast no longer takes the greedy LCB pick / ml_final_pick (those need T==0).
+pcr_fast_temperature = 0.1
+active_games = 192
+c_puct = 1.5
+# In-flight batch depth for the self-play serve loop. At this channel width the
+# GPU is the bottleneck, so deeper pipelining buys little — revisit only if serve
+# profiling shows the GPU starving for work.
+virtual_batch_size = 48
+flush_target = 1024
+active_root_limit = 192
+# Root exploration is Gumbel-AlphaZero: the Gumbel-Top-m root sampler + Sequential
+# Halving (gumbel_root / gumbel_sequential_halving below) replace the classic
+# Dirichlet root-noise + forced-playout exploration entirely, so those legacy
+# PUCT knobs no longer exist in the config.
+fpu_reduction = 0.2
+root_fpu_reduction = 0.2
+lcb_z = 1.6
+nucleus_f64 = true
+new_child_fpu = true
+lazy_widening = false
+clean_root_prior_cache = true
+widening_policy_mass = 0.95
+widening_max_children = 96
+widening_min_children = 2
+policy_init_fraction = 0.25
+policy_init_avg_plies = 4.0
+policy_init_max_plies = 8
+policy_init_temperature = 1.4
+temperature = 1.0
+temperature_floor = 0.15
+temperature_halflife_plies = 10.0
+# Under the gumbel root these only shape the EXPORTED prior / surprise baseline
+# (root move selection is gumbel top-m, not the root-policy-temperature softmax).
+root_policy_temperature = 1.1
+root_policy_temperature_early = 1.15
+root_policy_temperature_halflife = 19.0
+# ml_* selection levers apply only on the T==0 paths (fast/eval greedy pick). With
+# pcr_fast_temperature = 0.1 above, Fast moves no longer hit T==0, so ml_final_pick
+# now scopes to the eval/lockstep arenas only.
+ml_two_sided = false
+ml_final_pick_band = 0.08
+max_game_plies = 256
+tss_enabled = true
+cache_max_states = 262144
+
+gumbel_root_enabled = true
+gumbel_sequential_halving = true
+gumbel_nonroot_select = true
+gumbel_target_enabled = true
+gumbel_c_visit = 50.0
+gumbel_c_scale = 1.0
+gumbel_m = 32
+gumbel_target_min_visits = 1
+gumbel_play_prune = true
+export_root_prior_logits = true
+
+[model.config.training]
+batch_rows = 256
+# 5e-4 is a safe fresh-run learning rate at batch 256 for this net: an overshoot
+# probe cleared <=5e-4, and early epochs run cool (grad_mean well under the clip
+# threshold, clip_fraction ~0), so there is headroom without going higher. Decay
+# toward 4e-4 at the mid-run plateau; only try 6e-4 if clip_fraction stays ~0 for
+# several epochs AND the loss slope looks learning-rate-limited.
+learning_rate = 5e-4
+weight_decay = 1e-4
+grad_clip = 5.0
+adaptive_clip = true
+clip_c = 1.75
+clip_ema_decay = 0.99
+clip_warmup_steps = 50
+policy_weight = 1.0
+value_weight = 1.0
+opp_policy_weight = 0.25
+short_term_value_weight = 0.1
+moves_left_weight = 0.2
+q_head_weight = 0.1
+soft_policy_weight = 1.0
+policy_surprise_uniform_fraction = 0.5
+policy_surprise_max_weight = 8.0
+warmup_steps = 0
+shuffle_min_rows = 20000
+shuffle_keep_target_rows = 600000
+shuffle_taper_window_exponent = 0.65
+shuffle_expand_window_per_row = 0.8
+shuffle_taper_window_scale = 20000.0
+validation_fraction = 0.0
+train_samples_per_epoch = 96000
+max_train_bucket_per_new_data = 8.0
+max_train_bucket_size = 500000.0
+no_repeat_files = false
+expand_backend = "rust"
+expand_workers = 0
+policy_target = "gumbel"
+
+[model.config.evaluation]
+games_per_epoch = 16
+eval_visits = 128
+eval_every = 5
+
+[model.config.multi_stage_eval]
+enabled = true
+games_budget = 128
+every_n_epochs = 5
+full_search_visits = 512
+eval_virtual_batch_size = 32
+sealbot_share = 0.25
+verdict_reference_lag = 5
+pool_path = "diagnostics/eval_pool.json"
+
+[model.config.multi_stage_eval.sprt]
+enabled = false
+
+[model.config.multi_stage_eval.opponents]
+# SealBot is an optional external reference opponent. To enable, build SealBot
+# (https://github.com/Ramora0/SealBot) and set SEALBOT_PATH to point at it, then
+# set sealbot_enabled = true.
+sealbot_enabled = false
+bracket_size = 1
+# permanent_anchors are optional fixed opponents held in the eval pool for the
+# whole run — each is [label, path-to-a-.pt-checkpoint] (absolute, or relative
+# to the run's checkpoints/ dir). The pool starts empty; add anchors here to
+# always evaluate against specific reference checkpoints, e.g.:
+#   permanent_anchors = [["ep30", "epoch_000030.pt"]]
+permanent_anchors = []
+radius8_opponents = []
+
+[run]
+name = "hexfield_main_7"
+# Relative output_dir resolves against THIS config file's dir (configs/), so
+# "../runs/..." anchors the run tree at the repo-root runs/ directory.
+output_dir = "../runs/hexfield_main_7"
+seed = 1
+
+[loop]
+epochs = 200
+
+[selfplay]
+games_per_epoch = 256
+update_checkpoint_pointer = false
+
+[train]
+passes_per_epoch = 1
+
+[checkpoint]
+# Warm start is optional. Generate a behavior-cloning prefit checkpoint with
+# scripts/prefit_launch.sh (see README), then uncomment and point this at its
+# output. Left commented out, training starts from a random net.
+# initialize_from = "runs/hexfield_main_7_prefit/checkpoint_epoch3.pt"
+save_name = "latest"

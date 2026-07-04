@@ -1,0 +1,3828 @@
+/* ===========================================================================
+   hexo_frontend dashboard stylesheet — all three screens in one dark theme.
+
+   Loaded only by static/index.html with a ?v= cache-bust token (bump together
+   with the app.js ?v= and APP_VERSION). Class prefixes mirror app.js sections:
+   .mt-* = Match screen v2, .hist-* = History screen v2, .dbg-* = Debug
+   workbench v2; unprefixed classes are the shared shell + board + generic
+   controls that predate the v2 rewrites (some are also reused by them).
+
+   File map (banner comments mark the regions, in this order):
+     1. Theme variables + resets                 (:root ... body)
+     2. App shell: header, nav, status line
+     3. Layout grids + board panel: board area, turn overlay, view controls,
+        HUD, legend
+     4. Generic controls: panel cards, fields, buttons, .seg toggles
+     5. Move-history dock + replay bar + tooltip + board cell classes
+     6. History panel container + History v2 regions (status band, trends,
+        epoch table, epoch inspector, game rows, mobile)
+     7. Debug tab (Model Debug v2) — regions per scripts/_debug_rewrite_spec.md
+     8. Match tab (Arena v2) — regions per scripts/_match_rewrite_spec.md
+   =========================================================================== */
+
+:root {
+  --bg: #070d13;
+  --shell: #0d1721;
+  --panel: #0b141d;
+  --panel-soft: #101b25;
+  --line: #1e2d3d;
+  --border: #2d3f51;
+  --text: #d5dde6;
+  --muted: #8f9baa;
+  --accent: #27d7e6;
+  --p0: #4f93ff;
+  --p0-soft: rgba(79, 147, 255, 0.28);
+  --p1: #ff5650;
+  --p1-soft: rgba(255, 86, 80, 0.28);
+  --green: #47c875;
+  --red: #ff5a5a;
+  --yellow: #f5c542;
+}
+
+* { box-sizing: border-box; }
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 50% 30%, #0f1d2a 0, var(--bg) 58%);
+  color: var(--text);
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* ===================== App shell: header, nav, status line ===================== */
+
+header {
+  height: 52px;
+  background: rgba(14, 24, 34, 0.94);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 18px 0 22px;
+  box-shadow: 0 12px 38px rgba(0, 0, 0, 0.24);
+}
+
+h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+
+.app-nav button {
+  min-height: 30px;
+  padding: 0 12px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.app-nav button.active {
+  border-color: rgba(39, 215, 230, 0.44);
+  background: rgba(39, 215, 230, 0.1);
+  color: var(--accent);
+}
+
+.status {
+  margin-left: auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+/* Status message can be long; let it shrink-and-ellipsis within the fixed-height
+   header instead of overflowing. The leading status dot stays fixed-size. */
+#statusText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status .dot {
+  flex: 0 0 auto;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 14px rgba(71, 200, 117, 0.6);
+}
+
+body.bot-thinking .dot {
+  background: var(--yellow);
+  box-shadow: 0 0 14px rgba(245, 197, 66, 0.62);
+}
+
+body.state-error .dot {
+  background: var(--red);
+  box-shadow: 0 0 14px rgba(255, 90, 90, 0.62);
+}
+
+main {
+  min-height: calc(100vh - 52px);
+  padding: 10px;
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 10px;
+  /* Backstop: the viewer is fixed-size, so the page must never scroll
+     horizontally even if a child briefly mis-sizes. */
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+/* ===================== Layout grids + board panel (shared board area,
+   turn overlay, view controls, HUD, legend) ===================== */
+
+.top-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 520px);
+  align-items: start;
+  gap: 10px;
+}
+
+.board-panel,
+.panel-card,
+.history-panel {
+  background: linear-gradient(180deg, rgba(16, 29, 42, 0.92), rgba(9, 17, 25, 0.94));
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025), 0 14px 36px rgba(0, 0, 0, 0.16);
+}
+
+.board-panel {
+  min-width: 0;
+  height: clamp(460px, calc(100vh - 150px), 820px);
+  min-height: 420px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.board-area {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(43, 77, 110, 0.32), transparent 44%),
+    linear-gradient(135deg, rgba(5, 12, 19, 0.92), rgba(8, 17, 25, 0.96));
+}
+
+.board-area.dragging {
+  cursor: grabbing;
+}
+
+.board-area svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Thinking indicator: a small corner pill (bottom-right — the only free board
+   corner: HUD top-left, zoom top-right, legend bottom-left). Deliberately NOT
+   a centered card over a dimmed board: it must never obscure the live game. */
+.turn-overlay {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.turn-overlay-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 240px;
+  padding: 5px 11px 5px 8px;
+  border: 1px solid rgba(245, 197, 66, 0.46);
+  border-radius: 999px;
+  background: rgba(10, 16, 21, 0.88);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+.thinking-mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(245, 197, 66, 0.24);
+  border-top-color: var(--yellow);
+  animation: spin 0.9s linear infinite;
+}
+
+.turn-overlay-title {
+  color: #ffe49a;
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* The explanatory sub-line is noise at pill size; the title carries the seat. */
+.turn-overlay-sub {
+  display: none;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.board-view-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: repeat(2, 34px);
+  gap: 6px;
+}
+
+.board-view-controls button {
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.board-hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  min-width: 132px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(12, 21, 31, 0.88);
+  color: var(--text);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  pointer-events: none;
+}
+
+.board-hud span {
+  color: var(--muted);
+}
+
+.legend {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(9, 16, 24, 0.9);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.ldot {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: -2px;
+}
+
+/* ===================== Generic controls: side stack, panel cards, form
+   fields, buttons, .seg toggles (shared by all screens) ===================== */
+
+.side-stack {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: visible;
+}
+
+.panel-card {
+  min-width: 0;
+  overflow: visible;
+}
+
+.select-field {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.select-field select {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(7, 13, 19, 0.86);
+  color: var(--text);
+  padding: 0 8px;
+  font: inherit;
+}
+
+.field-block {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.field-block label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(7, 13, 19, 0.82);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 8px;
+}
+
+select {
+  cursor: pointer;
+}
+
+input:focus,
+select:focus {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(39, 215, 230, 0.12);
+}
+
+input:disabled,
+select:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.primary-action {
+  min-height: 34px;
+  border-color: rgba(39, 215, 230, 0.52);
+  background: linear-gradient(180deg, rgba(29, 76, 86, 0.9), rgba(10, 31, 38, 0.96));
+  color: #ecfbff;
+  font-weight: 800;
+}
+
+.section-title,
+.dock-title {
+  width: 100%;
+  padding: 9px 12px 7px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: default;
+}
+
+.section-title::before {
+  content: "\25BE";
+  display: inline-block;
+  margin-right: 9px;
+  color: #718092;
+  font-size: 10px;
+}
+
+.info-row {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid rgba(45, 63, 81, 0.85);
+  border-radius: 5px;
+  background: rgba(7, 13, 19, 0.52);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.label {
+  color: var(--muted);
+}
+
+.value {
+  min-width: 0;
+  text-align: left;
+  font-weight: 650;
+  color: var(--text);
+  /* State-summary values (coords, phase, game id, last move) are meaningful and
+     vary in length; wrap rather than clip. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+button {
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(19, 31, 43, 0.95), rgba(9, 16, 24, 0.95));
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+button:hover {
+  border-color: var(--accent);
+  color: #ecfbff;
+}
+
+button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(39, 215, 230, 0.18), 0 0 18px rgba(39, 215, 230, 0.08);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+body.pending button:disabled {
+  cursor: wait;
+}
+
+.seg {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(7, 13, 19, 0.58);
+}
+
+.seg button {
+  min-width: 0;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 28px;
+}
+
+.seg button:last-child {
+  border-right: 0;
+}
+
+.seg button.active {
+  background: rgba(39, 215, 230, 0.11);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(39, 215, 230, 0.35);
+}
+
+.empty-list {
+  padding: 12px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.history-chip.p0 .chip-dot { background: var(--p0); }
+
+.history-chip.p1 .chip-dot { background: var(--p1); }
+
+.bottom-dock {
+  height: auto;
+  min-height: 0;
+  display: block;
+}
+
+.history-panel {
+  min-width: 0;
+  overflow: visible;
+}
+
+.history-panel .dock-title {
+  padding-top: 7px;
+  padding-bottom: 6px;
+}
+
+/* ===================== Move-history dock + replay bar + tooltip +
+   board cell classes ===================== */
+
+/* Bounded box: chips wrap and the box scrolls vertically, so it is always
+   exactly its container's width and never pushes the layout sideways no matter
+   how many moves a game has. */
+.move-history {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: 92px;
+  min-height: 92px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 9px 10px;
+}
+
+.move-history .empty-list {
+  align-self: center;
+  padding: 2px 4px;
+}
+
+.history-chip {
+  flex: 0 0 auto;
+  width: 110px;
+  height: 28px;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(8, 15, 23, 0.82);
+  color: var(--text);
+  display: grid;
+  grid-template-columns: 18px 10px 1fr;
+  grid-template-rows: 1fr;
+  align-items: center;
+  column-gap: 5px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+
+.history-chip:hover,
+.history-chip.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(39, 215, 230, 0.22);
+}
+
+.chip-index {
+  grid-column: auto;
+  color: var(--p0);
+  font-weight: 800;
+  text-align: center;
+  line-height: 1;
+}
+
+.history-chip.p1 .chip-index {
+  color: #ff8a86;
+}
+
+.chip-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  justify-self: end;
+}
+
+.chip-text {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.replay-bar {
+  border-top: 1px solid var(--line);
+}
+
+.replay-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(86px, 110px) minmax(180px, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 8px 12px;
+  min-width: 0;
+}
+
+.replay-buttons {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.replay-buttons button {
+  min-width: 0;
+}
+
+.replay-status {
+  text-align: center;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+#replaySub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.slider-wrap {
+  min-width: 0;
+  overflow: hidden;
+}
+
+#replaySlider {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tip {
+  position: absolute;
+  pointer-events: none;
+  display: none;
+  z-index: 5;
+  max-width: 260px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(3, 8, 13, 0.92);
+  color: #f3f7fb;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+.cell {
+  transition: opacity 0.12s, stroke 0.12s, filter 0.12s;
+}
+
+.legal {
+  cursor: pointer;
+}
+
+.board-area.dragging .cell,
+.board-area.dragging .legal {
+  cursor: grabbing;
+}
+
+.legal:hover {
+  opacity: 1;
+  stroke: var(--accent);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 5px rgba(39, 215, 230, 0.45));
+}
+
+body.pending .legal,
+body.replay-mode .legal {
+  pointer-events: none;
+  cursor: wait;
+  opacity: 0.5;
+}
+
+body.bot-thinking .legal {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.last-move-outline {
+  pointer-events: none;
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 3;
+  opacity: 0.98;
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.52));
+}
+
+.last-move-outline.previous {
+  stroke-width: 2;
+  stroke-dasharray: 4 4;
+  opacity: 0.68;
+}
+
+.stone-label {
+  pointer-events: none;
+  fill: #ffffff;
+  font-family: "Cascadia Code", Consolas, monospace;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.66);
+}
+
+.stone-label {
+  font-size: 10px;
+  font-weight: 800;
+  opacity: 0.9;
+  stroke-width: 2px;
+}
+
+@media (max-width: 1120px) {
+  main {
+    height: auto;
+    min-height: calc(100vh - 52px);
+  }
+
+  .top-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .board-panel {
+    height: min(64vh, 620px);
+    min-height: 420px;
+  }
+
+  .side-stack {
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .history-page-head,
+  .history-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .history-table-panel,
+  .history-detail-panel {
+    min-height: 360px;
+  }
+}
+
+@media (max-width: 980px) {
+  main {
+    grid-template-rows: auto auto;
+  }
+
+  .side-stack {
+    grid-template-rows: auto auto auto auto;
+  }
+
+  .board-panel {
+    height: min(62vh, 560px);
+    min-height: 380px;
+  }
+
+  .replay-row {
+    grid-template-columns: 1fr;
+    gap: 9px;
+  }
+
+  .history-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 820px) {
+  header {
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .app-nav button {
+    padding: 0 8px;
+  }
+
+  main {
+    padding: 8px;
+  }
+
+  .board-panel {
+    height: 58vh;
+    min-height: 340px;
+  }
+
+  .board-hud {
+    top: 10px;
+    left: 10px;
+    padding: 7px 9px;
+    font-size: 11px;
+  }
+
+  .legend {
+    left: 10px;
+    right: 10px;
+    gap: 10px;
+    padding: 7px 9px;
+  }
+
+  .replay-buttons {
+    gap: 6px;
+  }
+
+  .history-page-actions,
+  .player-detail-grid,
+  .diagnostic-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  h1 {
+    font-size: 16px;
+  }
+
+  .status {
+    font-size: 12px;
+  }
+
+  .app-nav {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  header {
+    height: auto;
+    min-height: 52px;
+    flex-wrap: wrap;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  main {
+    min-height: calc(100vh - 84px);
+  }
+
+  .board-panel {
+    height: 54vh;
+    min-height: 300px;
+  }
+
+  .seg {
+    grid-auto-flow: row;
+  }
+
+  .seg button {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .seg button:last-child {
+    border-bottom: 0;
+  }
+
+  .replay-buttons {
+    grid-template-columns: repeat(5, minmax(40px, 1fr));
+  }
+
+  .replay-status {
+    text-align: left;
+  }
+}
+
+.history-game-title,
+.history-game-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-game-title {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.history-game-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ===================== History screen container (v2 regions follow:
+   status band, trends, epoch table, inspector, game rows, mobile) ============ */
+
+.history-screen {
+  display: block;
+}
+
+/* Flex column (was a fixed 7-row grid): the v2 containers (#histHealthDrawer,
+   #histTrends, #histEpochTable) come and go via [hidden]/:empty, and flex
+   tolerates any visible-child count without leaving phantom gap rows. The
+   games layout keeps the old 1fr stretch via flex-grow. */
+.history-page {
+  min-height: calc(100vh - 72px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.history-page-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 520px);
+  gap: 12px;
+  align-items: end;
+  padding: 0 2px;
+}
+
+.page-title {
+  padding-left: 0;
+  border-bottom: 0;
+  font-size: 12px;
+}
+
+.page-subtitle {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.history-page-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 8px;
+}
+
+/* ===================== History v2 — Region 1: status band ===================== */
+/* One wrapping flex row: stage pill (+ live dot), optional progress bar,
+   watchdog resource chips, learning-health stat chips, health pill. */
+.hist-status-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.48);
+}
+
+/* Empty v2 containers collapse entirely so they never reserve a gap row. */
+.hist-status-band:empty,
+.hist-trends:empty,
+.hist-epoch-table:empty {
+  display: none;
+}
+
+.hist-band-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hist-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(7, 13, 19, 0.54);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.hist-live-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: histPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes histPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.72); }
+}
+
+.hist-bar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 170px;
+  min-width: 150px;
+  max-width: 280px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(7, 13, 19, 0.6);
+  overflow: hidden;
+}
+
+.hist-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background: rgba(39, 215, 230, 0.22);
+  border-right: 1px solid rgba(39, 215, 230, 0.55);
+}
+
+.hist-bar-label {
+  position: relative;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hist-resources,
+.hist-stat-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.hist-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text);
+  border: 1px solid rgba(143, 155, 170, 0.20);
+  border-radius: 10px;
+  background: rgba(7, 13, 19, 0.50);
+  white-space: nowrap;
+}
+
+.hist-chip i {
+  font-style: normal;
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hist-chip-warn {
+  border-color: rgba(255, 206, 86, 0.55);
+  background: rgba(255, 206, 86, 0.10);
+}
+
+/* R6: fast-poll freshness readout ("live · updated Ns ago"). Its text belongs
+   to the 1s histUpdateLiveTick interval (textContent only), so it stays empty
+   — and collapses — until the first successful /api/training/live poll. */
+.hist-live-tick {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.hist-live-tick:empty {
+  display: none;
+}
+
+/* Health pill: real <button> (44px target), toggles the messages drawer.
+   Status tints reuse the old learning-health-panel scheme (watch = amber,
+   intervene = red, improving = green) plus collecting/ok. */
+.hist-health-pill {
+  margin-left: auto;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 5px 14px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hist-health-pill:hover {
+  border-color: var(--accent);
+}
+
+.hist-health-collecting {
+  border-color: rgba(143, 155, 170, 0.45);
+  color: var(--muted);
+}
+
+.hist-health-ok {
+  border-color: rgba(39, 215, 230, 0.38);
+}
+
+.hist-health-improving {
+  border-color: rgba(54, 211, 153, 0.55);
+  background: rgba(54, 211, 153, 0.10);
+}
+
+.hist-health-watch {
+  border-color: rgba(255, 206, 86, 0.55);
+  background: rgba(255, 206, 86, 0.10);
+}
+
+.hist-health-intervene {
+  border-color: rgba(255, 92, 92, 0.62);
+  background: rgba(255, 92, 92, 0.12);
+}
+
+.hist-health-drawer {
+  display: grid;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.48);
+}
+
+.hist-health-drawer[hidden] {
+  display: none;
+}
+
+.hist-health-msg {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ===================== History v2 — Region 2: trends grid ===================== */
+.hist-trends {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.hist-trends-caption {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+/* ============ History v2 — Multi-stage eval (hexfield opt-in) ============ */
+/* Standalone rating-table region: hidden via [hidden] when the run carries no
+   multistage_eval_history, and self-collapses if it ever renders empty. */
+.hist-rating-table {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.44);
+}
+
+.hist-rating-table[hidden] {
+  display: none;
+}
+
+.hist-rating-table:empty {
+  display: none;
+}
+
+.hist-rating-table .hist-trends-caption {
+  margin-bottom: 0;
+}
+
+.hist-rating-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 8px;
+  align-items: start;
+}
+
+.hist-rating-head {
+  display: grid;
+  gap: 5px;
+}
+
+.hist-rating-verdict-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Verdict pill: tinted via the shared status palette (improving / watch /
+   intervene) attached alongside this base class. */
+.hist-rating-verdict {
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.hist-rating-tag {
+  padding: 2px 7px;
+  border: 1px solid rgba(39, 215, 230, 0.4);
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #9fe1e8;
+}
+
+.hist-rating-tag-muted {
+  border-color: rgba(143, 155, 170, 0.3);
+  color: var(--muted);
+}
+
+/* Reuse the loss-bar grid; the rating rows have no third (delta) column. */
+.hist-rating-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+}
+
+.hist-rating-anchor {
+  margin-left: 4px;
+  color: #9fe1e8;
+}
+
+.hist-trend-card {
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.44);
+}
+
+.hist-trend-card svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: crosshair;
+}
+
+.hist-chart-title {
+  fill: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.hist-chart-latest {
+  fill: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.hist-chart-axis {
+  fill: var(--muted);
+  font-size: 8px;
+}
+
+.hist-chart-tick {
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+
+.hist-trend-cross {
+  stroke: rgba(213, 221, 230, 0.45);
+  stroke-width: 1;
+}
+
+/* Shared, fixed-position tooltip (one div on document.body). */
+.hist-trend-tip {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  max-width: 240px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(7, 13, 19, 0.95);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+
+.hist-trend-tip[hidden] {
+  display: none;
+}
+
+/* ===================== History v2 — Region 3: epoch table ===================== */
+.hist-epoch-table {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.44);
+}
+
+.hist-epoch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 4px;
+  border-bottom: 1px solid rgba(45, 63, 81, 0.5);
+}
+
+.hist-epoch-row:last-of-type {
+  border-bottom: 0;
+}
+
+.hist-epoch-live {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: rgba(39, 215, 230, 0.05);
+}
+
+.hist-epoch-num {
+  flex: none;
+  min-width: 52px;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid rgba(39, 215, 230, 0.32);
+  border-radius: 6px;
+  background: rgba(10, 31, 38, 0.7);
+  color: #ecfbff;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hist-epoch-num:hover {
+  border-color: var(--accent);
+}
+
+.hist-epoch-run {
+  flex: none;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.hist-epoch-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.hist-epoch-sp {
+  flex: 1 1 auto;
+  color: var(--muted);
+}
+
+.hist-epoch-train {
+  flex: none;
+  width: 88px;
+}
+
+.hist-epoch-eval {
+  flex: none;
+  width: 108px;
+}
+
+.hist-balance-bar {
+  flex: none;
+  display: flex;
+  width: 110px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(143, 155, 170, 0.16);
+}
+
+.hist-bal-p0 {
+  background: var(--p0);
+}
+
+.hist-bal-draw {
+  background: rgba(143, 155, 170, 0.45);
+}
+
+.hist-bal-p1 {
+  background: var(--p1);
+}
+
+.hist-balance-none {
+  flex: none;
+  width: 110px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.hist-epoch-tag {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.hist-epoch-tag-saved {
+  border: 1px solid rgba(54, 211, 153, 0.5);
+  color: #9fe8cd;
+}
+
+.hist-epoch-tag-pending {
+  border: 1px solid rgba(143, 155, 170, 0.3);
+  color: var(--muted);
+}
+
+.hist-epoch-chevron {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hist-epoch-chevron:hover {
+  color: var(--text);
+  background: rgba(39, 215, 230, 0.08);
+}
+
+.hist-epoch-chevron-none {
+  cursor: default;
+}
+
+/* H7: removable epoch-filter chip in the filters row. */
+.hist-epoch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 12px;
+  border: 1px solid rgba(39, 215, 230, 0.45);
+  border-radius: 999px;
+  background: rgba(39, 215, 230, 0.10);
+  color: var(--text);
+  font-size: 12px;
+  justify-self: start;
+}
+
+.hist-epoch-chip[hidden] {
+  display: none;
+}
+
+.hist-epoch-chip button {
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hist-epoch-chip button:hover {
+  color: var(--accent);
+}
+
+/* ===================== History v2 — P1: epoch inspector ===================== */
+/* Full-width card between the epoch table and the filters row. Open state +
+   fetched payloads live in module vars/caches, so the 15s innerHTML refresh
+   repaints with zero refetches. */
+.hist-epoch-inspector {
+  display: grid;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.44);
+}
+
+.hist-epoch-inspector[hidden] {
+  display: none;
+}
+
+.hist-insp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.hist-insp-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.hist-insp-run {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.hist-insp-ckpt-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.hist-insp-spacer {
+  flex: 1 1 auto;
+}
+
+.hist-insp-btn {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(7, 13, 19, 0.54);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hist-insp-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.hist-insp-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.hist-insp-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.hist-insp-group {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 9px;
+  border: 1px solid rgba(143, 155, 170, 0.14);
+  border-radius: 6px;
+  background: rgba(7, 13, 19, 0.34);
+}
+
+/* Lazy groups (diagnostics/model) collapse once their fetch resolves empty. */
+.hist-insp-group:empty {
+  display: none;
+}
+
+.hist-insp-group-title {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hist-insp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.hist-insp-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.hist-loss-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: 6px;
+}
+
+.hist-loss-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.hist-loss-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 16px;
+  border-radius: 4px;
+  background: rgba(143, 155, 170, 0.14);
+  overflow: hidden;
+}
+
+.hist-loss-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background: rgba(39, 215, 230, 0.30);
+  border-right: 1px solid rgba(39, 215, 230, 0.6);
+}
+
+.hist-loss-val {
+  position: relative;
+  padding: 0 6px;
+  font-size: 10px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.hist-delta {
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.hist-delta-down {
+  color: #36d399;
+}
+
+.hist-delta-up {
+  color: #ff7a7a;
+}
+
+.hist-delta-flat {
+  color: var(--muted);
+}
+
+.hist-insp-warnings {
+  display: grid;
+  gap: 2px;
+}
+
+.hist-insp-warning {
+  color: #ffce56;
+  font-size: 10px;
+}
+
+/* --- Per-epoch telemetry group (schema-upgrade strip) --------------------- */
+/* The Telemetry group can carry a phase table + sparklines, so let it span the
+   full inspector width instead of one 240px grid cell. */
+.hist-insp-telem {
+  grid-column: 1 / -1;
+}
+
+.hist-telem-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.hist-telem-badge {
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.hist-telem-badge-info {
+  border-color: rgba(201, 134, 255, 0.45);
+  color: #d3adff;
+  background: rgba(201, 134, 255, 0.08);
+}
+
+.hist-telem-badge-warn {
+  border-color: rgba(255, 206, 86, 0.5);
+  color: #ffce56;
+  background: rgba(255, 206, 86, 0.09);
+}
+
+/* Sparkline mini-trends row. */
+.hist-telem-sparks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.hist-telem-spark-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hist-telem-spark-label {
+  font-size: 9px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hist-telem-spark-label b {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.hist-spark {
+  display: block;
+  width: 132px;
+  height: 26px;
+}
+
+.hist-spark-line {
+  stroke: var(--accent);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.hist-spark-mark {
+  fill: #c986ff;
+}
+
+/* Per-phase entropy/value table. */
+.hist-telem-phase {
+  border-collapse: collapse;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.hist-telem-phase th,
+.hist-telem-phase td {
+  padding: 2px 10px 2px 0;
+  text-align: left;
+  font-weight: 600;
+}
+
+.hist-telem-phase thead th,
+.hist-telem-phase tbody th {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.hist-telem-n {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.hist-telem-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hist-telem-detail > summary {
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+  list-style: revert;
+}
+
+.hist-telem-eval-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hist-telem-paths {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.hist-telem-paths > summary {
+  cursor: pointer;
+}
+
+.hist-telem-paths ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  max-height: 140px;
+  overflow: auto;
+  word-break: break-all;
+}
+
+/* Inspected-row accent: same shape as .hist-epoch-live, distinct color, and
+   declared after it so a row that is both live and inspected reads inspected. */
+[data-hist-epoch-inspect] {
+  cursor: pointer;
+}
+
+.hist-epoch-inspected {
+  box-shadow: inset 3px 0 0 #c986ff;
+  background: rgba(201, 134, 255, 0.07);
+}
+
+.history-table-panel,
+.history-detail-panel {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(16, 29, 42, 0.92), rgba(9, 17, 25, 0.94));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025), 0 14px 36px rgba(0, 0, 0, 0.16);
+}
+
+.history-filters {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 180px 180px 180px;
+  gap: 8px;
+}
+
+.history-layout {
+  min-height: 0;
+  flex: 1 1 auto;   /* fill the leftover .history-page column height (old 1fr row) */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 430px);
+  gap: 10px;
+}
+
+.history-table-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+/* ===================== History v2 — H8: one-line game rows ===================== */
+/* Header mirrors the row's fixed flex widths (game = dot 10 + gap 8 + label 74). */
+.hist-list-head {
+  display: flex;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.hist-list-head span {
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hist-h-game { width: 92px; }
+.hist-h-src { width: 24px; }
+.hist-h-len { width: 76px; }
+.hist-h-players { flex: 1 1 auto; }
+.hist-h-date { width: 104px; }
+.hist-h-act { width: 54px; }
+
+.game-history-list {
+  min-height: 0;
+  overflow: auto;
+}
+
+.hist-game-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 2px 12px;
+  border-bottom: 1px solid rgba(45, 63, 81, 0.68);
+  background: rgba(7, 13, 19, 0.24);
+}
+
+.hist-game-row:hover,
+.hist-game-row.selected {
+  background: rgba(39, 215, 230, 0.08);
+}
+
+.hist-game-row.selected {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* The row body is one full-width selection button (data-history-key). */
+.hist-game-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hist-win-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.hist-win-none {
+  background: transparent;
+  border: 1px solid rgba(143, 155, 170, 0.55);
+}
+
+.hist-game-label {
+  flex: none;
+  width: 74px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.hist-src-badge {
+  flex: none;
+  width: 24px;
+  padding: 1px 0;
+  border: 1px solid rgba(143, 155, 170, 0.3);
+  border-radius: 4px;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+.hist-src-selfplay {
+  border-color: rgba(39, 215, 230, 0.45);
+  color: var(--accent);
+}
+
+.hist-src-evaluation {
+  border-color: rgba(54, 211, 153, 0.5);
+  color: #9fe8cd;
+}
+
+/* Candidate net W/L badge (eval games only): green "W" / red "L". Rendered
+   only when the current model's outcome is decidable (historyOutcomeBadge). */
+.hist-cand-badge {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  color: #07131b;
+}
+
+.hist-cand-win {
+  background: var(--green);
+}
+
+.hist-cand-loss {
+  background: var(--red);
+}
+
+/* Explicit P0/P1 seat labels; the candidate seat is marked in accent color and
+   a leading dot span (see hist-cand-mark) so the current model is visible at a
+   glance. Marker is a real span, not ::before, so it does not collide with the
+   .hist-outcome-bit::before separator in the detail panel. */
+.hist-seat-cand {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.hist-cand-mark {
+  font-size: 8px;
+  vertical-align: middle;
+  margin-right: 3px;
+  color: var(--accent);
+}
+
+.hist-game-len {
+  flex: none;
+  width: 76px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hist-game-len b {
+  flex: none;
+  width: 28px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* Relative micro-bar: width = length / max length among displayed rows. */
+.hist-len-bar {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(143, 155, 170, 0.16);
+}
+
+.hist-len-bar span {
+  display: block;
+  height: 100%;
+  background: rgba(39, 215, 230, 0.65);
+}
+
+.hist-game-players {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.hist-game-date {
+  flex: none;
+  width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.hist-game-replay {
+  flex: none;
+  width: 54px;
+  min-height: 30px;
+  border: 1px solid rgba(39, 215, 230, 0.38);
+  border-radius: 6px;
+  background: rgba(10, 31, 38, 0.86);
+  color: #ecfbff;
+  font-size: 10px;
+  font-weight: 850;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hist-game-replay:hover {
+  border-color: var(--accent);
+  background: rgba(29, 76, 86, 0.96);
+}
+
+.hist-list-count {
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.history-list-more {
+  min-height: 28px;
+  border: 1px solid rgba(39, 215, 230, 0.38);
+  border-radius: 6px;
+  background: rgba(10, 31, 38, 0.86);
+  color: #ecfbff;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.history-list-more:hover {
+  border-color: var(--accent);
+  background: rgba(29, 76, 86, 0.96);
+}
+
+.history-list-more {
+  width: calc(100% - 24px);
+  margin: 12px;
+}
+
+.history-detail-panel {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.game-history-detail {
+  min-height: 0;
+  overflow: auto;
+}
+
+.history-detail-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.detail-row,
+.player-detail,
+.diagnostic-grid div,
+.detail-note {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(7, 13, 19, 0.54);
+}
+
+.player-detail,
+.diagnostic-grid div {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+}
+
+.detail-row span,
+.player-detail span,
+.player-detail small,
+.diagnostic-grid span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.detail-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+}
+
+.detail-row strong,
+.player-detail strong,
+.diagnostic-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.history-detail-section {
+  display: grid;
+  gap: 7px;
+}
+
+.detail-section-title,
+.diagnostic-title {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.player-detail-grid,
+.diagnostic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.diagnostic-block {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.detail-note {
+  padding: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.history-replay-btn {
+  width: 100%;
+}
+
+/* H9: final-position thumbnail in the detail panel (.hxr records only). */
+.hist-thumb {
+  width: 140px;
+  height: 140px;
+  display: grid;
+  place-items: center;
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(7, 13, 19, 0.54);
+}
+
+.hist-thumb:empty {
+  display: none;
+}
+
+.hist-thumb svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.hist-thumb-loading {
+  padding: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* P2: Selected Game panel — nav row / outcome line / details disclosure. */
+.hist-game-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hist-game-nav-pos {
+  min-width: 64px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.hist-outcome-line {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(7, 13, 19, 0.54);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.hist-outcome-line strong {
+  font-size: 14px;
+}
+
+.hist-outcome-line strong.p0 {
+  color: #90b9ff;
+}
+
+.hist-outcome-line strong.p1 {
+  color: #ffaaa6;
+}
+
+.hist-outcome-bit {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hist-outcome-bit::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--muted);
+}
+
+/* Both action buttons stay top-level primary targets (B3/B5). */
+.history-detail-actions button {
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+.hist-detail-more summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: rgba(7, 13, 19, 0.54);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hist-detail-more summary:hover {
+  border-color: var(--accent);
+}
+
+.hist-detail-more[open] summary {
+  margin-bottom: 8px;
+}
+
+.hist-detail-more-body {
+  display: grid;
+  gap: 12px;
+}
+
+@media (max-width: 1120px) {
+  .history-page-head,
+  .history-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .history-detail-panel {
+    order: -1;
+  }
+
+  .history-table-panel,
+  .history-detail-panel {
+    min-height: 360px;
+  }
+}
+
+@media (max-width: 980px) {
+  .history-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 820px) {
+  .history-page-actions,
+  .player-detail-grid,
+  .diagnostic-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .history-page-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ===================== History v2 — H10: mobile (<= 900px) ===================== */
+@media (max-width: 900px) {
+  /* Trends become a horizontally scrollable, snap-aligned strip. The
+     .hist-trends:empty collapse rule still wins on specificity. */
+  .hist-trends {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+    padding-bottom: 4px;
+  }
+
+  .hist-trends-caption {
+    flex: 0 0 auto;
+    align-self: center;
+  }
+
+  .hist-trend-card {
+    flex: 0 0 auto;
+    width: 240px;
+    min-width: 240px;
+    scroll-snap-align: start;
+  }
+
+  /* Epoch rows scroll horizontally inside the panel instead of wrapping. */
+  .hist-epoch-table {
+    overflow-x: auto;
+  }
+
+  .hist-epoch-row {
+    min-width: 660px;
+  }
+
+  .hist-epoch-num,
+  .hist-game-replay {
+    min-height: 44px;
+  }
+
+  /* Inspector is already a full-width card; groups stack one per row so the
+     loss bars and chip rows never force horizontal overflow at 390px. */
+  .hist-insp-groups {
+    grid-template-columns: 1fr;
+  }
+
+  /* One-line rows are self-explanatory without the header strip; collapse the
+     panel's header row so the list still fills and scrolls. */
+  .hist-list-head {
+    display: none;
+  }
+
+  .history-table-panel {
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .hist-game-date,
+  .hist-h-date {
+    display: none;
+  }
+}
+
+/* Per-epoch detail band: Buffer + per-head Losses + Calibration chip groups
+   rendered beneath each hexgt RL epoch row (epochProgressDetail in app.js). */
+.epoch-progress-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 6px 10px 7px 80px;   /* indent under the Epoch column */
+  border: 1px solid rgba(143, 155, 170, 0.14);
+  border-radius: 5px;
+  background: rgba(7, 13, 19, 0.34);
+}
+
+.epoch-detail-group {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.epoch-detail-label {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.epoch-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  color: var(--text);
+  border: 1px solid rgba(143, 155, 170, 0.20);
+  border-radius: 10px;
+  background: rgba(7, 13, 19, 0.50);
+  white-space: nowrap;
+}
+
+.epoch-chip i {
+  font-style: normal;
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.epoch-chip-total {
+  border-color: rgba(39, 215, 230, 0.40);
+  background: rgba(39, 215, 230, 0.10);
+}
+
+.epoch-chip-total,
+.epoch-chip-total i {
+  color: var(--text);
+}
+
+@media (max-width: 1100px) {
+  .epoch-progress-detail {
+    padding-left: 10px;   /* drop the desktop column-indent on narrow screens */
+  }
+}
+
+/* ============================ Debug tab (Model Debug v2) ============================ */
+/* Layout per scripts/_debug_rewrite_spec.md §1: #debugScreen > .dbg-grid with six
+   regions — context strip / ply rail / board stage / tabbed inspector / pin tray /
+   bottom dock. Tabs, dock and context collapse are pure class toggles (.active /
+   .dbg-collapsed) so the skeleton works before any JS wiring. Mobile hardening from
+   the v1 viewer is preserved: every control is a real <button>/<label> with
+   touch-action: manipulation and >=44px touch targets under 900px. */
+.debug-screen { display: block; padding: 14px 16px 26px; }
+
+.debug-status { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; font-size: 13px;
+  border: 1px solid var(--border); background: var(--panel); }
+.debug-status-busy { border-color: rgba(39,215,230,0.45); background: rgba(39,215,230,0.08); color: var(--accent); }
+.debug-status-error { border-color: rgba(255,86,80,0.5); background: rgba(255,86,80,0.10); color: var(--p1); }
+
+.dbg-grid {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) minmax(280px, 30%);
+  grid-template-areas:
+    "ctx ctx ctx"
+    "rail board insp"
+    "pins pins pins"
+    "dock dock dock";
+  gap: 12px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+/* ---- Region 1: context strip ---- */
+#dbgCtx { grid-area: ctx; display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.dbg-ctx-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; min-width: 0; }
+.dbg-ctx-controls .select-field { min-width: 0; }
+.dbg-ctx-controls select { max-width: 210px; }
+.dbg-ctx-controls button { min-height: 34px; touch-action: manipulation; }
+#dbgCtx.dbg-collapsed .dbg-ctx-controls { display: none; }
+.dbg-ctx-side { display: flex; align-items: center; gap: 10px; margin-left: auto; min-width: 0; }
+.dbg-ctx-crumb { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; max-width: 48vw; }
+.dbg-worker-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted);
+  flex: 0 0 auto; align-self: center; }
+.dbg-worker-dot.ok { background: var(--green); }
+.dbg-worker-dot.err { background: var(--red); }
+#dbgCtxCollapse, #dbgDockToggle { min-width: 34px; min-height: 34px; padding: 0 8px; touch-action: manipulation; }
+#dbgCtx.dbg-collapsed #dbgCtxCollapse, #dbgDock.dbg-collapsed #dbgDockToggle { transform: rotate(180deg); }
+
+/* ---- Region 2: ply rail ---- */
+#dbgPlyRail { grid-area: rail; display: flex; flex-direction: column; gap: 8px; align-items: stretch;
+  padding: 8px 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  min-height: 0; min-width: 0; }
+.dbg-ply-readout { text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text); }
+.dbg-ply-transport { display: flex; flex-direction: column; gap: 6px; }
+.dbg-ply-transport button { width: 100%; min-height: 34px; padding: 0; font-size: 13px; touch-action: manipulation; }
+.dbg-ply-slider-wrap { display: flex; justify-content: center; min-width: 0; }
+.dbg-ply-sweep { min-height: 34px; font-size: 11px; padding: 0 2px; touch-action: manipulation; }
+
+/* Wrongness strip: JS positions one .dbg-ply-row per ply (top/height inline);
+   neutral flat rows until a Game Error Sweep result exists. */
+.dbg-ply-strip { flex: 1 1 80px; min-height: 60px; position: relative; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 4px; background: rgba(255,255,255,0.02); }
+.dbg-ply-row { position: absolute; left: 0; right: 0; min-height: 2px;
+  background: rgba(143,155,170,0.16); cursor: pointer; touch-action: manipulation; }
+.dbg-ply-row .dbg-ply-verr { position: absolute; right: 0; top: 0; bottom: 0; width: 30%; }
+.dbg-ply-blunder { box-shadow: inset 3px 0 0 var(--red); }
+.dbg-ply-miss { box-shadow: inset -3px 0 0 var(--yellow); }
+.dbg-ply-cur { outline: 1px solid var(--accent); outline-offset: -1px; z-index: 2; }
+.dbg-ply-cur::before { content: "\25B8"; position: absolute; left: 1px; top: 50%;
+  transform: translateY(-55%); font-size: 9px; line-height: 1; color: var(--accent); }
+
+/* Custom range slider (iOS needs -webkit-appearance:none on the INPUT itself).
+   Vertical inside the desktop rail, horizontal in the <900px single-column layout. */
+#dbgPlySlider {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 28px; margin: 0;
+  background: transparent; cursor: pointer; touch-action: manipulation;
+}
+#dbgPlySlider::-webkit-slider-runnable-track { height: 10px; border-radius: 6px; background: #2c3d50; border: 1px solid var(--border); }
+#dbgPlySlider::-moz-range-track { height: 10px; border-radius: 6px; background: #2c3d50; border: 1px solid var(--border); }
+#dbgPlySlider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--accent); border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5); margin-top: -8px;
+}
+#dbgPlySlider::-moz-range-thumb {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--accent); border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+#dbgPlySlider:focus { outline: none; }
+@media (min-width: 901px) {
+  #dbgPlySlider { writing-mode: vertical-lr; direction: rtl; width: 28px; height: 120px; }
+  #dbgPlySlider::-webkit-slider-runnable-track { height: auto; width: 10px; }
+  #dbgPlySlider::-webkit-slider-thumb { margin-top: 0; margin-left: -8px; }
+}
+
+/* Session journal: icon accordion at the rail bottom; body pops out over the board. */
+.dbg-journal { position: relative; text-align: center; }
+.dbg-journal summary { list-style: none; cursor: pointer; min-height: 30px; line-height: 30px;
+  color: var(--muted); border: 1px solid var(--border); border-radius: 6px;
+  background: rgba(255,255,255,0.02); touch-action: manipulation; }
+.dbg-journal summary::-webkit-details-marker { display: none; }
+.dbg-journal[open] summary { color: var(--accent); border-color: rgba(39,215,230,0.44); }
+.dbg-journal-body { position: absolute; left: calc(100% + 10px); bottom: 0; z-index: 40;
+  width: min(320px, 80vw); max-height: 300px; overflow: auto; text-align: left;
+  padding: 10px 12px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 14px 38px rgba(0, 0, 0, 0.45); font-size: 12px; }
+.dbg-journal-head { display: flex; justify-content: space-between; align-items: center;
+  font-weight: 700; margin-bottom: 6px; }
+.dbg-journal-clear { font-size: 11px; padding: 2px 8px; min-height: 24px; }
+
+/* ---- Region 3: board stage ---- */
+#dbgBoardStage { grid-area: board; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.dbg-mode-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+/* .seg is a one-row grid in the Match styles; the mode bar has 9 entries and must
+   wrap on narrow boards, so it overrides to wrapping flex. */
+.dbg-mode-seg { display: flex; flex-wrap: wrap; }
+.dbg-mode-seg button { flex: 1 1 auto; min-height: 32px; padding: 0 10px; font-size: 12px; touch-action: manipulation; }
+.dbg-mode-seg button:last-child { border-right: 1px solid var(--border); }
+#dbgPlaneSelect { max-width: 180px; min-height: 30px; }
+.dbg-toggles { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center;
+  font-size: 12px; color: var(--text); }
+.dbg-toggles label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  min-height: 32px; touch-action: manipulation; }
+
+/* Bounded, scalable board viewport (overflow:hidden clips only the board, controls
+   are siblings in normal flow — keeps the v1 never-clipped mobile guarantee). */
+.dbg-board-wrap { position: relative; width: 100%; aspect-ratio: 1 / 1;
+  max-height: min(62vh, 640px); border: 1px solid var(--line); border-radius: 6px;
+  overflow: hidden; background: linear-gradient(180deg, rgba(16, 29, 42, 0.92), rgba(9, 17, 25, 0.94)); }
+.dbg-board-wrap .board-area { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; }
+#debugBoardSvg, #dbgBoardSvgB { width: 100%; height: 100%; display: block; }
+/* A/B split mode (COMPARE tab toggle): two half-width boards, shared hover cursor. */
+.dbg-board-wrap.dbg-split #debugBoardSvg { width: 50%; right: auto; }
+.dbg-board-wrap.dbg-split #dbgBoardSvgB { width: 50%; left: auto; right: 0; }
+.dbg-zoom { grid-template-columns: repeat(3, 34px); }
+
+.dbg-legend { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 10px; font-size: 12px; color: var(--muted);
+  background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; }
+.dbg-legend-end { min-width: 44px; text-align: center; color: var(--text); font-variant-numeric: tabular-nums; }
+.dbg-legend-scale { flex: 1 1 80px; min-width: 60px; height: 10px; border-radius: 5px;
+  border: 1px solid var(--border); background: linear-gradient(90deg, rgba(16, 25, 36, 0.9), var(--accent)); }
+.dbg-legend label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  min-height: 28px; touch-action: manipulation; }
+#dbgOpacity { width: 90px; min-height: 0; }
+
+.dbg-branch-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 10px; font-size: 12px; border-radius: 8px;
+  border: 1px solid rgba(39,215,230,0.35); background: rgba(39,215,230,0.06); }
+.dbg-branch-chips { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+#dbgBranchReturn { min-height: 30px; touch-action: manipulation; }
+
+/* Chips (value chip, branch-bar prefix chips, record metadata chips) */
+.dbg-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700;
+  padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); }
+.dbg-chip.pos { color: var(--green); border-color: rgba(80,220,140,0.5); }
+.dbg-chip.neg { color: var(--p1); border-color: rgba(255,86,80,0.5); }
+.dbg-chip-game { color: var(--muted); background: rgba(255,255,255,0.04); }
+.dbg-chip-inj { color: var(--accent); background: rgba(39,215,230,0.10); border-color: rgba(39,215,230,0.5); }
+.dbg-chip-x { border: none; background: transparent; color: inherit; cursor: pointer;
+  padding: 0 2px; font-size: 12px; min-height: 24px; touch-action: manipulation; }
+
+/* ---- Region 4: inspector ---- */
+#dbgInspector { grid-area: insp; display: flex; flex-direction: column; gap: 10px;
+  padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  min-width: 0; min-height: 0; max-height: calc(min(62vh, 640px) + 120px); }
+.dbg-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.dbg-tabs button { min-height: 32px; padding: 0 10px; font-size: 12px; font-weight: 700;
+  color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 6px;
+  cursor: pointer; touch-action: manipulation; }
+.dbg-tabs button.active { color: var(--accent); border-color: rgba(39,215,230,0.44);
+  background: rgba(39,215,230,0.10); box-shadow: none; }
+.dbg-tab-panels { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.dbg-tab-panel { display: none; flex-direction: column; gap: 10px; font-size: 13px; }
+.dbg-tab-panel.active { display: flex; }
+
+.dbg-panel-head { display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.dbg-panel-title { margin-right: auto; font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.dbg-stale { width: 8px; height: 8px; border-radius: 50%; background: var(--yellow);
+  box-shadow: 0 0 6px rgba(245,197,66,0.6); flex: 0 0 auto; }
+.dbg-panel-refresh { min-width: 28px; min-height: 28px; padding: 0; font-size: 13px; touch-action: manipulation; }
+.dbg-subhead { font-size: 12px; font-weight: 700; }
+.dbg-note { font-size: 12px; }
+.dbg-empty-note { color: var(--muted); font-size: 13px; padding: 4px 0; }
+
+.pos { color: var(--green); } .neg { color: var(--p1); }
+.dbg-muted { color: var(--muted); }
+
+/* HEADS tab content */
+.dbg-value-scalar { font-size: 14px; }
+.dbg-value-scalar strong { font-size: 16px; }
+.dbg-vdist { display: flex; align-items: flex-end; gap: 1px; height: 70px; padding: 4px 0;
+  background: rgba(255,255,255,0.02); border-radius: 6px; position: relative; }
+.dbg-vbar { flex: 1 1 0; min-width: 1px; border-radius: 1px 1px 0 0; opacity: 0.92; }
+.dbg-vbar.pos { background: var(--green); } .dbg-vbar.neg { background: var(--p1); }
+.dbg-vdist-marker { position: absolute; top: 0; bottom: 0; width: 1px; }
+.dbg-vdist-marker.z { background: var(--yellow); }
+.dbg-vdist-marker.soft { background: var(--accent); }
+.dbg-vdist-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.dbg-ownerswap { padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+  background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.dbg-stv { display: flex; flex-direction: column; gap: 6px; }
+.dbg-stv-row { display: grid; grid-template-columns: 60px 1fr 52px; align-items: center; gap: 8px; font-size: 12px; }
+.dbg-bar-track { position: relative; height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; }
+.dbg-bar-track::before { content:""; position:absolute; left:50%; top:-2px; bottom:-2px; width:1px; background: var(--border); }
+.dbg-bar-fill { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.dbg-bar-fill.pos { background: var(--green); } .dbg-bar-fill.neg { background: var(--p1); }
+.dbg-stv-row .value { text-align: right; }
+.dbg-top-moves, .dbg-opp-list, .dbg-targets-body, .dbg-ckpt-info, .dbg-cmp-body { font-size: 13px; }
+.dbg-move-row { display: grid; grid-template-columns: 28px 1fr 58px 58px 52px 52px; gap: 6px;
+  padding: 3px 4px; border-radius: 4px; align-items: center; }
+.dbg-move-head { color: var(--muted); font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.04em; border-bottom: 1px solid var(--border); }
+.dbg-move-head .sortable { cursor: pointer; }
+.dbg-move-row:nth-child(odd of .dbg-move-row) { background: rgba(255,255,255,0.02); }
+.dbg-move-best { background: rgba(39,215,230,0.12) !important; }
+.dbg-badge { font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 4px; border: 1px solid; }
+.dbg-badge-over { color: var(--yellow); border-color: rgba(245,197,66,0.5); }
+.dbg-badge-under { color: var(--accent); border-color: rgba(39,215,230,0.5); }
+
+/* SEARCH tab content */
+.dbg-search-controls { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.dbg-search-controls .field-block { display: flex; flex-direction: column; }
+.dbg-search-controls input { width: 80px; }
+.dbg-search-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.dbg-search-actions button { min-height: 34px; touch-action: manipulation; }
+.dbg-search-summary { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; }
+.dbg-tree { font-size: 12px; max-height: 320px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+  background: rgba(255,255,255,0.02); }
+.dbg-tree-node { padding-left: 12px; border-left: 1px solid var(--line); }
+.dbg-tree-row { display: flex; gap: 8px; align-items: center; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+.dbg-tree-row:hover { background: rgba(255,255,255,0.04); }
+.dbg-tree-row.pv { background: rgba(39,215,230,0.10); color: var(--accent); }
+.dbg-scatter, .dbg-ladder { border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; background: rgba(255,255,255,0.02); font-size: 12px; }
+.dbg-scatter svg { width: 100%; height: 180px; display: block; }
+
+/* COMPARE tab content */
+.dbg-cmp-controls { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.dbg-cmp-controls button { min-height: 32px; touch-action: manipulation; }
+.dbg-cmp-controls label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  min-height: 32px; touch-action: manipulation; }
+
+/* INPUTS tab content: 13 client-rendered mini heatmaps (dense lineage only) */
+.dbg-planes { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.dbg-plane-cell { font-size: 10px; color: var(--muted); text-align: center; }
+.dbg-plane-cell svg, .dbg-plane-cell canvas { width: 100%; aspect-ratio: 1 / 1; display: block;
+  border: 1px solid var(--line); border-radius: 4px; background: rgba(255,255,255,0.02); }
+
+/* ---- Region 6: pin tray ---- */
+#dbgPinTray { grid-area: pins; display: flex; gap: 10px; align-items: center;
+  padding: 8px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.dbg-pin-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.dbg-pin-actions button { min-height: 34px; touch-action: manipulation; }
+.dbg-file-btn { display: inline-flex; align-items: center; min-height: 34px; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 13px;
+  color: var(--text); background: linear-gradient(180deg, rgba(19, 31, 43, 0.95), rgba(9, 16, 24, 0.95));
+  touch-action: manipulation; }
+.dbg-file-btn:hover { border-color: var(--accent); color: #ecfbff; }
+.dbg-pin-chips { display: flex; gap: 8px; align-items: center; flex: 1 1 auto; min-width: 0; overflow-x: auto; }
+.dbg-pin-chip { flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; padding: 6px;
+  border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02);
+  font-size: 11px; cursor: pointer; touch-action: manipulation; }
+.dbg-pin-chip svg { width: 80px; height: 80px; display: block; }
+.dbg-pin-chip-actions { display: flex; justify-content: space-between; gap: 4px; }
+
+/* ---- Region 5: bottom dock ---- */
+#dbgDock { grid-area: dock; padding: 10px 12px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.dbg-dock-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.dbg-dock-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dbg-dock-actions button { min-height: 34px; touch-action: manipulation; }
+.dbg-dock-body { margin-top: 8px; }
+#dbgDock.dbg-collapsed .dbg-dock-body { display: none; }
+.dbg-dock-panel { display: none; }
+.dbg-dock-panel.active { display: block; }
+#dbgDockChart, .dbg-ckpt-sweep-chart { min-height: 120px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.02); }
+#dbgDockChart svg, .dbg-ckpt-sweep-chart svg { width: 100%; height: 220px; display: block; }
+.dbg-ckpt-sweep-head { display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; flex-wrap: wrap; font-size: 12px; margin-bottom: 8px; }
+
+/* ---- Overlays: shortcut help + command palette ---- */
+.dbg-overlay { position: fixed; inset: 0; z-index: 2000; background: rgba(4, 9, 14, 0.66);
+  display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px; }
+.dbg-overlay-card { width: 100%; max-width: 640px; max-height: 80vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px 18px; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5); }
+.dbg-overlay-title { font-weight: 700; margin-bottom: 10px; }
+.dbg-help-grid { display: grid; grid-template-columns: auto 1fr; gap: 5px 16px;
+  font-size: 13px; margin-bottom: 10px; align-items: baseline; }
+.dbg-help-grid kbd { font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace;
+  padding: 0 6px; border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 4px; background: rgba(255,255,255,0.04); white-space: nowrap; justify-self: start; }
+.dbg-palette-card { max-width: 560px; padding: 10px; }
+#dbgPaletteInput { width: 100%; }
+.dbg-palette-list { margin-top: 8px; max-height: 50vh; overflow: auto; }
+.dbg-palette-item { padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.dbg-palette-item.active, .dbg-palette-item:hover { background: rgba(39,215,230,0.10); color: var(--accent); }
+
+/* Board SVG cell/stone classes (shared with the renderer) */
+.dbg-stone-label { fill: #fff; font-size: 11px; font-weight: 600; pointer-events: none; }
+.dbg-cell { cursor: crosshair; pointer-events: all; }  /* keep transparent (attn) cells clickable */
+.dbg-ghost-stone { opacity: 0.55; pointer-events: none; }
+
+/* ---- Stage F3: tree explorer / sweep / pins / compare extras */
+.dbg-cell.dbg-hl { stroke: var(--accent); stroke-width: 2; }
+.dbg-mini-btn { min-height: 26px; padding: 0 10px; font-size: 11px; touch-action: manipulation; }
+.dbg-flex-head { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  margin-bottom: 4px; }
+.dbg-tree-row, .dbg-tree-cols { font-variant-numeric: tabular-nums; }
+.dbg-tree-cols { display: flex; gap: 8px; padding: 2px 4px; }
+.dbg-tree-cols span:nth-child(1) { width: 12px; }
+.dbg-tree-cols span:nth-child(2) { min-width: 52px; }
+.dbg-tree-cols span:nth-child(3) { min-width: 38px; text-align: right; }
+.dbg-tree-cols span:nth-child(4) { width: 46px; }
+.dbg-tree-cols span:nth-child(5) { min-width: 76px; }
+.dbg-tree-cols span:nth-child(6), .dbg-tree-cols span:nth-child(7), .dbg-tree-cols span:nth-child(8) { min-width: 40px; }
+.dbg-tree-caret { width: 12px; color: var(--muted); flex: 0 0 auto; }
+.dbg-tree-cell { min-width: 52px; font-weight: 700; }
+.dbg-tree-bar { width: 46px; height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px;
+  overflow: hidden; flex: 0 0 auto; }
+.dbg-tree-bar span { display: block; height: 100%; background: var(--accent); opacity: 0.7; }
+.dbg-tree-n { min-width: 38px; text-align: right; }
+.dbg-tree-q { min-width: 76px; }
+.dbg-tree-p, .dbg-tree-u, .dbg-tree-v { min-width: 40px; color: var(--muted); }
+.dbg-tree-step, .dbg-tree-expand { min-height: 22px; padding: 0 6px; font-size: 11px;
+  touch-action: manipulation; flex: 0 0 auto; }
+.dbg-target-row { display: grid; grid-template-columns: minmax(90px, 1fr) auto auto auto;
+  gap: 6px; padding: 2px 0; font-variant-numeric: tabular-nums; align-items: baseline; }
+.dbg-target-row span:nth-child(n+2) { text-align: right; }
+.dbg-dock-readout { font-size: 11px; margin-top: 4px; min-height: 14px;
+  font-variant-numeric: tabular-nums; }
+#dbgCmpHeat.active, #dbgSweepBtn.active, #dbgPlySweepBtn.active { color: var(--accent);
+  border-color: rgba(39,215,230,0.44); background: rgba(39,215,230,0.10); }
+.dbg-pin-chip-actions .dbg-mini-btn { min-height: 22px; padding: 0 6px; }
+
+/* Narrow desktop, inspector at/near its 280px floor: the fixed .dbg-move-row
+   tracks (28+58+58+52+52 + five 6px gaps = 278px) exceed the ~256px of panel
+   content width — compress the tracks and let the cell column ellipsize so the
+   Q/Δ columns stay visible instead of forcing a horizontal scrollbar. */
+@media (min-width: 901px) and (max-width: 1280px) {
+  .dbg-move-row { grid-template-columns: 18px minmax(0, 1fr) 48px 48px 44px 44px; gap: 4px; font-size: 12px; }
+  .dbg-move-row > span:nth-child(2) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+}
+
+/* ---- Mobile (<900px): single column Context -> Board -> Ply controls -> Inspector
+   -> Pins (horizontal scroller) -> Dock; rail becomes a horizontal strip + slider. */
+@media (max-width: 900px) {
+  .dbg-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "ctx" "board" "rail" "insp" "pins" "dock";
+  }
+  .dbg-ctx-crumb { max-width: 100%; }
+  #dbgPlyRail { flex-direction: row; flex-wrap: wrap; align-items: center; padding: 8px 10px; }
+  .dbg-ply-readout { min-width: 48px; font-size: 13px; }
+  .dbg-ply-transport { flex-direction: row; flex: 1 1 auto; gap: 8px; }
+  .dbg-ply-transport button { min-width: 44px; min-height: 44px; }
+  .dbg-ply-sweep { min-height: 44px; padding: 0 10px; }
+  .dbg-ply-slider-wrap { flex: 1 1 100%; }
+  .dbg-ply-strip { flex: 1 1 100%; min-height: 22px; height: 22px; }
+  /* Horizontal strip: JS emits left/width inline (instead of top/height) when
+     the <=900px query matches; rows span the strip's full height and the
+     value-error tint / blunder / miss / cursor markers rotate with them. */
+  .dbg-ply-row { top: 0; bottom: 0; left: auto; right: auto; min-height: 0; min-width: 2px; }
+  .dbg-ply-row .dbg-ply-verr { left: 0; right: 0; top: auto; bottom: 0; width: auto; height: 30%; }
+  .dbg-ply-blunder { box-shadow: inset 0 3px 0 var(--red); }
+  .dbg-ply-miss { box-shadow: inset 0 -3px 0 var(--yellow); }
+  .dbg-ply-cur::before { content: "\25BE"; left: 50%; top: 1px;
+    transform: translateX(-50%); }
+  .dbg-journal { text-align: left; }
+  .dbg-journal summary { padding: 0 12px; min-height: 44px; line-height: 44px; }
+  .dbg-journal-body { left: 0; right: auto; bottom: calc(100% + 8px); }
+  .dbg-board-wrap { max-height: min(58vh, 520px); }
+  .dbg-mode-seg button, .dbg-tabs button { min-height: 44px; }
+  .dbg-toggles label, .dbg-legend label, .dbg-cmp-controls label { min-height: 44px; }
+  .dbg-panel-refresh { min-width: 44px; min-height: 44px; }
+  .dbg-search-actions button, .dbg-dock-actions button, .dbg-pin-actions button,
+  .dbg-file-btn, .dbg-ctx-controls button, #dbgBranchReturn { min-height: 44px; }
+  /* Small embedded controls (chip ✕, tree step/expand, mini buttons incl. the
+     pin-chip pair, whose base rule outspecifies bare .dbg-mini-btn). */
+  .dbg-chip-x, .dbg-mini-btn, .dbg-pin-chip-actions .dbg-mini-btn,
+  .dbg-tree-step, .dbg-tree-expand { min-width: 44px; min-height: 44px; touch-action: manipulation; }
+  /* Wins over .board-view-controls button (equal specificity, later source order). */
+  .dbg-zoom { grid-template-columns: repeat(3, 44px); }
+  .dbg-zoom button { width: 44px; min-height: 44px; touch-action: manipulation; }
+  #dbgInspector { max-height: none; }
+  .dbg-tab-panels { overflow-y: visible; }
+  .dbg-pin-chips { flex-wrap: nowrap; }
+}
+
+/* History -> Debug deep link */
+.history-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.history-debug-btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent);
+  background: rgba(39,215,230,0.10); color: var(--accent); cursor: pointer; font-weight: 600; }
+.history-debug-btn:hover { background: rgba(39,215,230,0.18); }
+
+/* Match-tab artifact "Debug" button (opens the game in the Debug tab) */
+.artifact-debug-btn { margin-left: 6px; padding: 2px 9px; border-radius: 6px; font-size: 12px;
+  border: 1px solid var(--accent); background: rgba(39,215,230,0.10); color: var(--accent); cursor: pointer; }
+.artifact-debug-btn:hover { background: rgba(39,215,230,0.18); }
+
+/* ============================ Match tab (Arena v2) ============================ */
+/* Layout per scripts/_match_rewrite_spec.md §4: #matchScreen > .mt-grid with a
+   full-width setup strip, board stage + ~340px side rail, and the kept
+   move-history bottom dock. Visual language copies the Debug screen
+   (.dbg-ctx / .panel-card): 1px borders, 8px radii, --panel backgrounds.
+   New interactive targets get touch-action: manipulation and >=44px height in
+   the <=900px single-column layout. */
+.mt-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  grid-template-areas:
+    "setup setup"
+    "board side";
+  gap: 10px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+#mtSetup { grid-area: setup; }
+#mtBoardStage { grid-area: board; }
+#mtSide { grid-area: side; }
+
+/* ---- Region 1: setup strip (mirrors .dbg-ctx) ---- */
+.mt-setup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px 16px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.mt-seat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 1 220px;
+  min-width: 170px;
+}
+
+.mt-seat-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.mt-seat-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.mt-seat select,
+.mt-ckpt-cfg select,
+.mt-ckpt-cfg input,
+.mt-opts select,
+.mt-opts input:not([type="checkbox"]),
+.mt-actions button {
+  min-height: 34px;
+  touch-action: manipulation;
+}
+
+.mt-ckpt-cfg {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+
+.mt-vs {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.mt-opts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+}
+
+.mt-opts label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.mt-opts input:not([type="checkbox"]),
+.mt-opts select {
+  width: 96px;
+}
+
+/* ---- Evaluation region (D2/D3): BT pool ladder + W-L matrix + verdict strip,
+   verdict-CI error bar, dropped-anchor pills, eval-replay deep links. ---- */
+.hist-eval-pool {
+  margin: 8px 0 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(7, 13, 19, 0.4);
+}
+
+.hist-eval-pool[hidden] {
+  display: none;
+}
+
+.hist-eval-pool .hist-trends-caption {
+  margin-bottom: 6px;
+}
+
+/* Δ-Elo 95% CI error bar: a centered 0 reference with the CI range overlaid so a
+   wide INCONCLUSIVE reads as "low resolution", not a real regression. */
+.hist-ci-bar {
+  position: relative;
+  height: 14px;
+  margin: 2px 0;
+}
+
+.hist-ci-track {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(143, 155, 170, 0.22);
+  border-radius: 2px;
+}
+
+.hist-ci-zero {
+  position: absolute;
+  top: 1px;
+  width: 1px;
+  height: 12px;
+  background: rgba(143, 155, 170, 0.7);
+  transform: translateX(-0.5px);
+}
+
+.hist-ci-range {
+  position: absolute;
+  top: 4px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(39, 215, 230, 0.32);
+  border: 1px solid rgba(39, 215, 230, 0.5);
+}
+
+.hist-ci-point {
+  position: absolute;
+  top: 2px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(7, 13, 19, 0.8);
+}
+
+.hist-ci-caption {
+  margin-top: 2px;
+  font-size: 9px;
+  color: var(--muted);
+}
+
+/* cand-vs-replay Elo split badge on a unified ladder row (the 69-Elo artifact). */
+.hist-eval-split {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--muted);
+  background: rgba(143, 155, 170, 0.16);
+}
+
+/* BT ladder rows: label / Elo bar / replay deep-link. */
+.hist-eval-ladder-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+}
+
+/* Per-opponent W-L matrix rows. */
+.hist-eval-pair {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 6px;
+}
+
+.hist-eval-record {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+
+.hist-eval-win { color: #36d399; }
+.hist-eval-loss { color: #ff7a7a; }
+.hist-eval-draw { color: var(--muted); }
+
+.hist-eval-ep {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+/* Verdict-history strip. */
+.hist-eval-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hist-eval-verdict {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+
+/* Eval-replay deep-link button (ladder / W-L rows). */
+.hist-eval-replay {
+  padding: 1px 7px;
+  border: 1px solid rgba(39, 215, 230, 0.4);
+  border-radius: 8px;
+  background: transparent;
+  color: #9fe1e8;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.hist-eval-replay:hover {
+  background: rgba(39, 215, 230, 0.14);
+}
+
+/* Muted "not in roster" headline pill for a dropped permanent anchor. */
+.hist-epoch-chip-muted {
+  opacity: 0.7;
+  border-style: dashed;
+}
+
+/* ============ History v2 — #histStrength (redesigned eval cluster) ============ */
+/* One compact panel: a "current strength" hero KPI row, ONE learning curve, and
+   ONE opponent panel — collapsing the old trends-eval + rating-table + big BT
+   ladder + W-L table stack. Hidden via [hidden]; self-collapses when empty. */
+.hist-strength {
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(7, 13, 19, 0.44);
+}
+
+.hist-strength[hidden],
+.hist-strength:empty {
+  display: none;
+}
+
+.hist-strength .hist-trends-caption {
+  margin-bottom: 0;
+}
+
+/* Row 1: hero — KPIs in a single wrapping row, not a tile wall. */
+.hist-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.hist-hero-verdict,
+.hist-hero-kpi,
+.hist-hero-ci {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  justify-content: center;
+  min-width: 92px;
+  padding: 6px 10px;
+  border: 1px solid rgba(143, 155, 170, 0.16);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.34);
+}
+
+.hist-hero-ci {
+  flex: 1 1 180px;
+  min-width: 160px;
+}
+
+.hist-hero-k {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hist-hero-k small {
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.hist-hero-v {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1.05;
+}
+
+.hist-hero-big {
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 0.3px;
+}
+
+.hist-hero-sub {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+/* Verdict KPI gets a status tint from the shared improving/watch/intervene
+   palette attached alongside .hist-hero-verdict. */
+.hist-hero-verdict.hist-health-improving {
+  border-color: rgba(54, 211, 153, 0.5);
+  background: rgba(54, 211, 153, 0.12);
+}
+.hist-hero-verdict.hist-health-watch {
+  border-color: rgba(255, 206, 86, 0.45);
+  background: rgba(255, 206, 86, 0.1);
+}
+.hist-hero-verdict.hist-health-intervene {
+  border-color: rgba(255, 122, 122, 0.5);
+  background: rgba(255, 122, 122, 0.12);
+}
+
+.hist-hero-ci .hist-ci-bar {
+  margin-top: 4px;
+}
+
+.hist-hero-flags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.hist-hero-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* One responsive grid: full-width hero banner + equal-weight content cards
+   (Elo curve | SealBot curve | BT ladder | latest W-L) that auto-fit columns. */
+.hist-strength-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 8px;
+  align-items: start;
+}
+
+/* Hero spans the full width as a banner above the content cards. */
+.hist-strength-hero {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+}
+
+.hist-strength-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.44);
+}
+
+.hist-strength-card-title {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Cap curve height so two side-by-side curves don't dominate the panel. */
+.hist-strength-card svg {
+  max-height: 150px;
+  width: 100%;
+  height: auto;
+}
+
+.hist-strength-more {
+  font-size: 9px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.mt-opts label.mt-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  cursor: pointer;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  touch-action: manipulation;
+}
+
+.mt-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.mt-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.mt-actions button {
+  padding: 0 14px;
+}
+
+.mt-muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---- Region 2: board stage (takes over .board-panel as the board-area flex
+   parent: bounded height, overflow hidden, replay bar below) ---- */
+.mt-board-stage {
+  min-width: 0;
+  height: clamp(460px, calc(100vh - 240px), 820px);
+  min-height: 420px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(16, 29, 42, 0.92), rgba(9, 17, 25, 0.94));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+/* Three view controls now (zoom in / zoom out / fit). */
+.mt-board-stage .board-view-controls {
+  grid-template-columns: repeat(3, 34px);
+}
+
+#mtFitBtn {
+  font-size: 11px;
+  font-weight: 800;
+}
+
+/* ---- Region 3: side rail ---- */
+.mt-side {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mt-side .panel-card {
+  border-radius: 8px;
+}
+
+.mt-turn-banner {
+  margin: 9px 12px;
+  padding: 9px 10px;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.68);
+}
+
+#mtTurnDot {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+#mtTurnTitle {
+  grid-column: 2;
+  color: var(--text);
+  font-size: 14px;
+}
+
+#mtTurnSub {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mt-turn-banner.p0 {
+  border-color: rgba(79, 147, 255, 0.72);
+  background: rgba(79, 147, 255, 0.08);
+}
+
+.mt-turn-banner.p0 #mtTurnDot {
+  background: var(--p0);
+  box-shadow: 0 0 12px rgba(79, 147, 255, 0.58);
+}
+
+.mt-turn-banner.p1 {
+  border-color: rgba(255, 86, 80, 0.72);
+  background: rgba(255, 86, 80, 0.08);
+}
+
+.mt-turn-banner.p1 #mtTurnDot {
+  background: var(--p1);
+  box-shadow: 0 0 12px rgba(255, 86, 80, 0.58);
+}
+
+.mt-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 11px;
+}
+
+.mt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(7, 13, 19, 0.54);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.mt-chip-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+#mtPlayers {
+  display: grid;
+  gap: 8px;
+  padding: 9px 12px 11px;
+}
+
+.mt-player-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(45, 63, 81, 0.85);
+  border-radius: 8px;
+  background: rgba(7, 13, 19, 0.52);
+  font-size: 13px;
+}
+
+/* Pulse pattern copied from .hist-live-dot. */
+.mt-thinking-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--yellow);
+  animation: mtPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes mtPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.72); }
+}
+
+/* F3.1 — player-row internals. */
+.mt-player-name {
+  min-width: 0;
+  font-weight: 700;
+}
+
+.mt-player-row .mt-chip {
+  padding: 2px 7px;
+  font-size: 11px;
+}
+
+.mt-player-row .mt-kind-chip {
+  color: var(--muted);
+}
+
+.mt-your-turn {
+  padding: 2px 8px;
+  border: 1px solid rgba(39, 215, 230, 0.55);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.mt-player-last {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mt-player-err {
+  flex-basis: 100%;
+  color: var(--red);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* F3.2 — value sparkline. */
+.mt-value-chart svg {
+  cursor: pointer;
+}
+
+.mt-chart-zero {
+  stroke: rgba(143, 155, 170, 0.45);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.mt-chart-axis {
+  fill: var(--muted);
+  font-size: 9px;
+}
+
+.mt-chart-line {
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.mt-chart-line.p0 { stroke: var(--p0); }
+.mt-chart-line.p1 { stroke: var(--p1); }
+.mt-chart-dot.p0 { fill: var(--p0); }
+.mt-chart-dot.p1 { fill: var(--p1); }
+
+.mt-chart-cross {
+  stroke: rgba(213, 221, 230, 0.4);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.mt-chart-hover {
+  fill: var(--text);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+/* F3.3 — slot labels in the tally line (slot colors match the series chips). */
+.mt-slot0 { color: var(--p0); }
+.mt-slot1 { color: var(--p1); }
+
+.mt-series-chip.draw {
+  color: var(--muted);
+}
+
+.mt-insight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.mt-insight-head > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+
+.mt-insight-head button {
+  min-height: 30px;
+  font-size: 12px;
+  touch-action: manipulation;
+}
+
+.mt-value-chart {
+  min-height: 90px;
+  padding: 9px 12px 11px;
+}
+
+.mt-value-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+#mtSeries {
+  display: grid;
+  gap: 8px;
+  padding: 9px 12px 11px;
+  font-size: 13px;
+}
+
+.mt-series-tally {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.mt-series-progress {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mt-series-games {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mt-series-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(7, 13, 19, 0.54);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mt-series-chip.slot0 {
+  color: var(--p0);
+  border-color: rgba(79, 147, 255, 0.5);
+}
+
+.mt-series-chip.slot1 {
+  color: var(--p1);
+  border-color: rgba(255, 86, 80, 0.5);
+}
+
+/* ---- Mobile (<=900px): single column setup -> board -> side rail; setup strip
+   wraps; fact chips scroll horizontally; all new targets >= 44px tall. ---- */
+@media (max-width: 900px) {
+  .mt-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "setup"
+      "board"
+      "side";
+  }
+
+  .mt-board-stage {
+    height: min(62vh, 560px);
+    min-height: 340px;
+  }
+
+  .mt-seat {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .mt-vs {
+    align-self: flex-start;
+  }
+
+  .mt-opts,
+  .mt-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .mt-opts input:not([type="checkbox"]),
+  .mt-opts select {
+    width: 110px;
+  }
+
+  .mt-seat select,
+  .mt-ckpt-cfg select,
+  .mt-ckpt-cfg input,
+  .mt-opts select,
+  .mt-opts input:not([type="checkbox"]),
+  .mt-actions button,
+  .mt-opts label.mt-check,
+  .mt-insight-head button {
+    min-height: 44px;
+  }
+
+  .mt-facts {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+
+  /* F3.6: series result chips scroll like the fact chips. */
+  .mt-series-games {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+
+  /* Wins over .board-view-controls button (later source order). */
+  .mt-board-stage .board-view-controls {
+    grid-template-columns: repeat(3, 44px);
+  }
+
+  .mt-board-stage .board-view-controls button {
+    width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+}
+
+/* ---- ATTENTION tab (hexfield lineage only; additive) ---- */
+.dbg-attn-body { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.dbg-attn-ctrls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.dbg-attn-ctrls label { display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted); }
+.dbg-attn-ctrls select { min-height: 30px; }
+.dbg-attn-readout { font-size: 12px; color: var(--text); font-weight: 700; }
+.dbg-attn-tokens { display: flex; flex-wrap: wrap; gap: 6px; }
+.dbg-attn-chip { min-width: 38px; min-height: 32px; padding: 0 10px; font-size: 12px; font-weight: 700;
+  color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; touch-action: manipulation; }
+.dbg-attn-chip.active { color: var(--accent); border-color: rgba(39,215,230,0.5);
+  background: rgba(39,215,230,0.10); }
+.dbg-attn-bars { display: flex; flex-direction: column; gap: 3px; }
+.dbg-attn-bars-title { font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--muted); margin-bottom: 2px; }
+.dbg-attn-bar-row { display: grid; grid-template-columns: 26px 1fr 48px; align-items: center; gap: 6px;
+  font-size: 12px; }
+.dbg-attn-bar-lab { color: var(--muted); font-weight: 700; }
+.dbg-attn-bar-track { height: 10px; border-radius: 4px; background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border); overflow: hidden; }
+.dbg-attn-bar-fill { display: block; height: 100%; background: var(--accent); opacity: 0.8; }
+.dbg-attn-bar-val { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+.dbg-attn-incoming { display: flex; flex-wrap: wrap; gap: 6px; }
+.dbg-attn-inc-chip { font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--muted); font-variant-numeric: tabular-nums; }
+.dbg-disabled { opacity: 0.45; cursor: not-allowed; }
+.dbg-disabled[disabled] { pointer-events: none; }
+
+@media (max-width: 520px) {
+  .dbg-attn-tokens { gap: 5px; }
+  .dbg-attn-chip { min-width: 44px; min-height: 44px; touch-action: manipulation; }
+}

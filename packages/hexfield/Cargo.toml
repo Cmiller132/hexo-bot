@@ -1,0 +1,25 @@
+[package]
+name = "hexfield"
+version.workspace = true
+edition.workspace = true
+
+# Own cdylib (`hexfield._rust`): the model's featurizer, search, and replay
+# kernels compile into a single self-contained extension module, so rebuilding
+# hexfield never touches the engine/utils extension modules.
+
+[lib]
+name = "hexfield"
+path = "rust/src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+[dependencies]
+hexo_engine.workspace = true
+hexo_utils.workspace = true
+half = "2"
+pyo3 = { workspace = true, optional = true }
+rand.workspace = true
+rayon.workspace = true

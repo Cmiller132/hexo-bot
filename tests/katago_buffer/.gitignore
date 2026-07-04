@@ -1,0 +1,5 @@
+# Generated test scratch: katago-buffer tests write their sample/diag trees
+# here at runtime (test_p2_manifest._fresh_scratch and conftest.py synthesize
+# compact shards under _scratch/ via _shard_gen). Never commit these generated
+# artifacts.
+_scratch/

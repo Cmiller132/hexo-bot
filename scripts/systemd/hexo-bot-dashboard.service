@@ -1,0 +1,23 @@
+# Optional Linux convenience unit for the :8080 run dashboard.
+# scripts/dashboard.sh works standalone — this unit is only for those who want
+# systemd management. Replace /path/to/hexo-bot with your checkout and adjust
+# the venv path, then `systemctl enable --now hexo-bot-dashboard`.
+[Unit]
+Description=hexo_frontend :8080 run dashboard
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/test -d /path/to/hexo-bot/packages/hexo_frontend/python
+WorkingDirectory=/path/to/hexo-bot
+Environment=HEXO_DEBUG_RUN_ROOT=/path/to/hexo-bot
+Environment=PYTHONPATH=/path/to/hexo-bot/packages/hexfield/python:/path/to/hexo-bot/packages/hexo_frontend/python:/path/to/hexo-bot/packages/hexo_engine/python:/path/to/hexo-bot/packages/hexo_utils/python:/path/to/hexo-bot/packages/hexo_runner/python:/path/to/hexo-bot/packages/hexo_train/python
+# Optional external SealBot reference opponent (append --sealbot-path below):
+# Environment=SEALBOT_PATH=/path/to/SealBot
+# --host 127.0.0.1 keeps the dashboard local; use 0.0.0.0 to expose on the LAN.
+ExecStart=/path/to/hexo-bot/.venv/bin/python -u -m hexo_frontend.web --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
