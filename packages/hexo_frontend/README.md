@@ -25,7 +25,7 @@ server's cwd (see Run discovery below).
 | `python/hexo_frontend/dashboard.py` | Pure shaping layer: `PythonHexoState` mirror -> browser JSON payload (placements, legal moves, winner, window-tactics block). Called only from web.py. |
 | `python/hexo_frontend/debug_service.py` | Server-side manager for the Debug worker: lazily spawns `debug_worker` as a child process, serializes requests behind a lock (NDJSON, timeouts, auto-restart on transport failure, LRU result cache). Module singleton via `get_worker()`. |
 | `python/hexo_frontend/debug_worker.py` | Child-process main loop: one JSON request per stdin line, dispatches ops (`ping`/`info`/`analyze`/`search`/`search_tree`/`record_row`/`game_eval`/`reeval`) to debug_infer, one JSON response per stdout line. LRU checkpoint cache. Launched by debug_service as `python -m hexo_frontend.debug_worker`. |
-| `python/hexo_frontend/debug_infer.py` | CPU-only inference library: rebuilds `HexfieldNet` from a checkpoint's state-dict + run manifest, replays action-id sequences into engine states, and returns a uniform debug schema (priors, distributional value, aux heads, fresh MCTS, pure-Python PUCT debug tree, `.npz` training-row decode, per-ply game-eval sweeps). Only importer is debug_worker (+ tests). |
+| `python/hexo_frontend/debug_infer.py` | CPU-only inference library: rebuilds `ShrimpNet` from a checkpoint's state-dict + run manifest, replays action-id sequences into engine states, and returns a uniform debug schema (priors, distributional value, aux heads, fresh MCTS, pure-Python PUCT debug tree, `.npz` training-row decode, per-ply game-eval sweeps). Only importer is debug_worker (+ tests). |
 | `python/hexo_frontend/static/app.js` | ~8.5k-line single-file SPA holding all three screens (`mt*` Match, `hist*` History, `dbg*` Debug prefixes) plus the top diag/error bar and `APP_VERSION`. |
 | `python/hexo_frontend/static/index.html` | Single page hosting all three screens; references `styles.css` and `app.js` with the `?v=` cache-bust token. |
 | `python/hexo_frontend/static/styles.css` | ~3.2k-line dark-theme stylesheet for all three screens. |
@@ -45,18 +45,18 @@ server's cwd (see Run discovery below).
   `is_legal_action`, `to_python_state`, and `pack_coord_id`/`unpack_coord_id`.
   app.js re-implements the same coord<->action-id packing client-side
   (`DBG_COORD_OFFSET` 32768) -- a pinned cross-language contract.
-- `hexfield` (lazily, inside the debug worker only): rebuilds `HexfieldNet` from
+- `shrimp` (lazily, inside the debug worker only): rebuilds `ShrimpNet` from
   the checkpoint state dict + run manifest to serve the arena and debug screens.
 
 **Imports in:** none -- no package imports hexo_frontend. It is exercised by the
 browser, by tests, and by `scripts/dashboard.sh` (which puts
-`packages/hexo_frontend/python` and `packages/hexfield/python` on `PYTHONPATH`).
+`packages/hexo_frontend/python` and `packages/shrimp/python` on `PYTHONPATH`).
 
-**Shared on-disk formats (read-only):** produced by hexo_train + hexfield:
+**Shared on-disk formats (read-only):** produced by hexo_train + Shrimp:
 
 - `manifest.json` (lineage + architecture), `diagnostics/*.json`
-  (`hexfield.selfplay.live.json`, `hexfield.selfplay.epoch_*.json`,
-  `hexfield.multistage_eval.epoch_*.json`), `events.jsonl` tails (live status).
+  (`shrimp.selfplay.live.json`, `shrimp.selfplay.epoch_*.json`,
+  `shrimp.multistage_eval.epoch_*.json`), `events.jsonl` tails (live status).
 - `checkpoints/*.pt` (epoch filename regex `epoch_?NNN.pt`).
 - `.hxr` game records via `hexo_runner.records.HexoRecordFile`.
 - Self-play per-game `.npz` training-row shards (Targets tab decode).

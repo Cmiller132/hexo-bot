@@ -7,17 +7,17 @@ checkpoint -> calibrate performance -> N epochs of (selfplay -> finalize ->
 sample window -> D6 symmetry -> train passes -> epoch checkpoint -> optional
 eval) -> final checkpoint -> diagnostics.
 
-**One shipped plugin: `hexfield`.** The recipe run is launched as
-`python -m hexo_train.cli.train_model configs/hexfield_main_7.toml` (via
-`scripts/launch_training.sh`); `[model].module = "hexfield.plugin"` selects the
-plugin. The package itself is model-neutral — nothing here is hexfield-specific.
+**One shipped plugin: `shrimp`.** The recipe run is launched as
+`python -m hexo_train.cli.train_model configs/shrimp_main_7.toml` (via
+`scripts/launch_training.sh`); `[model].module = "shrimp.plugin"` selects the
+plugin. The package itself is model-neutral — nothing here is shrimp-specific.
 
 ## Design: defaults plus plugin overrides
 
 The package separates orchestration (owned here) from model semantics (owned by
 plugins). `hexo_train` ships model-neutral defaults -- target helpers, a
 deterministic D6 selector, and placeholder checkpoint writers -- and each plugin
-returns `ComponentOverrides` to replace the pieces it owns. The hexfield plugin
+returns `ComponentOverrides` to replace the pieces it owns. The Shrimp plugin
 supplies its own trainer, checkpoint loader/saver, and replay storage, so on a
 real run the epoch ordering, diagnostics, and artifact layout come from this
 package while storage, training, and checkpoint IO come from the plugin. The
@@ -31,7 +31,7 @@ All paths relative to `packages/hexo_train/python/hexo_train/`.
 | File | Role |
 | --- | --- |
 | `cli/train_model.py` | Thin argparse CLI -> `TrainingPipeline().run(config_path)`. The single public command (`python -m hexo_train.cli.train_model` / `hexo-train-model` console script). |
-| `pipeline.py` | `TrainingPipeline`: the run "map". Fixed step sequence (initialize_run, load_checkpoint, calibrate_performance, run_epochs, publish_final_model, write_diagnostics), each wrapped in `_run_step` diagnostics. Teardown calls `trainer.close()` when present (e.g. hexfield's shard-expansion pool). |
+| `pipeline.py` | `TrainingPipeline`: the run "map". Fixed step sequence (initialize_run, load_checkpoint, calibrate_performance, run_epochs, publish_final_model, write_diagnostics), each wrapped in `_run_step` diagnostics. Teardown calls `trainer.close()` when present (e.g. Shrimp's shard-expansion pool). |
 | `config.py` | TOML loading and normalization into frozen dataclasses (`ModelConfig`, `RunConfig`, `LoopConfig`, `SelfPlayConfig`, `SamplesConfig`, `TrainConfig`, `CheckpointConfig`, `TrainingConfig`). Resolves paths relative to the config dir. Typed sections cover the orchestration skeleton; `[model.config]` passes through opaquely to the plugin's own config module, and model-neutral extras like `[shared.game]` stay reachable via `TrainingConfig.raw` / `ctx.section()`. Every config in `configs/` is TOML. |
 | `registry.py` | Plugin discovery from the explicit module path in `[model].module` (`load_model_plugin` -> `import_module` -> read the module's plugin object). Defines the `ModelPlugin` Protocol covering the construction hooks. |
 | `context.py` | `RunContext`: creates `output/`, `checkpoints/`, `diagnostics/` dirs; holds the `DiagnosticsWriter`, `outputs` dict, `epoch_outputs` list; `ctx.section()` exposes raw config sections. |
@@ -43,8 +43,8 @@ All paths relative to `packages/hexo_train/python/hexo_train/`.
 | `symmetry.py` | Training-owned deterministic D6 augmentation selection (blake2b of `seed:epoch:sample-id`); `D6SymmetrySelector`, `SampleSymmetrySelection`. |
 | `epoch/loop.py` | `run_epochs`/`run_epoch`: the fixed per-epoch order above; `_start_epoch` resumes from the loader's `{"status": "loaded", "epoch": N}` state (how a resumed run fast-forwards past completed epochs). |
 | `epoch/selfplay.py` | `generate_selfplay` dispatch: `plugin.generate_selfplay()` > placeholder payload; the result is stored on `shared.selfplay_result`. |
-| `epoch/samples.py` | Sample window per epoch: `finalize_samples` (plugin `sample_finalizer` hook), then `select_training_samples` -- delegates to `trainer.select_training_samples` when the trainer provides it (hexfield's KataGo-style shuffle over `.npz` shards), else builds a default index/window. |
-| `epoch/symmetry.py` | `select_epoch_symmetries`: applies the D6 selector to the current sample window and stores the `SampleSymmetrySelection` on shared state. A trainer may consume the full per-sample tuple or just `selection.seed`; the hexfield trainer uses the seed and draws its own per-row D6 symmetries during shard expansion. |
+| `epoch/samples.py` | Sample window per epoch: `finalize_samples` (plugin `sample_finalizer` hook), then `select_training_samples` -- delegates to `trainer.select_training_samples` when the trainer provides it (Shrimp's KataGo-style shuffle over `.npz` shards), else builds a default index/window. |
+| `epoch/symmetry.py` | `select_epoch_symmetries`: applies the D6 selector to the current sample window and stores the `SampleSymmetrySelection` on shared state. A trainer may consume the full per-sample tuple or just `selection.seed`; the Shrimp trainer uses the seed and draws its own per-row D6 symmetries during shard expansion. |
 | `epoch/training.py` | `train_passes`: calls `trainer.train_passes(passes, sample_window, sample_symmetries, ...)` or returns skipped. |
 | `__init__.py` | Re-exports config dataclasses, `RunContext`, `TrainingPipeline`, `load_model_plugin`, D6 selector types. |
 
@@ -59,8 +59,8 @@ Imports OUT (what this package uses):
 
 Imports IN (who uses this package):
 
-- The `hexfield` plugin imports `hexo_train.components.ComponentOverrides` and is
-  loaded by module path (`[model].module = "hexfield.plugin"` in the configs).
+- The `shrimp` plugin imports `hexo_train.components.ComponentOverrides` and is
+  loaded by module path (`[model].module = "shrimp.plugin"` in the configs).
 
 Plugin/trainer contract (duck-typed; hooks dispatched via hasattr checks in
 `pipeline.py` and `epoch/*.py`):
@@ -80,22 +80,22 @@ File-format contracts (no Python import):
   `hexo_frontend/web.py` and `debug_infer.py` for lineage/arch detection.
 - `diagnostics/events.jsonl` -- tailed by the dashboard's live training status.
 - The plugin writes `diagnostics/<prefix>.selfplay.epoch_*.json` etc. through
-  `ctx.diagnostics.write_json` (the prefix is manifest-derived; hexfield writes
-  `hexfield.*`); the dashboard reads them.
+  `ctx.diagnostics.write_json` (the prefix is manifest-derived; Shrimp writes
+  `shrimp.*`); the dashboard reads them.
 
-## How the hexfield selfplay -> replay -> train loop maps onto this package
+## How the Shrimp selfplay -> replay -> train loop maps onto this package
 
-Per epoch (`epoch/loop.py` order), with the `hexfield` plugin:
+Per epoch (`epoch/loop.py` order), with the `shrimp` plugin:
 
-1. **Selfplay** -- `plugin.generate_selfplay` runs `hexfield/selfplay.py`
+1. **Selfplay** -- `plugin.generate_selfplay` runs `shrimp/selfplay.py`
    (continuous scheduler over the Rust search), which writes per-game compact
    `.npz` shards + JSON sidecars under `<run>/selfplay/` and live/epoch
    diagnostics JSON. hexo_train sees only the summary dict.
 2. **Replay/sample window** -- `epoch/samples.select_training_samples` delegates
-   to the hexfield trainer's `select_training_samples`, which builds a
+   to the Shrimp trainer's `select_training_samples`, which builds a
    KataGo-style shuffle over the mtime-ordered `.npz` shard window; the plugin
    owns its replay storage.
-3. **Train** -- `epoch/training.train_passes` calls the hexfield trainer's
+3. **Train** -- `epoch/training.train_passes` calls the Shrimp trainer's
    `train_passes` (parallel shard expansion with per-row D6, AdamW steps).
 4. **Checkpoint + eval** -- `checkpoints.save_epoch_checkpoint` via the plugin
    saver; `plugin.evaluate_epoch` runs the paired-anchor + SealBot evaluation.
@@ -105,5 +105,5 @@ Per epoch (`epoch/loop.py` order), with the `hexfield` plugin:
 | Entry | Notes |
 | --- | --- |
 | `python -m hexo_train.cli.train_model <config>` / `hexo-train-model` | The sole public command. |
-| `scripts/launch_training.sh` | Sets the load-bearing hexfield arch env + perf kernels, then starts the auto-relaunch supervisor (`scripts/supervise.sh`) or one foreground run. |
+| `scripts/launch_training.sh` | Sets the load-bearing Shrimp arch env + perf kernels, then starts the auto-relaunch supervisor (`scripts/supervise.sh`) or one foreground run. |
 | `tests/test_training_pipeline_simplification.py` | The package's dedicated test: config normalization, registry, full FakePlugin pipeline run, resume, D6 determinism. Run with `python -m pytest tests/test_training_pipeline_simplification.py -q`. |

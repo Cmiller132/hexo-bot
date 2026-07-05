@@ -1,8 +1,8 @@
 """Self-play generation for one training epoch.
 
 This file is the handoff from training orchestration to model-owned execution.
-The hexfield plugin implements `generate_selfplay()` and runs its own game loop
-(packages/hexfield/python/hexfield/selfplay.py, which drives the shared Rust
+The shrimp plugin implements `generate_selfplay()` and runs its own game loop
+(packages/shrimp/python/shrimp/selfplay.py, which drives the shared Rust
 MCTS and writes NPZ shards under the run dir), so the first dispatch branch
 below is the only one that executes in any configured run. The placeholder
 branch is retained scaffolding for a plugin that does not own self-play.

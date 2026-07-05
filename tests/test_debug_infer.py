@@ -1,15 +1,15 @@
 """Tests for the dashboard Debug-tab inference library + worker service.
 
-The debug worker serves the **hexfield** lineage. These tests cover:
+The debug worker serves the **shrimp** lineage. These tests cover:
   * pure helpers (WSL path translation, always run);
-  * ``_detect_lineage`` accept/reject (the only lineage is hexfield);
+  * ``_detect_lineage`` accept/reject (the only lineage is shrimp);
   * the full inference surface (load / analyze / search / search-tree /
-    attention) against a *synthetic* smoke-size hexfield checkpoint built from a
-    fresh ``HexfieldNet`` — no real run dir or GPU required;
+    attention) against a *synthetic* smoke-size shrimp checkpoint built from a
+    fresh ``ShrimpNet`` — no real run dir or GPU required;
   * the lineage-agnostic recorded-.npz row reader and the server-layer
     imported-position reconstruction.
 
-Everything that needs torch/hexfield is guarded with ``importorskip`` so the
+Everything that needs torch/shrimp is guarded with ``importorskip`` so the
 suite skips cleanly where those are absent.
 """
 
@@ -20,10 +20,10 @@ from pathlib import Path
 
 import pytest
 
-# Make hexfield importable from the source tree (never pip-installed; see README).
-_HEXFIELD_SRC = Path(__file__).resolve().parent.parent / "packages" / "hexfield" / "python"
-if _HEXFIELD_SRC.is_dir() and str(_HEXFIELD_SRC) not in sys.path:
-    sys.path.insert(0, str(_HEXFIELD_SRC))
+# Make shrimp importable from the source tree (never pip-installed; see README).
+_SHRIMP_SRC = Path(__file__).resolve().parent.parent / "packages" / "shrimp" / "python"
+if _SHRIMP_SRC.is_dir() and str(_SHRIMP_SRC) not in sys.path:
+    sys.path.insert(0, str(_SHRIMP_SRC))
 
 # Pure helpers (no torch) — always importable.
 from hexo_frontend import debug_service
@@ -45,19 +45,19 @@ def test_to_wsl_passes_through_posix_paths():
 
 
 # --------------------------------------------------------------------------
-# Inference surface: gated on torch + hexfield.
+# Inference surface: gated on torch + shrimp.
 # --------------------------------------------------------------------------
 
-di = pytest.importorskip("hexo_frontend.debug_infer", reason="needs torch + hexfield")
+di = pytest.importorskip("hexo_frontend.debug_infer", reason="needs torch + shrimp")
 torch = pytest.importorskip("torch")
 
 
 # ---- lineage detection (pure, no model) ----------------------------------
 
 
-def test_detect_lineage_accepts_hexfield_payload():
-    payload = {"meta": {"lineage": "hexfield", "epoch": 0}, "model": {"stem.bias": 1}}
-    assert di._detect_lineage(payload) == di.HEXFIELD
+def test_detect_lineage_accepts_shrimp_payload():
+    payload = {"meta": {"lineage": "shrimp", "epoch": 0}, "model": {"stem.bias": 1}}
+    assert di._detect_lineage(payload) == di.SHRIMP
 
 
 @pytest.mark.parametrize(
@@ -67,11 +67,11 @@ def test_detect_lineage_accepts_hexfield_payload():
         {"model": "dense_cnn_restnet", "model_state": {}},  # legacy dense tag
         {"model": {"w": 1}, "arch": {"blocks": 3}},  # legacy hexgt shape
         {"meta": {"lineage": "hexgt"}, "model": {"w": 1}},  # wrong lineage
-        {"meta": {"lineage": "hexfield"}, "model": "not-a-dict"},  # model not a state dict
+        {"meta": {"lineage": "shrimp"}, "model": "not-a-dict"},  # model not a state dict
     ],
 )
-def test_detect_lineage_rejects_non_hexfield(payload):
-    with pytest.raises(ValueError, match="hexfield"):
+def test_detect_lineage_rejects_non_shrimp(payload):
+    with pytest.raises(ValueError, match="shrimp"):
         di._detect_lineage(payload)
 
 
@@ -84,20 +84,20 @@ def test_detect_lineage_rejects_non_dict():
 
 
 @pytest.fixture(scope="module")
-def hexfield_checkpoint(tmp_path_factory) -> Path:
-    """A real (smoke-size, env-default arch) hexfield checkpoint on disk.
+def shrimp_checkpoint(tmp_path_factory) -> Path:
+    """A real (smoke-size, env-default arch) shrimp checkpoint on disk.
 
-    Builds a fresh ``HexfieldNet`` at the default arch (channels/heads/trunk from
+    Builds a fresh ``ShrimpNet`` at the default arch (channels/heads/trunk from
     the process env; the default trunk ``CCCACCCACCA`` is a known 8-conv/3-attn
     layout the loader can reconstruct exactly), dumps its ``state_dict`` under the
-    hexfield payload shape, and saves it. Random weights are fine — the tests
+    shrimp payload shape, and saves it. Random weights are fine — the tests
     assert shapes, ranges, and determinism, not learned behavior."""
 
-    from hexfield.model import HexfieldNet
+    from shrimp.model import ShrimpNet
 
-    model = HexfieldNet()
+    model = ShrimpNet()
     payload = {
-        "meta": {"lineage": "hexfield", "epoch": 3, "run": "test_synthetic"},
+        "meta": {"lineage": "shrimp", "epoch": 3, "run": "test_synthetic"},
         "model": model.state_dict(),
         "optimizer": None,
     }
@@ -107,9 +107,9 @@ def hexfield_checkpoint(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def loaded(hexfield_checkpoint):
-    lm = di.load_checkpoint(hexfield_checkpoint)
-    assert lm.lineage == di.HEXFIELD
+def loaded(shrimp_checkpoint):
+    lm = di.load_checkpoint(shrimp_checkpoint)
+    assert lm.lineage == di.SHRIMP
     return lm
 
 
@@ -133,8 +133,8 @@ def _legal_actions(n: int = 6) -> list[int]:
 # ---- load ----------------------------------------------------------------
 
 
-def test_load_hexfield_checkpoint(loaded):
-    assert loaded.lineage == di.HEXFIELD
+def test_load_shrimp_checkpoint(loaded):
+    assert loaded.lineage == di.SHRIMP
     assert loaded.rl_epoch == 3
     assert loaded.has_moves_left is True
     assert loaded.stv_horizons  # non-empty; from the model constant
@@ -219,12 +219,12 @@ def test_search_tree_respects_pruning_and_node_cap(loaded):
 # ---- interactive attention map -------------------------------------------
 
 
-def test_attention_hexfield_token_rows(loaded):
+def test_attention_shrimp_token_rows(loaded):
     actions = _legal_actions(6)
     res = di.attention_position(loaded, actions, block=0, head=None, query={"type": "token", "id": 0})
 
     assert res["found"] is True
-    assert res["lineage"] == di.HEXFIELD
+    assert res["lineage"] == di.SHRIMP
     # Env-default arch: 3 attn blocks, 4 heads, 8 tokens.
     assert res["num_blocks"] == 3 and res["num_heads"] == 4 and res["num_tokens"] == 8
     n_cells = res["num_cells"]
@@ -255,7 +255,7 @@ def test_attention_bad_cell_query(loaded):
     res = di.attention_position(loaded, actions, block=0, head=None, query={"type": "cell", "id": -1})
     assert res["found"] is False
     assert res["reason"] == "bad_query"
-    assert res["lineage"] == di.HEXFIELD
+    assert res["lineage"] == di.SHRIMP
     assert res["cell_query"] is None
 
 

@@ -3,20 +3,20 @@
 # single-instance lock + halt flag. Drives the config-driven CLI
 # (hexo_train.cli.train_model) and RESUMES from the latest epoch checkpoint
 # (resume_from is injected into [checkpoint]; hexo_train prefers resume_from
-# over initialize_from, and the hexfield loader restores model+optimizer+epoch
+# over initialize_from, and the shrimp loader restores model+optimizer+epoch
 # when resume_from is set).
 #
 # Config and run dir are env-overridable:
-#   CONFIG   (default configs/hexfield_main_7.toml)
-#   RUNDIR   (default runs/hexfield_main_7)
+#   CONFIG   (default configs/shrimp_main_7.toml)
+#   RUNDIR   (default runs/shrimp_main_7)
 #   HEXO_VENV (default .venv at repo root) — the venv whose python is used
-# hexfield itself is imported via PYTHONPATH (never pip-installed; see README).
+# shrimp itself is imported via PYTHONPATH (never pip-installed; see README).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HEXO_VENV="${HEXO_VENV:-$ROOT/.venv}"
-CONFIG="${CONFIG:-$ROOT/configs/hexfield_main_7.toml}"
-RUNDIR="${RUNDIR:-$ROOT/runs/hexfield_main_7}"
+CONFIG="${CONFIG:-$ROOT/configs/shrimp_main_7.toml}"
+RUNDIR="${RUNDIR:-$ROOT/runs/shrimp_main_7}"
 
 CKPTS="$RUNDIR/checkpoints"
 SUPLOG="$RUNDIR/supervisor.log"; LOCK="$RUNDIR/supervisor.lock"
@@ -29,16 +29,16 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 # GPU-memory pressure.
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
-# hexfield is imported from the source tree, never installed into the venv.
-export PYTHONPATH="$ROOT/packages/hexfield/python${PYTHONPATH:+:$PYTHONPATH}"
+# shrimp is imported from the source tree, never installed into the venv.
+export PYTHONPATH="$ROOT/packages/shrimp/python${PYTHONPATH:+:$PYTHONPATH}"
 # GPU/host overlap in the self-play serve loop (parity-gated; set 0 for sync).
-export HEXFIELD_ASYNC_EVAL="${HEXFIELD_ASYNC_EVAL:-1}"
+export SHRIMP_ASYNC_EVAL="${SHRIMP_ASYNC_EVAL:-1}"
 # Serve-only FlexAttention: compute the rel-pos bias inside the attention
 # kernel instead of materializing it (parity-gated; set 0 to revert).
-export HEXFIELD_SERVE_FLEX="${HEXFIELD_SERVE_FLEX:-1}"
+export SHRIMP_SERVE_FLEX="${SHRIMP_SERVE_FLEX:-1}"
 # Deferred-decode: hold per-group decode/softmax out of submit so the serve
 # select pass overlaps the forwards (parity-gated; set 0 to keep syncs inside).
-export HEXFIELD_DEFER_DECODE="${HEXFIELD_DEFER_DECODE:-1}"
+export SHRIMP_DEFER_DECODE="${SHRIMP_DEFER_DECODE:-1}"
 # Optional external SealBot reference opponent (see README + config
 # multi_stage_eval). Honored only if set; the eval fails open without it.
 # export SEALBOT_PATH=/path/to/SealBot
@@ -65,7 +65,7 @@ while :; do
   if [[ -n "$lc" ]]; then
     USE="$RUNDIR/_resume_config.toml"
     # Inject resume_from right after [checkpoint]; hexo_train prefers it over
-    # initialize_from, and the hexfield loader then loads model+optimizer+epoch.
+    # initialize_from, and the shrimp loader then loads model+optimizer+epoch.
     # If the config has no [checkpoint] table, append one (awk sets found=1
     # only when the anchor exists), so resume still works for minimal configs.
     awk -v c="$lc" '/^\[checkpoint\]/{print; print "resume_from = \"" c "\""; found=1; next} {print} END{if(!found){print "[checkpoint]"; print "resume_from = \"" c "\""}}' "$CONFIG" > "$USE"

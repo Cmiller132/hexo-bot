@@ -48,15 +48,15 @@ def test_search_profile_resolution_order(tiny_checkpoint, tmp_path):
     """Bare name -> built-in profiles dir; relative path -> bots.toml dir;
     absolute path -> as given; absent -> None (global default)."""
     local = tmp_path / "local_profile.toml"
-    shutil.copyfile(PROFILES_DIR / "hexfield_main_4.toml", local)
-    absolute = (PROFILES_DIR / "hexfield_main_5.toml").resolve()
+    shutil.copyfile(PROFILES_DIR / "shrimp_main_4.toml", local)
+    absolute = (PROFILES_DIR / "shrimp_main_5.toml").resolve()
     catalogue = load_bots_toml(
         _write_bots_toml(
             tmp_path / "bots.toml",
             tiny_checkpoint,
             [
                 "",
-                'search_profile = "hexfield_main_5"',
+                'search_profile = "shrimp_main_5"',
                 'search_profile = "local_profile.toml"',
                 f"search_profile = '{absolute.as_posix()}'",
             ],
@@ -64,7 +64,7 @@ def test_search_profile_resolution_order(tiny_checkpoint, tmp_path):
     )
     profiles = [spec.search_profile for spec in catalogue.checkpoints]
     assert profiles[0] is None
-    assert profiles[1] == PROFILES_DIR / "hexfield_main_5.toml"
+    assert profiles[1] == PROFILES_DIR / "shrimp_main_5.toml"
     assert profiles[2] == local.resolve()
     assert profiles[3] == absolute
     # search_profile is a server key, never display metadata.
@@ -100,7 +100,7 @@ def test_group_and_search_keys_are_scalar_meta(tiny_checkpoint, tmp_path):
 
 @pytest.mark.parametrize(
     ("name", "search_visits"),
-    [("hexfield_main_4", 512), ("hexfield_main_5", 1024)],
+    [("shrimp_main_4", 512), ("shrimp_main_5", 1024)],
 )
 def test_legacy_profiles_parse_as_trained_puct(name, search_visits):
     """The distilled PUCT profiles carry the as-trained knob values and emit
@@ -139,10 +139,10 @@ def test_legacy_profiles_parse_as_trained_puct(name, search_visits):
 
 
 def test_main7_profile_matches_global_default():
-    """profiles/hexfield_main_7.toml and the SHOWCASE_SEARCH_CONFIG default
-    (configs/hexfield_main_7.toml) must stay value-identical."""
-    from_profile = SearchProfile(PROFILES_DIR / "hexfield_main_7.toml")
-    from_config = SearchProfile(_REPO_ROOT / "configs" / "hexfield_main_7.toml")
+    """profiles/shrimp_main_7.toml and the SHOWCASE_SEARCH_CONFIG default
+    (configs/shrimp_main_7.toml) must stay value-identical."""
+    from_profile = SearchProfile(PROFILES_DIR / "shrimp_main_7.toml")
+    from_config = SearchProfile(_REPO_ROOT / "configs" / "shrimp_main_7.toml")
     assert from_profile.selfplay == from_config.selfplay
     assert from_profile.overrides == from_config.overrides
     assert from_profile.virtual_batch_size == from_config.virtual_batch_size
@@ -166,7 +166,7 @@ def test_worker_runtime_routes_profiles_per_checkpoint(tiny_checkpoint, tmp_path
         _write_bots_toml(
             tmp_path / "bots.toml",
             tiny_checkpoint,
-            ["", 'search_profile = "hexfield_main_5"', 'search_profile = "hexfield_main_5"'],
+            ["", 'search_profile = "shrimp_main_5"', 'search_profile = "shrimp_main_5"'],
         )
     )
     runtime = _WorkerRuntime(list(catalogue.checkpoints), settings)

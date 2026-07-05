@@ -6,7 +6,7 @@ unbounded hexagonal grid. Owns board occupancy, the turn/phase machine
 any stone), incremental 6-cell win/threat windows, and the stable packed
 action-ID encoding.
 
-**Load-bearing.** The model (`hexfield`), the runner, the trainer, the frontend
+**Load-bearing.** The model (`shrimp`), the runner, the trainer, the frontend
 dashboard, and most of the test suite drive it. Repo convention: Python callers
 come through this package rather than re-implementing game logic.
 
@@ -15,7 +15,7 @@ come through this package rather than re-implementing game logic.
 A Rust crate plus a thin typed Python wrapper, distributed via maturin:
 
 - The crate builds as an **rlib** consumed directly by the `hexo_utils` and
-  `hexfield` Rust crates (Cargo workspace members; see root `Cargo.toml`).
+  `shrimp` Rust crates (Cargo workspace members; see root `Cargo.toml`).
 - With the `python` feature it also builds a **PyO3 extension module**
   `hexo_engine._rust` (`pyproject.toml`: `module-name = "hexo_engine._rust"`,
   `python-source = "python"`).
@@ -67,7 +67,7 @@ Windows-native Python raises `EngineUnavailableError` lazily.
 
 **Rust rlib consumers** (`hexo_engine.workspace = true` in their Cargo.toml):
 
-- `packages/hexfield` -- uses `HexoState`, `apply_with_delta`+undo,
+- `packages/shrimp` -- uses `HexoState`, `apply_with_delta`+undo,
   `Board::occupied_cells`, and `WindowStore` threat queries for search,
   candidate generation, and tensor featurization.
 - `packages/hexo_utils` -- `state_hash.rs` (eval-cache keys) and record replay
@@ -81,7 +81,7 @@ use time.
 
 **Python consumers:** `hexo_runner` (engine adapter + match loop),
 `hexo_frontend` (`web.py`, `debug_infer.py`, `dashboard.py` replay stored
-action-ID sequences and render boards from `to_python_state()`), and `hexfield`
+action-ID sequences and render boards from `to_python_state()`), and `shrimp`
 (selfplay / evaluation / player / search glue).
 
 **Shared/persisted contracts:**
@@ -102,9 +102,9 @@ action-ID sequences and render boards from `to_python_state()`), and `hexfield`
 There is no CLI. The runtime entry is the maturin-built extension:
 
 - `import hexo_engine` from any Python consumer.
-- `hexo_engine = { workspace = true }` rlib dependency from `hexfield` /
+- `hexo_engine = { workspace = true }` rlib dependency from `shrimp` /
   `hexo_utils`.
-- `state_api_capsule()` FFI entry from the `hexfield` accelerator crate.
+- `state_api_capsule()` FFI entry from the `shrimp` accelerator crate.
 - Tests: `tests/test_hexo_engine_rust_bridge.py` (bridge contract; skips when
   the .so is unavailable, e.g. Windows-native Python) and `cargo test -p
   hexo_engine` for the Rust invariant suites. Indirectly, nearly every test

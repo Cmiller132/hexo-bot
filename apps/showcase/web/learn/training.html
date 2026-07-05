@@ -79,14 +79,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 <main class="learn-main">
   <h1>The training <span class="h-dim">— learning from its own games</span></h1>
   <p class="lede">
-    Hexfield trains only on its own games. Each epoch it plays a batch of
+    Shrimp trains only on its own games. Each epoch it plays a batch of
     games against itself, records what its search concluded at every
     decision, and trains the network to predict those conclusions and the
     games' final outcomes. Every few epochs a standalone evaluator measures
     whether the network got stronger.
   </p>
 
-  <!-- All numbers below are the live run config: configs/hexfield_main_7.toml.
+  <!-- All numbers below are the live run config: configs/shrimp_main_7.toml.
        games_per_epoch=256 (L189), search_visits=1024 (L38), pcr_full_proportion=0.33
        (L39), train_samples_per_epoch=96000 (L138), multi_stage games_budget=128 /
        every_n_epochs=5 (L153-154). D6_SIZE=12: hexo_utils/encoding/symmetry.py:22. -->

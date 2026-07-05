@@ -18,12 +18,12 @@ if pgrep -f "hexo_frontend[.]web.*--port $PORT" >/dev/null 2>&1; then
   exit 0
 fi
 
-# hexo_engine/utils/runner/train resolve from the venv, but hexfield and the
+# hexo_engine/utils/runner/train resolve from the venv, but shrimp and the
 # frontend are imported from the source tree.
-export PYTHONPATH="$ROOT/packages/hexfield/python:$ROOT/packages/hexo_frontend/python:$ROOT/packages/hexo_engine/python:$ROOT/packages/hexo_utils/python:$ROOT/packages/hexo_runner/python:$ROOT/packages/hexo_train/python"
+export PYTHONPATH="$ROOT/packages/shrimp/python:$ROOT/packages/hexo_frontend/python:$ROOT/packages/hexo_engine/python:$ROOT/packages/hexo_utils/python:$ROOT/packages/hexo_runner/python:$ROOT/packages/hexo_train/python"
 # Featurization radius must match the loaded weights (shipped main_7 weights
 # trained at radius 4; the code default is 8). Override for your own runs.
-export HEXFIELD_SUPPORT_RADIUS="${HEXFIELD_SUPPORT_RADIUS:-4}"
+export SHRIMP_SUPPORT_RADIUS="${SHRIMP_SUPPORT_RADIUS:-4}"
 export HEXO_DEBUG_RUN_ROOT="$RUNROOT"
 cd "$RUNROOT"
 LOG="$RUNROOT/dashboard.out.log"

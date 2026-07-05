@@ -7,7 +7,7 @@ this directory) speaking newline-delimited JSON over stdin/stdout, because
 the two SealBot variants ("current"/"best") export identical pybind module
 names and cannot coexist in one Python process.
 
-Consumers: the hexfield eval harness (packages/hexfield/python/hexfield/
+Consumers: the shrimp eval harness (packages/shrimp/python/shrimp/
 eval_arena.py) and packages/hexo_frontend/python/hexo_frontend/web.py
 (Arena opponent + the /api adapters endpoint via discover_sealbot_adapters).
 Covered by tests/test_sealbot_adapter.py.

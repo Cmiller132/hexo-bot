@@ -3225,7 +3225,7 @@ function renderHistStatusBand(runs) {
   }
 
   // Inline progress: live selfplay games are the primary signal; the derived
-  // phase progress (hexfield training pass: elapsed vs typical duration) comes
+  // phase progress (shrimp training pass: elapsed vs typical duration) comes
   // next; the training_progress file is normally absent (no current producer
   // emits it), so it is only a fallback. No bar at all otherwise.
   let barFrac = null;
@@ -3299,7 +3299,7 @@ function renderHistStatusBand(runs) {
   // Learning-health stat chips ("--" when null so a young run never throws).
   const h = health || {};
   const latestEpoch = asFinite(h.latest_epoch);
-  // Eval chip: hexfield runs carry a multi-stage verdict + candidate Elo (the
+  // Eval chip: shrimp runs carry a multi-stage verdict + candidate Elo (the
   // dead `mean_turns` path is all-null), so render the real signal — e.g.
   // "+37 Elo · INCONCLUSIVE" with the SealBot winrate + epoch as the title —
   // instead of "--". dense_cnn lineages still get the legacy turns chip.
@@ -3605,8 +3605,8 @@ function histTrendRun(runs) {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-stage eval (hexfield, opt-in): SealBot-pinned Bradley-Terry ratings.
-// Every helper degrades to empty/null on absent payload so non-hexfield and
+// Multi-stage eval (shrimp, opt-in): SealBot-pinned Bradley-Terry ratings.
+// Every helper degrades to empty/null on absent payload so non-shrimp and
 // pre-multistage runs render nothing (the web.py readers return [] / null).
 // ---------------------------------------------------------------------------
 
@@ -3879,15 +3879,15 @@ function renderHistTrends(runs) {
     }
   }
   // T4 "SealBot eval" (legacy dense_cnn turns chart) rides evaluation_history,
-  // which is ALL-NULL for hexfield (the wrapper JSON only points to the
+  // which is ALL-NULL for shrimp (the wrapper JSON only points to the
   // multistage report). Kept ONLY for the dense_cnn lineage that still populates
-  // mean_turns; for hexfield the real eval lives in T7/T8 + the Evaluation region
+  // mean_turns; for shrimp the real eval lives in T7/T8 + the Evaluation region
   // (renderHistEvalPool) below, so this never draws (histSeriesCount<2 -> skipped).
   const evals = run && Array.isArray(run.evaluation_history)
     ? run.evaluation_history.filter(row => row && asFinite(row.epoch) !== null).slice().sort((a, b) => Number(a.epoch) - Number(b.epoch))
     : [];
   const evalTurns = evals.map(row => asFinite(row.mean_turns));
-  // Only draw for the dense_cnn lineage (no multistage history); on hexfield runs
+  // Only draw for the dense_cnn lineage (no multistage history); on shrimp runs
   // the multistage region owns the eval surface, so suppress the dead chart.
   if (histSeriesCount(evalTurns) >= 2 && !msHistoryRows(run).length) {
     const evalEpochs = evals.map(row => Number(row.epoch));
@@ -3927,7 +3927,7 @@ function renderHistTrends(runs) {
 }
 
 // ===========================================================================
-// #histStrength — the redesigned EVAL / STRENGTH cluster (hexfield opt-in).
+// #histStrength — the redesigned EVAL / STRENGTH cluster (shrimp opt-in).
 // Replaces the old four-part stack (trends eval charts + rating table + giant
 // BT-ladder eval pool) with ONE compact, scannable panel in three rows:
 //   1. a single "current strength" hero (verdict + candidate Elo vs anchor +
@@ -4296,11 +4296,11 @@ function msStrengthOpponentPanel(run, latest) {
 // SUPERSEDED by renderHistStrength (the compact #histStrength panel). No longer
 // dispatched; #histRatingTable stays hidden/empty. Kept only as reference for the
 // verdict-chip / Δ-Elo-CI / rating-row logic now folded into the hero + ladder.
-// Standalone "Multi-stage eval" region (hexfield opt-in): the SealBot-pinned Elo
+// Standalone "Multi-stage eval" region (shrimp opt-in): the SealBot-pinned Elo
 // RATING TABLE from the newest report's ratings.players, the latest PROMOTE/
 // REGRESS/INCONCLUSIVE VERDICT (+ note + pure-eval indicator), and the headline
 // EDGES (vs SealBot / vs BC-prefit / vs champion winrate + CI). Hidden whenever
-// the run carries no multistage_eval_history (non-hexfield + pre-multistage runs).
+// the run carries no multistage_eval_history (non-shrimp + pre-multistage runs).
 function renderHistRatingTable(runs) {
   if (!histRatingTable) return;
   const run = histTrendRun(runs);
@@ -4454,7 +4454,7 @@ function histEvalReplayLink(epoch, label) {
 // cand_epN / epN split surfaced as a delta, not two bots), a per-opponent W-L
 // matrix from the pool edges, and a per-epoch verdict-history strip. Each row
 // deep-links into the History list filtered to source=evaluation + that epoch.
-// Hidden when run.eval_pool is null/empty (non-hexfield / older runs).
+// Hidden when run.eval_pool is null/empty (non-shrimp / older runs).
 function renderHistEvalPool(runs) {
   if (!histEvalPool) return;
   const run = histTrendRun(runs);
@@ -4838,7 +4838,7 @@ function epochProgressDetail(buf) {
     .forEach(match => {
       if (asFinite(buf[match[0]]) !== null) lossChips.push(epochChip(`stv${match[1]}`, formatDecimal(buf[match[0]], 3)));
     });
-  // Auxiliary hexfield-only heads (emitted only when present).
+  // Auxiliary shrimp-only heads (emitted only when present).
   if (asFinite(buf.loss_moves_left) !== null) lossChips.push(epochChip("moves", formatDecimal(buf.loss_moves_left, 3)));
   if (asFinite(buf.loss_cell_q) !== null) lossChips.push(epochChip("cellQ", formatDecimal(buf.loss_cell_q, 3)));
 
@@ -5166,7 +5166,7 @@ function histInspEvalGroup(row, run, epoch) {
   return `<div class="hist-insp-group"><span class="hist-insp-group-title">Evaluation</span><div class="hist-insp-chips">${chips.join("")}</div></div>`;
 }
 
-// Per-epoch multi-stage eval (hexfield opt-in): the VERDICT for this epoch plus
+// Per-epoch multi-stage eval (shrimp opt-in): the VERDICT for this epoch plus
 // its headline edges. Keys off run.multistage_eval_history by epoch; returns ""
 // for every epoch/run lacking a report (so the :empty rule hides the group).
 function histInspMultistageGroup(row, run, epoch) {
@@ -5469,7 +5469,7 @@ function histInspTelemetryGroup(runName, epoch) {
     if (status === "loading" || !entry) {
       return `<div class="hist-insp-group hist-insp-telem"><span class="hist-insp-group-title">Telemetry</span><div class="hist-insp-note">Loading per-epoch telemetry</div></div>`;
     }
-    return "";  // ready-but-no-record (non-hexfield / no diagnostics) → hidden
+    return "";  // ready-but-no-record (non-shrimp / no diagnostics) → hidden
   }
   const sp = rec.selfplay || {};
   const sel = rec.select || {};
@@ -6062,7 +6062,7 @@ const dbg = {
   games: [],
   checkpoints: [],
   worker: null,        // worker status from /api/debug/checkpoints
-  lineage: "",         // run lineage from /api/debug/checkpoints (hexfield|dense_cnn|hexgt|"")
+  lineage: "",         // run lineage from /api/debug/checkpoints (shrimp|dense_cnn|hexgt|"")
   radiusDetected: null, // support_radius_detected from /api/debug/checkpoints (int|null) — Auto seed
   records: [],         // record_games from the last recorded position payload
   // Current data + the cache key each piece was rendered for (stale dots, M14).
@@ -6479,7 +6479,7 @@ async function dbgLoadCheckpoints(run) {
     dbg.checkpoints = data.checkpoints || [];
     dbg.worker = data.worker || null;
     dbg.lineage = data.lineage || "";
-    // int|null detected support radius (hexfield only); seeds the Auto display.
+    // int|null detected support radius (shrimp only); seeds the Auto display.
     dbg.radiusDetected = (typeof data.support_radius_detected === "number") ? data.support_radius_detected : null;
     dbgRenderWorkerDot(dbg.worker && dbg.worker.alive ? "ok" : "");
   } catch (e) {
@@ -6822,7 +6822,7 @@ async function dbgEnsureRecordedActs() {
 async function dbgRequestBody(checkpoint) {
   const nav = dbg.nav;
   const body = { run: nav.run, checkpoint };
-  // Manual support-radius override (hexfield only); absent => backend detects/
+  // Manual support-radius override (shrimp only); absent => backend detects/
   // defaults. Covers analyze/search/search_tree/attention bodies built here.
   if (nav.radius) body.radius = nav.radius;
   if (nav.acts.length) {
@@ -6844,7 +6844,7 @@ async function dbgRequestBody(checkpoint) {
 // Append the manual support-radius override (4|8) to a URLSearchParams for the
 // GET endpoints (game_eval / trajectory / ckpt_info / prefetch position+analyze).
 // No-op on Auto (0) so the backend detection/default path stays the source of
-// truth and non-hexfield runs (radius never set) are byte-identical to today.
+// truth and non-shrimp runs (radius never set) are byte-identical to today.
 function dbgRadiusParam(params) {
   if (dbg.nav.radius) params.set("radius", String(dbg.nav.radius));
   return params;
@@ -6868,10 +6868,10 @@ function dbgDetectedRadius() {
 
 // The support radius to DISPLAY. Truth order: the analyze meta (what the worker
 // actually ran at) > the manual override > detection > 8. Lineage-gated: returns
-// null for KNOWN non-hexfield runs (no support radius applies) so the UI hides it.
+// null for KNOWN non-shrimp runs (no support radius applies) so the UI hides it.
 function dbgEffectiveRadius() {
-  const lin = dbgAttnLineage();  // "" unknown | hexfield | dense_cnn | hexgt
-  if (lin && lin !== "hexfield") return null;
+  const lin = dbgAttnLineage();  // "" unknown | shrimp | dense_cnn | hexgt
+  if (lin && lin !== "shrimp") return null;
   const a = dbgFreshData("analysis");
   if (a && a.meta && typeof a.meta.support_radius === "number") return a.meta.support_radius;
   if (dbg.nav.radius) return dbg.nav.radius;
@@ -8137,7 +8137,7 @@ function dbgMaybePrefetch() {
 }
 
 // ---- INPUTS tab: featurizer input planes -----------------------
-// The hexfield lineage is graph-featurized (support-set node tokens), so it has
+// The shrimp lineage is graph-featurized (support-set node tokens), so it has
 // no dense per-cell input planes: analyze returns input_planes: null and this
 // tab renders an n/a note. The plane-rendering path below is retained for any
 // checkpoint that DOES return dense planes.
@@ -8161,7 +8161,7 @@ async function dbgEnsureInputs(force) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    entry.planes = data.input_planes || null;  // null = graph-featurized lineage (e.g. hexfield)
+    entry.planes = data.input_planes || null;  // null = graph-featurized lineage (e.g. shrimp)
     if (!entry.analysis) entry.analysis = data;  // a planes analyze is a full analyze
   } catch (e) {
     debugSetStatus(`Inputs: ${e.message}`, "error");
@@ -8192,7 +8192,7 @@ function dbgRenderInputs() {
   }
   if (planes === null) {
     el.__dbgPlanesSig = "";
-    el.innerHTML = `<div class="dbg-empty-note">n/a for the hexfield lineage (graph featurizer — no input planes)</div>`;
+    el.innerHTML = `<div class="dbg-empty-note">n/a for the shrimp lineage (graph featurizer — no input planes)</div>`;
     return;
   }
   const dimH = (planes.shape && planes.shape[1]) || 41;
@@ -8237,12 +8237,12 @@ function dbgSyncPlaneSelect() {
   }
 }
 
-// ---- ATTENTION tab + board mode (hexfield lineage only) ----------------------
+// ---- ATTENTION tab + board mode (shrimp lineage only) ----------------------
 
 // Best-known lineage for the loaded ckptA. Prefer the analyze meta (present after
 // any analyze), then the CKPT-tab provenance (loaded independently). Used ONLY to
 // disable the Attn mode/tab for dense/hexgt — the worker is the authority and
-// still returns found:false for non-hexfield, so a wrong guess only delays a note.
+// still returns found:false for non-shrimp, so a wrong guess only delays a note.
 function dbgAttnLineage() {
   const a = dbgFreshData("analysis");
   if (a && a.meta && a.meta.lineage) return String(a.meta.lineage);
@@ -8253,9 +8253,9 @@ function dbgAttnLineage() {
 
 function dbgAttnLineageOk() {
   const lin = dbgAttnLineage();
-  // Empty (unknown) is allowed — let the worker decide; only KNOWN non-hexfield
+  // Empty (unknown) is allowed — let the worker decide; only KNOWN non-shrimp
   // lineages are inert so we never fetch for dense/hexgt.
-  return lin === "" || lin === "hexfield";
+  return lin === "" || lin === "shrimp";
 }
 
 function dbgHasCellQ() {
@@ -8414,12 +8414,12 @@ function dbgRenderAttn() {
   const noteEl = dbgEl("dbgAttnNote");
   const hide = el => { if (el) el.hidden = true; };
 
-  // Known non-hexfield lineage — inert n/a state, hide the interactive blocks.
+  // Known non-shrimp lineage — inert n/a state, hide the interactive blocks.
   if (!dbgAttnLineageOk()) {
     hide(tokensEl); hide(barsEl); hide(incomingEl); hide(readoutEl);
     if (noteEl) {
       noteEl.hidden = false;
-      noteEl.textContent = "Attention map is available for the hexfield lineage only (n/a here).";
+      noteEl.textContent = "Attention map is available for the shrimp lineage only (n/a here).";
     }
     return;
   }
@@ -8496,7 +8496,7 @@ function dbgRenderAttn() {
     else if (!dbg.attnQuery) msg = "Select a board cell (in Attn mode) or a token chip above.";
     else if (!attn) msg = "Loading attention…";
     else if (!attn.found) msg = attn.reason === "lineage_na"
-      ? "Attention map is available for the hexfield lineage only (n/a here)."
+      ? "Attention map is available for the shrimp lineage only (n/a here)."
       : (attn.reason === "bad_query" ? "That cell is not a support cell here — pick another." : "No attention data.");
     else if (dbg.attnQuery.type === "cell" && !attn.cell_query) msg = "Loading cell attention…";
     noteEl.hidden = !msg;
@@ -8661,7 +8661,7 @@ function dbgSyncControls() {
   const ckptOptions = dbg.checkpoints.map(c => `<option value="${escapeAttr(c.name)}">${escapeText(dbgCkptLabel(c))}</option>`).join("");
   dbgSyncSelect("dbgCtxCkptA", ckptOptions || `<option value="">—</option>`, nav.ckptA);
   dbgSyncSelect("dbgCtxCkptB", `<option value="">—</option>` + ckptOptions, nav.ckptB);
-  // Support-radius override (hexfield only). The control is hidden for KNOWN
+  // Support-radius override (shrimp only). The control is hidden for KNOWN
   // dense/hexgt lineages (no support radius); unknown stays visible until the
   // analyze/ckpt_info meta resolves the lineage.
   const radSel = dbgEl("dbgCtxRadius");
@@ -8669,7 +8669,7 @@ function dbgSyncControls() {
   const radField = dbgEl("dbgCtxRadiusField");
   if (radField) {
     const lin = dbgAttnLineage();
-    radField.hidden = Boolean(lin) && lin !== "hexfield";
+    radField.hidden = Boolean(lin) && lin !== "shrimp";
   }
   document.querySelectorAll("#dbgTabs [data-tab]").forEach(b => b.classList.toggle("active", b.dataset.tab === nav.tab));
   for (const tab of DBG_TABS) {
@@ -8679,8 +8679,8 @@ function dbgSyncControls() {
   document.querySelectorAll("#dbgModeBar [data-mode]").forEach(b => b.classList.toggle("active", b.dataset.mode === nav.mode));
   const plane = dbgEl("dbgPlaneSelect");
   if (plane) plane.hidden = nav.mode !== "plane";
-  // Attention is hexfield-only: disable the Attn MODE button + the Attention TAB
-  // button for known dense/hexgt lineages (re-enable for hexfield/unknown).
+  // Attention is shrimp-only: disable the Attn MODE button + the Attention TAB
+  // button for known dense/hexgt lineages (re-enable for shrimp/unknown).
   const attnOk = dbgAttnLineageOk();
   const attnModeBtn = document.querySelector('#dbgModeBar [data-mode="attn"]');
   if (attnModeBtn) {
@@ -8692,7 +8692,7 @@ function dbgSyncControls() {
     attnTabBtn.disabled = !attnOk;
     attnTabBtn.classList.toggle("dbg-disabled", !attnOk);
   }
-  // Per-cell Q head is v3-hexfield-only: disable the Q MODE button for lineages
+  // Per-cell Q head is v3-shrimp-only: disable the Q MODE button for lineages
   // / checkpoints without a cell_q head (meta.has_cell_q false). A position with
   // no legal cells (terminal) keeps the button enabled — dbgHeatForMode's note
   // covers it without a hard disable.
@@ -8721,7 +8721,7 @@ function dbgRenderCrumb() {
   if (nav.ply != null) parts.push(`ply ${nav.ply}${total != null ? "/" + total : ""}`);
   if (nav.acts.length) parts.push(`branch +${nav.acts.length}`);
   if (nav.ckptA) parts.push(dbgCkptShort(nav.ckptA) + (nav.ckptB ? ` vs ${dbgCkptShort(nav.ckptB)}` : ""));
-  // Active support radius (hexfield only). Prefer the analyze meta (what the
+  // Active support radius (shrimp only). Prefer the analyze meta (what the
   // worker actually ran at); annotate "(auto)" when no manual override is set.
   const effR = dbgEffectiveRadius();
   if (effR != null) parts.push(`R=${effR}${nav.radius ? "" : " (auto)"}`);
@@ -8934,7 +8934,7 @@ function dbgHeatForMode(mode) {
     const planes = entry ? entry.planes : undefined;
     if (entry && entry.planesPending) out.note = "loading planes…";
     else if (planes === undefined) out.note = "open INPUTS once to load planes";
-    else if (planes === null) out.note = "n/a for the hexfield lineage";
+    else if (planes === null) out.note = "n/a for the shrimp lineage";
     else {
       out.scale = "div";
       const sel = dbgEl("dbgPlaneSelect");
@@ -9361,7 +9361,7 @@ function dbgRenderHeads() {
     }
     if (distEl) distEl.innerHTML = `<div class="dbg-empty-note">${note}</div>`;
     // Default-hidden pre-analysis: the owner-swap probe does not apply to the
-    // hexfield lineage (value_swapped is null), so the analyze commit unhides
+    // shrimp lineage (value_swapped is null), so the analyze commit unhides
     // this block only when value_swapped is actually present.
     if (swapBlock) swapBlock.hidden = true;
     if (swapEl) swapEl.innerHTML = `<span class="dbg-muted">—</span>`;
@@ -9688,8 +9688,8 @@ function dbgCkptInfoHtml(name) {
     if (m.expanded_stv && m.expanded_stv.length) rows.push(["Expanded STV", `${m.expanded_stv.length} heads`]);
     if (m.zeroed_feature_cols && m.zeroed_feature_cols.length) rows.push(["Zeroed cols", m.zeroed_feature_cols.join(", ")]);
     if (m.candidate_radius != null) rows.push(["Cand. radius", String(m.candidate_radius)]);
-    // Active HEXFIELD support radius the worker process actually ran this info op
-    // at (OWNER C meta.support_radius); null for non-hexfield lineages.
+    // Active SHRIMP support radius the worker process actually ran this info op
+    // at (OWNER C meta.support_radius); null for non-shrimp lineages.
     if (m.support_radius != null) rows.push(["Support radius", String(m.support_radius)]);
     if (m.param_count != null) rows.push(["Params", `${(m.param_count / 1e6).toFixed(2)}M`]);
     if (info.size != null) rows.push(["File", formatBytes(info.size)]);

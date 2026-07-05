@@ -3,8 +3,8 @@
 The retired reference oracle and the private development-run
 live-run tree are unavailable in the public environment, so every test that
 previously read real shards now reads shards SYNTHESIZED here: a random game is
-played with the public engine, finalized into ``HexfieldSampleData`` rows, and
-written as a ``hexfield_compact_v1`` shard (``.npz`` + ``.json`` sidecar) via the
+played with the public engine, finalized into ``ShrimpSampleData`` rows, and
+written as a ``shrimp_compact_v1`` shard (``.npz`` + ``.json`` sidecar) via the
 same ``write_compact_shard`` the production writer uses.
 
 Games are played long enough (``max_plies >= 16``) that the finalized rows carry
@@ -23,20 +23,20 @@ import random
 import sys
 from pathlib import Path
 
-# Make ``hexfield_testkit`` importable regardless of how pytest is invoked (the
-# harness command only puts packages/hexfield/python on PYTHONPATH). testkit in
-# turn adds the hexfield package path.
+# Make ``shrimp_testkit`` importable regardless of how pytest is invoked (the
+# harness command only puts packages/shrimp/python on PYTHONPATH). testkit in
+# turn adds the shrimp package path.
 _TESTS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TESTS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TESTS_ROOT))
 
-from hexfield_testkit import api  # noqa: E402  (path set up above)
+from shrimp_testkit import api  # noqa: E402  (path set up above)
 
-from hexfield.features import window_scan  # noqa: E402
-from hexfield.geometry import pack_action_id, unpack_action_id  # noqa: E402
-from hexfield.samples import HexfieldSampleData, finalize_game_samples  # noqa: E402
-from hexfield.engine_facts import facts_from_engine, player_int  # noqa: E402
-from hexfield.shards import write_compact_shard  # noqa: E402
+from shrimp.features import window_scan  # noqa: E402
+from shrimp.geometry import pack_action_id, unpack_action_id  # noqa: E402
+from shrimp.samples import ShrimpSampleData, finalize_game_samples  # noqa: E402
+from shrimp.engine_facts import facts_from_engine, player_int  # noqa: E402
+from shrimp.shards import write_compact_shard  # noqa: E402
 from hexo_engine.types import AxialCoord, PlacementAction  # noqa: E402
 
 
@@ -47,7 +47,7 @@ def _hex_dist(a: tuple[int, int], b: tuple[int, int]) -> int:
     return (abs(dq) + abs(dq + dr) + abs(dr)) // 2
 
 
-def _sample_from_state(state, rng: random.Random, turn_index: int) -> HexfieldSampleData:
+def _sample_from_state(state, rng: random.Random, turn_index: int) -> ShrimpSampleData:
     """One pre-decision sample carrying the engine facts + a soft policy.
 
     The policy is restricted to legal actions within a small hex radius of an
@@ -73,7 +73,7 @@ def _sample_from_state(state, rng: random.Random, turn_index: int) -> HexfieldSa
     weights = [rng.random() + 0.1 for _ in chosen]
     total = sum(weights)
     policy = tuple((aid, w / total) for aid, w in zip(chosen, weights))
-    return HexfieldSampleData(
+    return ShrimpSampleData(
         game_id="synth",
         turn_index=turn_index,
         current_player=facts.current_player,
@@ -98,7 +98,7 @@ def make_game(seed: int, max_plies: int = 24):
     """
     rng = random.Random(seed)
     state = api.new_game()
-    pending: list[tuple[int, HexfieldSampleData, float]] = []
+    pending: list[tuple[int, ShrimpSampleData, float]] = []
     winner = None
     for ply in range(max_plies):
         ids = api.legal_action_ids(state)
@@ -142,7 +142,7 @@ def make_hot_game(seed: int, plies: int = 6):
     """
     rng = random.Random(seed)
     records = _hot_records(base_len=3)
-    pending: list[tuple[int, HexfieldSampleData, float]] = []
+    pending: list[tuple[int, ShrimpSampleData, float]] = []
     for ply in range(plies):
         cp = ply % 2
         own_hot, opp_hot, own_win, opp_win = window_scan(records, cp, len(records))
@@ -151,7 +151,7 @@ def make_hot_game(seed: int, plies: int = 6):
             (pack_action_id(10 + j, -(10 + j)), w)
             for j, w in enumerate((0.5, 0.3, 0.2))
         )
-        sample = HexfieldSampleData(
+        sample = ShrimpSampleData(
             game_id="synth-hot",
             turn_index=ply,
             current_player=cp,

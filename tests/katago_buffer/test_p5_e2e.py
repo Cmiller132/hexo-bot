@@ -12,7 +12,7 @@ What this verifies (each block prints its own line; ``main`` prints PASS):
      expands field-identical (support nodes, feats, policy, opp, stvalue,
      moves_left, value) to ``read_compact_shard(p)[i]`` for every row of a real
      shard, across several fixed D6 symmetries. This pins the PackedRowView ->
-     HexfieldSampleData shim that feeds the unchanged ``expand_sample`` (PLAN §6).
+     ShrimpSampleData shim that feeds the unchanged ``expand_sample`` (PLAN §6).
 
   2. DETERMINISM — the pre-drawn per-row D6 vector and the survivor permutation
      are pure functions of (run_seed, epoch): identical across two draws AND the
@@ -20,7 +20,7 @@ What this verifies (each block prints its own line; ``main`` prints PASS):
      trained-row order, loss, and grad-norm trace (PLAN §4.4/§4.5). A DIFFERENT
      seed yields a different order (the augmentation actually varies).
 
-  3. END-TO-END — HexfieldNet on CPU + AdamW + HexfieldTrainer:
+  3. END-TO-END — ShrimpNet on CPU + AdamW + ShrimpTrainer:
      ``select_training_samples`` then ``train_passes`` for 2 epochs against the
      copied main_2 samples. Asserts: status completed, steps>0, finite loss,
      finite grad norm, the training diagnostics json is written and carries the
@@ -40,18 +40,18 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from hexfield.config import HexfieldConfig, TrainingSection
-from hexfield.model import HexfieldNet
-from hexfield.samples import expand_sample
-from hexfield.shards import read_compact_shard
-from hexfield.trainer import (
+from shrimp.config import ShrimpConfig, TrainingSection
+from shrimp.model import ShrimpNet
+from shrimp.samples import expand_sample
+from shrimp.shards import read_compact_shard
+from shrimp.trainer import (
     D6_SIZE,
-    HexfieldTrainer,
+    ShrimpTrainer,
     _aug_seed,
     _perm_seed,
     _row_view_to_sample,
 )
-from hexfield.window import PackedWindow, load_packed_shard
+from shrimp.window import PackedWindow, load_packed_shard
 
 SCRATCH = Path(__file__).resolve().parent / "_scratch" / "p5"
 SAMPLES = SCRATCH / "samples"
@@ -60,7 +60,7 @@ SAMPLES = SCRATCH / "samples"
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-def _build_trainer(seed_unused: int = 0, **training) -> HexfieldTrainer:
+def _build_trainer(seed_unused: int = 0, **training) -> ShrimpTrainer:
     base = dict(
         # SMALL window + cap so the CPU run is quick while still exercising the
         # full path (taper + keep_prob subsample + governor + truncation + a
@@ -76,8 +76,8 @@ def _build_trainer(seed_unused: int = 0, **training) -> HexfieldTrainer:
         batch_rows=16,
     )
     base.update(training)
-    cfg = HexfieldConfig(device="cpu", training=TrainingSection(**base))
-    model = HexfieldNet()
+    cfg = ShrimpConfig(device="cpu", training=TrainingSection(**base))
+    model = ShrimpNet()
     decay, no_decay = [], []
     for name, p in model.named_parameters():
         if not p.requires_grad:
@@ -93,7 +93,7 @@ def _build_trainer(seed_unused: int = 0, **training) -> HexfieldTrainer:
         ],
         lr=cfg.training.learning_rate,
     )
-    return HexfieldTrainer(model=model, config=cfg, optimizer=opt)
+    return ShrimpTrainer(model=model, config=cfg, optimizer=opt)
 
 
 def _ctx(samples_dir: Path, diag_dir: Path, seed: int) -> SimpleNamespace:
@@ -113,14 +113,14 @@ def _components() -> SimpleNamespace:
 
 
 # ---------------------------------------------------------------------------
-# 1. shim parity: PackedRowView -> HexfieldSampleData == read_compact_shard
+# 1. shim parity: PackedRowView -> ShrimpSampleData == read_compact_shard
 # ---------------------------------------------------------------------------
 def test_shim_parity() -> None:
     npzs = sorted(SAMPLES.glob("epoch_*/game_*.npz"))[:4]
     assert npzs, "no scratch shards"
     checked_rows = 0
     for npz in npzs:
-        oracle_rows = read_compact_shard(npz)  # list[HexfieldSampleData]
+        oracle_rows = read_compact_shard(npz)  # list[ShrimpSampleData]
         packed = load_packed_shard(npz)
         assert packed.n == len(oracle_rows), (npz.name, packed.n, len(oracle_rows))
         for i in range(packed.n):
@@ -160,7 +160,7 @@ def test_shim_parity() -> None:
                 assert abs(es.value - eo.value) < 1e-9
             checked_rows += 1
     print(f"  1. SHIM PARITY: {checked_rows} rows x 5 syms expand field-identical to "
-          "read_compact_shard (PackedRowView->HexfieldSampleData shim is faithful)")
+          "read_compact_shard (PackedRowView->ShrimpSampleData shim is faithful)")
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +289,7 @@ def test_e2e_two_epochs() -> None:
         assert np.isfinite(out["grad_norm_p95"])
 
         # Diagnostics json written with the new fields.
-        diag_path = diag / f"hexfield.training.epoch_{epoch:06d}.json"
+        diag_path = diag / f"shrimp.training.epoch_{epoch:06d}.json"
         assert diag_path.exists(), f"training diag not written: {diag_path}"
         disk = json.loads(diag_path.read_text())
         for field in ("reuse_ratio", "window_rows", "train_bucket_level",

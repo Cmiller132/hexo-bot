@@ -1,6 +1,6 @@
 """Showcase test fixtures.
 
-Arch env is pinned BEFORE any hexfield import (the constants are read once at
+Arch env is pinned BEFORE any shrimp import (the constants are read once at
 import time): a smoke-size c=32 / 4-head / CCA net at support radius 4 — the
 same radius the shipped main_7 weights use, so the radius-sensitive featurizer
 paths are exercised as deployed.
@@ -19,16 +19,16 @@ import os
 import sys
 from pathlib import Path
 
-# Load-bearing: set the arch env before hexfield (imported transitively by the
+# Load-bearing: set the arch env before shrimp (imported transitively by the
 # showcase worker code and by tests that build the tiny net) is first imported.
-os.environ["HEXFIELD_CHANNELS"] = "32"
-os.environ["HEXFIELD_ATTENTION_HEADS"] = "4"
-os.environ["HEXFIELD_TRUNK"] = "CCA"
-os.environ["HEXFIELD_SUPPORT_RADIUS"] = "4"
+os.environ["SHRIMP_CHANNELS"] = "32"
+os.environ["SHRIMP_ATTENTION_HEADS"] = "4"
+os.environ["SHRIMP_TRUNK"] = "CCA"
+os.environ["SHRIMP_SUPPORT_RADIUS"] = "4"
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 for entry in (
-    _REPO_ROOT / "packages" / "hexfield" / "python",
+    _REPO_ROOT / "packages" / "shrimp" / "python",
     _REPO_ROOT / "apps" / "showcase" / "server",
 ):
     if str(entry) not in sys.path:
@@ -41,14 +41,14 @@ from showcase.config import Settings
 
 @pytest.fixture(scope="session")
 def tiny_checkpoint(tmp_path_factory) -> Path:
-    """A real smoke-size hexfield checkpoint (env-default arch, random weights)."""
+    """A real smoke-size shrimp checkpoint (env-default arch, random weights)."""
     import torch
 
-    from hexfield.model import HexfieldNet
+    from shrimp.model import ShrimpNet
 
     payload = {
-        "meta": {"lineage": "hexfield", "epoch": 0, "run": "showcase_tiny_test"},
-        "model": HexfieldNet().state_dict(),
+        "meta": {"lineage": "shrimp", "epoch": 0, "run": "showcase_tiny_test"},
+        "model": ShrimpNet().state_dict(),
         "optimizer": None,
     }
     path = tmp_path_factory.mktemp("ckpt") / "tiny_bot.pt"
@@ -87,7 +87,7 @@ checkpoint = '{tiny_checkpoint.as_posix()}'
 label = "Tiny PUCT bot"
 run = "showcase_tiny_test"
 epoch = 0
-search_profile = "hexfield_main_5"
+search_profile = "shrimp_main_5"
 group = "earlier runs"
 search = "puct"
 """
@@ -100,7 +100,7 @@ def settings(bots_toml, tmp_path_factory) -> Settings:
     return Settings(
         db_path=tmp_path_factory.mktemp("db") / "showcase.db",
         bots_toml=bots_toml,
-        search_config=_REPO_ROOT / "configs" / "hexfield_main_7.toml",
+        search_config=_REPO_ROOT / "configs" / "shrimp_main_7.toml",
         static_dir=_REPO_ROOT / "apps" / "showcase" / "web",
         workers=1,
         max_active_games=16,

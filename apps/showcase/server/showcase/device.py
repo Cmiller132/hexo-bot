@@ -16,14 +16,14 @@ when the attribute is missing entirely. CPU-only torch builds have no
 
 Only the model forward moves to the accelerator: the Rust MCTS session calls
 back into the Python evaluator for every batch and is device-agnostic, and
-hexfield's fast Triton kernels are ``x.is_cuda``-gated, so XPU tensors take
+shrimp's fast Triton kernels are ``x.is_cuda``-gated, so XPU tensors take
 the eager fp32 paths automatically (correct by construction; speed is what
 the deploy benchmark decides). Because eager-on-XPU is an untested-in-CI
 combination, workers run a one-position CPU-vs-device parity self-check at
 startup (``SHOWCASE_DEVICE_SELFCHECK``, default on whenever the resolved
 device is not cpu) and fall back to cpu if it fails — never serve wrong moves.
 
-This module is worker-side: torch/hexfield imports stay inside functions so
+This module is worker-side: torch/shrimp imports stay inside functions so
 the web process can import the showcase package without the model stack.
 """
 
@@ -142,7 +142,7 @@ def _selfcheck_batch() -> dict[str, Any]:
     import hexo_engine as engine
     from hexo_engine.types import AxialCoord, PlacementAction
 
-    from hexfield.batching import collate_rows
+    from shrimp.batching import collate_rows
 
     from .analysis import featurize
 

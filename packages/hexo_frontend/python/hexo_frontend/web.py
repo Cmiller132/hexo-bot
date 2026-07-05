@@ -113,7 +113,7 @@ CHECKPOINT_C_PUCT_DEFAULT = 1.5
 # so repeated games diverge; afterwards play is the strict visit argmax.
 CHECKPOINT_OPENING_MOVES = 8
 CHECKPOINT_OPENING_TEMPERATURE = 0.6
-# In-search opening temperature for the hexfield lineage, whose selection
+# In-search opening temperature for the shrimp lineage, whose selection
 # happens inside the search (as-trained gumbel profile). 1.0 = the
 # multistage-eval arena's opening_temperature, so match-screen games sample
 # openings exactly like eval games. The 0.6 above remains the client-side
@@ -986,7 +986,7 @@ class _CheckpointBotPlayer:
                 temperature=temperature,
             )
             if result.get("selection_in_search"):
-                # hexfield: the returned action IS the profile's selection
+                # shrimp: the returned action IS the profile's selection
                 # (tempered opening / greedy after) — play it directly.
                 action_id = int(result["best_action_id"])
                 selection = (
@@ -1669,8 +1669,8 @@ def _training_run(name: str) -> dict[str, object]:
         "diagnostics_by_epoch": diagnostics_by_epoch,
         "epoch_history": epoch_history,
         "evaluation_history": evaluation_history,
-        # Standalone hexfield multi-stage eval (opt-in). [] / None for runs
-        # without the new artifacts (non-hexfield lineages, older runs).
+        # Standalone shrimp multi-stage eval (opt-in). [] / None for runs
+        # without the new artifacts (non-shrimp lineages, older runs).
         "multistage_eval_history": multistage_eval_history,
         "eval_pool": eval_pool,
         "learning_health": _learning_health(
@@ -1730,7 +1730,7 @@ def _training_epoch(name: str, epoch: int | None) -> dict[str, object]:
 
 # ---------------------------------------------------------------------------
 # Per-epoch telemetry strip (/api/training/epochs). One request scans the run's
-# diagnostics dir once and merges the four hexfield per-epoch artifacts
+# diagnostics dir once and merges the four shrimp per-epoch artifacts
 # (selfplay / select / training / multistage_eval) into one flat record per
 # epoch. Every field is guarded: a missing file, a missing key, or a legacy
 # (pre-2026-07-03) schema simply yields None on that field — the record is
@@ -1771,7 +1771,7 @@ def _fraction_of(numerator: object, denominator: object) -> float | None:
 
 
 def _epoch_selfplay_record(payload: object) -> dict[str, object]:
-    """Flatten one ``hexfield.selfplay.epoch_*.json`` into the strip record's
+    """Flatten one ``shrimp.selfplay.epoch_*.json`` into the strip record's
     self-play block, reading both the upgraded and the legacy key names and
     deriving the per-move rates from the ``scheduler`` counters when the
     producer did not emit the ``*_rate`` fields directly. All-None for a run/
@@ -1868,7 +1868,7 @@ def _epoch_selfplay_record(payload: object) -> dict[str, object]:
 
 
 def _epoch_select_record(payload: object) -> dict[str, object]:
-    """Flatten one ``hexfield.select.epoch_*.json`` into the strip record's
+    """Flatten one ``shrimp.select.epoch_*.json`` into the strip record's
     window-selection block. ``skipped_paths`` is capped to keep the payload
     small; the count comes from ``shards_skipped``. All-None when absent."""
 
@@ -1896,7 +1896,7 @@ def _epoch_select_record(payload: object) -> dict[str, object]:
 
 
 def _epoch_training_record(payload: object) -> dict[str, object]:
-    """Flatten one ``hexfield.training.epoch_*.json`` into the strip record's
+    """Flatten one ``shrimp.training.epoch_*.json`` into the strip record's
     training block (the loss subset + step/timing keys). ``select_seconds``
     isn't in the training file today, so it stays None unless a future producer
     adds it. All-None when the file is absent."""
@@ -1957,13 +1957,13 @@ def _epoch_eval_record(row: object) -> dict[str, object] | None:
 def _training_epochs(run_dir: Path) -> dict[str, object]:
     """Assemble the per-epoch telemetry strip for ``run_dir``.
 
-    Scans ``diagnostics/`` once for the hexfield self-play / select / training
+    Scans ``diagnostics/`` once for the shrimp self-play / select / training
     per-epoch files, groups them by epoch, and emits one merged record per
     epoch (ascending) carrying the curated self-play / select / training key
     subsets plus a headline-Elo block at the epochs that have a multi-stage
     eval report. Every field degrades to None on a missing file or key, so the
     strip renders for legacy runs (pre-schema-upgrade) and mid-run epochs
-    without crashing. Non-hexfield lineages (no ``hexfield.*`` files) yield an
+    without crashing. Non-shrimp lineages (no ``shrimp.*`` files) yield an
     empty ``epochs`` list."""
 
     prefix = _diag_prefix(run_dir)
@@ -2047,7 +2047,7 @@ def _selfplay_epoch_extras(run_dir: Path, epoch: int) -> dict[str, object] | Non
         "mcts_virtual_batch_size",
         "elapsed_seconds",
         "mcts_search_elapsed_seconds",
-        # hexfield self-play diagnostics carry these inline (dense_cnn omits them);
+        # shrimp self-play diagnostics carry these inline (dense_cnn omits them);
         # listed here so the epoch inspector surfaces them when present and stays a
         # no-op for dense_cnn (missing keys are simply skipped below).
         "search_visits",
@@ -2353,30 +2353,30 @@ def _diag_prefix(run_dir: Path) -> str:
     """Diagnostic-file basename prefix for a run's per-epoch self-play / training /
     evaluation JSON (``<prefix>.selfplay.epoch_*.json`` etc.).
 
-    The hexfield lineage writes ``hexfield.*`` files. Derived from the run's
+    The shrimp lineage writes ``shrimp.*`` files. Derived from the run's
     manifest lineage so the dashboard reads the right files without hard-coding
     the prefix at every glob. A run whose manifest is absent/unreadable or whose
-    model name does not identify hexfield (e.g. a hand-staged or imported run
+    model name does not identify shrimp (e.g. a hand-staged or imported run
     dir) falls back to the legacy ``dense_cnn`` prefix."""
 
     lineage = _debug_run_lineage(run_dir)
-    if lineage and "hexfield" in lineage.lower():
-        return "hexfield"
+    if lineage and "shrimp" in lineage.lower():
+        return "shrimp"
     return "dense_cnn"
 
 
 def _debug_detect_radius(run_dir: Path) -> int | None:
-    """Detected ``HEXFIELD_SUPPORT_RADIUS`` for a run, or ``None`` when it does
+    """Detected ``SHRIMP_SUPPORT_RADIUS`` for a run, or ``None`` when it does
     not apply or cannot be read. Source: the latest
-    ``hexfield.multistage_eval.epoch_*.json``'s ``featurize_radius`` (the one
+    ``shrimp.multistage_eval.epoch_*.json``'s ``featurize_radius`` (the one
     structured on-disk record of the eval process's support radius). ``None`` for
-    a non-hexfield run (no support radius applies). Hexfield with no/old eval ->
+    a non-shrimp run (no support radius applies). Shrimp with no/old eval ->
     ``None``; the caller defaults to 8 and the UI override corrects the rest
     (e.g. an older run whose evals predate the ``featurize_radius``
     annotation)."""
 
     lineage = _debug_run_lineage(run_dir)
-    if not (lineage and "hexfield" in lineage.lower()):
+    if not (lineage and "shrimp" in lineage.lower()):
         return None
     diag = run_dir / "diagnostics"
     if not diag.is_dir():
@@ -2387,7 +2387,7 @@ def _debug_detect_radius(run_dir: Path) -> int | None:
                 e.name
                 for e in os.scandir(diag)
                 if e.is_file()
-                and e.name.startswith("hexfield.multistage_eval.epoch_")
+                and e.name.startswith("shrimp.multistage_eval.epoch_")
                 and e.name.endswith(".json")
             ),
             reverse=True,  # zero-padded epoch -> lexical desc == newest first
@@ -2409,23 +2409,23 @@ def _debug_detect_radius(run_dir: Path) -> int | None:
 
 
 def _debug_resolve_radius(run_dir: Path | None, body: dict[str, Any]) -> int | None:
-    """The ``HEXFIELD_SUPPORT_RADIUS`` to run the worker at for this request, or
-    ``None`` when radius does not apply (non-hexfield lineage) so the worker is
+    """The ``SHRIMP_SUPPORT_RADIUS`` to run the worker at for this request, or
+    ``None`` when radius does not apply (non-shrimp lineage) so the worker is
     not keyed on it. Manual override (body ``radius`` in {4,8}) wins; else
-    detected; else 8. Returns ``None`` when the run is not hexfield (detection
+    detected; else 8. Returns ``None`` when the run is not shrimp (detection
     returned ``None`` AND no override) so dense/hexgt stay byte-identical."""
 
     if run_dir is None:
         return None
     lineage = _debug_run_lineage(run_dir)
-    is_hexfield = bool(lineage and "hexfield" in lineage.lower())
+    is_shrimp = bool(lineage and "shrimp" in lineage.lower())
     override = body.get("radius")
     if override in (4, 8, "4", "8"):
         ov = int(override)
-        # Honor an explicit override only for hexfield runs (the UI shows the
-        # control only for hexfield); for non-hexfield, ignore it -> None.
-        return ov if is_hexfield else None
-    if not is_hexfield:
+        # Honor an explicit override only for shrimp runs (the UI shows the
+        # control only for shrimp); for non-shrimp, ignore it -> None.
+        return ov if is_shrimp else None
+    if not is_shrimp:
         return None
     detected = _debug_detect_radius(run_dir)
     return detected if detected is not None else 8
@@ -2437,9 +2437,9 @@ def _debug_checkpoints(run_name: str) -> dict[str, object]:
         raise ValueError("Unknown training run")
     lineage = _debug_run_lineage(run_dir)
     # The pre/post-STV graft chip is a legacy readout-widening annotation that
-    # does not apply to the hexfield lineage, so it is suppressed for hexfield
+    # does not apply to the shrimp lineage, so it is suppressed for shrimp
     # runs to avoid a misleading label (attached only for runs without a
-    # hexfield manifest).
+    # shrimp manifest).
     is_graft_lineage = lineage is None or "hexgt" in lineage.lower()
     ckpt_dir = run_dir / "checkpoints"
     items: list[dict[str, object]] = []
@@ -2739,7 +2739,7 @@ def _debug_search_tree(body: dict[str, Any]) -> dict[str, object]:
 
 
 def _debug_attention(body: dict[str, Any]) -> dict[str, object]:
-    """hexfield interactive attention map for one position (§Model Debug attn).
+    """shrimp interactive attention map for one position (§Model Debug attn).
 
     Additive route: never alters analyze/search/etc. Resolves the position +
     checkpoint exactly like search/search_tree, clamps block/head/query in the
@@ -2809,13 +2809,13 @@ def _debug_ckpt_info(run_name: str, checkpoint: str, radius: int | None = None) 
 
     ``radius`` (optional UI override, 4|8) selects the worker's support radius so
     ``meta.support_radius`` reflects the toggle; ``None`` -> detected-else-8 for
-    hexfield, no radius for other lineages."""
+    shrimp, no radius for other lineages."""
 
     ckpt_path = _debug_resolve_checkpoint(run_name, checkpoint)
     # info is radius-independent (reads checkpoint meta) BUT it now also surfaces
     # the worker's ACTIVE support radius (meta.support_radius), so run the op in a
     # worker spawned at the run's radius. An explicit query override (radius=4|8)
-    # lets the UI's info chip follow the toggle; else detected-else-8 for hexfield.
+    # lets the UI's info chip follow the toggle; else detected-else-8 for shrimp.
     override = {"radius": radius} if radius in (4, 8) else {}
     radius = _debug_resolve_radius(_debug_resolve_run_dir(run_name), override)
     signature = _debug_signature("info", ckpt_path, [], None, radius)
@@ -2942,7 +2942,7 @@ def _debug_game_eval(
 
     ``radius`` (optional UI override, 4|8) keys the worker's support radius so the
     sweep evaluates at the run's trained radius; ``None`` -> detected-else-8 for
-    hexfield, no radius for other lineages."""
+    shrimp, no radius for other lineages."""
 
     record, _players, _records = _debug_open_record(run_name, artifact_path, record_index)
     action_ids = [int(a) for a in record.action_ids]
@@ -3599,7 +3599,7 @@ def _candidate_seat_from_game_id(game_id: object) -> str | None:
     """Return which seat ("player0"/"player1") the run's own candidate net held
     in an evaluation game, or None when it cannot be determined.
 
-    Evaluation .hxr games (written by hexfield.eval_arena._write_eval_hxr) carry
+    Evaluation .hxr games (written by shrimp.eval_arena._write_eval_hxr) carry
     seat-symmetric player labels ("cand_epN/opp · seat 0/1"), so the label alone
     does not identify the candidate. The candidate seat SWAPS per game (CRN
     pairing) and is instead encoded as a "-candP0"/"-candP1" suffix on the
@@ -3888,14 +3888,14 @@ def _evaluation_history(run_dir: Path) -> list[dict[str, object]]:
                 "epoch": epoch,
                 "status": payload.get("status"),
                 "games": payload.get("games"),
-                # hexfield omits `completed`; fall back to total games when it has
+                # shrimp omits `completed`; fall back to total games when it has
                 # finished so the eval row still reads as complete.
                 "completed": payload.get("completed")
                 if payload.get("completed") is not None
                 else (payload.get("games") if payload.get("status") == "completed" else None),
                 "wins": payload.get("wins"),
                 "losses": payload.get("losses"),
-                # dense_cnn emits `mean_turns`; hexfield emits `mean_game_length`.
+                # dense_cnn emits `mean_turns`; shrimp emits `mean_game_length`.
                 "mean_turns": payload.get("mean_turns")
                 if payload.get("mean_turns") is not None
                 else payload.get("mean_game_length"),
@@ -3924,26 +3924,26 @@ def _multistage_headline_edge(edge: dict[str, object]) -> bool:
 
 
 def _multistage_eval_history(run_dir: Path) -> list[dict[str, object]]:
-    """Per-epoch rows from the standalone hexfield multi-stage eval reports
-    (``diagnostics/hexfield.multistage_eval.epoch_*.json``), ascending by epoch.
+    """Per-epoch rows from the standalone shrimp multi-stage eval reports
+    (``diagnostics/shrimp.multistage_eval.epoch_*.json``), ascending by epoch.
 
-    Mirrors ``_evaluation_history``: lineage-gated on the hexfield prefix, reads
+    Mirrors ``_evaluation_history``: lineage-gated on the shrimp prefix, reads
     each report via ``_read_json_file`` (graceful on missing/corrupt -> skipped),
     and emits a flat row per epoch carrying the verdict label/block, the
     SealBot-pinned rating table (``ratings.players`` + ``ratings.fit``), the
     headline edges (primary + SealBot/BC-prefit, winrate + CI), and the
     ``sealbot_winrate_ci95`` headline. The newest row is the latest verdict +
     rating table; the full list (each report's ``ratings.players``) is the
-    Elo-over-epochs trajectory. Returns ``[]`` for non-hexfield lineages, a
+    Elo-over-epochs trajectory. Returns ``[]`` for non-shrimp lineages, a
     missing ``diagnostics/`` dir, or when no report files exist (opt-in eval)."""
 
-    if _diag_prefix(run_dir) != "hexfield":
+    if _diag_prefix(run_dir) != "shrimp":
         return []
     diagnostics_dir = run_dir / "diagnostics"
     if not diagnostics_dir.exists():
         return []
     rows: list[dict[str, object]] = []
-    for path in sorted(diagnostics_dir.glob("hexfield.multistage_eval.epoch_*.json")):
+    for path in sorted(diagnostics_dir.glob("shrimp.multistage_eval.epoch_*.json")):
         payload = _read_json_file(path)
         if not isinstance(payload, dict):
             continue
@@ -4058,13 +4058,13 @@ def _eval_pool_summary(run_dir: Path) -> dict[str, object] | None:
 
     The pool is a single append-only file (not per-epoch), so its edges carry an
     ``epoch`` column spanning every candidate checkpoint. Lineage-gated like the
-    other hexfield readers; returns ``None`` for non-hexfield runs and when the
+    other shrimp readers; returns ``None`` for non-shrimp runs and when the
     file is absent/corrupt (``_read_json_file`` -> ``None``). The heavy ``raw``
     block on each edge is dropped to keep the run payload small, EXCEPT the few
     integer ``physical_wins_*`` counts the W-L matrix needs (the top-level
     ``wins_a/wins_b`` are n_eff-weighted, so the true head-to-head must survive)."""
 
-    if _diag_prefix(run_dir) != "hexfield":
+    if _diag_prefix(run_dir) != "shrimp":
         return None
     payload = _read_json_file(run_dir / "diagnostics" / "eval_pool.json")
     if not isinstance(payload, dict):
@@ -4267,9 +4267,9 @@ def _loss_buffer_from_training(training: dict[str, object]) -> dict[str, object]
     out: dict[str, object] = {"loss_total": total}
     components = training.get("loss_components")
     if isinstance(components, dict):
-        # hexfield's per-head components are normalized into this same dict shape by
+        # shrimp's per-head components are normalized into this same dict shape by
         # _training_epoch_summary, so the mapping below covers both lineages. The
-        # moves_left and cell_q (per-cell action-value) heads are hexfield-only; the
+        # moves_left and cell_q (per-cell action-value) heads are shrimp-only; the
         # epoch card renders both as chips when present.
         for src, dst in (
             ("policy", "loss_policy"),
@@ -4353,7 +4353,7 @@ def _learning_health(
     Display-side triage only — thresholds here are owner judgment calls, not
     training-side gates.
 
-    For hexfield runs the eval signal is the standalone multi-stage report
+    For shrimp runs the eval signal is the standalone multi-stage report
     (``multistage_eval_history``: pooled Bradley-Terry verdict + candidate Elo +
     descriptive SealBot zero-point winrate), NOT the all-null wrapper
     ``evaluation_history`` (which only the dense_cnn lineage populates with
@@ -4423,7 +4423,7 @@ def _learning_health(
     elif latest_loss is not None:
         messages.append(f"Latest training loss is {latest_loss:.3f}.")
 
-    # Multi-stage eval fields, populated from the standalone hexfield report when
+    # Multi-stage eval fields, populated from the standalone shrimp report when
     # present (so the status-band eval chip renders a real value, not "--").
     latest_verdict: str | None = None
     latest_cand_elo: float | None = None
@@ -4431,7 +4431,7 @@ def _learning_health(
     latest_eval_epoch: int | None = None
 
     if has_multistage:
-        # Hexfield lineage: drive eval-health off the multi-stage Bradley-Terry
+        # Shrimp lineage: drive eval-health off the multi-stage Bradley-Terry
         # report. NEVER emit the legacy turns-based "no SealBot eval yet" line —
         # the eval has run (one report per evaluated epoch).
         latest_ms = ms_history[-1]
@@ -4528,7 +4528,7 @@ def _learning_health(
     if "random_per_training_expansion" in d6_mode or d6_preview:
         messages.append("D6 training augmentation previews are present.")
     elif latest_epoch > 0 and not has_multistage:
-        # D6 preview is a dense_cnn-lineage concern; on hexfield runs the absent
+        # D6 preview is a dense_cnn-lineage concern; on shrimp runs the absent
         # preview is irrelevant noise, so only flag it for non-multistage runs.
         status = "watch" if status != "intervene" else status
         messages.append("D6 augmentation preview is missing for the latest epoch.")
@@ -4552,7 +4552,7 @@ def _learning_health(
         "eval_delta_from_first": (latest_turns - first_turns) if latest_turns is not None and first_turns is not None else None,
         "latest_eval_wins": latest_wins,
         "latest_eval_games": latest_games,
-        # Multi-stage eval (hexfield) — None for dense_cnn lineages. These let the
+        # Multi-stage eval (shrimp) — None for dense_cnn lineages. These let the
         # status-band eval chip render a real value instead of "--".
         "latest_verdict": latest_verdict,
         "latest_cand_elo": latest_cand_elo,
@@ -4621,7 +4621,7 @@ def _selfplay_epoch_summary(payload: dict[str, object]) -> dict[str, object]:
             games = payload.get("games_started")
 
     # app.js reads selfplay.samples_added; dense_cnn emits effective_samples,
-    # hexfield emits rows_written (samples added to the replay buffer).
+    # shrimp emits rows_written (samples added to the replay buffer).
     samples_added = payload.get("effective_samples")
     if samples_added is None:
         samples_added = payload.get("raw_samples")
@@ -4629,7 +4629,7 @@ def _selfplay_epoch_summary(payload: dict[str, object]) -> dict[str, object]:
         samples_added = payload.get("rows_written")
 
     # No producer key for per-searched-position sims; derive when both present.
-    # dense_cnn emits searched_positions; hexfield emits total_decisions (decision
+    # dense_cnn emits searched_positions; shrimp emits total_decisions (decision
     # points evaluated) — the same quantity for this display.
     mcts_simulations = payload.get("mcts_simulations")
     searched_positions = payload.get("searched_positions")
@@ -4658,7 +4658,7 @@ def _selfplay_epoch_summary(payload: dict[str, object]) -> dict[str, object]:
         # _epoch_history backfills any None from the epoch's .hxr records (display
         # side). Producer-emitted values pass through unchanged. None values are
         # omitted client-side, so a run with neither stays unaffected.
-        # hexfield emits mean_game_length / p90_game_length inline (different names,
+        # shrimp emits mean_game_length / p90_game_length inline (different names,
         # and p90 rather than p95); fall back to them so its self-play row carries
         # length stats without the .hxr backfill. dense_cnn keys win when present.
         "game_length_mean": payload.get("game_length_mean")
@@ -4776,7 +4776,7 @@ def _training_epoch_summary(payload: dict[str, object]) -> dict[str, object]:
     # unweighted per-head `loss_components` (policy/value/opp_policy/stvalue_*) — pass
     # it through so the per-head Loss band renders (the optional policy_targets overlay
     # still augments source_summary/policy_imitation later in _epoch_history).
-    # hexfield's trainer emits the weighted total as `loss_total` and the per-head
+    # shrimp's trainer emits the weighted total as `loss_total` and the per-head
     # losses FLAT at top level (loss_policy/loss_value/loss_opp_policy/loss_stvalue_*/
     # loss_moves_left) rather than dense_cnn's `loss` + nested `loss_components`.
     # Normalize to the dense_cnn shape here so every downstream reader (the loss band
@@ -4801,17 +4801,17 @@ def _training_epoch_summary(payload: dict[str, object]) -> dict[str, object]:
     return {
         "status": payload.get("status"),
         "loss": loss,
-        "loss_components": loss_components,  # per-head (dense_cnn nested / hexfield flat)
+        "loss_components": loss_components,  # per-head (dense_cnn nested / shrimp flat)
         "source_summary": None,  # no producer key (overlaid from policy_targets file)
         "policy_imitation": None,  # no producer key (overlaid from policy_targets file)
         "steps": payload.get("steps"),
-        # dense_cnn emits `samples`; hexfield emits `window_rows` (training window size).
+        # dense_cnn emits `samples`; shrimp emits `window_rows` (training window size).
         "samples": payload.get("samples")
         if payload.get("samples") is not None
         else payload.get("window_rows"),
         "batch_size": payload.get("batch_size"),
         "samples_per_second": payload.get("samples_per_second"),
-        # dense_cnn emits `elapsed_seconds`; hexfield emits `seconds`.
+        # dense_cnn emits `elapsed_seconds`; shrimp emits `seconds`.
         "elapsed_seconds": payload.get("elapsed_seconds")
         if payload.get("elapsed_seconds") is not None
         else payload.get("seconds"),
@@ -4822,14 +4822,14 @@ def _evaluation_epoch_summary(payload: dict[str, object]) -> dict[str, object]:
     return {
         "status": payload.get("status"),
         "games": payload.get("games"),
-        # hexfield omits `completed`; treat all games as completed once the eval is
+        # shrimp omits `completed`; treat all games as completed once the eval is
         # done so the row reads as finished.
         "completed": payload.get("completed")
         if payload.get("completed") is not None
         else (payload.get("games") if payload.get("status") == "completed" else None),
         "wins": payload.get("wins"),
         "losses": payload.get("losses"),
-        # dense_cnn emits `mean_turns`; hexfield emits `mean_game_length`.
+        # dense_cnn emits `mean_turns`; shrimp emits `mean_game_length`.
         "mean_turns": payload.get("mean_turns")
         if payload.get("mean_turns") is not None
         else payload.get("mean_game_length"),
@@ -4956,10 +4956,10 @@ def _training_live_status(run_dir: Path) -> dict[str, object]:
     prefix = _diag_prefix(run_dir)
     events = _stage_status_from_events(diagnostics / "events.jsonl")
     watchdog = _read_last_jsonl(diagnostics / "resource_watchdog.jsonl")
-    # hexfield does not emit a `<prefix>.performance_calibration.json` (it writes a
+    # shrimp does not emit a `<prefix>.performance_calibration.json` (it writes a
     # differently-shaped `calibrate_performance.json`), so the calibration block is
-    # omitted for hexfield runs (honest gap, not faked). It DOES emit the live
-    # `<prefix>.selfplay.live.json` (hexfield/selfplay.py _write_live, every ~3s
+    # omitted for shrimp runs (honest gap, not faked). It DOES emit the live
+    # `<prefix>.selfplay.live.json` (shrimp/selfplay.py _write_live, every ~3s
     # during self-play), which feeds the live-progress + sub-phase blocks below.
     calibration = _read_json_file(diagnostics / f"{prefix}.performance_calibration.json")
     selfplay_live = _read_json_file(diagnostics / f"{prefix}.selfplay.live.json")
@@ -5039,13 +5039,13 @@ def _derive_sub_phase(
     on-disk file signals, as ``(phase, detail, progress)``.
 
     A dense_cnn epoch runs self-play (~10 min) -> shuffle (~1 min) -> train (~2 min)
-    -> SealBot eval (~15-19 min); a hexfield epoch runs self-play (~25-30 min) ->
+    -> SealBot eval (~15-19 min); a shrimp epoch runs self-play (~25-30 min) ->
     window select (~25s) -> train (~5-8 min) -> moves-left audit / multistage eval +
     checkpoint. The run-level ``stage`` stays ``epoch_NNNNNN`` the whole time, so
     without this every non-selfplay minute reads as a stuck "epoch running".
 
     ``progress`` is an optional ``{"phase", "elapsed_seconds", "typical_seconds"}``
-    block (currently the hexfield training pass) that lets the client render a
+    block (currently the shrimp training pass) that lets the client render a
     progress bar. Returns ``(None, None, None)`` when nothing can be derived (setup
     stages, stopped runs, or models without these file signals) so callers fall
     back to the existing ``stage``/``stage_status`` label. Robust to missing files."""
@@ -5084,8 +5084,8 @@ def _derive_sub_phase(
     # epoch tail. The tail differs per lineage.
     epoch_done = (diagnostics / f"epoch_{epoch:06d}.json").is_file()
     if sp_status == "completed" and sp_epoch == epoch and not epoch_done:
-        if prefix == "hexfield":
-            return _hexfield_post_selfplay_phase(diagnostics, prefix, epoch)
+        if prefix == "shrimp":
+            return _shrimp_post_selfplay_phase(diagnostics, prefix, epoch)
         shuffle_age = _shuffle_dir_age_seconds(run_dir, epoch)
         if shuffle_age is None:
             # Shuffle output for this epoch not on disk yet -> still shuffling.
@@ -5099,12 +5099,12 @@ def _derive_sub_phase(
     return None, None, None
 
 
-def _hexfield_post_selfplay_phase(
+def _shrimp_post_selfplay_phase(
     diagnostics: Path,
     prefix: str,
     epoch: int,
 ) -> tuple[str, str | None, dict[str, object] | None]:
-    """hexfield epoch tail from the per-segment diagnostics files, each written
+    """shrimp epoch tail from the per-segment diagnostics files, each written
     the moment its phase completes: ``<prefix>.selfplay.epoch_N.json`` (self-play
     done) -> ``.select`` (window selection done, ~25s) -> ``.training`` (training
     pass done, ~5-8 min) -> moves-left audit / multistage eval + checkpoint +

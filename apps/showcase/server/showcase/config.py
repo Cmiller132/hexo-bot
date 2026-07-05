@@ -79,7 +79,7 @@ class Settings:
                 os.environ.get("SHOWCASE_BOTS_TOML", "apps/showcase/bots.example.toml")
             ),
             search_config=Path(
-                os.environ.get("SHOWCASE_SEARCH_CONFIG", "configs/hexfield_main_7.toml")
+                os.environ.get("SHOWCASE_SEARCH_CONFIG", "configs/shrimp_main_7.toml")
             ),
             static_dir=Path(os.environ.get("SHOWCASE_STATIC_DIR", "apps/showcase/web")),
             workers=_env_int("SHOWCASE_WORKERS", 2),

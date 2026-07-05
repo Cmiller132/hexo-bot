@@ -19,7 +19,7 @@
 # source trees are copied.
 #
 # The image contains NO checkpoints: bots.toml + weights are a read-only
-# volume (see docker-compose.yml). HEXFIELD_* arch env is not baked either —
+# volume (see docker-compose.yml). SHRIMP_* arch env is not baked either —
 # radius/arch belong with the mounted weights and come from compose.
 #
 # GPU variant: Dockerfile.xpu (Intel Arc / torch XPU, opt-in via
@@ -53,7 +53,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY packages/hexo_engine packages/hexo_engine
 COPY packages/hexo_utils packages/hexo_utils
-COPY packages/hexfield packages/hexfield
+COPY packages/shrimp packages/shrimp
 
 # --locked: build exactly the dependency set in the committed Cargo.lock.
 RUN maturin build --release --locked -o /wheels -i python3.12 \
@@ -61,7 +61,7 @@ RUN maturin build --release --locked -o /wheels -i python3.12 \
     && maturin build --release --locked -o /wheels -i python3.12 \
         -m packages/hexo_utils/Cargo.toml \
     && maturin build --release --locked -o /wheels -i python3.12 \
-        -m packages/hexfield/Cargo.toml
+        -m packages/shrimp/Cargo.toml
 
 ##############################################################################
 # Stage 2 — runtime: python 3.12 + CPU torch + wheels + the showcase app

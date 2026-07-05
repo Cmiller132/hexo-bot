@@ -1,7 +1,7 @@
 """E4 — radius-confound annotation + anchor exclusion.
 
 The support radius is a process-global read once per process, so EVERY opponent
-is featurized at the live HEXFIELD_SUPPORT_RADIUS. A radius-8-era anchor
+is featurized at the live SHRIMP_SUPPORT_RADIUS. A radius-8-era anchor
 (bc_prefit) forced to radius-4 plays OOD -> weaker -> inflates the candidate's
 relative Elo. We cannot vary the radius per net (OnceLock + metadata-less frozen
 checkpoints), so we:
@@ -12,7 +12,7 @@ checkpoints), so we:
 
 Because the radius is import-time (a process-global OnceLock), the radius-4 and
 radius-8 scenarios each run in their OWN SUBPROCESS with the target
-HEXFIELD_SUPPORT_RADIUS (it cannot be mutated in-process). The whole suite runs
+SHRIMP_SUPPORT_RADIUS (it cannot be mutated in-process). The whole suite runs
 at the default radius, so both radius scenarios are exercised via subprocesses
 that this module launches from the repo root.
 
@@ -27,21 +27,21 @@ import sys
 import tempfile
 from pathlib import Path
 
-from hexfield.config import parse_hexfield_config
-from hexfield.multistage_eval import Opponent, Roster, _choose_anchor
-import hexfield.eval_stats as eval_stats
+from shrimp.config import parse_shrimp_config
+from shrimp.multistage_eval import Opponent, Roster, _choose_anchor
+import shrimp.eval_stats as eval_stats
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_radius_subprocess(probe: str, radius: int) -> subprocess.CompletedProcess:
-    """Run a probe under HEXFIELD_SUPPORT_RADIUS=<radius> from the repo root, so
-    it exercises THIS checkout's hexfield at the requested import-time radius."""
+    """Run a probe under SHRIMP_SUPPORT_RADIUS=<radius> from the repo root, so
+    it exercises THIS checkout's shrimp at the requested import-time radius."""
 
     env = dict(os.environ)
-    env["HEXFIELD_SUPPORT_RADIUS"] = str(radius)
+    env["SHRIMP_SUPPORT_RADIUS"] = str(radius)
     env["PYTHONPATH"] = os.pathsep.join(
-        [str(_REPO_ROOT / "packages" / "hexfield" / "python"), env.get("PYTHONPATH", "")]
+        [str(_REPO_ROOT / "packages" / "shrimp" / "python"), env.get("PYTHONPATH", "")]
     )
     return subprocess.run(
         [sys.executable, "-c", probe],
@@ -67,12 +67,12 @@ def _roster():
 
 _SUBPROC_R4_TAGGING = """
 from pathlib import Path
-from hexfield import support
-from hexfield.config import parse_hexfield_config
-from hexfield.multistage_eval import Opponent, Roster, _build_checkpoint_edge_from_match
+from shrimp import support
+from shrimp.config import parse_shrimp_config
+from shrimp.multistage_eval import Opponent, Roster, _build_checkpoint_edge_from_match
 
 assert support._SUPPORT_RADIUS == 4, support._SUPPORT_RADIUS
-cfg = parse_hexfield_config({}).multi_stage_eval
+cfg = parse_shrimp_config({}).multi_stage_eval
 roster = Roster(
     candidate_label="cand_ep35", candidate_epoch=35, sealbot=None,
     champion=Opponent("ep30", "champion", Path("x"), 30),
@@ -122,12 +122,12 @@ def test_anchor_excludes_ood():
 _SUBPROC_R4_STAGE_D = """
 import tempfile
 from pathlib import Path
-from hexfield import support
-from hexfield.config import parse_hexfield_config
-from hexfield.multistage_eval import Opponent, Roster, _stage_d_pool
+from shrimp import support
+from shrimp.config import parse_shrimp_config
+from shrimp.multistage_eval import Opponent, Roster, _stage_d_pool
 
 assert support._SUPPORT_RADIUS == 4, support._SUPPORT_RADIUS
-cfg = parse_hexfield_config({}).multi_stage_eval
+cfg = parse_shrimp_config({}).multi_stage_eval
 roster = Roster(
     candidate_label="cand_ep35", candidate_epoch=35, sealbot=None,
     champion=Opponent("ep30", "champion", Path("x"), 30),
@@ -163,13 +163,13 @@ def test_stage_d_surfaces_ood():
 _SUBPROC_R8 = """
 import sys
 from pathlib import Path
-from hexfield import support
-from hexfield.config import parse_hexfield_config
-from hexfield.multistage_eval import Opponent, Roster, _build_checkpoint_edge_from_match, _choose_anchor
-import hexfield.eval_stats as eval_stats
+from shrimp import support
+from shrimp.config import parse_shrimp_config
+from shrimp.multistage_eval import Opponent, Roster, _build_checkpoint_edge_from_match, _choose_anchor
+import shrimp.eval_stats as eval_stats
 
 assert support._SUPPORT_RADIUS == 8, support._SUPPORT_RADIUS
-cfg = parse_hexfield_config({}).multi_stage_eval
+cfg = parse_shrimp_config({}).multi_stage_eval
 roster = Roster(
     candidate_label="cand_ep35", candidate_epoch=35, sealbot=None,
     champion=Opponent("ep30", "champion", Path("x"), 30),

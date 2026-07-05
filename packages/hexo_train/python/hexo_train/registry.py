@@ -5,7 +5,7 @@ sample decoding, losses, checkpoint interpretation, and epoch-time behavior.
 `hexo_train` only finds the plugin and calls agreed-upon lifecycle methods.
 
 Plugin lookup uses an explicit Python module path from config: the shipped
-configs set `[model].module = "hexfield.plugin"`, and the module exposes either
+configs set `[model].module = "shrimp.plugin"`, and the module exposes either
 a `get_plugin()` factory or a `plugin` object.
 
 Note: `ModelPlugin` covers only the two construction hooks. The full

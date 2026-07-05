@@ -1,9 +1,9 @@
 import dataclasses
 import inspect
 
-import hexfield.config as c
-import hexfield.eval_arena as a
-import hexfield.multistage_eval as m
+import shrimp.config as c
+import shrimp.eval_arena as a
+import shrimp.multistage_eval as m
 
 print("select_opponents:", inspect.signature(m.select_opponents))
 print("_stage_d_pool:", inspect.signature(m._stage_d_pool))

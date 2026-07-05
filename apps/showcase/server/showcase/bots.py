@@ -8,7 +8,7 @@ search session per CHECKPOINT — the visit budget is a per-job parameter, so
 the catalogue stays small in memory no matter how many strengths are offered.
 
 Process model: `SHOWCASE_WORKERS` spawned processes each load the FULL
-catalogue once (checkpoints are small) plus one `HexfieldMctsSession` per
+catalogue once (checkpoints are small) plus one `ShrimpMctsSession` per
 checkpoint, and serve jobs from a per-worker queue. Jobs for a game are routed
 sticky by `game_key % workers`, so a game's search trees live in exactly one
 worker and `discard(game_key)` at game end reclaims them there. Results flow
@@ -16,7 +16,7 @@ back over a shared queue drained by a reader thread that resolves asyncio
 futures; an abandoned or timed-out job simply resolves a future nobody awaits,
 so the pool can never deadlock on a dead game.
 
-This module keeps torch/hexfield imports out of module scope: the web process
+This module keeps torch/shrimp imports out of module scope: the web process
 imports it for `BotSpec`/`load_bots_toml`/`BotPool` without paying (or
 depending on) the model stack. Workers do the heavy imports in
 `_WorkerRuntime` after multiprocessing spawn.
@@ -28,7 +28,7 @@ varies per game. A `[[checkpoint]]` entry may name its own profile via
 `search_profile` (a bare name resolves against the built-in profiles dir,
 `apps/showcase/profiles/`), so PUCT-era checkpoints are served with the search
 they trained under; entries without one share the global default
-(`SHOWCASE_SEARCH_CONFIG`, default `configs/hexfield_main_7.toml`). Opening
+(`SHOWCASE_SEARCH_CONFIG`, default `configs/shrimp_main_7.toml`). Opening
 plies are temperature-sampled exactly like the eval arena, so games do not all
 open identically.
 """
@@ -116,7 +116,7 @@ def _resolve_search_profile(ref: str, bots_dir: Path) -> Path:
     """Resolve a checkpoint's `search_profile` reference to a profile toml.
 
     Resolution order: a bare name (a single path component with no .toml
-    suffix, e.g. "hexfield_main_5") resolves against the built-in
+    suffix, e.g. "shrimp_main_5") resolves against the built-in
     `PROFILES_DIR`; otherwise the reference is a path, taken relative to the
     bots.toml directory unless absolute. The file must exist so a bad
     reference fails at catalogue load, not on the first move.
@@ -221,12 +221,12 @@ class SearchProfile:
     """
 
     def __init__(self, config_path: Path | str) -> None:
-        from hexfield.config import build_divergence_overrides, parse_hexfield_config
+        from shrimp.config import build_divergence_overrides, parse_shrimp_config
 
         with open(config_path, "rb") as fh:
             raw = tomllib.load(fh)
         model_cfg = raw.get("model", {}).get("config", {})
-        cfg = parse_hexfield_config(
+        cfg = parse_shrimp_config(
             {
                 "device": "cpu",
                 "selfplay": model_cfg.get("selfplay", {}),
@@ -285,7 +285,7 @@ class SearchProfile:
 
 
 def _load_checkpoint(path: Path) -> Any:
-    """Strict-load a hexfield checkpoint into a fresh eval-mode HexfieldNet.
+    """Strict-load a shrimp checkpoint into a fresh eval-mode ShrimpNet.
 
     Arch (width / head count / trunk layout) is inferred from the state dict
     where determinable, falling back to the env-driven module globals — the
@@ -294,13 +294,13 @@ def _load_checkpoint(path: Path) -> Any:
     """
     import torch
 
-    from hexfield.model import HexfieldNet, infer_net_kwargs_from_state_dict
+    from shrimp.model import ShrimpNet, infer_net_kwargs_from_state_dict
 
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), dict):
         raise RuntimeError(f"checkpoint payload has no 'model' state dict: {path}")
     state_dict = payload["model"]
-    model = HexfieldNet(**infer_net_kwargs_from_state_dict(state_dict))
+    model = ShrimpNet(**infer_net_kwargs_from_state_dict(state_dict))
     model.load_state_dict(state_dict, strict=True)
     model.eval()
     return model
@@ -340,8 +340,8 @@ class _WorkerRuntime:
         )
         torch.set_num_threads(threads)
 
-        from hexfield import _rust
-        from hexfield.inference import HexfieldEvaluator
+        from shrimp import _rust
+        from shrimp.inference import ShrimpEvaluator
 
         from . import device as devmod
 
@@ -394,8 +394,8 @@ class _WorkerRuntime:
             self.bots[spec.slug] = _LoadedBot(
                 spec=spec,
                 model=model,
-                evaluator=HexfieldEvaluator(model, device=device),
-                session=_rust.HexfieldMctsSession(max_states=65_536),
+                evaluator=ShrimpEvaluator(model, device=device),
+                session=_rust.ShrimpMctsSession(max_states=65_536),
                 profile=profile_for(spec),
             )
         self.device = device
@@ -427,7 +427,7 @@ class _WorkerRuntime:
         """
         import hexo_engine as engine
         from hexo_engine.types import PlacementAction, unpack_coord_id
-        from hexfield.geometry import unpack_action_id
+        from shrimp.geometry import unpack_action_id
 
         bot = self.bots[bot_slug]
         state = self._replay(actions)

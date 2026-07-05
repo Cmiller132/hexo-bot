@@ -1,13 +1,13 @@
 """Position analysis: bare-net policy/value/stv/moves-left readout, a small
 searched eval, and the batched whole-game summary series.
 
-Runs inside bot worker processes only (imports torch/hexfield at module level;
+Runs inside bot worker processes only (imports torch/shrimp at module level;
 the web process never imports this module). The net-only path mirrors the
 serve featurization exactly: engine state -> PositionFacts -> Support ->
 features -> one forward. Policy logits are positional over the support's
 legal prefix, so the sparse payload maps slot i to `legal_coords()[i]`.
 
-Note the support radius (HEXFIELD_SUPPORT_RADIUS, 4 for main_7) bounds the
+Note the support radius (SHRIMP_SUPPORT_RADIUS, 4 for main_7) bounds the
 net's legal prefix; cells the engine allows beyond that radius are invisible
 to the net by construction — the payload's policy covers what the net sees,
 which is also everything the search can expand.
@@ -20,12 +20,12 @@ from typing import Any
 import numpy as np
 import torch
 
-from hexfield.batching import collate_rows
-from hexfield.engine_facts import facts_from_state
-from hexfield.features import build_features
-from hexfield.geometry import unpack_action_id
-from hexfield.losses import decode_binned_value, decode_moves_left
-from hexfield.support import build_support
+from shrimp.batching import collate_rows
+from shrimp.engine_facts import facts_from_state
+from shrimp.features import build_features
+from shrimp.geometry import unpack_action_id
+from shrimp.losses import decode_binned_value, decode_moves_left
+from shrimp.support import build_support
 
 TOP_K = 5
 

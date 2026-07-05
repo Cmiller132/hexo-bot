@@ -1,6 +1,6 @@
 # Learn-section snapshot data
 
-Static JSON baked from the real `hexfield_main_7` run by
+Static JSON baked from the real `shrimp_main_7` run by
 `apps/showcase/scripts/learn_snapshots.py` (env + command in its header).
 Regenerate with that script; do not hand-edit. All files are minified JSON,
 ASCII-only, no filesystem paths.

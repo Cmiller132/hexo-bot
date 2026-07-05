@@ -1,6 +1,6 @@
-# Hexo bot showcase — game server
+# Shrimp — a Hexo bot — game server
 
-Public-facing FastAPI service: play Hexo against hexfield checkpoints at
+Public-facing FastAPI service: play Hexo against Shrimp checkpoints at
 several strengths, review finished games with model analysis, every game
 saved to SQLite. Phase 1 of the showcase — the server core; the static web
 frontend lands in `web/` as phase 2.
@@ -24,7 +24,7 @@ apps/showcase/
   requirements.txt     fastapi + uvicorn (on top of the repo's model stack)
 ```
 
-The server imports `hexo_engine`, `hexfield`, and `hexo_utils` only. Model
+The server imports `hexo_engine`, `shrimp`, and `hexo_utils` only. Model
 inference runs in `SHOWCASE_WORKERS` spawned worker processes, each holding
 the full catalogue resident; the web process never imports torch.
 
@@ -51,12 +51,12 @@ From the repo root, in an env with the repo's extensions built (see the main
 README) plus `pip install -r apps/showcase/requirements.txt`:
 
 ```bash
-export PYTHONPATH=$PWD/packages/hexfield/python:$PWD/apps/showcase/server
-export HEXFIELD_SUPPORT_RADIUS=4          # main_7 weights; also the default
+export PYTHONPATH=$PWD/packages/shrimp/python:$PWD/apps/showcase/server
+export SHRIMP_SUPPORT_RADIUS=4          # main_7 weights; also the default
 python -m pytest apps/showcase/tests -q   # generates tests/data/tiny_bot.pt
 # The default catalogue serves the tiny test checkpoint, whose smoke arch must
 # come from env (its CCA trunk is not inferable from the state dict):
-HEXFIELD_CHANNELS=32 HEXFIELD_ATTENTION_HEADS=4 HEXFIELD_TRUNK=CCA \
+SHRIMP_CHANNELS=32 SHRIMP_ATTENTION_HEADS=4 SHRIMP_TRUNK=CCA \
   uvicorn showcase.app:app --port 8123
 ```
 
@@ -78,13 +78,13 @@ lazily on the first game — so the stats views report per-strength numbers.
 ## Tests
 
 ```bash
-PYTHONPATH=packages/hexfield/python:apps/showcase/server \
+PYTHONPATH=packages/shrimp/python:apps/showcase/server \
   python -m pytest apps/showcase/tests -q
 ```
 
-The suite builds a smoke-size net (env arch `HEXFIELD_CHANNELS=32`,
-`HEXFIELD_ATTENTION_HEADS=4`, `HEXFIELD_TRUNK=CCA`,
-`HEXFIELD_SUPPORT_RADIUS=4`, pinned in `tests/conftest.py`), spins up the real
+The suite builds a smoke-size net (env arch `SHRIMP_CHANNELS=32`,
+`SHRIMP_ATTENTION_HEADS=4`, `SHRIMP_TRUNK=CCA`,
+`SHRIMP_SUPPORT_RADIUS=4`, pinned in `tests/conftest.py`), spins up the real
 worker pool once, and drives full games over HTTP.
 
 ## API
@@ -132,7 +132,7 @@ client polls until the bot's first stone lands.
 ```json
 {
   "checkpoints": [
-    {"id": "main7-ep75", "label": "Hexfield main_7", "run": "hexfield_main_7",
+    {"id": "main7-ep75", "label": "Shrimp main_7", "run": "shrimp_main_7",
      "epoch": 75, "games_trained": 24000000}
   ],
   "sims": [16, 64, 256, 512]
@@ -148,7 +148,7 @@ pass through verbatim as display metadata.
 {
   "id": "…uuid…",
   "status": "your_turn | bot_thinking | finished",
-  "bot": {"checkpoint_id": "main7-ep75", "label": "Hexfield main_7",
+  "bot": {"checkpoint_id": "main7-ep75", "label": "Shrimp main_7",
           "epoch": 75, "sims": 64},
   "human_color": 0,
   "to_move": 1,
@@ -234,7 +234,7 @@ finishes never skip or duplicate:
   "games": [
     {
       "id": "…uuid…",
-      "bot": {"checkpoint_id": "main7-ep75", "label": "Hexfield main_7",
+      "bot": {"checkpoint_id": "main7-ep75", "label": "Shrimp main_7",
               "epoch": 75, "sims": 64},
       "human_color": 0,
       "result": {"winner": 1, "termination": "resign", "human_result": -1},
@@ -255,7 +255,7 @@ Bot moves run each checkpoint's as-trained search profile: everything except
 the per-game visit budget (the chosen `sims`) is parsed from a profile TOML's
 `[model.config.selfplay]` section. Checkpoints without a `search_profile` key
 share the global default (`SHOWCASE_SEARCH_CONFIG`, default
-`configs/hexfield_main_7.toml`, the gumbel profile). Opening plies are
+`configs/shrimp_main_7.toml`, the gumbel profile). Opening plies are
 temperature-sampled like the eval arena so games vary; later moves are
 greedy. Analysis `?search=1` runs the position's checkpoint profile at a
 capped budget (`SHOWCASE_ANALYSIS_VISIT_CAP`, default 64).
@@ -264,14 +264,14 @@ capped budget (`SHOWCASE_ANALYSIS_VISIT_CAP`, default 64).
 
 A `[[checkpoint]]` entry may set `search_profile` to serve that checkpoint
 with the search it trained under. Resolution order: a bare name
-(`"hexfield_main_5"`) resolves against the built-in profiles dir
+(`"shrimp_main_5"`) resolves against the built-in profiles dir
 (`apps/showcase/profiles/`, shipped in the server image); a path resolves
 relative to the bots.toml directory; absolute paths pass through. A missing
 profile file fails catalogue load at startup, not the first move. Each worker
 parses one `SearchProfile` per unique profile.
 
-Shipped profiles: `hexfield_main_4`, `hexfield_main_5` (PUCT era; the Gumbel
-flags default off, selecting the plain PUCT root) and `hexfield_main_7` (the
+Shipped profiles: `shrimp_main_4`, `shrimp_main_5` (PUCT era; the Gumbel
+flags default off, selecting the plain PUCT root) and `shrimp_main_7` (the
 same values as the global default, for catalogues that name every profile
 explicitly). The PUCT profiles are distilled to the knobs this repo's strict
 config parser knows; every training-run knob missing from that set (root
@@ -289,11 +289,11 @@ Example entry:
 ```toml
 [[checkpoint]]
 id = "main5-ep105"
-checkpoint = "models/hexfield_main5_infer.pt"
-label = "Hexfield main_5"
-run = "hexfield_main_5"
+checkpoint = "models/shrimp_main5_infer.pt"
+label = "Shrimp main_5"
+run = "shrimp_main_5"
 epoch = 105
-search_profile = "hexfield_main_5"
+search_profile = "shrimp_main_5"
 group = "earlier runs"
 search = "puct"
 ```

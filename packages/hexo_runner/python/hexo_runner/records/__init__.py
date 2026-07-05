@@ -2,7 +2,7 @@
 
 The most-imported path of this package: the model's selfplay/evaluation
 modules import AbortRecord/HexoRecordFile/HexoRecordPlayer from here (see
-packages/hexfield/python/hexfield/selfplay.py), and hexo_frontend reads
+packages/shrimp/python/shrimp/selfplay.py), and hexo_frontend reads
 .hxr files through the same types.
 """
 

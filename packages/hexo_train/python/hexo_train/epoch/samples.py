@@ -6,9 +6,9 @@ the sample window it consumes.
 
 The model owns payload schemas, tensor decoding, replay storage, and window
 selection. Every shipped plugin sets `uses_shared_sample_store=False` and owns
-its own replay storage: the hexfield lineage writes NPZ shards from its own
+its own replay storage: the shrimp lineage writes NPZ shards from its own
 self-play and selects windows through its trainer's `select_training_samples`
-(packages/hexfield/python/hexfield/{selfplay,trainer}.py). `hexo_train` no
+(packages/shrimp/python/shrimp/{selfplay,trainer}.py). `hexo_train` no
 longer ships a shared JSON-chunk sample store.
 """
 
@@ -53,7 +53,7 @@ def select_training_samples(
 ) -> dict[str, Any]:
     """Choose the training window for this epoch via the model-owned trainer.
 
-    The trainer owns replay storage and window selection (the hexfield trainer
+    The trainer owns replay storage and window selection (the shrimp trainer
     builds a KataGo-style shuffle over its mtime-ordered NPZ shard window).
     """
 

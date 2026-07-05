@@ -10,7 +10,7 @@ see `pyproject.toml`).
 | Subsystem | Role |
 | --- | --- |
 | `.hxr` record codec (`rust/src/records.rs` + `pybridge.rs` + `python/hexo_utils/records.py`) | The repo's cross-package game-record format. Every self-play / evaluation / match path writes `.hxr` through it; the dashboard reads it. |
-| `state_hash` (`rust/src/state_hash.rs`) | Rust-only. The cache key for the `hexfield` search evaluator (deterministic, placement-order-sensitive position identity). |
+| `state_hash` (`rust/src/state_hash.rs`) | Rust-only. The cache key for the `shrimp` search evaluator (deterministic, placement-order-sensitive position identity). |
 | `encoding/` D6 contracts | The D6 symmetry transport contract (`D6_SIZE`, `D6Symmetry`, `ActionSymmetryMapper`, `transform_action_ids`), consumed by `hexo_train.symmetry` for training-time augmentation. |
 
 ## The .hxr record format
@@ -39,8 +39,8 @@ per-game writer.
 
 Inbound (who uses hexo_utils):
 
-- `hexo_runner.records.record` imports `HexoRecordFile` / `HexoRecordGameWriter` / `HexoRecord` / `HexoRecordPlayer` / `AbortRecord` / magic + schema constants from `hexo_utils.records` and re-exports them. All production `.hxr` IO flows through that path: `hexfield` selfplay/evaluation writes records; `hexo_frontend/web.py` reads them for the dashboard.
-- Rust: the `hexfield` crate depends on the `hexo_utils` workspace crate for `use hexo_utils::{hash_state, StateHash}` (evaluator cache keys).
+- `hexo_runner.records.record` imports `HexoRecordFile` / `HexoRecordGameWriter` / `HexoRecord` / `HexoRecordPlayer` / `AbortRecord` / magic + schema constants from `hexo_utils.records` and re-exports them. All production `.hxr` IO flows through that path: `shrimp` selfplay/evaluation writes records; `hexo_frontend/web.py` reads them for the dashboard.
+- Rust: the `shrimp` crate depends on the `hexo_utils` workspace crate for `use hexo_utils::{hash_state, StateHash}` (evaluator cache keys).
 - `hexo_train`: `symmetry.py` imports `D6_SIZE` / `D6Symmetry` from `hexo_utils.encoding`.
 
 Outbound (what hexo_utils depends on):

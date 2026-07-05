@@ -3,7 +3,7 @@
 # Three stages:
 #   1. fetch_corpus.py         -> downloads a human game corpus (Hugging Face)
 #   2. bootstrap_from_corpus.py-> replays it through hexo_engine into
-#                                 hexfield_compact_v1 shards (train/ + val/)
+#                                 shrimp_compact_v1 shards (train/ + val/)
 #   3. scripts/prefit.py       -> trains a BC checkpoint at the main_7 arch
 #
 # The architecture env is LOAD-BEARING (the prefit checkpoint must be built at
@@ -13,7 +13,7 @@
 #   HEXO_VENV   (default .venv at repo root)
 #   CORPUS_DIR  (default data/hexo-bootstrap-corpus)
 #   DATA_DIR    (default data/prefit)          — the shard dataset
-#   OUT_DIR     (default runs/hexfield_main_7_prefit)
+#   OUT_DIR     (default runs/shrimp_main_7_prefit)
 #   PREFIT_EPOCHS (default 4)
 #   SKIP_FETCH=1 to reuse an already-downloaded corpus
 set -euo pipefail
@@ -24,17 +24,17 @@ PY="$HEXO_VENV/bin/python"
 
 CORPUS_DIR="${CORPUS_DIR:-$ROOT/data/hexo-bootstrap-corpus}"
 DATA_DIR="${DATA_DIR:-$ROOT/data/prefit}"
-OUT_DIR="${OUT_DIR:-$ROOT/runs/hexfield_main_7_prefit}"
+OUT_DIR="${OUT_DIR:-$ROOT/runs/shrimp_main_7_prefit}"
 PREFIT_EPOCHS="${PREFIT_EPOCHS:-4}"
 
 # Architecture (must match the config the checkpoint will warm-start).
-export HEXFIELD_SUPPORT_RADIUS="${HEXFIELD_SUPPORT_RADIUS:-4}"
-export HEXFIELD_CHANNELS="${HEXFIELD_CHANNELS:-192}"
-export HEXFIELD_ATTENTION_HEADS="${HEXFIELD_ATTENTION_HEADS:-3}"
-export HEXFIELD_TRUNK="${HEXFIELD_TRUNK:-CCACCACCACCACCA}"
+export SHRIMP_SUPPORT_RADIUS="${SHRIMP_SUPPORT_RADIUS:-4}"
+export SHRIMP_CHANNELS="${SHRIMP_CHANNELS:-192}"
+export SHRIMP_ATTENTION_HEADS="${SHRIMP_ATTENTION_HEADS:-3}"
+export SHRIMP_TRUNK="${SHRIMP_TRUNK:-CCACCACCACCACCA}"
 # Prefit trains eagerly; the serve/train perf kernels are intentionally not set.
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-export PYTHONPATH="$ROOT/packages/hexfield/python${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/packages/shrimp/python${PYTHONPATH:+:$PYTHONPATH}"
 
 # 1. Fetch corpus.
 if [ "${SKIP_FETCH:-0}" != "1" ]; then

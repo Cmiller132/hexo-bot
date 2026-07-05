@@ -34,7 +34,7 @@ Hard environment constraints (do not violate):
 
 Known bugs this rewrite MUST fix (verified against code):
 - B1. `app.js` (~3905-3908) decodes moves_left with hardcoded `*80`; the real cap is
-  `MOVES_LEFT_CAP = 512` (`hexfield.constants.MOVES_LEFT_CAP`). Decode as
+  `MOVES_LEFT_CAP = 512` (`shrimp.constants.MOVES_LEFT_CAP`). Decode as
   `(v + 1) / 2 * moves_left_cap` where `moves_left_cap` comes from the analyze meta (new
   field, see §3.6).
 - B2. `web.py` `_debug_search` (1398-1415) drops the `seed` param even though
@@ -42,7 +42,7 @@ Known bugs this rewrite MUST fix (verified against code):
 - B3. The worker `info` op (`debug_worker.py:106-108`) has no HTTP route; checkpoint
   provenance currently costs a full analyze. New route §3.8.
 - B4. The "optimism probe" UI block (owner-swap Σ with ok/warn coloring) is a misreading
-  and does not apply to hexfield: hexfield encodes side-to-move ownership directly in its
+  and does not apply to Shrimp: Shrimp encodes side-to-move ownership directly in its
   features (own/opp planes), so the owner-swap probe is N/A and `value_swapped`/`optimism`
   come back null. The fields stay in the API (tests pin them) but the UI must NOT present
   them as an optimism metric — the panel is hidden when the fields are null.
@@ -57,12 +57,12 @@ Feasibility downgrades applied (silently dropped/changed vs the design draft):
   exposes only root aggregates); the existing `w` field
   already IS raw visits. Child-Q data therefore comes exclusively from the new Python
   `search_tree` op's root layer. The `search` endpoint changes only by gaining `seed`.
-- INPUTS tab (dense feature planes) is REMOVED in the public release: hexfield is
+- INPUTS tab (dense feature planes) is REMOVED in the public release: Shrimp is
   support-graph featurized (no 13×41×41 dense planes), so `analyze` always returns
   `input_planes: null`. The tab is a no-op n/a placeholder; do not build a plane viewer.
 - "Recorded" trajectory series is REMOVED in the public release: it depended on a
-  now-removed lineage that wrote `eval/epoch_*_examples.json`, which hexfield does not
-  produce. The Game Error Sweep's reeval series is the replacement for hexfield runs.
+  now-removed lineage that wrote `eval/epoch_*_examples.json`, which Shrimp does not
+  produce. The Game Error Sweep's reeval series is the replacement for Shrimp runs.
 - The Python PUCT tree is explicitly labeled "debug search" everywhere in the UI: it
   reuses the exact inference wrappers but will not bit-match Rust tie-breaking.
 - Checkpoint Sweep ("when did the model learn this") is pure frontend over the existing
@@ -146,7 +146,7 @@ transport buttons. A "Sweep" mini-button `#dbgPlySweepBtn` sits at the rail bott
   diverging), `opp` (4), `target` (5, recorded npz visit policy), `mismatch` (6,
   prior−target diverging), `childq` (7, root-child Q from last search_tree),
   plus `none` (0). (The dense-plane heat mode was removed with the INPUTS tab —
-  hexfield has no input planes.) Additive toggles (checkboxes, independent of base mode):
+  Shrimp has no input planes.) Additive toggles (checkboxes, independent of base mode):
   `#dbgTglThreats`, `#dbgTglNumbers`, `#dbgTglLast`, `#dbgTglLegalDim`.
 - Legend `#dbgLegend`: one shared color scale with explicit numeric min/max readout
   `#dbgLegendMin`/`#dbgLegendMax`, log-scale toggle `#dbgLegendLog` (key L), opacity
@@ -174,7 +174,7 @@ icon: shown whenever the panel's rendered data token != current nav token (§5 F
 - HEADS `#dbgTabHeads`: value scalar + chip `#dbgValueChip`; 65-bin dist chart
   `#dbgValueDist` with overlaid vertical markers for final z (when game decided) and
   recorded soft-z target (when TARGETS row loaded) + dist-entropy readout; owner-swap
-  probe block per B4 (hidden for hexfield — `value_swapped`/`optimism` are null); STV rows `#dbgStvRows`
+  probe block per B4 (hidden for Shrimp — `value_swapped`/`optimism` are null); STV rows `#dbgStvRows`
   (per-horizon centered bipolar bars); moves-left row `#dbgMovesLeft` decoded with
   `meta.moves_left_cap` (B1) and compared to actual remaining plies when on a recorded
   ply; top-moves table `#dbgTopMoves` — columns #, cell, prior%, visits%, Q, Δ(v−p);
@@ -209,10 +209,10 @@ icon: shown whenever the panel's rendered data token != current nav token (§5 F
   `#dbgCmpSplit` = A/B SPLIT-BOARD mode: board stage renders two half-size boards
   (`#dbgBoardSvg` + clone `#dbgBoardSvgB`) with a SHARED hover cursor (hovering a cell
   highlights it on both and the HUD shows A and B metrics side by side).
-- INPUTS `#dbgTabInputs`: REMOVED in the public release. hexfield is support-graph
+- INPUTS `#dbgTabInputs`: REMOVED in the public release. Shrimp is support-graph
   featurized and `analyze` always returns `input_planes: null`, so there are no dense
   feature planes to render. The tab is retained only as an n/a placeholder ("no input
-  planes for the hexfield lineage"); do not build a plane viewer.
+  planes for the Shrimp lineage"); do not build a plane viewer.
 - CKPT `#dbgTabCkpt`: provenance from GET /api/debug/ckpt_info — readable WITHOUT
   paying an analyze: arch, lineage, rl_epoch, step, graft, STV horizons, moves_left
   presence + cap, expanded heads, zeroed feature cols, load warnings, param count,
@@ -386,7 +386,7 @@ S7. Throttled ply±1 prefetch (client-only, one in-flight, abort-on-action, neve
     ckptB, only when the worker dot is green and no user request is pending).
 S8. [ / ] and { / } record/file hotkeys + record metadata chips in `#dbgCtxRecord`
     (data already in `record_games`).
-S9. INPUTS tab — REMOVED in the public release (hexfield has no dense input planes;
+S9. INPUTS tab — REMOVED in the public release (Shrimp has no dense input planes;
     `analyze` returns `input_planes: null`). Tab kept only as an n/a placeholder.
 S10. Visit-ladder sweep table (client loop over the existing search endpoint).
 S11. Trajectory hover crosshair + second KL axis (degenerate without sweep: hidden).
@@ -440,12 +440,12 @@ Cache signature in debug_service must include the seed.
 
 ### 3.6 POST /api/debug/analyze — CHANGED (additive)
 Body: current `{run, checkpoint, n?} + (action_ids | path,record,ply)` PLUS optional
-`planes?:bool (default false)` — accepted for call-site compatibility; hexfield is
+`planes?:bool (default false)` — accepted for call-site compatibility; Shrimp is
 support-graph featurized and returns no planes regardless.
 Response: current shape PLUS:
-- `meta.moves_left_cap:int|null` — NEW. 512 (`hexfield.constants.MOVES_LEFT_CAP`),
+- `meta.moves_left_cap:int|null` — NEW. 512 (`shrimp.constants.MOVES_LEFT_CAP`),
   null when the lineage has no moves_left head. Frontend uses this for B1.
-- `input_planes:null` — ALWAYS null in the public release: hexfield emits no dense
+- `input_planes:null` — ALWAYS null in the public release: Shrimp emits no dense
   feature planes. (The dense 13×41×41 plane payload was removed with its lineage;
   the field is kept only so the null n/a contract stays stable.)
 All existing fields (value, value_swapped, optimism, value_bins, value_dist, policy,
@@ -585,8 +585,8 @@ the 3-checkpoint LRU are untouched.
 ## 4. BACKEND IMPLEMENTATION PLAN
 
 ### 4.1 debug_infer.py
-- Add `MOVES_LEFT_CAP` plumb-through: the hexfield meta builder gains
-  `moves_left_cap` (import from `hexfield.constants`; null when the model has no
+- Add `MOVES_LEFT_CAP` plumb-through: the Shrimp meta builder gains
+  `moves_left_cap` (import from `shrimp.constants`; null when the model has no
   moves_left head) and `param_count`. Do NOT change any existing meta key.
 - Add `DebugSearchNode` + `search_tree_position(loaded, action_ids, *, visits, c_puct,
   seed, max_depth, top_k, min_n, n=None) -> dict` — a NEW pure-Python PUCT:
@@ -611,7 +611,7 @@ the 3-checkpoint LRU are untouched.
   `sum(t_i * (log t_i − log p_i))` over recorded-support cells, with p floored at 1e-9
   after renormalizing the prior over the recorded support.
 - DO NOT touch `load_checkpoint`, `analyze_position` (which accepts the additive
-  `planes:bool=False` kwarg but returns `input_planes: null` for hexfield), or
+  `planes:bool=False` kwarg but returns `input_planes: null` for Shrimp), or
   `search_position` signatures/behavior — all pinned by tests/test_debug_infer.py
   (priors alignment 1e-5, bit-determinism, stvalue keys, optimism field).
 
@@ -719,7 +719,7 @@ same commit). `node --check app.js` must pass after every stage.
 - COMPARE tab deep A/B + client prior-Δ overlay + split board (S5).
 - Pinboard (S2), journal (S3), palette (S1), checkpoint sweep dock tab (S4),
   prefetch (S7), record/file hotkeys (S8), overlay ergonomics (S6).
-  (INPUTS tab / S9 is removed — hexfield has no input planes; keep only the n/a
+  (INPUTS tab / S9 is removed — Shrimp has no input planes; keep only the n/a
   placeholder.)
 
 ### SHARED ID LIST (created in F1, wired in F2/F3 — binding between stages)
@@ -757,7 +757,7 @@ F3 wires: #dbgTreeRun #dbgTree #dbgScatter #dbgLadder #dbgTargetsNote #dbgCmpHea
   Verification = `node --check` and `python -m pytest tests/ -q` from the repo root
   with the `.venv` active.
 - Do not modify the Rust engine/rust_bridge, the production MCTS, selfplay/training
-  code, or anything under the `hexfield` package outside the debug-inference surface
+  code, or anything under the `shrimp` package outside the debug-inference surface
   this spec touches.
 - Do not change the worker spawn command, NDJSON protocol framing, env knobs, cache
   policy headers, `/static/` and `/` serving, or `_to_wsl`.

@@ -1,14 +1,14 @@
-"""D1/D2/D3 dashboard-fix assertions for the hexfield eval data layer.
+"""D1/D2/D3 dashboard-fix assertions for the shrimp eval data layer.
 
 These pin the ``hexo_frontend.web`` data-layer behavior that surfaces the REAL
 multi-stage eval (pinned Bradley-Terry ladder, pool ledger, roster-driven
 headline) instead of the dead "no eval" path — WITHOUT reading any private live
-run. Every test drives ``web`` against a SYNTHESIZED hexfield run dir built in a
+run. Every test drives ``web`` against a SYNTHESIZED shrimp run dir built in a
 ``tmp_path`` fixture (see ``run_dir`` below), so the assertions pin controlled,
 self-consistent values rather than frozen snapshots of an evolving live run.
 
 Run from the repo root (WSL, with the public venv active) as:
-  PYTHONPATH=packages/hexfield/python \
+  PYTHONPATH=packages/shrimp/python \
     python -m pytest tests/eval_dashboard/test_eval_dashboard_fixes.py -q
 """
 import json
@@ -21,10 +21,10 @@ from hexo_frontend import web  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
-# Synthetic hexfield run dir.
+# Synthetic shrimp run dir.
 #
-# All web.py readers are lineage-gated on ``_diag_prefix(run_dir) == "hexfield"``
-# (which reads manifest.json -> model.name), so the run dir MUST carry a hexfield
+# All web.py readers are lineage-gated on ``_diag_prefix(run_dir) == "shrimp"``
+# (which reads manifest.json -> model.name), so the run dir MUST carry a shrimp
 # manifest or every reader returns [] / None. The multi-stage reports below are a
 # small, self-consistent set (epochs 5, 30, 35) whose CONTROLLED values make the
 # behavioral assertions pass:
@@ -311,11 +311,11 @@ def _eval_pool() -> dict:
 
 @pytest.fixture()
 def run_dir(tmp_path: Path) -> Path:
-    """Build a synthetic hexfield run dir under ``tmp_path`` with a hexfield
+    """Build a synthetic shrimp run dir under ``tmp_path`` with a shrimp
     manifest (so the lineage-gated readers engage), three multi-stage eval
     reports (epochs 5, 30, 35), and a controlled ``eval_pool.json``."""
     (tmp_path / "manifest.json").write_text(
-        json.dumps({"model": {"name": "hexfield"}}), encoding="utf-8"
+        json.dumps({"model": {"name": "shrimp"}}), encoding="utf-8"
     )
     diag = tmp_path / "diagnostics"
     diag.mkdir()
@@ -324,7 +324,7 @@ def run_dir(tmp_path: Path) -> Path:
         (30, _report_ep30()),
         (35, _report_ep35()),
     ):
-        name = f"hexfield.multistage_eval.epoch_{epoch:06d}.json"
+        name = f"shrimp.multistage_eval.epoch_{epoch:06d}.json"
         (diag / name).write_text(json.dumps(report), encoding="utf-8")
     (diag / "eval_pool.json").write_text(json.dumps(_eval_pool()), encoding="utf-8")
     return tmp_path
@@ -352,7 +352,7 @@ def test_d1_health_uses_real_multistage(run_dir: Path):
     assert not any("No SealBot evaluation result yet" in m for m in msgs), (
         "D1: false 'no eval' message still emitted: " + repr(msgs)
     )
-    # (b) NO false hexfield "D6 missing" noise.
+    # (b) NO false shrimp "D6 missing" noise.
     assert not any("D6 augmentation preview is missing" in m for m in msgs), (
         "D1: false 'D6 missing' message still emitted: " + repr(msgs)
     )
@@ -425,7 +425,7 @@ def test_d2_pool_ledger_builds(run_dir: Path):
     # report edge's provenance, so cross-check the *physical* count there — against
     # the SYNTHESIZED newest report path, not any private live latest_path.
     latest_path = (
-        run_dir / "diagnostics" / f"hexfield.multistage_eval.epoch_{LATEST_EPOCH:06d}.json"
+        run_dir / "diagnostics" / f"shrimp.multistage_eval.epoch_{LATEST_EPOCH:06d}.json"
     )
     rep = json.loads(latest_path.read_text(encoding="utf-8"))
     champ_edge = next(e for e in rep["edges"] if e.get("primary"))

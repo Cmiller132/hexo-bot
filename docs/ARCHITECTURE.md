@@ -1,15 +1,15 @@
-# Architecture: the hexfield training system
+# Architecture: the Shrimp training system
 
 This document is the study reference for how the whole system fits together —
 the layers, the data flow between them, and where every piece lives in the tree.
 It assumes you have skimmed [`intro_to_hexo.md`](intro_to_hexo.md) (the game) and,
-ideally, [`hexfield_blueprint.md`](hexfield_blueprint.md) (the ideas, no code).
+ideally, [`shrimp_blueprint.md`](shrimp_blueprint.md) (the ideas, no code).
 For a plain-language tour of the bot itself — board representation, network,
 search, and training — before the code-level detail here, see
-[`HEXFIELD.md`](HEXFIELD.md). Everything named below is a real path in this
+[`SHRIMP.md`](SHRIMP.md). Everything named below is a real path in this
 repository.
 
-The system is one model lineage — **hexfield** — wrapped in a model-neutral
+The system is one model lineage — **Shrimp** — wrapped in a model-neutral
 orchestration and execution layer. Six packages, in dependency order:
 
 ```
@@ -17,13 +17,13 @@ hexo_engine   (Rust)   authoritative game rules
 hexo_utils    (Rust+Py) .hxr records, state_hash, D6 contract
 hexo_runner   (Py)      player contracts, match loop, SealBot adapter
 hexo_train    (Py)      config-driven epoch orchestration (model-neutral)
-hexfield      (Rust+Py) THE model: net + search + featurization + eval + trainer
+shrimp      (Rust+Py) THE model: net + search + featurization + eval + trainer
 hexo_frontend (Py)      web dashboard (arena / history / debug)
 ```
 
-`hexo_train` knows nothing about hexfield specifically: it discovers a *plugin*
-by module path (`[model].module = "hexfield.plugin"`) and drives it through a
-duck-typed contract. hexfield supplies the model semantics; hexo_train supplies
+`hexo_train` knows nothing about Shrimp specifically: it discovers a *plugin*
+by module path (`[model].module = "shrimp.plugin"`) and drives it through a
+duck-typed contract. Shrimp supplies the model semantics; hexo_train supplies
 the run skeleton (epoch ordering, diagnostics, artifact layout).
 
 ---
@@ -68,9 +68,9 @@ contracts:
   `ActionSymmetryMapper` protocol, and `transform_action_ids`. Consumed by
   `hexo_train.symmetry` for training-time augmentation.
 
-### 1.3 Featurization — `hexfield` (Rust `features.rs` + Python `features.py`)
+### 1.3 Featurization — `shrimp` (Rust `features.rs` + Python `features.py`)
 
-hexfield does not feed the network a fixed board crop. It builds a **support
+Shrimp does not feed the network a fixed board crop. It builds a **support
 set** that grows and shrinks with the game:
 
 ```
@@ -85,23 +85,23 @@ threat/standing-win membership for either side).
 
 Featurization is implemented twice for speed and correctness: the fast Rust path
 (`rust/src/features.rs`, `support.rs`, exposed as `_rust.featurize_states`) is the
-production path; the Python path (`python/hexfield/features.py`, `support.py`,
+production path; the Python path (`python/shrimp/features.py`, `support.py`,
 `geometry.py`) is the reference and the CPU/debug path. The support radius is
-**env-driven** (`HEXFIELD_SUPPORT_RADIUS`, default 8; the shipped weights use 4).
+**env-driven** (`SHRIMP_SUPPORT_RADIUS`, default 8; the shipped weights use 4).
 
-### 1.4 The network — `hexfield/model.py`
+### 1.4 The network — `shrimp/model.py`
 
-`HexfieldNet` (`python/hexfield/model.py`) is a stem → trunk → three-heads graph
+`ShrimpNet` (`python/shrimp/model.py`) is a stem → trunk → three-heads graph
 over the support set. **Its geometry is read from the environment at import
-time** (`python/hexfield/constants.py`) and is load-bearing — a checkpoint only
+time** (`python/shrimp/constants.py`) and is load-bearing — a checkpoint only
 loads into a net built with matching values:
 
 | Env var | Shipped value | Meaning |
 |---|---|---|
-| `HEXFIELD_CHANNELS` | 192 | trunk width |
-| `HEXFIELD_ATTENTION_HEADS` | 3 | attention heads (head_dim 64) |
-| `HEXFIELD_TRUNK` | `CCACCACCACCACCA` | block order: `C`=hex conv, `A`=attention |
-| `HEXFIELD_SUPPORT_RADIUS` | 4 | featurize radius |
+| `SHRIMP_CHANNELS` | 192 | trunk width |
+| `SHRIMP_ATTENTION_HEADS` | 3 | attention heads (head_dim 64) |
+| `SHRIMP_TRUNK` | `CCACCACCACCACCA` | block order: `C`=hex conv, `A`=attention |
+| `SHRIMP_SUPPORT_RADIUS` | 4 | featurize radius |
 
 The trunk alternates two kinds of vision:
 
@@ -120,12 +120,12 @@ over 65 bins spanning −1…+1), and **auxiliary** (moves-left + short-term val
 
 Fast kernels live alongside: `_triton_conv.py` and `_triton_attn.py` are Triton
 implementations guarded on `x.is_cuda`, so the eager PyTorch path is always
-available on CPU. The env flags that gate them (`HEXFIELD_TRITON_*`,
-`HEXFIELD_FLEX_PAIR`, `HEXFIELD_SERVE_HALF`, …) are parity-tested against eager.
+available on CPU. The env flags that gate them (`SHRIMP_TRITON_*`,
+`SHRIMP_FLEX_PAIR`, `SHRIMP_SERVE_HALF`, …) are parity-tested against eager.
 
-### 1.5 Search — `hexfield/rust/src/{search,tree}.rs`
+### 1.5 Search — `shrimp/rust/src/{search,tree}.rs`
 
-Search is Rust for speed. The entry point is `HexfieldMctsSession` (exposed from
+Search is Rust for speed. The entry point is `ShrimpMctsSession` (exposed from
 `lib.rs`), and the self-play driver is its `run_continuous` method: a continuous
 scheduler that keeps many games in flight and replaces finished games per slot.
 
@@ -148,15 +148,15 @@ To keep the search fed affordably, the Rust side **batches** deduplicated leaf
 positions, **caches** evaluations keyed by `state_hash` (FIFO, bounded), and
 **deduplicates** repeats within a batch — see §2 for the wire protocol.
 
-### 1.6 Training loop — `hexo_train` + `hexfield`
+### 1.6 Training loop — `hexo_train` + `shrimp`
 
-`hexo_train` owns the fixed run lifecycle; hexfield owns what happens inside each
+`hexo_train` owns the fixed run lifecycle; Shrimp owns what happens inside each
 step. Entry is `python -m hexo_train.cli.train_model <config>` →
 `TrainingPipeline.run` (`hexo_train/pipeline.py`):
 
 ```
 initialize run dirs + manifest.json (artifacts.py)
-  -> load/initialize checkpoint (checkpoints.py -> hexfield loader)
+  -> load/initialize checkpoint (checkpoints.py -> shrimp loader)
   -> per-epoch loop (epoch/loop.py):
        selfplay -> finalize samples -> select replay window
                 -> D6 symmetry seed -> train passes
@@ -164,17 +164,17 @@ initialize run dirs + manifest.json (artifacts.py)
   -> final checkpoint + run.completed.json
 ```
 
-The hexfield plugin (`python/hexfield/plugin.py`) supplies the hooks:
+The Shrimp plugin (`python/shrimp/plugin.py`) supplies the hooks:
 `build_model`, `training_component_overrides` (trainer + checkpoint loader/saver +
-replay storage), `generate_selfplay`, and `evaluate_epoch`. hexfield owns its own
+replay storage), `generate_selfplay`, and `evaluate_epoch`. Shrimp owns its own
 replay storage (`uses_shared_sample_store` is not used), so on a real run the
 epoch ordering and diagnostics come from `hexo_train` while storage, training,
-and checkpoint IO come from hexfield.
+and checkpoint IO come from shrimp.
 
 Inside the plugin:
 
 - **Self-play** — `selfplay.py:generate_selfplay_epoch` builds a
-  `HexfieldMctsSession`, runs `run_continuous`, and writes finished games. It
+  `ShrimpMctsSession`, runs `run_continuous`, and writes finished games. It
   applies the per-move levers (temperature schedule, PCR full/fast, policy-init
   openings) and records each move's search visit distribution as the policy
   target.
@@ -186,11 +186,11 @@ Inside the plugin:
   compact shards to dense tensors applying per-row D6 symmetry; `trainer.py` runs
   AdamW steps against `losses.py` (policy + 65-bin value + opponent-policy +
   short-term-value + moves-left).
-- **Checkpoints** — `checkpoints.py` writes `HexfieldNet` state (+ optimizer +
+- **Checkpoints** — `checkpoints.py` writes `ShrimpNet` state (+ optimizer +
   epoch for full checkpoints). `resume_from` restores model+optimizer+epoch;
   `initialize_from` is weights-only (how a BC prefit warm-starts a run).
 
-### 1.7 Evaluation — `hexfield/{eval_arena,multistage_eval,eval_stats}.py`
+### 1.7 Evaluation — `shrimp/{eval_arena,multistage_eval,eval_stats}.py`
 
 Strength is measured against *fixed* opponents, because a rising self-play loss
 does not mean the model got worse (longer games inflate it). Each eval cadence
@@ -205,7 +205,7 @@ plays:
   README), whose minimax depth varies with time so CRN pairing does not apply.
 
 `multistage_eval.py` runs the staged SPRT-style screen and writes
-`diagnostics/hexfield.multistage_eval.epoch_*.json`. Verdicts
+`diagnostics/shrimp.multistage_eval.epoch_*.json`. Verdicts
 (PROMOTE/REGRESS/INCONCLUSIVE) are **informational only** — nothing gates or
 redirects training. A separate `head_audit.py` checks that the moves-left head
 correlates with reality and disables it if not.
@@ -228,7 +228,7 @@ in-process — all model inference is delegated to an out-of-process CPU worker.
 
 The Debug worker chain: `web.py` → `debug_service.py` (spawns and manages the
 worker, NDJSON over stdin/stdout, timeouts, LRU cache) → `debug_worker.py`
-(per-op dispatch) → `debug_infer.py` (CPU inference, rebuilds `HexfieldNet` from
+(per-op dispatch) → `debug_infer.py` (CPU inference, rebuilds `ShrimpNet` from
 a checkpoint's state dict). Checkpoint bots in the Match arena also decide moves
 through this worker, so a bot in the arena plays exactly like its eval self.
 
@@ -242,7 +242,7 @@ language boundary one position at a time would be hopeless. The contract:
 1. Rust collects a batch of deduplicated leaf positions and packs them, via
    `serve_pack.rs` (`build_serve_groups`, `F16Buf`/`I32Buf`/`U8Buf`), into
    half-precision feature buffers grouped by support size.
-2. It calls the Python `HexfieldEvaluator` (`inference.py`), which pads to a
+2. It calls the Python `ShrimpEvaluator` (`inference.py`), which pads to a
    ceiling, runs `forward_policy_value` on the (optionally half-precision) GPU
    model, and returns:
    - `values_bytes` — f32 × B, clamped to [−1, 1];
@@ -252,7 +252,7 @@ language boundary one position at a time would be hopeless. The contract:
    the tree.
 
 The byte layout is a fixed contract in both directions — the parity harness
-(`tests/test_hexfield_*parity*.py`) exists to keep the native path and the
+(`tests/test_shrimp_*parity*.py`) exists to keep the native path and the
 reference path byte-identical for the shipped search profile.
 
 ---
@@ -260,37 +260,37 @@ reference path byte-identical for the shipped search profile.
 ## 3. Data flow, end to end
 
 ```
-configs/hexfield_main_7.toml
+configs/shrimp_main_7.toml
       |
       v
 hexo_train.cli.train_model  ->  TrainingPipeline (hexo_train/pipeline.py)
-      |  plugin: hexo_train/registry.py -> hexfield/plugin.py
+      |  plugin: hexo_train/registry.py -> shrimp/plugin.py
       v
   per-epoch loop (hexo_train/epoch/loop.py)
       |
-      |-- selfplay: hexfield/selfplay.py (continuous scheduler)
+      |-- selfplay: shrimp/selfplay.py (continuous scheduler)
       |       |                                   ^
       |       v   f16 feature buffers (serve_pack)| values_bytes /
-      |   hexfield._rust.HexfieldMctsSession       | priors_bytes
-      |   .run_continuous (search.rs / tree.rs) --> hexfield/inference.py (GPU)
+      |   shrimp._rust.ShrimpMctsSession       | priors_bytes
+      |   .run_continuous (search.rs / tree.rs) --> shrimp/inference.py (GPU)
       |       |  state clone via hexo_engine._rust state-api capsule
       |       v
       |   game truth: hexo_engine (Rust rules)
       |       |
       |       +--> <run>/selfplay/*.hxr    (hexo_runner.records / hexo_utils codec)
       |       +--> <run>/selfplay/*.npz + .json  (shards.py / samples.py)
-      |       +--> diagnostics/hexfield.selfplay.{live,epoch_N}.json
+      |       +--> diagnostics/shrimp.selfplay.{live,epoch_N}.json
       |
-      |-- replay window: hexfield/trainer.py (KataGo shuffle over .npz shards)
+      |-- replay window: shrimp/trainer.py (KataGo shuffle over .npz shards)
       |
       |-- train: expand shards (replay_expand.rs, per-row D6) + AdamW (losses.py)
       |
-      |-- checkpoint: hexfield/checkpoints.py -> <run>/checkpoints/epoch_NNNNNN.pt
+      |-- checkpoint: shrimp/checkpoints.py -> <run>/checkpoints/epoch_NNNNNN.pt
       |
       +-- eval: eval_arena.py / multistage_eval.py
               vs anchors (paired, pentanomial) + SealBot (unpaired)
               -> <run>/evaluation/... *.hxr
-              -> diagnostics/hexfield.multistage_eval.epoch_N.json
+              -> diagnostics/shrimp.multistage_eval.epoch_N.json
 
 <run dir>  <---- read-only scan ----  hexo_frontend/web.py (:8080)
                                           |              |
@@ -305,7 +305,7 @@ hexo_train.cli.train_model  ->  TrainingPipeline (hexo_train/pipeline.py)
 
 ## 4. Run directory layout
 
-A run directory is created under `runs/<name>/` by `hexo_train` + the hexfield
+A run directory is created under `runs/<name>/` by `hexo_train` + the Shrimp
 plugin. The dashboard treats a directory as a run if it contains `diagnostics/`
 or `selfplay/`, and lists its checkpoints from `checkpoints/`.
 
@@ -313,13 +313,13 @@ or `selfplay/`, and lists its checkpoints from `checkpoints/`.
 |---|---|---|---|
 | Run manifest (lineage, arch, config subset) | `manifest.json` | `hexo_train/artifacts.py` | dashboard, debug worker |
 | Event log (step start/finish) | `diagnostics/events.jsonl` | `hexo_train/diagnostics.py` | dashboard live status |
-| Self-play epoch summary | `diagnostics/hexfield.selfplay.epoch_*.json` | hexfield selfplay | dashboard |
-| Self-play live progress | `diagnostics/hexfield.selfplay.live.json` | hexfield selfplay | dashboard `/api/training/live` |
-| Eval diagnostics | `diagnostics/hexfield.multistage_eval.epoch_*.json` | hexfield eval | dashboard |
-| Self-play game records | `selfplay/*.hxr` | hexfield selfplay via `hexo_runner.records` | dashboard, debug worker |
-| Compact training shards | `selfplay/*.npz` + `.json` | hexfield `shards.py` | trainer, debug row decode |
-| Checkpoints | `checkpoints/epoch_NNNNNN.pt` | hexfield `checkpoints.py` | resume, dashboard, arena bots |
-| Eval game records | `evaluation/.../*.hxr` | hexfield eval | dashboard |
+| Self-play epoch summary | `diagnostics/shrimp.selfplay.epoch_*.json` | Shrimp selfplay | dashboard |
+| Self-play live progress | `diagnostics/shrimp.selfplay.live.json` | Shrimp selfplay | dashboard `/api/training/live` |
+| Eval diagnostics | `diagnostics/shrimp.multistage_eval.epoch_*.json` | Shrimp eval | dashboard |
+| Self-play game records | `selfplay/*.hxr` | Shrimp selfplay via `hexo_runner.records` | dashboard, debug worker |
+| Compact training shards | `selfplay/*.npz` + `.json` | Shrimp `shards.py` | trainer, debug row decode |
+| Checkpoints | `checkpoints/epoch_NNNNNN.pt` | Shrimp `checkpoints.py` | resume, dashboard, arena bots |
+| Eval game records | `evaluation/.../*.hxr` | Shrimp eval | dashboard |
 | Final marker | `diagnostics/run.completed.json` | `hexo_train/artifacts.py` | humans/scripts |
 | Supervisor state | `supervisor.lock`, `supervisor_halted.flag`, `driver.pid`, `_resume_config.toml` | `scripts/supervise.sh` | supervisor |
 
@@ -334,7 +334,7 @@ or `selfplay/`, and lists its checkpoints from `checkpoints/`.
   Persisted in `.npz` shards, `.hxr` records, and deep links, so all three must
   produce identical IDs.
 - **Env-driven, load-bearing architecture** — the net geometry
-  (`HEXFIELD_CHANNELS/ATTENTION_HEADS/TRUNK/SUPPORT_RADIUS`) is read once at
+  (`SHRIMP_CHANNELS/ATTENTION_HEADS/TRUNK/SUPPORT_RADIUS`) is read once at
   import. A checkpoint only loads into a matching net. The launch/prefit/dashboard
   scripts set the shipped values; a manual load must set them too.
 - **Parity kernels** — every fast Triton/Flex kernel is gated on `x.is_cuda` and
@@ -346,7 +346,7 @@ or `selfplay/`, and lists its checkpoints from `checkpoints/`.
 ---
 
 For the model's design rationale and target contract, see
-[`specs/hexfield_model_spec.md`](specs/hexfield_model_spec.md); for the evaluation
-statistics, [`specs/hexfield_eval_v2_spec.md`](specs/hexfield_eval_v2_spec.md);
+[`specs/shrimp_model_spec.md`](specs/shrimp_model_spec.md); for the evaluation
+statistics, [`specs/shrimp_eval_v2_spec.md`](specs/shrimp_eval_v2_spec.md);
 for the dashboard screens, the `*_screen_v2_spec.md` files under
 [`specs/`](specs).

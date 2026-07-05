@@ -42,12 +42,12 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from hexfield.config import HexfieldConfig, TrainingSection
-from hexfield.expand_backends import expand_rows
-from hexfield.model import HexfieldNet
-from hexfield.samples import ExpandedRow, expand_sample
-from hexfield.trainer import HexfieldTrainer
-from hexfield.window import concat_packed, load_packed_shard
+from shrimp.config import ShrimpConfig, TrainingSection
+from shrimp.expand_backends import expand_rows
+from shrimp.model import ShrimpNet
+from shrimp.samples import ExpandedRow, expand_sample
+from shrimp.trainer import ShrimpTrainer
+from shrimp.window import concat_packed, load_packed_shard
 
 SCRATCH = Path(__file__).resolve().parent / "_scratch"
 SAMPLES = SCRATCH / "p5" / "samples"
@@ -190,8 +190,8 @@ OFFLEGAL_SAMPLES = SCRATCH / "p7_offlegal" / "samples"
 _RADIUS_PROBE = r"""
 import numpy as np
 from pathlib import Path
-from hexfield.window import concat_packed, load_packed_shard
-from hexfield.expand_backends import expand_rows
+from shrimp.window import concat_packed, load_packed_shard
+from shrimp.expand_backends import expand_rows
 
 SAMPLES = Path("__SAMPLES__")
 npzs = sorted(SAMPLES.glob("epoch_*/game_*.npz"))
@@ -260,16 +260,16 @@ def test_offlegal_radius4_subprocess() -> None:
     injected = _make_offlegal_samples()
     probe = _RADIUS_PROBE.replace("__SAMPLES__", str(OFFLEGAL_SAMPLES))
     env = dict(os.environ)
-    env["HEXFIELD_SUPPORT_RADIUS"] = "4"
+    env["SHRIMP_SUPPORT_RADIUS"] = "4"
     # Run from THIS checkout's root (the repo containing this test) so the relative
-    # package paths resolve to the SAME hexfield kernel the parent imports — i.e. a
+    # package paths resolve to the SAME shrimp kernel the parent imports — i.e. a
     # git worktree exercises ITS OWN _rust.so, not whatever lives at a hard-coded
     # build tree. (Previously cwd was pinned to a private worktree, which silently
     # tested a different checkout.)
     repo_root = Path(__file__).resolve().parents[2]
     env["PYTHONPATH"] = os.pathsep.join(
         [
-            str(repo_root / "packages" / "hexfield" / "python"),
+            str(repo_root / "packages" / "shrimp" / "python"),
             env.get("PYTHONPATH", ""),
         ]
     )
@@ -442,7 +442,7 @@ def test_truncated_rows_rust_eq_serial() -> None:
 # ---------------------------------------------------------------------------
 # 4. train_passes integration: rust vs serial bit-identical downstream
 # ---------------------------------------------------------------------------
-def _build_trainer(backend: str) -> HexfieldTrainer:
+def _build_trainer(backend: str) -> ShrimpTrainer:
     # A SMALL, FAST config: min_rows spans the whole scratch corpus so selection is
     # deterministic, but keep_target=600 subsamples the window to ~600 rows and
     # train_samples_per_epoch=300 caps the (slow, CPU) training to ~300 rows — both
@@ -461,8 +461,8 @@ def _build_trainer(backend: str) -> HexfieldTrainer:
         expand_backend=backend,
         expand_workers=0,
     )
-    cfg = HexfieldConfig(device="cpu", training=TrainingSection(**base))
-    model = HexfieldNet()
+    cfg = ShrimpConfig(device="cpu", training=TrainingSection(**base))
+    model = ShrimpNet()
     decay, no_decay = [], []
     for name, p in model.named_parameters():
         if not p.requires_grad:
@@ -478,7 +478,7 @@ def _build_trainer(backend: str) -> HexfieldTrainer:
         ],
         lr=cfg.training.learning_rate,
     )
-    return HexfieldTrainer(model=model, config=cfg, optimizer=opt)
+    return ShrimpTrainer(model=model, config=cfg, optimizer=opt)
 
 
 def _run_epoch(backend: str, diag_dir: Path, *, seed: int, model_seed: int, epoch: int = 1):
@@ -544,8 +544,8 @@ def main() -> int:
         from _shard_gen import generate_samples_tree
 
         generate_samples_tree(SAMPLES, epochs=3, games_per_epoch=8, max_plies=24, base_seed=5000)
-    os.environ.pop("HEXFIELD_EXPAND", None)
-    os.environ.pop("HEXFIELD_EXPAND_WORKERS", None)
+    os.environ.pop("SHRIMP_EXPAND", None)
+    os.environ.pop("SHRIMP_EXPAND_WORKERS", None)
     torch.use_deterministic_algorithms(True, warn_only=True)
     test_rust_equals_serial_all_d6()
     test_offlegal_radius4_subprocess()

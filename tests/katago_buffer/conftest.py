@@ -2,7 +2,7 @@
 
 These tests once read real shards from a private development-run live tree
 (copied in by ``_p5_setup_scratch.sh``). That tree does not exist publicly, so we
-SYNTHESIZE equivalent ``hexfield_compact_v1`` shards here (see ``_shard_gen``) and
+SYNTHESIZE equivalent ``shrimp_compact_v1`` shards here (see ``_shard_gen``) and
 expose them through fixtures:
 
 * ``paths`` — a handful of freshly synthesized shard paths (>= 3 non-empty shards

@@ -76,8 +76,8 @@ has_moves_left, moves_left_cap, param_count, arch (display STRING, pre-flattened
 server-side)}`. Any meta key may be null.
 
 ### 0.3 Raw diagnostics worth surfacing (the P3 inventory result)
-`diagnostics/hexfield.selfplay.epoch_{N:06d}.json` (~120KB; the per-epoch self-play
-diagnostics file; the `hexfield.` basename prefix is manifest-derived — see
+`diagnostics/shrimp.selfplay.epoch_{N:06d}.json` (~120KB; the per-epoch self-play
+diagnostics file; the `shrimp.` basename prefix is manifest-derived — see
 `_diag_prefix` in `web.py`) carries useful stats NOT in `_selfplay_epoch_summary`:
 - `temperature_control` `{expected_game_length, halflife_plies, halflife_fraction}` —
   the game-length EMA driving the temperature schedule (an active tuning lever).
@@ -169,7 +169,7 @@ the existing do_GET error handling answer 400 `{"error": ...}` exactly as
 }
 ```
 - `selfplay_extras`: read `diagnostics/<prefix>.selfplay.epoch_{epoch:06d}.json`
-  via `_read_json_file` (`<prefix>` from `_diag_prefix(run_dir)`, i.e. `hexfield`);
+  via `_read_json_file` (`<prefix>` from `_diag_prefix(run_dir)`, i.e. `shrimp`);
   None when absent/non-dict. Curate EXACTLY:
   top-level passthrough keys `scheduler, raw_samples, effective_samples,
   total_decisions, active_games, mcts_virtual_batch_size, elapsed_seconds,
@@ -213,12 +213,12 @@ header, `tmp_path` + `monkeypatch.chdir(tmp_path)`, run dir at
 cases:
 1. Full epoch: write `diagnostics/epoch_000002.json` (with
    `metadata.result.{epoch,selfplay,training,checkpoint}`),
-   `diagnostics/hexfield.selfplay.epoch_000002.json` (including a
+   `diagnostics/shrimp.selfplay.epoch_000002.json` (including a
    `temperature_control` dict AND an `npz_writes` list + `mcts_diagnostics` dict),
-   `diagnostics/hexfield.evaluation.epoch_000002.json`, a previous
+   `diagnostics/shrimp.evaluation.epoch_000002.json`, a previous
    `diagnostics/epoch_000001.json`, `checkpoints/epoch_000002.pt` (a few bytes),
-   and a `manifest.json` with `model.name` "hexfield" (so `_diag_prefix` resolves
-   the `hexfield.*` diagnostics) and a `model.config` subset. Assert: response shape;
+   and a `manifest.json` with `model.name` "Shrimp" (so `_diag_prefix` resolves
+   the `shrimp.*` diagnostics) and a `model.config` subset. Assert: response shape;
    `history["epoch"] == 2`; `prev_epoch["epoch"] == 1`; `evaluation["epoch"] == 2`;
    `selfplay_extras` contains `temperature_control` but NOT `npz_writes`/
    `mcts_diagnostics`; `manifest["model_name"]`; `checkpoint["name"] ==
@@ -501,7 +501,7 @@ B6. `?v=` bumped to `20260611-hist2` at BOTH index.html occurrences as the very
   data is missing, and never fire fetches unless the inspector is actually open.
 - The endpoint reads `_epoch_history` per call (no cache) — fine at
   once-per-inspector-open; do NOT wire it into any polling loop.
-- a run with no `hexfield.selfplay.epoch_*.json` → `selfplay_extras` null →
+- a run with no `shrimp.selfplay.epoch_*.json` → `selfplay_extras` null →
   DIAGNOSTICS group hidden; a run with a loss-only buffer → BUFFER/CALIBRATION
   hidden; a run mid-epoch has neither file nor checkpoint → header + GAME
   STATS-from-row only. All three shapes must render without throwing.

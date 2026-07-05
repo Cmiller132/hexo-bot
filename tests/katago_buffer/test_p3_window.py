@@ -1,6 +1,6 @@
 """PLAN Phase 3 self-test: packed columnar window decode parity (PLAN §5.1/§5.5/§6).
 
-Runs against SYNTHESIZED ``hexfield_compact_v1`` shards (the ``paths`` fixture in
+Runs against SYNTHESIZED ``shrimp_compact_v1`` shards (the ``paths`` fixture in
 conftest.py generates a handful across a couple of epoch subdirs; the private
 private development-run live tree is unavailable publicly). Two gates:
 
@@ -22,13 +22,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from hexfield import shards
-from hexfield.shards import _PHASES
-from hexfield.window import PackedRowView, concat_packed, load_packed_shard
+from shrimp import shards
+from shrimp.shards import _PHASES
+from shrimp.window import PackedRowView, concat_packed, load_packed_shard
 
 
 def _assert_row_parity(view: PackedRowView, oracle, *, where: str) -> None:
-    """Field-identical check of one PackedRowView vs one HexfieldSampleData."""
+    """Field-identical check of one PackedRowView vs one ShrimpSampleData."""
     # --- scalars -------------------------------------------------------------
     assert view.turn_index == oracle.turn_index, f"{where}: turn_index {view.turn_index} != {oracle.turn_index}"
     assert view.current_player == oracle.current_player, f"{where}: current_player"
@@ -111,7 +111,7 @@ def test_concat(paths: list[str]) -> None:
     assert merged.n == na + nb, f"concat n {merged.n} != {na + nb}"
 
     # Every offsets array must be monotone non-decreasing and start at 0.
-    from hexfield.window import OFF_COLS
+    from shrimp.window import OFF_COLS
 
     for off in OFF_COLS:
         arr = merged.cols[off]
@@ -167,7 +167,7 @@ def test_concat(paths: list[str]) -> None:
 
 
 def test_empty_and_concat_with_empty(paths: list[str]) -> None:
-    from hexfield.window import PackedWindow
+    from shrimp.window import PackedWindow
 
     e = PackedWindow.empty()
     assert e.n == 0

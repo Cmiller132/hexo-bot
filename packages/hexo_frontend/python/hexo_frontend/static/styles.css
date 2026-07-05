@@ -1194,7 +1194,7 @@ body.bot-thinking .legal {
   text-transform: uppercase;
 }
 
-/* ============ History v2 — Multi-stage eval (hexfield opt-in) ============ */
+/* ============ History v2 — Multi-stage eval (shrimp opt-in) ============ */
 /* Standalone rating-table region: hidden via [hidden] when the run carries no
    multistage_eval_history, and self-collapses if it ever renders empty. */
 .hist-rating-table {
@@ -3815,7 +3815,7 @@ body.bot-thinking .legal {
   }
 }
 
-/* ---- ATTENTION tab (hexfield lineage only; additive) ---- */
+/* ---- ATTENTION tab (shrimp lineage only; additive) ---- */
 .dbg-attn-body { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
 .dbg-attn-ctrls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
 .dbg-attn-ctrls label { display: inline-flex; align-items: center; gap: 6px;

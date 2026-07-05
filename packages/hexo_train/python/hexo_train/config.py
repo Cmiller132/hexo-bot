@@ -3,7 +3,7 @@
 This file is the boundary between user-authored TOML and the rest of the
 training code. Everything outside this module should read typed config objects
 instead of pulling values directly out of nested dictionaries. Every config in
-configs/ is TOML (e.g. configs/hexfield_main_7.toml, the live run).
+configs/ is TOML (e.g. configs/shrimp_main_7.toml, the live run).
 
 The typed sections here cover only the orchestration skeleton. Model-owned
 settings ride through opaquely as `ModelConfig.config` ([model.config] in the

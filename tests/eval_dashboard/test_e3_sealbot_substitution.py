@@ -10,7 +10,7 @@ CPU-only, no torch, no GPU, no games played (we feed _stage_d_pool a pre-built
 pool and append=False).
 
 Run:
-  PYTHONPATH=packages/hexfield/python python -m pytest tests/eval_dashboard/test_e3_sealbot_substitution.py
+  PYTHONPATH=packages/shrimp/python python -m pytest tests/eval_dashboard/test_e3_sealbot_substitution.py
 """
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ import logging
 import tempfile
 from pathlib import Path
 
-from hexfield.config import parse_hexfield_config
-from hexfield.multistage_eval import (
+from shrimp.config import parse_shrimp_config
+from shrimp.multistage_eval import (
     SEALBOT_LABEL,
     Opponent,
     Roster,
@@ -37,7 +37,7 @@ class _CaptureHandler(logging.Handler):
 
 
 def _cfg():
-    return parse_hexfield_config({}).multi_stage_eval
+    return parse_shrimp_config({}).multi_stage_eval
 
 
 def _pool_row(a, b, wa, wb, kind="checkpoint", weight=1.0, epoch=35):
@@ -103,7 +103,7 @@ def _run(roster, pool, reason):
 
 def test_sealbot_death_degrades():
     handler = _CaptureHandler()
-    logger = logging.getLogger("hexfield.eval")
+    logger = logging.getLogger("shrimp.eval")
     logger.addHandler(handler)
     logger.setLevel(logging.WARNING)
     try:

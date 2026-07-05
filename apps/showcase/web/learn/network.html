@@ -127,15 +127,15 @@ shipped net&rsquo;s learned weights.
 <b>Ground truth.</b> Everything on this page is checked against the code:
 <code>model.py</code>, <code>support.py</code>, <code>features.py</code>,
 <code>constants.py</code>, <code>geometry.py</code> in
-<code>packages/hexfield/python/hexfield/</code>, and the shipped recipe
-<code>configs/hexfield_main_7.toml</code> (192 channels, 3 attention heads,
+<code>packages/shrimp/python/shrimp/</code>, and the shipped recipe
+<code>configs/shrimp_main_7.toml</code> (192 channels, 3 attention heads,
 trunk <code>CCACCACCACCACCA</code>, support radius 4; 8,128,812 parameters).
 </div>
 
 <!-- ================================================================ -->
 <!-- src: support.py build_support/_build_support; constants.py LEGAL_RADIUS=8,
-     HALO_DIST=9; support.py _SUPPORT_RADIUS (HEXFIELD_SUPPORT_RADIUS, main_7=4);
-     docs/HEXFIELD.md "The board representation" -->
+     HALO_DIST=9; support.py _SUPPORT_RADIUS (SHRIMP_SUPPORT_RADIUS, main_7=4);
+     docs/SHRIMP.md "The board representation" -->
 <section id="support">
 <h2><span class="sec-no">01</span>The board as a graph</h2>
 
@@ -143,7 +143,7 @@ trunk <code>CCACCACCACCACCA</code>, support radius 4; 8,128,812 parameters).
 Legality reaches hex-distance 8 from the nearest stone, so the playable region
 grows throughout the game and can move arbitrarily far from the origin. A
 fixed <code>H×W</code> input window would waste computation on empty cells or
-cut off stones. hexfield builds a <strong>support set</strong>, the finite set
+cut off stones. Shrimp builds a <strong>support set</strong>, the finite set
 of cells relevant to the current position, and feeds the network that set as a
 variable-length list of nodes plus a neighbour graph.
 </p>
@@ -153,7 +153,7 @@ variable-length list of nodes plus a neighbour graph.
 <li><strong>Stones</strong>: every occupied cell.</li>
 <li><strong>Legal cells</strong>: empty cells within hex-distance
 <em>R</em> of some stone. The engine's legality radius is 8; the model's
-radius is set by <code>HEXFIELD_SUPPORT_RADIUS</code>, and the shipped weights
+radius is set by <code>SHRIMP_SUPPORT_RADIUS</code>, and the shipped weights
 use <strong>4</strong>. The tighter radius restricts candidate moves to a
 smaller ring around the stones and roughly quarters the node count per
 evaluation.</li>
@@ -310,7 +310,7 @@ conv reach on the support graph.
 <!-- ================================================================ -->
 <!-- src: model.py RelPosAttention (full self-attention over [8 tokens; cells],
      additive per-block bias, pad-KEY additive mask -3e4), AttnBlock (pre-norm,
-     GELU MLP ratio 2), HexfieldNet.tokens (NUM_TOKENS=8), bias_tables
+     GELU MLP ratio 2), ShrimpNet.tokens (NUM_TOKENS=8), bias_tables
      (one (237, heads) table per A block); geometry.py rel_bias_index;
      constants.py BIAS_* rows, ATTENTION_HEADS=3 (main_7), HEAD_DIM=64 -->
 <section id="attention">
@@ -363,7 +363,7 @@ split-four position, block 2's head 1 queried from the gap puts 0.88 of its
 mass on the stone that completes the four. In the double-threat position,
 block 3's head 1 queried from a threat-window cell puts 0.90 on
 (&minus;3,&nbsp;3), the forced blocking gap.
-<!-- Observed in data/attention.json (hexfield_main_7, ep58):
+<!-- Observed in data/attention.json (shrimp_main_7, ep58):
      block0 head0: token 4 weight 0.994-1.000 on most queries, all positions;
      block4 head0: token 6 weight 0.653 (last_stone) / 0.728 (opening_stone)
        in four_threat;
@@ -395,14 +395,14 @@ block 3's head 1 queried from a threat-window cell puts 0.90 on
 </section>
 
 <!-- ================================================================ -->
-<!-- src: model.py HexfieldNet heads (policy/opp_policy/soft_policy conv+Linear;
+<!-- src: model.py ShrimpNet heads (policy/opp_policy/soft_policy conv+Linear;
      cell_q conv+Linear(c,65); value/aux/ml reductions Linear(3c,c) reading
      token pairs {0,1}/{2,3}/{4,5} + masked mean pool; stv_heads horizons
      (2,6,16); VALUE_BINS=65, MOVES_LEFT_CAP=209), forward vs
      forward_policy_value (serve skips train-only heads);
      losses.py decode_binned_value/decode_moves_left/segment_policy_ce;
      inference.py _decode_group (softmax over legal prefix);
-     totals cross-checked vs docs/HEXFIELD.md: 8,128,812 params -->
+     totals cross-checked vs docs/SHRIMP.md: 8,128,812 params -->
 <section id="heads">
 <h2><span class="sec-no">05</span>The outputs</h2>
 
@@ -448,7 +448,7 @@ layer shapes (a 7-tap conv is <code>7·C_in·C_out + C_out</code>, a Linear
 </p>
 
 <figure class="fig fig-wide" id="fig-heads">
-  <figcaption><b>Figure 5</b> — HexfieldNet at the shipped configuration. Hover or focus a plate for its parameter count. C = conv residual block, A = attention block; dashed heads are train-only.</figcaption>
+  <figcaption><b>Figure 5</b> — ShrimpNet at the shipped configuration. Hover or focus a plate for its parameter count. C = conv residual block, A = attention block; dashed heads are train-only.</figcaption>
   <div class="fig-body"><svg id="svg5" class="nx-schem" role="img" aria-label="Architecture schematic: input, stem, CCA times five trunk, LN final, head fan-out"></svg></div>
   <div class="fig-readout" id="ro5" aria-live="polite"></div>
 </figure>
@@ -512,7 +512,7 @@ function hexPts(cx,cy,s){var p='';for(var i=0;i<6;i++){
   return p.trim();}
 
 /* Real position: the quiet_midgame snapshot from data/attention.json
-   (hexfield_main_7, ep58 export) — 15 chronological placements [q,r,owner],
+   (shrimp_main_7, ep58 export) — 15 chronological placements [q,r,owner],
    owners derived from the fixed turn structure. ordinal = array index;
    placement_index = ordinal+1. Turn structure 1-then-2-2-2 => next mover
    (ordinal 15) is player 0, phase FirstStone. Inlined so figs 1-3 need no
@@ -868,7 +868,7 @@ var FEATS=buildFeatures(SUP);
 })();
 
 /* ================= FIG 4 — attention visualizer =================
-   Real mode: rows from data/attention.json (hexfield_main_7, ep58) — four
+   Real mode: rows from data/attention.json (shrimp_main_7, ep58) — four
    curated positions, 5 blocks × 3 heads, ~6 query cells each; sparse cell
    weights (floor 1e-3) plus all 8 summary-token weights per row. Cited
    observations verified against the JSON: block0 head0 token4 ≈ 1.0
@@ -1167,7 +1167,7 @@ var FEATS=buildFeatures(SUP);
    moves_left = 123,329
    TOTAL = 20,736 + 10*517,440 + 5*(297,408+711) + 1,536 + 384
            + 3*258,433 + 270,785 + 123,329 + 148,419 + 123,329
-         = 8,128,812  (== torch count; cross-checked vs docs/HEXFIELD.md) */
+         = 8,128,812  (== torch count; cross-checked vs docs/SHRIMP.md) */
 (function(){
   var TOTAL=8128812;
   var svg=$('svg5');
@@ -1269,7 +1269,7 @@ var FEATS=buildFeatures(SUP);
   t2.textContent='A = attention block (3×64 heads + own bias table)';
   var t3=el('text',{x:790,y:301,'class':'nx-lab'},lg);
   t3.textContent='dashed = train-only heads';
-  setReadout('ro5','HexfieldNet · 8,128,812 parameters',
+  setReadout('ro5','ShrimpNet · 8,128,812 parameters',
     'Hover or focus any plate. Trunk CCACCACCACCACCA: conv blocks 63.7%, attention 18.3%, heads 17.7%, stem/tokens 0.3%.');
 })();
 })();

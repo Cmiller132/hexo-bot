@@ -5,7 +5,7 @@ Scope: FULL overhaul of the Match screen (frontend) PLUS the minimal backend ext
 that makes model/checkpoint players and bot-vs-bot series possible. All data fields
 below were verified against `web.py` / `debug_worker.py` / `debug_infer.py` /
 `dashboard.py`; if code and spec disagree on a FIELD NAME, the names
-here win (they were read from the live code). The only model lineage is `hexfield`;
+here win (they were read from the live code). The only model lineage is `shrimp`;
 its checkpoints are the only kind that exist.
 
 Design language: copy the Debug screen (`#debugScreen`, `.dbg-*`) — strip/panel/chip
@@ -53,7 +53,7 @@ From `ManualMatchController._payload_locked` + `dashboard_state`:
 - `POST /api/move {q,r}` → 409 + `{error, state}` on `MoveConflict`.
 
 ### 1.2 Debug worker ops (reused by the checkpoint player; do NOT modify them)
-- `search` (debug_infer.search_position → `_search_hexfield`): fresh
+- `search` (debug_infer.search_position → `_search_shrimp`): fresh
   reproducible CPU MCTS, NO root noise. The search runs with the run's AS-TRAINED
   profile (read from the run's manifest — the Gumbel-Top-m + Sequential Halving
   levers and the budget-calibrated `gumbel_m`), and move selection happens
@@ -192,7 +192,7 @@ methods; `setup_worker/observe_transition/finish_game/close` are no-ops;
   Selection follows the trainer's `[model.config.evaluation]` arena protocol:
   the first `CHECKPOINT_OPENING_MOVES` (8) plies sample the opening at
   `CHECKPOINT_OPENING_TEMPERATURE_IN_SEARCH` (1.0), argmax afterwards. For the
-  hexfield lineage this selection happens IN-SEARCH (the search runs the run's
+  Shrimp lineage this selection happens IN-SEARCH (the search runs the run's
   as-trained Gumbel profile and returns the tempered/greedy pick as
   `best_action_id`, flagged `selection_in_search:true`), so the bot plays
   `best_action_id` directly. The per-(game, ply) seed is derived from the
@@ -549,7 +549,7 @@ A8. ≤ 900px: single column, setup strip wraps, all new targets ≥ 44px.
 
 From the repo root with the `.venv` active, start a server on a spare port that
 is NOT the one the dashboard normally uses (8080): `python -m hexo_frontend.web
---port 8901`, with a run present under `runs/` (e.g. `runs/hexfield_smoke`).
+--port 8901`, with a run present under `runs/` (e.g. `runs/shrimp_smoke`).
 Then with curl:
 1. `GET /api/state` → 200, `version` present.
 2. `POST /api/new` ckpt-vs-ckpt: pick `<your run>` `epoch_000001.pt`

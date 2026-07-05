@@ -7,7 +7,7 @@
 #   * python — build the native extensions + run the pytest suite the way §8 says.
 #
 # LFS note: no test reads the shipped weights under models/ (the whole tests/
-# tree has zero references to models/hexfield*.pt), so both jobs check out with
+# tree has zero references to models/shrimp*.pt), so both jobs check out with
 # lfs: false — pulling the ~124 MB of .pt objects would only slow CI. If a test
 # ever starts loading the shipped weights, flip that job's checkout to lfs: true.
 
@@ -43,7 +43,7 @@ jobs:
             cargo-${{ runner.os }}-
 
       - name: cargo test (release)
-        run: cargo test -p hexo_engine -p hexo_utils -p hexfield --release
+        run: cargo test -p hexo_engine -p hexo_utils -p shrimp --release
 
   python:
     name: python (pytest)
@@ -74,14 +74,14 @@ jobs:
           pip install maturin numpy pytest
           # CPU PyTorch is enough for the test suite (no GPU on the runner).
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          # Build the three native crates (hexo_engine, hexo_utils, hexfield).
+          # Build the three native crates (hexo_engine, hexo_utils, shrimp).
           HEXO_VENV=$PWD/.venv bash scripts/build_native.sh
-          # Install the pure-Python packages (hexfield stays import-from-tree).
+          # Install the pure-Python packages (shrimp stays import-from-tree).
           pip install --no-deps -e packages/hexo_runner -e packages/hexo_train -e packages/hexo_frontend
 
-      # README §8: run the suite from the repo root with hexfield on PYTHONPATH.
+      # README §8: run the suite from the repo root with shrimp on PYTHONPATH.
       - name: Run tests (README §8)
         run: |
           . .venv/bin/activate
-          export PYTHONPATH=$PWD/packages/hexfield/python
+          export PYTHONPATH=$PWD/packages/shrimp/python
           python -m pytest tests/ -q

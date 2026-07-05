@@ -6,7 +6,7 @@ converts its dict payloads into the frozen dataclasses from `.types`.
 
 Callers: hexo_runner/engine.py (HexoEngineAdapter, the match loop),
 hexo_frontend (web.py / debug_infer.py / dashboard.py board replays), and
-the hexfield selfplay/evaluation glue. Hot paths (MCTS, selfplay)
+the shrimp selfplay/evaluation glue. Hot paths (MCTS, selfplay)
 use only the cheap handle functions (`new_game`/`clone_state`/`apply_action`/
 `legal_action_ids`); the `to_python_state` mirror is dashboard-volume only.
 

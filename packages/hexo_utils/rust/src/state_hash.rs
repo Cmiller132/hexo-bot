@@ -6,7 +6,7 @@
 //! fields to core state.
 //!
 //! Callers: the model-side MCTS evaluator caches (see
-//! `packages/hexfield/rust/src/cache.rs`). No Python surface.
+//! `packages/shrimp/rust/src/cache.rs`). No Python surface.
 //!
 //! Stability contract: the hash is process-internal (cache keys only) and is
 //! never persisted, so the mixing constants may change between builds without

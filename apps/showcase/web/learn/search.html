@@ -7,20 +7,20 @@
 <meta name="description" content="Gumbel-Top-m root sampling, sequential halving, threat-space search, and the batched scheduler behind Hexo's move search.">
 <!--
   Accuracy sources (all claims verified against the implementation):
-  - packages/hexfield/rust/src/tree.rs        — Divergences (gumbel_* flags/defaults), init_gumbel_root,
+  - packages/shrimp/rust/src/tree.rs        — Divergences (gumbel_* flags/defaults), init_gumbel_root,
       seed_gumbel_round_caps, maybe_advance_gumbel_round, select_gumbel_root_edge,
       select_gumbel_nonroot_edge, gumbel_sigma, gumbel_completed_q, GumbelRootState
       (rounds_for = ceil(log2 m), budget_calibrated_m, GUMBEL_MIN_ROUND0_VISITS = 4)
-  - packages/hexfield/rust/src/search.rs      — run_continuous scheduler, select_continuous_pass
+  - packages/shrimp/rust/src/search.rs      — run_continuous scheduler, select_continuous_pass
       (per-slot in-flight cap = virtual_batch_size, drained-slot SH barrier), gumbel_target_policy,
       select_action_with_lcb, lcb_pick / ml_final_pick, visit_policy (delta-visit histogram),
       SEED_STREAM_GUMBEL, ACTIVE_ROOT_LIMIT = 512
-  - packages/hexfield/rust/src/threats_shared.rs — threat = active single-colour 6-window with count >= 4;
+  - packages/shrimp/rust/src/threats_shared.rs — threat = active single-colour 6-window with count >= 4;
       placements budget B (2 at FirstStone, 1 at Opening/SecondStone); hitting-set defense;
       tactical_cells = own winning completions ∪ empties of every opponent >=4 window
-  - packages/hexfield/rust/src/cache.rs       — FIFO eval cache, EVAL_CACHE_MAX_STATES = 262,144,
+  - packages/shrimp/rust/src/cache.rs       — FIFO eval cache, EVAL_CACHE_MAX_STATES = 262,144,
       keyed by state hash; Arc-shared evaluations
-  - configs/hexfield_main_7.toml [model.config.selfplay] — search_visits=1024, pcr_fast_visits=192,
+  - configs/shrimp_main_7.toml [model.config.selfplay] — search_visits=1024, pcr_fast_visits=192,
       virtual_batch_size=48, flush_target=1024, active_root_limit=192, lcb_z=1.6, tss_enabled=true,
       gumbel_m=32, gumbel_c_visit=50.0, gumbel_c_scale=1.0, gumbel_target_c_scale=0.35,
       gumbel_draw_temperature=1.5, gumbel_play_prune=true; [multi_stage_eval] full_search_visits=512,
@@ -99,7 +99,7 @@ body{margin:0}
   <!-- MCTS substrate + gumbel machinery: tree.rs Divergences::gumbel() builds on production();
        PUCT paths still exist (Fast moves without a gumbel root, interior fallback), but the trained
        config enables gumbel_root / gumbel_sequential_halving / gumbel_nonroot_select / gumbel_target.
-       Dirichlet noise / forced playouts: removed; configs/hexfield_main_7.toml:54-57. -->
+       Dirichlet noise / forced playouts: removed; configs/shrimp_main_7.toml:54-57. -->
   <p>The engine is a Monte-Carlo tree search: a tree of
   positions, edges with visit counts and running values, batched network evaluations at the leaves,
   and PUCT-style selection machinery with first-play urgency and progressive widening. The trained

@@ -178,7 +178,7 @@ def create_app(settings: Settings) -> FastAPI:
             await app.state.pool.stop()
             app.state.db.close()
 
-    app = FastAPI(title="hexo-bot showcase", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="Shrimp — a Hexo bot", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.settings = settings
     app.state.move_bucket = TokenBucket(settings.moves_per_minute)
     app.state.analysis_bucket = TokenBucket(settings.analysis_per_minute)

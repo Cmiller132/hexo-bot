@@ -1,7 +1,7 @@
-"""Phase 2 self-test — hexfield/buffer_manifest.py (PLAN §5.3, §5.4, §6).
+"""Phase 2 self-test — shrimp/buffer_manifest.py (PLAN §5.3, §5.4, §6).
 
 CPU-only, no GPU, no live-run interaction. All inputs are genuine
-hexfield_compact_v1 shards synthesized by ``_shard_gen`` (npz + sidecar), so no
+shrimp_compact_v1 shards synthesized by ``_shard_gen`` (npz + sidecar), so no
 private data is required; ``scan_or_update_manifest`` — which PERSISTS
 ``.buffer_manifest.json`` into its ``samples_dir`` — is only ever pointed at those
 synthesized trees under ``_scratch/``.
@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from hexfield.buffer_manifest import (
+from shrimp.buffer_manifest import (
     MANIFEST_NAME,
     MANIFEST_VERSION,
     BufferManifest,
@@ -37,7 +37,7 @@ from hexfield.buffer_manifest import (
 )
 
 # The conftest inserts this directory on sys.path; the generator writes genuine
-# hexfield_compact_v1 shards (npz + sidecar) so these tests need no private data.
+# shrimp_compact_v1 shards (npz + sidecar) so these tests need no private data.
 from _shard_gen import generate_samples_tree  # noqa: E402
 
 SCRATCH = Path(__file__).resolve().parent / "_scratch"
@@ -72,8 +72,8 @@ def _write_synth_shard(dst_dir: Path, game_key: int, rows: int, *, sidecar_epoch
     )
     if with_sidecar:
         meta = {
-            "lineage": "hexfield",
-            "schema": "hexfield_compact_v1",
+            "lineage": "shrimp",
+            "schema": "shrimp_compact_v1",
             "schema_version": 1,
             "rows": rows,
             "horizons": [2, 6, 16],
@@ -106,7 +106,7 @@ def _assert_total(man: BufferManifest) -> None:
 
 
 def test_real_sidecar_schema() -> None:
-    """Confirm a genuine hexfield sidecar (written by the real
+    """Confirm a genuine shrimp sidecar (written by the real
     ``write_compact_shard`` path via the shard generator) uses the 'rows' key +
     'epoch'/'game_key' cross-check fields the manifest relies on, and the npz
     carries the 'num_rows' array."""
@@ -322,7 +322,7 @@ def test_npz_fallback_when_sidecar_lacks_rows() -> None:
     )
     # Sidecar present but deliberately WITHOUT any row key.
     (dst / "game_1000000.json").write_text(
-        json.dumps({"lineage": "hexfield", "schema_version": 1, "epoch": 1, "game_key": 1000000}),
+        json.dumps({"lineage": "shrimp", "schema_version": 1, "epoch": 1, "game_key": 1000000}),
         encoding="utf-8",
     )
     man = scan_or_update_manifest(samples)

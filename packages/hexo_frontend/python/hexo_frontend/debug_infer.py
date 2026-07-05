@@ -1,4 +1,4 @@
-"""CPU-only inference for the dashboard Debug tab (hexfield lineage).
+"""CPU-only inference for the dashboard Debug tab (shrimp lineage).
 
 This module is the *inference library* behind the Debug tab. It loads a training
 checkpoint, reconstructs a board position from a move sequence, and returns what
@@ -6,9 +6,9 @@ the model "thinks" — per-candidate policy prior, the distributional value head
 (+ scalar), auxiliary heads (opponent-policy / short-term-value / moves-left),
 and (on demand) a fresh CPU MCTS visit distribution.
 
-Checkpoints are hexfield-lineage: the payload carries the model state dict under
+Checkpoints are shrimp-lineage: the payload carries the model state dict under
 ``payload["model"]`` and a ``payload["meta"]`` block whose ``lineage`` field is
-``"hexfield"`` (see ``_detect_lineage``). The architecture is inferred from the
+``"shrimp"`` (see ``_detect_lineage``). The architecture is inferred from the
 state dict, the support-set featurizer is used, and a uniform debug-output schema
 is returned (heads the checkpoint does not have are returned as ``None`` so the
 UI marks them N/A).
@@ -18,7 +18,7 @@ Everything here is **CPU-only by construction**: models are built and run on
 "cpu"`` (no AMP). The worker process that imports this module is also launched
 with ``CUDA_VISIBLE_DEVICES=""`` so it can never touch the training GPU.
 
-The heavy hexfield import is lazy (loaded only when a checkpoint is opened) so
+The heavy shrimp import is lazy (loaded only when a checkpoint is opened) so
 the worker's ``ping`` never pays an import it does not need.
 """
 
@@ -40,7 +40,7 @@ import hexo_engine as engine
 from hexo_engine.types import unpack_coord_id
 
 # Lineage tag (the only lineage this module serves).
-HEXFIELD = "hexfield"
+SHRIMP = "shrimp"
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ class LoadedModel:
 
     Some fields (``candidate_radius``/``graft``/``expanded_*``/
     ``zeroed_feature_cols``) are legacy neutral defaults retained so the worker's
-    metadata view stays a stable shape; the hexfield loader leaves them at their
+    metadata view stays a stable shape; the shrimp loader leaves them at their
     defaults.
     """
 
@@ -73,42 +73,42 @@ class LoadedModel:
     has_moves_left: bool = False
     # True when the checkpoint's state dict carries the train-only per-cell Q
     # head (``cell_q_head.weight``). Detected from the state dict, NOT from the
-    # forward output: a bare ``HexfieldNet()`` ALWAYS has the head module, so
+    # forward output: a bare ``ShrimpNet()`` ALWAYS has the head module, so
     # output presence is not a valid detector.
     has_cell_q: bool = False
-    # Run root (the checkpoint's grandparent dir) — the hexfield search reads
+    # Run root (the checkpoint's grandparent dir) — the shrimp search reads
     # the run's manifest.json from here to search with the AS-TRAINED profile
     # (gumbel flags, calibrated gumbel_m, divergences).
     run_dir: str | None = None
 
 
 def _detect_lineage(payload: Any) -> str:
-    """Validate a checkpoint payload as the supported hexfield lineage.
+    """Validate a checkpoint payload as the supported shrimp lineage.
 
-    A hexfield checkpoint stores the model state dict under ``payload["model"]``
-    and carries a ``payload["meta"]`` block whose ``lineage`` is ``"hexfield"``.
+    A shrimp checkpoint stores the model state dict under ``payload["model"]``
+    and carries a ``payload["meta"]`` block whose ``lineage`` is ``"shrimp"``.
     Anything else raises with a clear message naming the supported lineage.
     """
 
     if not isinstance(payload, dict):
         raise ValueError("checkpoint payload is not a dict")
     meta = payload.get("meta")
-    if isinstance(meta, dict) and meta.get("lineage") == "hexfield" and isinstance(payload.get("model"), dict):
-        return HEXFIELD
+    if isinstance(meta, dict) and meta.get("lineage") == "shrimp" and isinstance(payload.get("model"), dict):
+        return SHRIMP
     raise ValueError(
-        "unsupported checkpoint: this build only serves the 'hexfield' lineage "
-        "(expected payload['meta']['lineage'] == 'hexfield' with a state dict "
+        "unsupported checkpoint: this build only serves the 'shrimp' lineage "
+        "(expected payload['meta']['lineage'] == 'shrimp' with a state dict "
         "under payload['model'])"
     )
 
 
 def load_checkpoint(path: str | Path) -> LoadedModel:
-    """Load a hexfield checkpoint onto CPU."""
+    """Load a shrimp checkpoint onto CPU."""
 
     ckpt_path = Path(path)
     payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     _detect_lineage(payload)
-    return _load_hexfield_checkpoint(ckpt_path, payload)
+    return _load_shrimp_checkpoint(ckpt_path, payload)
 
 
 def _maybe_int(value: Any) -> int | None:
@@ -164,10 +164,10 @@ def analyze_position(
 ) -> dict[str, Any]:
     """Full-head readout for the position reached by ``action_ids``.
 
-    ``n``/``planes`` are accepted for call-site compatibility; the hexfield
+    ``n``/``planes`` are accepted for call-site compatibility; the shrimp
     readout uses neither."""
 
-    return _analyze_hexfield(loaded, action_ids)
+    return _analyze_shrimp(loaded, action_ids)
 
 
 @torch.no_grad()
@@ -188,43 +188,43 @@ def search_position(
     bots pass 1.0 for opening plies. ``n`` is accepted for call-site
     compatibility and unused."""
 
-    return _search_hexfield(
+    return _search_shrimp(
         loaded, action_ids, visits=visits, c_puct=c_puct, seed=seed,
         temperature=temperature,
     )
 
 
 # ===========================================================================
-# hexfield lineage — support-set (variable-N) graph featurizer + node tokens
+# shrimp lineage — support-set (variable-N) graph featurizer + node tokens
 # ===========================================================================
 
 
 @lru_cache(maxsize=1)
-def _hexfield() -> SimpleNamespace:
-    """Lazily import the hexfield package modules (kept out of import-time so the
-    worker's ``ping`` never pays the import, and so an env without torch/hexfield
+def _shrimp() -> SimpleNamespace:
+    """Lazily import the shrimp package modules (kept out of import-time so the
+    worker's ``ping`` never pays the import, and so an env without torch/shrimp
     can still load this module)."""
 
-    # hexfield is NEVER installed into a shared venv (spec §5.1) — it is imported
+    # shrimp is NEVER installed into a shared venv (spec §5.1) — it is imported
     # via a source-path shim. The debug worker is spawned with a minimal
-    # PYTHONPATH that does not include it, so add packages/hexfield/python here
+    # PYTHONPATH that does not include it, so add packages/shrimp/python here
     # (derived from this file's location) before importing. Without this the
-    # worker fails with ModuleNotFoundError: No module named 'hexfield'.
+    # worker fails with ModuleNotFoundError: No module named 'shrimp'.
     import sys
 
-    _hf_src = Path(__file__).resolve().parents[3] / "hexfield" / "python"
+    _hf_src = Path(__file__).resolve().parents[3] / "shrimp" / "python"
     if _hf_src.is_dir() and str(_hf_src) not in sys.path:
         sys.path.insert(0, str(_hf_src))
 
-    from hexfield import _rust
-    from hexfield.batching import collate_rows
-    from hexfield.constants import VALUE_BINS
-    from hexfield.engine_facts import facts_from_state
-    from hexfield.features import build_features
-    from hexfield.geometry import pack_action_id
-    from hexfield.losses import decode_binned_value, decode_moves_left, value_bins
-    from hexfield.model import STV_HORIZONS, HexfieldNet
-    from hexfield.support import build_support
+    from shrimp import _rust
+    from shrimp.batching import collate_rows
+    from shrimp.constants import VALUE_BINS
+    from shrimp.engine_facts import facts_from_state
+    from shrimp.features import build_features
+    from shrimp.geometry import pack_action_id
+    from shrimp.losses import decode_binned_value, decode_moves_left, value_bins
+    from shrimp.model import STV_HORIZONS, ShrimpNet
+    from shrimp.support import build_support
 
     return SimpleNamespace(
         _rust=_rust,
@@ -237,13 +237,13 @@ def _hexfield() -> SimpleNamespace:
         decode_moves_left=decode_moves_left,
         value_bins=value_bins,
         STV_HORIZONS=STV_HORIZONS,
-        HexfieldNet=HexfieldNet,
+        ShrimpNet=ShrimpNet,
         build_support=build_support,
     )
 
 
-def _infer_hexfield_channels(state_dict: dict[str, Any]) -> int | None:
-    """Read the trunk width (channels) off a hexfield state dict.
+def _infer_shrimp_channels(state_dict: dict[str, Any]) -> int | None:
+    """Read the trunk width (channels) off a shrimp state dict.
 
     ``stem.bias`` is a length-``channels`` vector and ``tokens`` is
     ``(NUM_TOKENS, channels)``; either pins the width without consulting the
@@ -264,23 +264,23 @@ def _infer_hexfield_channels(state_dict: dict[str, Any]) -> int | None:
 # is CCC A CCC A CC A; (10 conv, 5 attn) is CC A x5. A new layout must be added
 # here before its checkpoints can be debugged (the loader raises a clear error
 # instead of mis-building the net).
-_HEXFIELD_TRUNK_LAYOUTS: dict[tuple[int, int], str] = {
+_SHRIMP_TRUNK_LAYOUTS: dict[tuple[int, int], str] = {
     (8, 3): "CCCACCCACCA",
     (10, 5): "CCACCACCACCACCA",
 }
 
 
-def _infer_hexfield_arch(state_dict: dict[str, Any]) -> dict[str, Any]:
-    """Infer (channels, attention_heads, trunk_layout) off a hexfield state dict.
+def _infer_shrimp_arch(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """Infer (channels, attention_heads, trunk_layout) off a shrimp state dict.
 
-    All three are env-driven at training time (HEXFIELD_CHANNELS /
-    HEXFIELD_ATTENTION_HEADS / HEXFIELD_TRUNK), so the worker — whose process
+    All three are env-driven at training time (SHRIMP_CHANNELS /
+    SHRIMP_ATTENTION_HEADS / SHRIMP_TRUNK), so the worker — whose process
     env is NOT the run's env — must reconstruct them from the weights:
     channels from stem.bias, heads from the bias-table column count
     (``bias_tables.0`` is (BIAS_ROWS, heads)), block counts from the parameter
     key indices, and the C/A interleaving from the known-lineage layout map."""
 
-    channels = _infer_hexfield_channels(state_dict)
+    channels = _infer_shrimp_channels(state_dict)
     heads = None
     bt = state_dict.get("bias_tables.0")
     if bt is not None and len(getattr(bt, "shape", ())) == 2:
@@ -294,15 +294,15 @@ def _infer_hexfield_arch(state_dict: dict[str, Any]) -> dict[str, Any]:
     layout = None
     if conv_ids and attn_ids:
         counts = (max(conv_ids) + 1, max(attn_ids) + 1)
-        layout = _HEXFIELD_TRUNK_LAYOUTS.get(counts)
+        layout = _SHRIMP_TRUNK_LAYOUTS.get(counts)
         # Unknown counts (e.g. legacy v2's 6C/3A): leave layout None so the
         # net builds at the env default and the non-strict load surfaces the
         # drift as load_warnings — same soft contract as before, never a 500.
     return {"channels": channels, "attention_heads": heads, "trunk_layout": layout}
 
 
-def _load_hexfield_checkpoint(ckpt_path: Path, payload: dict[str, Any]) -> LoadedModel:
-    """Load a hexfield checkpoint onto CPU.
+def _load_shrimp_checkpoint(ckpt_path: Path, payload: dict[str, Any]) -> LoadedModel:
+    """Load a shrimp checkpoint onto CPU.
 
     The payload is ``{meta, model (state dict), optimizer}``. The block layout
     and head set are fixed, but the trunk width (channels) is env-driven per run
@@ -311,18 +311,18 @@ def _load_hexfield_checkpoint(ckpt_path: Path, payload: dict[str, Any]) -> Loade
     is the authoritative head set, so a strict mismatch is surfaced as a warning
     rather than 500-ing (same defensive contract as the other loaders)."""
 
-    hf = _hexfield()
+    hf = _shrimp()
     meta = dict(payload.get("meta", {}))
     state_dict = payload["model"]
     if not isinstance(state_dict, dict):
-        raise ValueError(f"{ckpt_path.name}: hexfield checkpoint 'model' is not a state dict")
+        raise ValueError(f"{ckpt_path.name}: shrimp checkpoint 'model' is not a state dict")
 
-    # The hexfield width (channels), head count, AND trunk layout are env-driven
+    # The shrimp width (channels), head count, AND trunk layout are env-driven
     # at training time (e.g. c=128/4-head/CCCACCCACCA and c=192/3-head/
     # CCACCACCACCACCA are both known layouts), so a worker running with the
     # process-default env cannot load foreign runs unless it reconstructs the
-    # arch off the weights. HexfieldNet is fully parameterized for exactly this.
-    inferred = _infer_hexfield_arch(state_dict)
+    # arch off the weights. ShrimpNet is fully parameterized for exactly this.
+    inferred = _infer_shrimp_arch(state_dict)
     kwargs: dict[str, Any] = {}
     if inferred["channels"] is not None:
         kwargs["channels"] = inferred["channels"]
@@ -330,7 +330,7 @@ def _load_hexfield_checkpoint(ckpt_path: Path, payload: dict[str, Any]) -> Loade
         kwargs["attention_heads"] = inferred["attention_heads"]
     if inferred["trunk_layout"] is not None:
         kwargs["trunk_layout"] = inferred["trunk_layout"]
-    model = hf.HexfieldNet(**kwargs)
+    model = hf.ShrimpNet(**kwargs)
     warnings: list[str] = []
     try:
         model.load_state_dict(state_dict, strict=True)
@@ -353,12 +353,12 @@ def _load_hexfield_checkpoint(ckpt_path: Path, payload: dict[str, Any]) -> Loade
     arch["attention_heads"] = inferred["attention_heads"]
     arch["trunk_layout"] = inferred["trunk_layout"]
     return LoadedModel(
-        lineage=HEXFIELD,
+        lineage=SHRIMP,
         model=model,
         arch=arch,
         rl_epoch=_maybe_int(meta.get("epoch")),
         step=_maybe_int(payload.get("step")),
-        candidate_radius=None,  # hexfield has no candidate radius (full legal set)
+        candidate_radius=None,  # shrimp has no candidate radius (full legal set)
         graft=None,
         load_warnings=warnings,
         # The network always carries the STV + moves-left heads; expose them so
@@ -366,7 +366,7 @@ def _load_hexfield_checkpoint(ckpt_path: Path, payload: dict[str, Any]) -> Loade
         # lineage). Horizons come from the model constant, not the checkpoint.
         stv_horizons=tuple(int(h) for h in hf.STV_HORIZONS),
         has_moves_left=True,
-        # The per-cell Q head is train-only (v3+). Older hexfield lineages lack
+        # The per-cell Q head is train-only (v3+). Older shrimp lineages lack
         # it; gate the debug Q heatmap / regret UI on this from the state dict.
         has_cell_q=("cell_q_head.weight" in state_dict),
         # Run root — lets the search read the run's manifest for the as-trained
@@ -375,7 +375,7 @@ def _load_hexfield_checkpoint(ckpt_path: Path, payload: dict[str, Any]) -> Loade
     )
 
 
-def _hexfield_inputs(hf: SimpleNamespace, state: Any):
+def _shrimp_inputs(hf: SimpleNamespace, state: Any):
     """Featurize one engine decision state into the model's (1, N, *) batch.
 
     Returns ``(batch, legal_action_ids)`` where ``batch`` is the collate dict
@@ -393,10 +393,10 @@ def _hexfield_inputs(hf: SimpleNamespace, state: Any):
     return batch, legal_action_ids
 
 
-def _hexfield_forward(model: Any, batch: dict[str, Any]) -> dict[str, Any]:
+def _shrimp_forward(model: Any, batch: dict[str, Any]) -> dict[str, Any]:
     """Run the full forward on CPU, forcing the fp32 relative-position-bias path.
 
-    ``HexfieldNet.build_attn_bias`` branches on ``torch.is_grad_enabled()``: in
+    ``ShrimpNet.build_attn_bias`` branches on ``torch.is_grad_enabled()``: in
     no-grad it gathers the bias DIRECTLY in fp16 (``bias_table.to(fp16)[pair]``)
     for the GPU serve path. On CPU a bare fp16 gather + add is supported, but to
     be unconditionally safe (the caveat: a CPU fp16 op could error) we run the
@@ -413,7 +413,7 @@ def _hexfield_forward(model: Any, batch: dict[str, Any]) -> dict[str, Any]:
     return {k: v.detach() for k, v in out.items()}
 
 
-def _hexfield_policy_rows(
+def _shrimp_policy_rows(
     logits_row: torch.Tensor, legal_action_ids: list[int]
 ) -> list[dict[str, Any]]:
     """Softmax the policy over the legal prefix -> per-candidate rows.
@@ -435,7 +435,7 @@ def _hexfield_policy_rows(
     return rows
 
 
-def _hexfield_cell_q_scalars(
+def _shrimp_cell_q_scalars(
     hf: SimpleNamespace, out: dict[str, Any], legal_count: int
 ) -> torch.Tensor | None:
     """Decode the per-cell Q head to a (legal_count,) scalar tensor in [-1, 1].
@@ -454,7 +454,7 @@ def _hexfield_cell_q_scalars(
     return hf.decode_binned_value(cq_logits)  # (legal_count,) in [-1, 1], mover POV
 
 
-def _hexfield_cell_q_rows(
+def _shrimp_cell_q_rows(
     hf: SimpleNamespace, out: dict[str, Any], legal_action_ids: list[int]
 ) -> list[dict[str, Any]] | None:
     """Per-cell decoded-Q rows for the analyze payload, sorted by Q desc.
@@ -465,7 +465,7 @@ def _hexfield_cell_q_rows(
     not the move recorded at the swept ply)."""
 
     legal_count = len(legal_action_ids)
-    q_scalar = _hexfield_cell_q_scalars(hf, out, legal_count)
+    q_scalar = _shrimp_cell_q_scalars(hf, out, legal_count)
     if q_scalar is None:
         return None
     rows = []
@@ -478,7 +478,7 @@ def _hexfield_cell_q_rows(
     return rows
 
 
-def _hexfield_dist(hf: SimpleNamespace, logits: torch.Tensor) -> dict[str, Any]:
+def _shrimp_dist(hf: SimpleNamespace, logits: torch.Tensor) -> dict[str, Any]:
     """Scalar + 65-bin distribution for one value-style head's (65,) logits."""
 
     flat = logits.float().reshape(-1)
@@ -488,38 +488,38 @@ def _hexfield_dist(hf: SimpleNamespace, logits: torch.Tensor) -> dict[str, Any]:
 
 
 @torch.no_grad()
-def _analyze_hexfield(loaded: LoadedModel, action_ids: Sequence[int]) -> dict[str, Any]:
-    hf = _hexfield()
+def _analyze_shrimp(loaded: LoadedModel, action_ids: Sequence[int]) -> dict[str, Any]:
+    hf = _shrimp()
     state = state_from_actions(action_ids)
-    batch, legal_action_ids = _hexfield_inputs(hf, state)
-    out = _hexfield_forward(loaded.model, batch)
+    batch, legal_action_ids = _shrimp_inputs(hf, state)
+    out = _shrimp_forward(loaded.model, batch)
 
-    policy = _hexfield_policy_rows(out["policy"][0], legal_action_ids)
+    policy = _shrimp_policy_rows(out["policy"][0], legal_action_ids)
     opp = None
     if "opp_policy" in out:
-        opp = _hexfield_policy_rows(out["opp_policy"][0], legal_action_ids)
+        opp = _shrimp_policy_rows(out["opp_policy"][0], legal_action_ids)
 
-    value = _hexfield_dist(hf, out["value"][0])
+    value = _shrimp_dist(hf, out["value"][0])
 
     stv: dict[str, Any] = {}
     for horizon in loaded.stv_horizons:
         key = f"stvalue_{horizon}"
         if key in out:
-            stv[str(horizon)] = _hexfield_dist(hf, out[key][0])
+            stv[str(horizon)] = _shrimp_dist(hf, out[key][0])
 
     # moves_left: the head emits 65-bin logits decoded the SAME way the dense
     # lineage's is (decode_binned_value -> scalar in [-1, 1]); the UI undoes the
     # affine map to remaining decisions with moves_left_cap (512). NOT
     # decode_moves_left (that returns a raw decisions count the UI would
     # double-scale).
-    moves_left = _hexfield_dist(hf, out["moves_left"][0]) if "moves_left" in out else None
+    moves_left = _shrimp_dist(hf, out["moves_left"][0]) if "moves_left" in out else None
 
     # Per-cell Q head (v3+): decoded scalar per legal cell, mover POV. None for
     # older lineages lacking the head OR terminal/no-legal positions. The bare
     # net always emits ``out["cell_q"]``, so gate on the checkpoint's state dict
     # (``loaded.has_cell_q``) — not on output presence — for the lineage check.
     cell_q = (
-        _hexfield_cell_q_rows(hf, out, legal_action_ids) if loaded.has_cell_q else None
+        _shrimp_cell_q_rows(hf, out, legal_action_ids) if loaded.has_cell_q else None
     )
 
     current = engine.current_player(state)
@@ -533,7 +533,7 @@ def _analyze_hexfield(loaded: LoadedModel, action_ids: Sequence[int]) -> dict[st
         "legal_count": int(engine.legal_action_count(state)),
         "value": value["scalar"],
         "cell_q": cell_q,
-        # The owner-swap "optimism" probe does not apply here: hexfield encodes
+        # The owner-swap "optimism" probe does not apply here: shrimp encodes
         # side-to-move ownership in its features (own/opp planes), so it is
         # marked N/A (the UI hides the panel when null).
         "value_swapped": None,
@@ -558,8 +558,8 @@ def _decode_id_weight_pairs(ids_bytes: Any, weights_bytes: Any) -> list[tuple[in
 
 
 @lru_cache(maxsize=16)
-def _hexfield_run_config(run_dir: str | None):
-    """The run's parsed HexfieldConfig (from ``<run>/manifest.json``), or None.
+def _shrimp_run_config(run_dir: str | None):
+    """The run's parsed ShrimpConfig (from ``<run>/manifest.json``), or None.
 
     This is how the search runs AS-TRAINED: the manifest carries the exact
     ``model.config`` the run trains/evals with — the gumbel levers, the
@@ -569,17 +569,17 @@ def _hexfield_run_config(run_dir: str | None):
     if not run_dir:
         return None
     try:
-        from hexfield.config import parse_hexfield_config
+        from shrimp.config import parse_shrimp_config
 
         manifest = Path(run_dir) / "manifest.json"
         data = json.loads(manifest.read_text(encoding="utf-8-sig"))
-        return parse_hexfield_config(data.get("model", {}).get("config", {}))
+        return parse_shrimp_config(data.get("model", {}).get("config", {}))
     except Exception:
         return None
 
 
 @torch.no_grad()
-def _search_hexfield(
+def _search_shrimp(
     loaded: LoadedModel,
     action_ids: Sequence[int],
     *,
@@ -588,7 +588,7 @@ def _search_hexfield(
     seed: int,
     temperature: float = 0.0,
 ) -> dict[str, Any]:
-    """Real CPU MCTS via the Rust HexfieldMctsSession (single-position search).
+    """Real CPU MCTS via the Rust ShrimpMctsSession (single-position search).
 
     Searches with the run's AS-TRAINED profile, exactly like the eval arena
     (eval_arena.play_checkpoint_match): the divergence overrides — including
@@ -602,11 +602,11 @@ def _search_hexfield(
     same plain-PUCT profile as before (the overrides mirror whatever the
     config says)."""
 
-    from hexfield.config import SelfplayConfig, build_divergence_overrides
-    from hexfield.inference import HexfieldEvaluator
+    from shrimp.config import SelfplayConfig, build_divergence_overrides
+    from shrimp.inference import ShrimpEvaluator
 
-    hf = _hexfield()
-    cfg = _hexfield_run_config(loaded.run_dir)
+    hf = _shrimp()
+    cfg = _shrimp_run_config(loaded.run_dir)
     sp = cfg.selfplay if cfg is not None else SelfplayConfig()
     # Eval-arena vbs: the multistage eval's eval_virtual_batch_size, not the
     # self-play in-flight depth (48) — single-root CPU search wants the former.
@@ -618,8 +618,8 @@ def _search_hexfield(
     overrides = build_divergence_overrides(sp)
 
     state = state_from_actions(action_ids)
-    evaluator = HexfieldEvaluator(loaded.model, device="cpu")
-    session = hf._rust.HexfieldMctsSession(max_states=65536)
+    evaluator = ShrimpEvaluator(loaded.model, device="cpu")
+    session = hf._rust.ShrimpMctsSession(max_states=65536)
 
     # Mirrors eval_arena's `common` search kwargs (visits/c_puct come from the
     # request; the rest from the run's selfplay profile) + per-root
@@ -677,11 +677,11 @@ def _search_hexfield(
 
 
 # ---------------------------------------------------------------------------
-# hexfield attention map (Model Debug interactive attention view)
+# shrimp attention map (Model Debug interactive attention view)
 # ---------------------------------------------------------------------------
 
 # Skeleton/echo constants. NUM_TOKENS is a true model constant; BLOCKS/HEADS
-# are only the non-hexfield n/a-skeleton clamps — for a loaded hexfield model
+# are only the non-shrimp n/a-skeleton clamps — for a loaded shrimp model
 # the real counts are read off the model (arch-dependent, e.g. 3 blocks x 4
 # heads or 5 blocks x 3 heads) in attention_position.
 _ATTN_NUM_TOKENS = 8
@@ -690,7 +690,7 @@ _ATTN_NUM_HEADS = 4
 
 
 def _attention_na_skeleton(loaded: "LoadedModel", block: int, head: int | None, action_ids: Sequence[int]) -> dict[str, Any]:
-    """Empty attention payload for a non-hexfield lineage (mirrors the INPUTS
+    """Empty attention payload for a non-shrimp lineage (mirrors the INPUTS
     tab's ``input_planes: null`` n/a contract — a 200 with ``found: False``)."""
 
     return {
@@ -720,7 +720,7 @@ def attention_position(
     query: dict[str, Any],
     n: int | None = None,
 ) -> dict[str, Any]:
-    """Per-query attention distribution for the hexfield set-transformer.
+    """Per-query attention distribution for the shrimp set-transformer.
 
     Registers a forward hook on ``model.attn_blocks[block].attn`` (a
     ``RelPosAttention``) and recomputes the per-head softmax attention over the
@@ -731,10 +731,10 @@ def attention_position(
     ``(8+N)^2`` matrix. Floats rounded to 6 dp.
 
     ``n`` is an opaque passthrough for signature parity with analyze/search and
-    is unused here. Non-hexfield lineages return the n/a skeleton (found False).
+    is unused here. Non-shrimp lineages return the n/a skeleton (found False).
     """
 
-    if loaded.lineage != HEXFIELD:
+    if loaded.lineage != SHRIMP:
         block = max(0, min(int(block), _ATTN_NUM_BLOCKS - 1))
         head = None if head is None else ("max" if head == "max" else max(0, min(int(head), _ATTN_NUM_HEADS - 1)))
         return _attention_na_skeleton(loaded, block, head, action_ids)
@@ -747,9 +747,9 @@ def attention_position(
     block = max(0, min(int(block), num_blocks - 1))
     head = None if head is None else ("max" if head == "max" else max(0, min(int(head), num_heads - 1)))
 
-    hf = _hexfield()
+    hf = _shrimp()
     state = state_from_actions(action_ids)
-    batch, legal_action_ids = _hexfield_inputs(hf, state)
+    batch, legal_action_ids = _shrimp_inputs(hf, state)
     model = loaded.model
 
     target = model.attn_blocks[block].attn  # RelPosAttention
@@ -771,7 +771,7 @@ def attention_position(
 
     # Force the materialized fp32 bias path: serve-flex must be OFF so the hook's
     # attn_bias is a real (1, heads, S, S) tensor, never a _FlexBias carrier. We
-    # run the forward under enable_grad() (same trick as _hexfield_forward) so
+    # run the forward under enable_grad() (same trick as _shrimp_forward) so
     # build_attn_bias takes the master fp32 _BiasGather branch, and temporarily
     # disable any leaked serve-flag, restoring it in finally.
     prev_flex = getattr(model, "_serve_flex", False)
@@ -848,7 +848,7 @@ def attention_position(
         if j is None:
             out = _attention_na_skeleton(loaded, block, head, action_ids)
             out["reason"] = "bad_query"
-            # still echo the real lineage/structural constants for a hexfield miss
+            # still echo the real lineage/structural constants for a shrimp miss
             out["lineage"] = loaded.lineage
             out["num_blocks"] = num_blocks
             out["num_heads"] = num_heads
@@ -903,7 +903,7 @@ def moves_left_cap(loaded: LoadedModel) -> int | None:
 
     if not loaded.has_moves_left:
         return None
-    from hexfield.constants import MOVES_LEFT_CAP
+    from shrimp.constants import MOVES_LEFT_CAP
 
     return int(MOVES_LEFT_CAP)
 
@@ -937,11 +937,11 @@ def _tree_evaluator(loaded: LoadedModel, n: int | None):
     practical interactive ceiling. ``n`` is accepted for call-site compatibility
     and unused."""
 
-    hf = _hexfield()
+    hf = _shrimp()
 
     def evaluate(state: Any) -> tuple[list[tuple[int, float]], float]:
-        batch, legal_action_ids = _hexfield_inputs(hf, state)
-        out = _hexfield_forward(loaded.model, batch)
+        batch, legal_action_ids = _shrimp_inputs(hf, state)
+        out = _shrimp_forward(loaded.model, batch)
         value = float(
             hf.decode_binned_value(out["value"][0].float().reshape(1, -1)).reshape(()).item()
         )
@@ -1335,13 +1335,13 @@ def game_eval_positions(
     wanted = sorted({int(p) for p in plies if 0 <= int(p) <= len(action_ids)})
     rows = _npz_rows_by_turn(npz_path) if npz_path else {}
 
-    # Per-ply Q-regret (hexfield v3+ only): one extra hexfield forward per ply to
+    # Per-ply Q-regret (shrimp v3+ only): one extra shrimp forward per ply to
     # decode the per-cell Q head, then regret = bestQ - playedQ (mover POV, >=0).
     # Gated on the checkpoint actually carrying cell_q; every other lineage / an
-    # older hexfield checkpoint leaves all regret keys None (additive, backward-
+    # older shrimp checkpoint leaves all regret keys None (additive, backward-
     # compatible). Built once; ``_regret_for_ply`` returns the 6-key dict.
-    want_regret = loaded.lineage == HEXFIELD and loaded.has_cell_q
-    hf_regret = _hexfield() if want_regret else None
+    want_regret = loaded.lineage == SHRIMP and loaded.has_cell_q
+    hf_regret = _shrimp() if want_regret else None
     _NULL_REGRET = {
         "played_q": None,
         "best_q": None,
@@ -1355,12 +1355,12 @@ def game_eval_positions(
         # No played move at the final position (ply == total) -> no regret.
         if not want_regret or ply >= len(action_ids):
             return dict(_NULL_REGRET)
-        batch, legal_action_ids = _hexfield_inputs(hf_regret, state)
+        batch, legal_action_ids = _shrimp_inputs(hf_regret, state)
         legal_count = len(legal_action_ids)
         if legal_count == 0:  # terminal / no legal cell
             return dict(_NULL_REGRET)
-        out = _hexfield_forward(loaded.model, batch)
-        q_scalar = _hexfield_cell_q_scalars(hf_regret, out, legal_count)
+        out = _shrimp_forward(loaded.model, batch)
+        q_scalar = _shrimp_cell_q_scalars(hf_regret, out, legal_count)
         if q_scalar is None:
             return dict(_NULL_REGRET)
         played_aid = action_ids[ply]

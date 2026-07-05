@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Precomputed snapshot generator for the showcase Learn section.
 
-Bakes real hexfield_main_7 model data into static JSON consumed by the learn
+Bakes real shrimp_main_7 model data into static JSON consumed by the learn
 pages (apps/showcase/web/learn/):
 
   data/attention.json    — real attention rows (softmax(QK^T/sqrt(d) + bias))
@@ -18,22 +18,22 @@ pages (apps/showcase/web/learn/):
 Reproducible CLI (run from the repo root, inside the public WSL venv):
 
   cd /mnt/e/hexo-bot
-  PYTHONPATH=packages/hexfield/python:packages/hexo_engine/python \
-  HEXFIELD_CHANNELS=192 HEXFIELD_ATTENTION_HEADS=3 \
-  HEXFIELD_TRUNK=CCACCACCACCACCA HEXFIELD_SUPPORT_RADIUS=4 \
+  PYTHONPATH=packages/shrimp/python:packages/hexo_engine/python \
+  SHRIMP_CHANNELS=192 SHRIMP_ATTENTION_HEADS=3 \
+  SHRIMP_TRUNK=CCACCACCACCACCA SHRIMP_SUPPORT_RADIUS=4 \
   /root/.venvs/hexo-bot-public/bin/python apps/showcase/scripts/learn_snapshots.py \
       --models-dir /mnt/e/hexo-bot-deploy/models \
       --diagnostics-dir <run_dir>/diagnostics \
       --out apps/showcase/web/learn/data
 
-where <run_dir> is the hexfield_main_7 training run directory (read-only; the
-script only parses eval_pool.json + hexfield.multistage_eval.epoch_*.json).
+where <run_dir> is the shrimp_main_7 training run directory (read-only; the
+script only parses eval_pool.json + shrimp.multistage_eval.epoch_*.json).
 The arch env vars above are the published main_7 recipe; the script sets them
 itself when unset and refuses to run under a conflicting arch. Output is
 deterministic: two runs on the same inputs and --date produce byte-identical
 files (CPU forwards, single torch thread, fixed positions, no RNG).
 
-Imports are restricted to stdlib + numpy/torch + hexfield + hexo_engine
+Imports are restricted to stdlib + numpy/torch + shrimp + hexo_engine
 (never hexo_frontend / hexo_train). The output JSONs contain no filesystem
 paths or machine-specific strings; a built-in scrub gate fails the run if a
 forbidden substring ever leaks into an output file.
@@ -48,12 +48,12 @@ import math
 import os
 import sys
 
-# --- published main_7 arch: pin the env BEFORE any hexfield import -------------
+# --- published main_7 arch: pin the env BEFORE any shrimp import -------------
 _ARCH_ENV = {
-    "HEXFIELD_CHANNELS": "192",
-    "HEXFIELD_ATTENTION_HEADS": "3",
-    "HEXFIELD_TRUNK": "CCACCACCACCACCA",
-    "HEXFIELD_SUPPORT_RADIUS": "4",
+    "SHRIMP_CHANNELS": "192",
+    "SHRIMP_ATTENTION_HEADS": "3",
+    "SHRIMP_TRUNK": "CCACCACCACCACCA",
+    "SHRIMP_SUPPORT_RADIUS": "4",
 }
 for _k, _v in _ARCH_ENV.items():
     os.environ.setdefault(_k, _v)
@@ -70,15 +70,15 @@ import torch
 import hexo_engine as engine
 from hexo_engine.types import AxialCoord, PlacementAction
 
-from hexfield.batching import collate_rows
-from hexfield.constants import NUM_TOKENS
-from hexfield.engine_facts import facts_from_state
-from hexfield.features import build_features
-from hexfield.losses import decode_binned_value, decode_moves_left
-from hexfield.model import HexfieldNet, infer_net_kwargs_from_state_dict
-from hexfield.support import build_support
+from shrimp.batching import collate_rows
+from shrimp.constants import NUM_TOKENS
+from shrimp.engine_facts import facts_from_state
+from shrimp.features import build_features
+from shrimp.losses import decode_binned_value, decode_moves_left
+from shrimp.model import ShrimpNet, infer_net_kwargs_from_state_dict
+from shrimp.support import build_support
 
-RUN_LABEL = "hexfield_main_7"
+RUN_LABEL = "shrimp_main_7"
 CHECKPOINT_EPOCHS = (2, 14, 30, 58)
 ATTENTION_EPOCH = 58
 POLICY_FLOOR = 1e-3   # sparse-policy floor (checkpoints.json)
@@ -256,20 +256,20 @@ def verify_position(spec: dict, facts, support) -> None:
 # ==============================================================================
 
 
-def load_net(path: str) -> HexfieldNet:
+def load_net(path: str) -> ShrimpNet:
     payload = torch.load(path, map_location="cpu", weights_only=False)
     state_dict = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
-    net = HexfieldNet(**infer_net_kwargs_from_state_dict(state_dict))
+    net = ShrimpNet(**infer_net_kwargs_from_state_dict(state_dict))
     net.load_state_dict(state_dict, strict=True)
     net.eval()
     return net
 
 
-def forward_with_attention(net: HexfieldNet, batch: dict, capture: bool):
+def forward_with_attention(net: ShrimpNet, batch: dict, capture: bool):
     """Full-head forward; optionally captures per-block attention matrices.
 
     Hook point: a forward hook on every `attn_blocks[i].attn`
-    (hexfield.model.RelPosAttention). AttnBlock.forward calls
+    (shrimp.model.RelPosAttention). AttnBlock.forward calls
     `self.attn(self.ln1(seq), attn_bias)`, so the hook's positional inputs are
     exactly the LN'd joint [tokens; cells] sequence and this block's additive
     bias. The hook recomputes q/k with the module's own projections and takes
@@ -420,13 +420,13 @@ _RATING_FIELDS = ("label", "elo", "elo_ci95", "se_elo", "is_anchor")
 
 def parse_eval_history(diagnostics_dir: str, generated: str) -> dict:
     """Whitelist-copy the pooled ratings / edges / verdicts out of every
-    hexfield.multistage_eval.epoch_*.json. Only labels and numbers are copied;
+    shrimp.multistage_eval.epoch_*.json. Only labels and numbers are copied;
     paths never leave the run directory."""
 
     import glob as _glob
 
     files = sorted(
-        _glob.glob(os.path.join(diagnostics_dir, "hexfield.multistage_eval.epoch_*.json"))
+        _glob.glob(os.path.join(diagnostics_dir, "shrimp.multistage_eval.epoch_*.json"))
     )
     if not files:
         raise SystemExit(f"no multistage eval files under --diagnostics-dir")
@@ -530,7 +530,7 @@ def main() -> None:
     ap.add_argument("--models-dir", required=True,
                     help="directory holding main7_ep{2,14,30,58}.pt inference exports")
     ap.add_argument("--diagnostics-dir", required=True,
-                    help="hexfield_main_7 run diagnostics dir (read-only)")
+                    help="shrimp_main_7 run diagnostics dir (read-only)")
     ap.add_argument("--out", default=os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", "web", "learn", "data"))
     ap.add_argument("--date", default=_dt.date.today().isoformat(),

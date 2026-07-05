@@ -11,7 +11,7 @@ Type=simple
 ExecStartPre=/usr/bin/test -d /path/to/hexo-bot/packages/hexo_frontend/python
 WorkingDirectory=/path/to/hexo-bot
 Environment=HEXO_DEBUG_RUN_ROOT=/path/to/hexo-bot
-Environment=PYTHONPATH=/path/to/hexo-bot/packages/hexfield/python:/path/to/hexo-bot/packages/hexo_frontend/python:/path/to/hexo-bot/packages/hexo_engine/python:/path/to/hexo-bot/packages/hexo_utils/python:/path/to/hexo-bot/packages/hexo_runner/python:/path/to/hexo-bot/packages/hexo_train/python
+Environment=PYTHONPATH=/path/to/hexo-bot/packages/shrimp/python:/path/to/hexo-bot/packages/hexo_frontend/python:/path/to/hexo-bot/packages/hexo_engine/python:/path/to/hexo-bot/packages/hexo_utils/python:/path/to/hexo-bot/packages/hexo_runner/python:/path/to/hexo-bot/packages/hexo_train/python
 # Optional external SealBot reference opponent (append --sealbot-path below):
 # Environment=SEALBOT_PATH=/path/to/SealBot
 # --host 127.0.0.1 keeps the dashboard local; use 0.0.0.0 to expose on the LAN.

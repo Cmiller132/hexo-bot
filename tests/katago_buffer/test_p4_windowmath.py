@@ -3,7 +3,7 @@ select_training_samples rewrite (PLAN §3.1-3.8, §5, §6).
 
 CPU-only, no GPU, no model, no live-run interaction. The retired
 reference oracle and the private development-run live tree are
-unavailable publicly, so the window-math gates check hexfield against in-test
+unavailable publicly, so the window-math gates check shrimp against in-test
 FIRST-PRINCIPLES references (reproducing the documented formulas) and the
 data-driven gates run on SYNTHESIZED shards (``_shard_gen.generate_samples_tree``).
 Every write (``scan_or_update_manifest`` -> ``.buffer_manifest.json``, the
@@ -45,11 +45,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _shard_gen import generate_samples_tree  # noqa: E402
 
-from hexfield import shards as hex_shards
-from hexfield.buffer_manifest import ShardEntry, scan_or_update_manifest
-from hexfield.trainer import HexfieldTrainer
-from hexfield.config import HexfieldConfig, TrainingSection
-from hexfield.window import (
+from shrimp import shards as hex_shards
+from shrimp.buffer_manifest import ShardEntry, scan_or_update_manifest
+from shrimp.trainer import ShrimpTrainer
+from shrimp.config import ShrimpConfig, TrainingSection
+from shrimp.window import (
     PackedWindow,
     _md5_path_fraction,
     _select_files_for_rows,
@@ -112,10 +112,10 @@ class _FakeEntry:
 
 def test_window_math_parity() -> None:
     # compute_katago_window_rows across a knob grid. The call-site invariant is
-    # usable_rows >= min_rows (the hexfield caller clamps max(window, min_rows)),
+    # usable_rows >= min_rows (the shrimp caller clamps max(window, min_rows)),
     # so the grid spans that real domain. The degenerate out-of-domain point
     # (negative base ** fractional exponent -> complex) is checked separately
-    # below: hexfield and the reference BOTH raise the identical TypeError there,
+    # below: shrimp and the reference BOTH raise the identical TypeError there,
     # proof the formula is faithful (not a silent divergence).
     exps = [0.5, 0.65, 0.8, 1.0]
     expands = [0.2, 0.4, 0.7]
@@ -156,7 +156,7 @@ def test_window_math_parity() -> None:
             taper_window_scale=20_000.0,
         ) == mr, "window must equal min_rows at the floor"
 
-    # Degenerate (out-of-call-domain) point: hexfield and the reference raise the
+    # Degenerate (out-of-call-domain) point: shrimp and the reference raise the
     # SAME error (negative base ** fractional exponent -> complex -> TypeError).
     deg = dict(min_rows=100_000, expand_window_per_row=0.4, taper_window_exponent=0.65,
                taper_window_scale=10_000.0)
@@ -184,7 +184,7 @@ def test_window_math_parity() -> None:
             assert ours == theirs, f"keep_prob({used},{target}) {ours} != {theirs}"
             assert 0.0 < ours <= 1.0
             kpn += 1
-    # used<=0 guard: hexfield defends a zero-divide, returning 1.0.
+    # used<=0 guard: shrimp defends a zero-divide, returning 1.0.
     assert keep_prob(0, 100) == 1.0
     print(f"  keep_prob: {kpn} (used,target) points == min(target,used)/used formula")
 
@@ -353,11 +353,11 @@ def test_keep_prob_selection_accounting() -> None:
 # ----------------------------------------------------------------------
 
 
-def _make_trainer(**training_overrides) -> HexfieldTrainer:
+def _make_trainer(**training_overrides) -> ShrimpTrainer:
     """A trainer with a CPU config and a tiny real model/optimizer (we only call
     the pure window/governor/selection methods, never train_passes).
 
-    HexfieldTrainer.__init__ partitions params via ``model.named_parameters()``
+    ShrimpTrainer.__init__ partitions params via ``model.named_parameters()``
     for per-group grad-norm logging, so the model must be a real ``nn.Module``
     (a bare SimpleNamespace has no ``named_parameters``); the linear layer is never
     forwarded/stepped by the paths these tests exercise.
@@ -370,10 +370,10 @@ def _make_trainer(**training_overrides) -> HexfieldTrainer:
         max_train_bucket_per_new_data=8.0,
     )
     base.update(training_overrides)
-    cfg = HexfieldConfig(device="cpu", training=TrainingSection(**base))
+    cfg = ShrimpConfig(device="cpu", training=TrainingSection(**base))
     model = torch.nn.Linear(4, 3)
     opt = torch.optim.SGD(model.parameters(), lr=0.1)
-    return HexfieldTrainer(model=model, config=cfg, optimizer=opt)
+    return ShrimpTrainer(model=model, config=cfg, optimizer=opt)
 
 
 def test_update_train_bucket() -> None:
@@ -538,7 +538,7 @@ def test_select_training_samples_dryrun(samples_dir: Path, diag_dir: Path) -> No
     )
     assert tr.train_state.train_steps_since_last_reload == 1
     # the select diag was written under the (scratch) diagnostics dir.
-    assert (diag_dir / "hexfield.select.epoch_000001.json").exists(), "select diag not written"
+    assert (diag_dir / "shrimp.select.epoch_000001.json").exists(), "select diag not written"
     print(f"  dry-run epoch 1: status=completed window_rows={out['window_rows']} "
           f"effective_rows={out['effective_rows']} total_rows={out['total_rows']} "
           f"keep_prob={out['keep_prob']:.3f} bucket={tr.train_state.train_bucket_level:.0f}")

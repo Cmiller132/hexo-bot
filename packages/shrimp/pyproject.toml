@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "shrimp"
+version = "0.1.0"
+description = "shrimp — variable-geometry hex lattice model lineage (spec: docs/specs/shrimp_model_spec.md)"
+requires-python = ">=3.11"
+# Runtime deps (torch, hexo_engine, hexo_train, ...) are ambient via the
+# environment / PYTHONPATH — NOT pip-resolved here, so `maturin develop`
+# never tries to fetch them. Build with scripts/build_native.sh.
+dependencies = [
+    "numpy",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "shrimp._rust"
+features = ["python"]

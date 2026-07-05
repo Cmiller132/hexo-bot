@@ -28,17 +28,17 @@ services:
       # restarts). Required, from .env — never committed.
       SHOWCASE_IP_SALT: ${SHOWCASE_IP_SALT:?put SHOWCASE_IP_SALT in apps/showcase/.env}
       # --- model geometry: must match the MOUNTED weights -------------------
-      # Support radius is read once at hexfield import time; main_7 weights
+      # Support radius is read once at shrimp import time; main_7 weights
       # were trained at radius 4.
-      HEXFIELD_SUPPORT_RADIUS: "4"
+      SHRIMP_SUPPORT_RADIUS: "4"
       # Arch fallback documenting the main_7 recipe (c=192, 3 heads of 64,
       # CCA x5 trunk). Production checkpoints self-describe — width/heads/
       # trunk are inferred per checkpoint from its state dict and inference
       # wins over these — but non-inferable layouts (e.g. the tiny smoke net)
       # fall back to this env, and it documents what the mounted weights are.
-      HEXFIELD_CHANNELS: "192"
-      HEXFIELD_ATTENTION_HEADS: "3"
-      HEXFIELD_TRUNK: "CCACCACCACCACCA"
+      SHRIMP_CHANNELS: "192"
+      SHRIMP_ATTENTION_HEADS: "3"
+      SHRIMP_TRUNK: "CCACCACCACCACCA"
     volumes:
       - showcase-db:/data # SQLite lives here
       - ./deploy/models:/models:ro # bots.toml + ladder checkpoints

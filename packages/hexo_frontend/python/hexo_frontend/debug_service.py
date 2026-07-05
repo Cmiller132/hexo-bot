@@ -79,7 +79,7 @@ class DebugWorker:
         self._next_id = 0
         self._err_path = Path(tempfile.gettempdir()) / "hexo_debug_worker.err"
         self._cache: "OrderedDict[str, Any]" = OrderedDict()
-        # The HEXFIELD_SUPPORT_RADIUS the live worker process was spawned at
+        # The SHRIMP_SUPPORT_RADIUS the live worker process was spawned at
         # (None = not keyed on radius, e.g. dense/hexgt or a cold/legacy spawn).
         # support._SUPPORT_RADIUS is read-once at import, so a radius change can
         # only take effect by respawning the worker with a new spawn env.
@@ -91,10 +91,10 @@ class DebugWorker:
         env = dict(os.environ)
         env["CUDA_VISIBLE_DEVICES"] = ""  # belt-and-suspenders; worker also forces CPU
         if radius is not None:
-            # Hexfield support radius is read-once at import in support.py / the
+            # Shrimp support radius is read-once at import in support.py / the
             # Rust featurizer, so it must be in the spawn env. Only set when a
             # radius applies; a None radius leaves the env untouched.
-            env["HEXFIELD_SUPPORT_RADIUS"] = str(radius)
+            env["SHRIMP_SUPPORT_RADIUS"] = str(radius)
         pkg_python_dir = Path(__file__).resolve().parent.parent  # .../hexo_frontend/python
 
         override = os.environ.get("HEXO_DEBUG_WORKER_CMD")
@@ -106,9 +106,9 @@ class DebugWorker:
             venv = os.environ.get("HEXO_DEBUG_WSL_PYTHON", DEFAULT_WSL_PYTHON)
             worktree = _to_wsl(Path.cwd())
             pp = _to_wsl(pkg_python_dir)
-            # The env dict does NOT cross `wsl.exe -e bash -lc`, so HEXFIELD_SUPPORT_RADIUS
+            # The env dict does NOT cross `wsl.exe -e bash -lc`, so SHRIMP_SUPPORT_RADIUS
             # must be inlined into the command like CUDA_VISIBLE_DEVICES=/PYTHONPATH=.
-            rad_inline = f"HEXFIELD_SUPPORT_RADIUS={radius} " if radius is not None else ""
+            rad_inline = f"SHRIMP_SUPPORT_RADIUS={radius} " if radius is not None else ""
             inner = (
                 f"cd {shlex.quote(worktree)} && CUDA_VISIBLE_DEVICES= {rad_inline}"
                 f"PYTHONPATH={shlex.quote(pp)} {shlex.quote(venv)} -u -m hexo_frontend.debug_worker"
@@ -208,10 +208,10 @@ class DebugWorker:
                 radius: int | None = None, **fields: Any) -> Any:
         """Serialized request to the worker.
 
-        ``radius`` is a worker-lifecycle param (the target HEXFIELD_SUPPORT_RADIUS),
+        ``radius`` is a worker-lifecycle param (the target SHRIMP_SUPPORT_RADIUS),
         NOT a request field: it is never forwarded into ``_exchange``. ``None``
         means "don't care — reuse whatever is running, spawn at None if cold", so
-        dense/hexgt/record_row requests never trigger a respawn. A hexfield request
+        dense/hexgt/record_row requests never trigger a respawn. A shrimp request
         passes a concrete int and respawns the worker iff it differs from the live
         process radius (support._SUPPORT_RADIUS is read-once at import).
 

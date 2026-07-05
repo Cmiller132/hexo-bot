@@ -75,9 +75,9 @@ def test_verify_device_cpu_reference_path():
     """The full compare machinery, exercised with device==cpu (the reference
     compared against itself): builds the synthetic position, runs both
     forwards, and must agree within tolerance with finite outputs."""
-    from hexfield.model import HexfieldNet
+    from shrimp.model import ShrimpNet
 
-    model = HexfieldNet().eval()
+    model = ShrimpNet().eval()
     result = verify_device(model, "cpu")
     assert result.ok
     assert result.error is None

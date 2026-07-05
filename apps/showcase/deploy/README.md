@@ -30,14 +30,14 @@ Everything below runs from `apps/showcase/` on the deploy machine.
    ```
    deploy/models/
      bots.toml            # catalogue (start from ../bots.example.toml)
-     main7_latest.pt      # hexfield inference export(s)
+     main7_latest.pt      # shrimp inference export(s)
      ...                  # past-epoch entries, immutable filenames
    ```
 
    `checkpoint` paths inside `bots.toml` resolve relative to the file, so
    entries reference the `.pt` files by bare filename. All checkpoints must
    match the support radius the server runs at
-   (`HEXFIELD_SUPPORT_RADIUS=4` in compose); width/heads/trunk are inferred
+   (`SHRIMP_SUPPORT_RADIUS=4` in compose); width/heads/trunk are inferred
    per checkpoint from its state dict.
 
 4. **Launch**:
@@ -66,7 +66,7 @@ see below.)
 
 ## GPU (XPU) deployment — Intel Arc
 
-Opt-in variant that runs hexfield inference on an Intel GPU via torch's
+Opt-in variant that runs Shrimp inference on an Intel GPU via torch's
 native XPU backend (`Dockerfile.xpu` + `docker-compose.xpu.yml`). The CPU
 stack remains the default; nothing below is required for it. Ship the GPU
 variant only if it benchmarks faster than CPU at showcase batch sizes.
@@ -134,7 +134,7 @@ CPU fall-through is visible in the logs rather than masked by `auto`.
 
 Play a few games / hit `/api/game/{id}/summary` on both stacks and compare
 move latency at the deployed visit budgets (or time a scripted game). The
-A310 runs hexfield's *eager* fp32 paths (the fast fused kernels are
+A310 runs Shrimp's *eager* fp32 paths (the fast fused kernels are
 CUDA-only), so XPU is not automatically a win over 7 modern CPU cores —
 measure, then keep whichever is faster. If XPU wins big, raise
 `SHOWCASE_MAX_ACTIVE_GAMES`/`SHOWCASE_WORKERS`.

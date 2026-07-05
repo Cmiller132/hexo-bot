@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from hexfield.expand_backends import expand_rows
-from hexfield.window import concat_packed, load_packed_shard
+from shrimp.expand_backends import expand_rows
+from shrimp.window import concat_packed, load_packed_shard
 
 SAMPLES = Path(__file__).resolve().parent / "_scratch" / "p5" / "samples"
 

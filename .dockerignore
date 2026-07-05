@@ -1,6 +1,6 @@
 # Build-context filter for apps/showcase/Dockerfile (context = repo root —
 # the maturin builds need the workspace Cargo.toml/Cargo.lock plus
-# packages/{hexo_engine,hexo_utils,hexfield}).
+# packages/{hexo_engine,hexo_utils,shrimp}).
 # Everything the image build does not consume stays out of the context.
 
 .git

@@ -68,7 +68,7 @@ training?, evaluation?, checkpoint?, samples?, d6? }`
   server-side from the .hxr records; nulls remain possible) — every chart/cell skips
   null points.
 - `selfplay.buffer` (nested object or null): the uniform per-head loss carrier, present
-  on hexfield runs with a training pool. Keys consumed today by
+  on Shrimp runs with a training pool. Keys consumed today by
   `epochProgressDetail`: `samples, cap, window_epochs, window_span, decay, train_steps,
   train_batch, train_samples_per_epoch, loss_total, loss_policy, loss_value, loss_opp,
   loss_stvalue_<h>, optimism_sum_mean`. A given run may carry ONLY the `loss_*` keys

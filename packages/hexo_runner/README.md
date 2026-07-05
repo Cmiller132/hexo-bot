@@ -5,14 +5,14 @@ the authoritative engine state for a single game, mediates between two opaque
 `RunnerPlayer` adapters and the Rust `hexo_engine`, and emits durable `.hxr`
 game records plus structured `GameResult` summaries. It also
 ships the **SealBot adapter** -- a subprocess bridge to an external C++ minimax
-baseline bot used as the fixed evaluation opponent by the `hexfield` model
+baseline bot used as the fixed evaluation opponent by the `shrimp` model
 package and the frontend Match/Arena screen.
 
 ## Status
 
 | Part | Usage |
 | --- | --- |
-| Player contracts (`player.py`), game loop (`loop.py`), match mode, records facade, SealBot adapter | Used by the `hexfield` model package, the frontend dashboard, and tests |
+| Player contracts (`player.py`), game loop (`loop.py`), match mode, records facade, SealBot adapter | Used by the `shrimp` model package, the frontend dashboard, and tests |
 
 ## Modules
 
@@ -79,9 +79,9 @@ Imports out:
 
 Imports in (who depends on hexo_runner):
 
-- **hexfield** (the model): `selfplay.py` and the eval code write `.hxr` via
+- **Shrimp** (the model): `selfplay.py` and the eval code write `.hxr` via
   `hexo_runner.records` and use `SealBotPlayer` as the eval opponent, driving
-  games with their own batched loop. `hexfield`'s player adapter implements the
+  games with their own batched loop. `shrimp`'s player adapter implements the
   `RunnerPlayer` protocol.
 - **hexo_frontend**: `web.py` imports the SealBot adapter, `run_match`, the
   player contracts, `GameResult`/`HexoRecordFile`, and `GameSpec` -- Match arena

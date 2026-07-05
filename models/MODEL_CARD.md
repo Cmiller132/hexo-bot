@@ -1,8 +1,8 @@
-# Model Card — hexfield (main_7)
+# Model Card — Shrimp (main_7)
 
-The shipped weights are a snapshot of the `hexfield_main_7` training run: an
+The shipped weights are a snapshot of the `shrimp_main_7` training run: an
 AlphaZero-style, Gumbel self-play RL agent for Hexo (a Connect6-style game on an
-unbounded hex grid). The network is the PyTorch/Triton "hexfield" model.
+unbounded hex grid). The network is the PyTorch/Triton "Shrimp" model.
 
 - **Snapshot epoch:** 18
 - **Snapshot date:** 2026-07-03
@@ -16,15 +16,15 @@ unbounded hex grid). The network is the PyTorch/Triton "hexfield" model.
 
 | File | Contents | Size | Use it for |
 | --- | --- | --- | --- |
-| `hexfield_main7_infer.pt` | Weights only (`{"meta", "model"}`) | ~31 MB | Playing / studying the bot: dashboard Debug + Match tools, inference, analysis. |
-| `hexfield_main7_full.pt` | Full training checkpoint (`{"meta", "model", "optimizer"}`) | ~93 MB | Resuming or continuing training from epoch 18 (carries optimizer state + step counters). |
+| `shrimp_main7_infer.pt` | Weights only (`{"meta", "model"}`) | ~31 MB | Playing / studying the bot: dashboard Debug + Match tools, inference, analysis. |
+| `shrimp_main7_full.pt` | Full training checkpoint (`{"meta", "model", "optimizer"}`) | ~93 MB | Resuming or continuing training from epoch 18 (carries optimizer state + step counters). |
 
 Both files are stored via Git LFS (see `.gitattributes`: `models/*.pt`). After a
 clone you need `git lfs pull` to fetch the real weights.
 
 The inference file is the training checkpoint with the optimizer state stripped
 and a small arch-metadata block embedded; it was produced by
-`scripts/export_weights.py` and re-verified to load strict into `HexfieldNet`.
+`scripts/export_weights.py` and re-verified to load strict into `ShrimpNet`.
 
 ## Architecture — env vars are load-bearing
 
@@ -34,10 +34,10 @@ values, so you must export these before instantiating the model or launching any
 tool that loads the weights:
 
 ```
-export HEXFIELD_CHANNELS=192
-export HEXFIELD_ATTENTION_HEADS=3
-export HEXFIELD_TRUNK=CCACCACCACCACCA
-export HEXFIELD_SUPPORT_RADIUS=4
+export SHRIMP_CHANNELS=192
+export SHRIMP_ATTENTION_HEADS=3
+export SHRIMP_TRUNK=CCACCACCACCACCA
+export SHRIMP_SUPPORT_RADIUS=4
 ```
 
 - `CHANNELS=192`, `ATTENTION_HEADS=3` (head_dim = 192/3 = 64), and
@@ -56,14 +56,14 @@ export HEXFIELD_SUPPORT_RADIUS=4
    behavioral cloning on the public corpus
    [timmyburn/hexo-bootstrap-corpus](https://huggingface.co/datasets/timmyburn/hexo-bootstrap-corpus)
    (see `scripts/prefit_launch.sh`; wired via `checkpoint.initialize_from` in
-   `configs/hexfield_main_7.toml`). The RL run initialized from prefit epoch 3.
+   `configs/shrimp_main_7.toml`). The RL run initialized from prefit epoch 3.
    The warm start is optional — without it, training starts from a random net.
 2. **Self-play RL.** 18 epochs of Gumbel-AlphaZero self-play + supervised updates
    + gated eval, on a single **RTX 4070 Ti** (12 GB). The repo deliberately ships
    only the Gumbel search path; classic PUCT+Dirichlet exploration knobs were
    stripped.
 
-Full recipe: `configs/hexfield_main_7.toml`.
+Full recipe: `configs/shrimp_main_7.toml`.
 
 ## Strength (early, small-sample)
 
@@ -92,14 +92,14 @@ Set the arch env vars (above), then:
 
 ```python
 import os, torch
-from hexfield.model import HexfieldNet   # PYTHONPATH: packages/hexfield/python
+from shrimp.model import ShrimpNet   # PYTHONPATH: packages/shrimp/python
 
-model = HexfieldNet(
-    channels=int(os.environ["HEXFIELD_CHANNELS"]),            # 192
-    attention_heads=int(os.environ["HEXFIELD_ATTENTION_HEADS"]),  # 3
-    trunk_layout=os.environ["HEXFIELD_TRUNK"],                # CCACCACCACCACCA
+model = ShrimpNet(
+    channels=int(os.environ["SHRIMP_CHANNELS"]),            # 192
+    attention_heads=int(os.environ["SHRIMP_ATTENTION_HEADS"]),  # 3
+    trunk_layout=os.environ["SHRIMP_TRUNK"],                # CCACCACCACCACCA
 )
-payload = torch.load("models/hexfield_main7_infer.pt", map_location="cpu", weights_only=False)
+payload = torch.load("models/shrimp_main7_infer.pt", map_location="cpu", weights_only=False)
 model.load_state_dict(payload["model"], strict=True)
 model.eval()
 ```
@@ -116,6 +116,6 @@ Match arena.
 
 ## Resuming training
 
-`hexfield_main7_full.pt` is a complete checkpoint (model + optimizer + step
+`shrimp_main7_full.pt` is a complete checkpoint (model + optimizer + step
 counters). Point `checkpoint.initialize_from` in a config at it to seed a new run
 from epoch 18's weights and optimizer state. Use the same arch env vars.

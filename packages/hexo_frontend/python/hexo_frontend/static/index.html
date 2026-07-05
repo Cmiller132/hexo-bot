@@ -257,7 +257,7 @@
         <label class="select-field"><span>Checkpoint A</span><select id="dbgCtxCkptA" aria-label="Checkpoint A"></select></label>
         <label class="select-field"><span>Checkpoint B</span><select id="dbgCtxCkptB" aria-label="Checkpoint B (compare)"><option value="">—</option></select></label>
         <label class="select-field" id="dbgCtxRadiusField"><span>Radius</span>
-          <select id="dbgCtxRadius" aria-label="Model support radius" title="Support radius the model runs at — Auto detects from the run's eval (hexfield only)">
+          <select id="dbgCtxRadius" aria-label="Model support radius" title="Support radius the model runs at — Auto detects from the run's eval (shrimp only)">
             <option value="0">Auto</option>
             <option value="4">R=4</option>
             <option value="8">R=8</option>
@@ -311,8 +311,8 @@
           <button type="button" data-mode="target" title="Recorded visit-policy target (5)">Target</button>
           <button type="button" data-mode="mismatch" title="Prior&#8722;target mismatch (6)">Mismatch</button>
           <button type="button" data-mode="childq" title="Root-child Q from last debug tree (7)">Child Q</button>
-          <button type="button" data-mode="cellq" title="Per-cell Q (action-value head) — hexfield v3 lineage only">Q</button>
-          <button type="button" data-mode="attn" title="Attention (8) — hexfield lineage only">Attn</button>
+          <button type="button" data-mode="cellq" title="Per-cell Q (action-value head) — shrimp v3 lineage only">Q</button>
+          <button type="button" data-mode="attn" title="Attention (8) — shrimp lineage only">Attn</button>
           <button type="button" data-mode="plane" title="Input plane, dense lineage only (9)">Plane</button>
         </div>
         <select id="dbgPlaneSelect" aria-label="Input plane" hidden></select>

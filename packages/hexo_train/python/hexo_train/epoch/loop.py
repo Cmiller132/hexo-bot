@@ -148,7 +148,7 @@ def _start_epoch(components: TrainingComponents) -> int:
     """Derive the first epoch to run from the loaded checkpoint state.
 
     LOAD-BEARING resume contract: a plugin checkpoint loader (e.g.
-    packages/hexfield/python/hexfield/checkpoints.py) returns
+    packages/shrimp/python/shrimp/checkpoints.py) returns
     ``{"status": "loaded", "epoch": N}`` for a full resume, and this helper
     fast-forwards the loop to epoch N+1 — this is how a halted run restarts
     from its latest checkpoint. Any other shape (weights-only initialize,

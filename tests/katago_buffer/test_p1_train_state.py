@@ -1,13 +1,13 @@
 """Phase 1 self-test (CPU-only): KataGo replay-buffer config fields +
-HexfieldTrainState checkpoint save/load wiring.
+ShrimpTrainState checkpoint save/load wiring.
 
 Covers PLAN §6 (checkpoints.py/config.py) / §9 test 5 (resume failure modes):
   (0) the modules import (config + checkpoints + trainer);
   (0b) the 11 new TrainingSection fields exist with the EXACT plan defaults,
        and the existing 6 are untouched;
-  (1) a NON-fresh HexfieldTrainState round-trips through to_dict/from_dict ->
+  (1) a NON-fresh ShrimpTrainState round-trips through to_dict/from_dict ->
       field-equal;
-  (2) HexfieldCheckpointSaver.save embeds train_state into meta; torch.load back
+  (2) ShrimpCheckpointSaver.save embeds train_state into meta; torch.load back
       shows meta["train_state"] present and round-tripping to the same state;
   (3) an OLD-format meta WITHOUT train_state -> from_dict(meta.get(...)) yields a
       FRESH state, no crash (old checkpoints resume cleanly);
@@ -15,7 +15,7 @@ Covers PLAN §6 (checkpoints.py/config.py) / §9 test 5 (resume failure modes):
       initialize_from branch does NOT (fresh governor on a warm start).
 
 Run (CPU, no GPU, no live run):
-  PYTHONPATH=packages/hexfield/python python -m pytest tests/katago_buffer/test_p1_train_state.py
+  PYTHONPATH=packages/shrimp/python python -m pytest tests/katago_buffer/test_p1_train_state.py
 """
 
 from __future__ import annotations
@@ -28,17 +28,17 @@ from types import SimpleNamespace
 import torch
 
 # (0) import-gate: these must all import cleanly (CPU, no CUDA touched).
-import hexfield.config as hxconfig
-import hexfield.checkpoints as hxckpt
-import hexfield.trainer as hxtrainer
-from hexfield.checkpoints import (
-    HexfieldCheckpointLoader,
-    HexfieldCheckpointSaver,
+import shrimp.config as hxconfig
+import shrimp.checkpoints as hxckpt
+import shrimp.trainer as hxtrainer
+from shrimp.checkpoints import (
+    ShrimpCheckpointLoader,
+    ShrimpCheckpointSaver,
     save_checkpoint,
 )
-from hexfield.config import TrainingSection
-from hexfield.model import HexfieldNet
-from hexfield.train_state import TRAIN_STATE_VERSION, HexfieldTrainState
+from shrimp.config import TrainingSection
+from shrimp.model import ShrimpNet
+from shrimp.train_state import TRAIN_STATE_VERSION, ShrimpTrainState
 
 
 # --------------------------------------------------------------------------- #
@@ -46,11 +46,11 @@ from hexfield.train_state import TRAIN_STATE_VERSION, HexfieldTrainState
 # hexo_train pipeline: the saver/loader only touch a handful of attributes, and
 # mirroring exactly those keeps the test CPU-only and contract-focused.
 # components.model is the ModelComponents-shaped object (so components.model.model
-# is the net, components.model.trainer is the HexfieldTrainer) — matching
+# is the net, components.model.trainer is the ShrimpTrainer) — matching
 # components.py:151-168.
 # --------------------------------------------------------------------------- #
 def _make_components(trainer):
-    model = HexfieldNet()  # no-arg ctor; stays on CPU
+    model = ShrimpNet()  # no-arg ctor; stays on CPU
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     if trainer is not None:
         # The saver reads components.model.model / .optimizer off the trainer's
@@ -63,15 +63,15 @@ def _make_components(trainer):
 
 def _make_ctx(checkpoint_dir: Path, *, resume_from):
     checkpoint = SimpleNamespace(resume_from=resume_from)
-    run = SimpleNamespace(name="hexfield_p1_test")
+    run = SimpleNamespace(name="shrimp_p1_test")
     config = SimpleNamespace(run=run, checkpoint=checkpoint)
     return SimpleNamespace(checkpoint_dir=checkpoint_dir, config=config)
 
 
-def _non_fresh_state() -> HexfieldTrainState:
+def _non_fresh_state() -> ShrimpTrainState:
     """A state with every field perturbed away from the fresh defaults so the
     round-trip actually exercises each field (a fresh state would pass trivially)."""
-    return HexfieldTrainState(
+    return ShrimpTrainState(
         total_num_data_rows=123_456,
         global_step_samples=7_777,
         window_start_data_row_idx=4_096,
@@ -82,7 +82,7 @@ def _non_fresh_state() -> HexfieldTrainState:
     )
 
 
-def _assert_states_equal(a: HexfieldTrainState, b: HexfieldTrainState, ctx: str) -> None:
+def _assert_states_equal(a: ShrimpTrainState, b: ShrimpTrainState, ctx: str) -> None:
     assert a.total_num_data_rows == b.total_num_data_rows, ctx
     assert a.global_step_samples == b.global_step_samples, ctx
     assert a.window_start_data_row_idx == b.window_start_data_row_idx, ctx
@@ -99,14 +99,14 @@ def _assert_states_equal(a: HexfieldTrainState, b: HexfieldTrainState, ctx: str)
 def test_imports():
     assert hxconfig is not None and hxckpt is not None and hxtrainer is not None
     # trainer.__init__ must now carry a fresh train_state (instruction b).
-    t = hxtrainer.HexfieldTrainer(
-        model=HexfieldNet(),
-        config=hxconfig.HexfieldConfig(device="cpu"),
+    t = hxtrainer.ShrimpTrainer(
+        model=ShrimpNet(),
+        config=hxconfig.ShrimpConfig(device="cpu"),
         optimizer=None,
     )
-    assert isinstance(t.train_state, HexfieldTrainState)
-    _assert_states_equal(t.train_state, HexfieldTrainState(), "fresh trainer.train_state")
-    print("[0] imports OK; trainer.__init__ carries a fresh HexfieldTrainState")
+    assert isinstance(t.train_state, ShrimpTrainState)
+    _assert_states_equal(t.train_state, ShrimpTrainState(), "fresh trainer.train_state")
+    print("[0] imports OK; trainer.__init__ carries a fresh ShrimpTrainState")
 
 
 # --------------------------------------------------------------------------- #
@@ -169,13 +169,13 @@ def test_config_fields():
 # --------------------------------------------------------------------------- #
 def test_round_trip_non_fresh():
     src = _non_fresh_state()
-    rebuilt = HexfieldTrainState.from_dict(src.to_dict())
+    rebuilt = ShrimpTrainState.from_dict(src.to_dict())
     _assert_states_equal(src, rebuilt, "non-fresh round-trip")
     # And the serialized dict carries the version + sorted file list.
     d = src.to_dict()
     assert d["version"] == TRAIN_STATE_VERSION
     assert d["data_files_used"] == sorted(src.data_files_used)
-    print("[1] non-fresh HexfieldTrainState round-trips field-equal through to_dict/from_dict")
+    print("[1] non-fresh ShrimpTrainState round-trips field-equal through to_dict/from_dict")
 
 
 # --------------------------------------------------------------------------- #
@@ -185,25 +185,25 @@ def test_saver_embeds_train_state():
     with tempfile.TemporaryDirectory() as tmp:
         ckpt_dir = Path(tmp) / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
-        trainer = hxtrainer.HexfieldTrainer(
-            model=HexfieldNet(),
-            config=hxconfig.HexfieldConfig(device="cpu"),
+        trainer = hxtrainer.ShrimpTrainer(
+            model=ShrimpNet(),
+            config=hxconfig.ShrimpConfig(device="cpu"),
             optimizer=None,
         )
         trainer.train_state = _non_fresh_state()
         components = _make_components(trainer)
         ctx = _make_ctx(ckpt_dir, resume_from=None)
 
-        saver = HexfieldCheckpointSaver()
+        saver = ShrimpCheckpointSaver()
         path = saver.save(name="epoch_000007", ctx=ctx, components=components)
         assert Path(path).exists()
 
         payload = torch.load(path, map_location="cpu", weights_only=False)
         meta = payload["meta"]
-        assert meta.get("run") == "hexfield_p1_test"
+        assert meta.get("run") == "shrimp_p1_test"
         assert meta.get("epoch") == 7
         assert "train_state" in meta, "saver did not embed train_state into meta"
-        rebuilt = HexfieldTrainState.from_dict(meta["train_state"])
+        rebuilt = ShrimpTrainState.from_dict(meta["train_state"])
         _assert_states_equal(trainer.train_state, rebuilt, "saver->torch.load round-trip")
         print("[2] saver embeds train_state in meta; torch.load round-trips it to the same state")
 
@@ -218,13 +218,13 @@ def test_saver_no_train_state_guard():
         trainer = SimpleNamespace(train_state=None)
         components = _make_components(trainer)
         ctx = _make_ctx(ckpt_dir, resume_from=None)
-        path = HexfieldCheckpointSaver().save(name="epoch_000001", ctx=ctx, components=components)
+        path = ShrimpCheckpointSaver().save(name="epoch_000001", ctx=ctx, components=components)
         meta = torch.load(path, map_location="cpu", weights_only=False)["meta"]
         assert "train_state" not in meta, "guard failed: train_state written for None state"
 
         # trainer entirely absent (None) -> still no crash, no key.
         components2 = _make_components(None)
-        path2 = HexfieldCheckpointSaver().save(name="epoch_000002", ctx=ctx, components=components2)
+        path2 = ShrimpCheckpointSaver().save(name="epoch_000002", ctx=ctx, components=components2)
         meta2 = torch.load(path2, map_location="cpu", weights_only=False)["meta"]
         assert "train_state" not in meta2, "guard failed: train_state written for absent trainer"
         print("[2b] saver guard: missing/None train_state -> no crash, no train_state key")
@@ -234,12 +234,12 @@ def test_saver_no_train_state_guard():
 # (3) old-format meta WITHOUT train_state -> fresh state, no crash.
 # --------------------------------------------------------------------------- #
 def test_old_format_meta_fresh():
-    old_meta = {"lineage": "hexfield", "epoch": 4, "run": "ancient_run"}  # no train_state
-    state = HexfieldTrainState.from_dict(old_meta.get("train_state"))
-    _assert_states_equal(state, HexfieldTrainState(), "old-format -> fresh")
+    old_meta = {"lineage": "shrimp", "epoch": 4, "run": "ancient_run"}  # no train_state
+    state = ShrimpTrainState.from_dict(old_meta.get("train_state"))
+    _assert_states_equal(state, ShrimpTrainState(), "old-format -> fresh")
     # also: None / non-mapping / version-mismatch all degrade to fresh.
     for raw in (None, [], "garbage", {"version": 9999, "train_bucket_level": 5.0}):
-        _assert_states_equal(HexfieldTrainState.from_dict(raw), HexfieldTrainState(), f"tolerant from_dict {raw!r}")
+        _assert_states_equal(ShrimpTrainState.from_dict(raw), ShrimpTrainState(), f"tolerant from_dict {raw!r}")
     print("[3] old-format meta (no train_state) and bad inputs -> FRESH state, no crash")
 
 
@@ -249,7 +249,7 @@ def test_old_format_meta_fresh():
 def _write_pipeline_checkpoint(ckpt_dir: Path, *, train_state_dict, epoch: int) -> Path:
     """Write a {meta, model, optimizer}-shaped checkpoint (the pipeline shape the
     loader's `"meta" in payload` branch expects) carrying a given train_state."""
-    model = HexfieldNet()
+    model = ShrimpNet()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     extra = {"run": "src_run"}
     if train_state_dict is not None:
@@ -271,14 +271,14 @@ def test_loader_resume_restores_initialize_does_not():
         ckpt_path = _write_pipeline_checkpoint(ckpt_dir, train_state_dict=persisted.to_dict(), epoch=7)
 
         # --- RESUME branch: resume_from set -> governor restored from meta. ---
-        trainer = hxtrainer.HexfieldTrainer(
-            model=HexfieldNet(), config=hxconfig.HexfieldConfig(device="cpu"), optimizer=None
+        trainer = hxtrainer.ShrimpTrainer(
+            model=ShrimpNet(), config=hxconfig.ShrimpConfig(device="cpu"), optimizer=None
         )
         # Start from a fresh governor so a successful restore is observable.
-        _assert_states_equal(trainer.train_state, HexfieldTrainState(), "pre-resume fresh")
+        _assert_states_equal(trainer.train_state, ShrimpTrainState(), "pre-resume fresh")
         components = _make_components(trainer)
         ctx = _make_ctx(ckpt_dir, resume_from=str(ckpt_path))
-        out = HexfieldCheckpointLoader().load(str(ckpt_path), ctx=ctx, components=components)
+        out = ShrimpCheckpointLoader().load(str(ckpt_path), ctx=ctx, components=components)
         assert out["status"] == "loaded", out
         assert out["epoch"] == 7
         _assert_states_equal(
@@ -286,16 +286,16 @@ def test_loader_resume_restores_initialize_does_not():
         )
 
         # --- initialize_from branch: resume_from None -> governor stays FRESH. ---
-        trainer2 = hxtrainer.HexfieldTrainer(
-            model=HexfieldNet(), config=hxconfig.HexfieldConfig(device="cpu"), optimizer=None
+        trainer2 = hxtrainer.ShrimpTrainer(
+            model=ShrimpNet(), config=hxconfig.ShrimpConfig(device="cpu"), optimizer=None
         )
         components2 = _make_components(trainer2)
         ctx2 = _make_ctx(ckpt_dir, resume_from=None)
-        out2 = HexfieldCheckpointLoader().load(str(ckpt_path), ctx=ctx2, components=components2)
+        out2 = ShrimpCheckpointLoader().load(str(ckpt_path), ctx=ctx2, components=components2)
         assert out2["status"] == "initialized_from", out2
         _assert_states_equal(
             components2.model.trainer.train_state,
-            HexfieldTrainState(),
+            ShrimpTrainState(),
             "initialize_from must NOT inherit the stale governor",
         )
         print("[4] loader: RESUME restores the persisted governor; initialize_from keeps a fresh one")
@@ -308,18 +308,18 @@ def test_loader_resume_old_format_no_crash():
         ckpt_dir = Path(tmp) / "checkpoints"
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         ckpt_path = _write_pipeline_checkpoint(ckpt_dir, train_state_dict=None, epoch=3)
-        trainer = hxtrainer.HexfieldTrainer(
-            model=HexfieldNet(), config=hxconfig.HexfieldConfig(device="cpu"), optimizer=None
+        trainer = hxtrainer.ShrimpTrainer(
+            model=ShrimpNet(), config=hxconfig.ShrimpConfig(device="cpu"), optimizer=None
         )
         # Seed the in-memory governor non-fresh; an old-format resume must RESET it.
         trainer.train_state = _non_fresh_state()
         components = _make_components(trainer)
         ctx = _make_ctx(ckpt_dir, resume_from=str(ckpt_path))
-        out = HexfieldCheckpointLoader().load(str(ckpt_path), ctx=ctx, components=components)
+        out = ShrimpCheckpointLoader().load(str(ckpt_path), ctx=ctx, components=components)
         assert out["status"] == "loaded", out
         _assert_states_equal(
             components.model.trainer.train_state,
-            HexfieldTrainState(),
+            ShrimpTrainState(),
             "old-format resume must reset to a FRESH governor",
         )
         print("[4b] resume from a train_state-less checkpoint -> FRESH governor, no crash")

@@ -1,7 +1,7 @@
-"""Radius-4 subprocess smoke: rust == serial under HEXFIELD_SUPPORT_RADIUS=4 on
+"""Radius-4 subprocess smoke: rust == serial under SHRIMP_SUPPORT_RADIUS=4 on
 REAL radius-8 main_2 shards (the support legitimately shrinks). No injection — this
 checks the closed-form legality + halo shrink agree between the Rust twin and the
-Python oracle when both read radius 4 at import. Run via env HEXFIELD_SUPPORT_RADIUS=4.
+Python oracle when both read radius 4 at import. Run via env SHRIMP_SUPPORT_RADIUS=4.
 """
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from pathlib import Path
 
 import numpy as np
 
-from hexfield.expand_backends import _resolve_support_radius, expand_rows
-from hexfield.support import _SUPPORT_RADIUS
-from hexfield.window import concat_packed, load_packed_shard
+from shrimp.expand_backends import _resolve_support_radius, expand_rows
+from shrimp.support import _SUPPORT_RADIUS
+from shrimp.window import concat_packed, load_packed_shard
 
 SAMPLES = Path(__file__).resolve().parent / "_scratch" / "p5" / "samples"
 
@@ -38,7 +38,7 @@ def rows_equal(a, b):
 
 
 def main():
-    print("env radius:", os.environ.get("HEXFIELD_SUPPORT_RADIUS"))
+    print("env radius:", os.environ.get("SHRIMP_SUPPORT_RADIUS"))
     print("support._SUPPORT_RADIUS:", _SUPPORT_RADIUS)
     print("rust resolve_support_radius:", _resolve_support_radius())
     assert _SUPPORT_RADIUS == 4 and _resolve_support_radius() == 4, "radius not 4"

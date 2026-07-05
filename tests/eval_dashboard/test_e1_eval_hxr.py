@@ -13,7 +13,7 @@ instead of being silently swallowed.
 CPU-only, no torch, no GPU.
 
 Run:
-  PYTHONPATH=packages/hexfield/python python -m pytest tests/eval_dashboard/test_e1_eval_hxr.py
+  PYTHONPATH=packages/shrimp/python python -m pytest tests/eval_dashboard/test_e1_eval_hxr.py
 """
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ from pathlib import Path
 
 from hexo_runner.records import HexoRecordFile
 
-from hexfield.eval_arena import _write_eval_hxr
-from hexfield.geometry import pack_action_id
+from shrimp.eval_arena import _write_eval_hxr
+from shrimp.geometry import pack_action_id
 
 
 class _StubGame:
@@ -151,7 +151,7 @@ def test_zero_record_is_loud():
     ]
 
     handler = _CaptureHandler()
-    logger = logging.getLogger("hexfield.eval")
+    logger = logging.getLogger("shrimp.eval")
     logger.addHandler(handler)
     prev_level = logger.level
     logger.setLevel(logging.WARNING)

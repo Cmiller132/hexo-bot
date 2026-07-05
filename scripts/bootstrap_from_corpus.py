@@ -1,4 +1,4 @@
-"""Phase-A BC bootstrap writer (spec §7): HF corpus -> hexfield_compact_v1 shards.
+"""Phase-A BC bootstrap writer (spec §7): HF corpus -> shrimp_compact_v1 shards.
 
 Replays every corpus game through hexo_engine (legality/terminal validated,
 games failing validation are skipped and counted), builds one decision row per
@@ -6,7 +6,7 @@ placement with a ONE-HOT policy on the played move, hard z from the engine
 winner, STV masked (no search values; horizons stored but empty), moves_left
 real. Game-level md5 train/val split. Multi-game shards (~64 games each).
 
-Imports hexfield via PYTHONPATH (hexfield is never pip-installed — see README).
+Imports shrimp via PYTHONPATH (shrimp is never pip-installed — see README).
 Usually invoked through scripts/prefit_launch.sh, but can be run directly:
     python scripts/bootstrap_from_corpus.py --corpus <corpus.jsonl> --out data/prefit
 """
@@ -20,17 +20,17 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "packages" / "hexfield" / "python"))
+sys.path.insert(0, str(REPO / "packages" / "shrimp" / "python"))
 
 from hexo_engine import api
 from hexo_engine.types import AxialCoord, PlacementAction
 
-from hexfield.engine_facts import player_int
-from hexfield.features import record_phase, record_player, window_scan
-from hexfield.geometry import pack_action_id
-from hexfield.samples import STV_HORIZONS, HexfieldSampleData, finalize_game_samples
-from hexfield.shards import write_compact_shard
-from hexfield.support import build_support
+from shrimp.engine_facts import player_int
+from shrimp.features import record_phase, record_player, window_scan
+from shrimp.geometry import pack_action_id
+from shrimp.samples import STV_HORIZONS, ShrimpSampleData, finalize_game_samples
+from shrimp.shards import write_compact_shard
+from shrimp.support import build_support
 
 VAL_PERCENT = 5
 GAMES_PER_SHARD = 64
@@ -41,7 +41,7 @@ def replay_game(moves: list[list[int]], winner: int, game_hash: str):
 
     Facts are built INCREMENTALLY from the tested derivations (record phase /
     player from ordinal position; hot / standing-win via `window_scan`, both
-    property-tested ≡ the engine in tests/test_hexfield_features.py) — the
+    property-tested ≡ the engine in tests/test_shrimp_features.py) — the
     engine still rules on every placement's legality and on the terminal
     winner, but the heavyweight `to_python_state` mirror never runs.
     """
@@ -56,7 +56,7 @@ def replay_game(moves: list[list[int]], winner: int, game_hash: str):
         # The one-hot policy target below is projected onto the featurizer's
         # radius-limited legal prefix at train time (expand_sample -> _legal_slot);
         # a target outside that prefix is a hard ValueError. build_support here reads
-        # the SAME HEXFIELD_SUPPORT_RADIUS the featurizer uses, so this is the exact
+        # the SAME SHRIMP_SUPPORT_RADIUS the featurizer uses, so this is the exact
         # membership check expand_sample will apply. Human corpus games occasionally
         # play far from the cluster; at small radii those cells fall outside the halo.
         # Reject the whole game (per-game bookkeeping in finalize_game_samples couples
@@ -68,7 +68,7 @@ def replay_game(moves: list[list[int]], winner: int, game_hash: str):
         own_hot, opp_hot, own_win, opp_win = window_scan(
             tuple(records), current, len(records)
         )
-        sample = HexfieldSampleData(
+        sample = ShrimpSampleData(
             game_id=game_hash,
             turn_index=ply,
             current_player=current,
@@ -104,7 +104,7 @@ def replay_game(moves: list[list[int]], winner: int, game_hash: str):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", default=str(REPO / "data" / "hexo-bootstrap-corpus" / "hexo_human_corpus.jsonl"))
-    parser.add_argument("--out", default=str(REPO / "data" / "hexfield_bootstrap"))
+    parser.add_argument("--out", default=str(REPO / "data" / "shrimp_bootstrap"))
     parser.add_argument("--limit", type=int, default=0, help="games (0 = all)")
     args = parser.parse_args()
 

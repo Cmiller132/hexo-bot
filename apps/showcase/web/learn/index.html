@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hexfield &mdash; how it works</title>
-<meta name="description" content="How hexfield works: an AlphaZero-family agent for Hexo with a graph-style network, Gumbel MCTS, and self-play training.">
+<title>Shrimp &mdash; how it works</title>
+<meta name="description" content="How Shrimp works: an AlphaZero-family agent for Hexo with a graph-style network, Gumbel MCTS, and self-play training.">
 <link rel="stylesheet" href="learn.css">
 </head>
 <body>
@@ -23,10 +23,10 @@
 
 <main class="learn-main">
 
-<h1>hexfield <span class="h-dim">&mdash; how it works</span></h1>
+<h1>Shrimp <span class="h-dim">&mdash; how it works</span></h1>
 
 <p class="lede">
-The bot you&rsquo;re playing is hexfield, an AlphaZero-family agent. One neural
+The bot you&rsquo;re playing is Shrimp, an AlphaZero-family agent. One neural
 network reads a position and returns a <em>policy</em> (a distribution over
 legal moves) and a <em>value</em> (who is winning); a Gumbel Monte-Carlo tree
 search uses that network to look ahead and returns a move stronger than the raw
@@ -48,16 +48,16 @@ opponents and does not gate or roll back a checkpoint.
 </p>
 
 <figure class="fig fig-wide" id="system-map">
-  <figcaption>fig 1 &middot; <b>the hexfield system</b> &middot; hover or focus a node for detail &middot; click to open its page</figcaption>
+  <figcaption>fig 1 &middot; <b>the Shrimp system</b> &middot; hover or focus a node for detail &middot; click to open its page</figcaption>
 
   <!-- Node subtitles and readout numbers below are sourced from:
        active_games = 192, search_visits = 1024, pcr_fast_visits = 192,
-       pcr_full_proportion = 0.33, gumbel_m = 32   (configs/hexfield_main_7.toml)
+       pcr_full_proportion = 0.33, gumbel_m = 32   (configs/shrimp_main_7.toml)
        params 8,128,812                            (models/MODEL_CARD.md)
        .npz shards + .hxr records under selfplay/  (README.md, "run directory")
        eval: games_budget = 128, full_search_visits = 512, every_n_epochs = 5
-                                                   (configs/hexfield_main_7.toml [model.config.multi_stage_eval])
-       informational eval verdict                  (docs/HEXFIELD.md, "Checkpoint and eval") -->
+                                                   (configs/shrimp_main_7.toml [model.config.multi_stage_eval])
+       informational eval verdict                  (docs/SHRIMP.md, "Checkpoint and eval") -->
   <svg class="sysmap" viewBox="0 0 860 378" role="group" aria-label="System map: self-play, replay window, training, checkpoint, evaluation, and the serving path between search and network">
     <defs>
       <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -138,7 +138,7 @@ opponents and does not gate or roll back a checkpoint.
     </a>
 
     <a class="map-node" href="network.html#support" tabindex="0" data-k="network"
-       data-info="HexfieldNet: a graph-style net over the variable-size support set, with 15 features per cell, direction-typed hex convolutions interleaved with global attention, and policy / value / auxiliary heads. 8,128,812 parameters.">
+       data-info="ShrimpNet: a graph-style net over the variable-size support set, with 15 features per cell, direction-typed hex convolutions interleaved with global attention, and policy / value / auxiliary heads. 8,128,812 parameters.">
       <rect x="278" y="232" width="120" height="88"/>
       <text class="nt" x="338" y="268" text-anchor="middle">network</text>
       <text class="ns" x="338" y="286" text-anchor="middle">8.1M params</text>
@@ -155,17 +155,17 @@ opponents and does not gate or roll back a checkpoint.
 <h2 id="numbers"><span class="sec-no">02</span>numbers at a glance</h2>
 
 <p>
-The shipped recipe is <code>configs/hexfield_main_7.toml</code> plus four
+The shipped recipe is <code>configs/shrimp_main_7.toml</code> plus four
 environment variables that fix the network geometry. Every figure below is read
 from the code or config.
 </p>
 
 <div class="numstrip">
-  <!-- src: models/MODEL_CARD.md "Parameters: 8,128,812 (~8.1 M)"; docs/HEXFIELD.md -->
+  <!-- src: models/MODEL_CARD.md "Parameters: 8,128,812 (~8.1 M)"; docs/SHRIMP.md -->
   <div class="ns-cell"><div class="ns-n">8,128,812</div><div class="ns-l">parameters</div></div>
-  <!-- src: configs/hexfield_main_7.toml header HEXFIELD_CHANNELS=192; constants.py CHANNELS -->
+  <!-- src: configs/shrimp_main_7.toml header SHRIMP_CHANNELS=192; constants.py CHANNELS -->
   <div class="ns-cell"><div class="ns-n">192</div><div class="ns-l">trunk channels</div></div>
-  <!-- src: configs/hexfield_main_7.toml header HEXFIELD_TRUNK=CCACCACCACCACCA (10 C + 5 A) -->
+  <!-- src: configs/shrimp_main_7.toml header SHRIMP_TRUNK=CCACCACCACCACCA (10 C + 5 A) -->
   <div class="ns-cell"><div class="ns-n">15 <small>blocks &middot; CC&middot;A &times;5</small></div><div class="ns-l">trunk &middot; 10 conv + 5 attn</div></div>
   <!-- src: constants.py HEAD_DIM = CHANNELS // ATTENTION_HEADS (192/3 = 64); config header "heads 3x64" -->
   <div class="ns-cell"><div class="ns-n">3 &times; 64</div><div class="ns-l">attention heads &times; dim</div></div>
@@ -175,15 +175,15 @@ from the code or config.
   <div class="ns-cell"><div class="ns-n">8</div><div class="ns-l">summary tokens</div></div>
   <!-- src: constants.py VALUE_BINS = 65 -->
   <div class="ns-cell"><div class="ns-n">65</div><div class="ns-l">value bins</div></div>
-  <!-- src: README.md / models/MODEL_CARD.md HEXFIELD_SUPPORT_RADIUS=4; constants.py LEGAL_RADIUS = 8 -->
+  <!-- src: README.md / models/MODEL_CARD.md SHRIMP_SUPPORT_RADIUS=4; constants.py LEGAL_RADIUS = 8 -->
   <div class="ns-cell"><div class="ns-n">4 <small>of legal 8</small></div><div class="ns-l">support radius</div></div>
-  <!-- src: configs/hexfield_main_7.toml gumbel_m = 32 -->
+  <!-- src: configs/shrimp_main_7.toml gumbel_m = 32 -->
   <div class="ns-cell"><div class="ns-n">32</div><div class="ns-l">gumbel root candidates</div></div>
-  <!-- src: configs/hexfield_main_7.toml search_visits = 1024, pcr_full_proportion = 0.33, pcr_fast_visits = 192 -->
+  <!-- src: configs/shrimp_main_7.toml search_visits = 1024, pcr_full_proportion = 0.33, pcr_fast_visits = 192 -->
   <div class="ns-cell"><div class="ns-n">1024 <small>full &middot; 192 fast</small></div><div class="ns-l">self-play visits (33% full)</div></div>
-  <!-- src: configs/hexfield_main_7.toml active_games = 192 -->
+  <!-- src: configs/shrimp_main_7.toml active_games = 192 -->
   <div class="ns-cell"><div class="ns-n">192</div><div class="ns-l">concurrent games</div></div>
-  <!-- src: configs/hexfield_main_7.toml [model.config.multi_stage_eval] games_budget = 128, full_search_visits = 512, every_n_epochs = 5 -->
+  <!-- src: configs/shrimp_main_7.toml [model.config.multi_stage_eval] games_budget = 128, full_search_visits = 512, every_n_epochs = 5 -->
   <div class="ns-cell"><div class="ns-n">128 <small>@ 512 visits</small></div><div class="ns-l">eval games / 5 epochs</div></div>
 </div>
 
@@ -192,14 +192,14 @@ Search budgets differ by role: self-play full searches use
 <b>1024 visits</b>, self-play fast moves <b>192</b>, and the evaluation
 arena <b>512</b>. A stronger net needs fewer visits for equal move
 quality, so these budgets are recalibrated as the run matures.
-<!-- src: configs/hexfield_main_7.toml search_visits/pcr_fast_visits/full_search_visits + header comment -->
+<!-- src: configs/shrimp_main_7.toml search_visits/pcr_fast_visits/full_search_visits + header comment -->
 </div>
 
 <h2 id="unusual"><span class="sec-no">03</span>properties of the design</h2>
 
 <p>
 <b>Variable-size input.</b> The board is unbounded and a game can extend
-anywhere on the grid, so a fixed-size input plane is not usable. hexfield
+anywhere on the grid, so a fixed-size input plane is not usable. Shrimp
 builds a <span class="term" title="stones + legal cells + a one-cell halo">support set</span>
 (stones, legal moves, and a one-cell halo) and feeds the network a
 variable-size graph that grows and shrinks with the game. Cells are ordered
@@ -219,7 +219,7 @@ attention over the support cells plus 8 learned summary tokens, with a
 relative-position bias keyed on the exact hex offset between two cells (a
 217-offset disk, then ring buckets). A threat forming on the far side of the
 board is visible after one attention block.
-<!-- src: constants.py BIAS_EXACT_ROWS = 217, NUM_TOKENS = 8; docs/HEXFIELD.md "Attention blocks" -->
+<!-- src: constants.py BIAS_EXACT_ROWS = 217, NUM_TOKENS = 8; docs/SHRIMP.md "Attention blocks" -->
 <a href="network.html#attention">How attention handles hex geometry &rarr;</a>
 </p>
 
@@ -232,7 +232,7 @@ and the played move improves on the raw policy in expectation even at small
 budgets. The improved root distribution is the policy training target
 (<code>policy_target&nbsp;=&nbsp;"gumbel"</code>), and threat-space search
 force-includes tactical cells so the candidate draw cannot miss a
-win-in-one. <!-- src: configs/hexfield_main_7.toml gumbel_m = 32, policy_target = "gumbel", tss_enabled = true -->
+win-in-one. <!-- src: configs/shrimp_main_7.toml gumbel_m = 32, policy_target = "gumbel", tss_enabled = true -->
 <a href="search.html#gumbel">How the search works &rarr;</a>
 </p>
 

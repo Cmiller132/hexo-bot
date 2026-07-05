@@ -69,10 +69,10 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _hexfield_run(tmp_path: Path, name: str, epoch: int) -> Path:
-    """Minimal hexfield-lineage run dir with an active epoch stage."""
+def _shrimp_run(tmp_path: Path, name: str, epoch: int) -> Path:
+    """Minimal shrimp-lineage run dir with an active epoch stage."""
     run_dir = tmp_path / "runs" / name
-    _write_json(run_dir / "manifest.json", {"model": {"name": "hexfield"}})
+    _write_json(run_dir / "manifest.json", {"model": {"name": "shrimp"}})
     _write_jsonl(
         run_dir / "diagnostics" / "events.jsonl",
         [
@@ -83,25 +83,25 @@ def _hexfield_run(tmp_path: Path, name: str, epoch: int) -> Path:
     return run_dir
 
 
-def test_hexfield_sub_phases_from_segment_files(tmp_path: Path, monkeypatch: Any) -> None:
-    """hexfield epoch tail: selfplay completed -> selecting window -> training
+def test_shrimp_sub_phases_from_segment_files(tmp_path: Path, monkeypatch: Any) -> None:
+    """shrimp epoch tail: selfplay completed -> selecting window -> training
     (with elapsed/typical progress) -> evaluating, from the per-segment files."""
     monkeypatch.chdir(tmp_path)
-    run_dir = _hexfield_run(tmp_path, "hexfield_phase", 32)
+    run_dir = _shrimp_run(tmp_path, "shrimp_phase", 32)
     diagnostics = run_dir / "diagnostics"
     _write_json(
-        diagnostics / "hexfield.selfplay.live.json",
+        diagnostics / "shrimp.selfplay.live.json",
         {"status": "completed", "epoch": 32, "timestamp": 0.0},
     )
-    _write_json(diagnostics / "hexfield.selfplay.epoch_000032.json", {"epoch": 32, "status": "completed"})
+    _write_json(diagnostics / "shrimp.selfplay.epoch_000032.json", {"epoch": 32, "status": "completed"})
 
     # No select output yet -> the brief window selection.
     status = web._training_live_status(run_dir)
     assert status["sub_phase"] == "selecting window"
 
     # Select file present -> training, with elapsed + typical from epoch 31.
-    _write_json(diagnostics / "hexfield.select.epoch_000032.json", {"epoch": 32})
-    _write_json(diagnostics / "hexfield.training.epoch_000031.json", {"epoch": 31, "train_seconds": 441.5})
+    _write_json(diagnostics / "shrimp.select.epoch_000032.json", {"epoch": 32})
+    _write_json(diagnostics / "shrimp.training.epoch_000031.json", {"epoch": 31, "train_seconds": 441.5})
     status = web._training_live_status(run_dir)
     assert status["sub_phase"] == "training"
     assert "typical" in status["sub_phase_detail"]
@@ -111,7 +111,7 @@ def test_hexfield_sub_phases_from_segment_files(tmp_path: Path, monkeypatch: Any
     assert progress["elapsed_seconds"] >= 0.0
 
     # Training file present -> the audit/eval/checkpoint tail.
-    _write_json(diagnostics / "hexfield.training.epoch_000032.json", {"epoch": 32, "train_seconds": 430.0})
+    _write_json(diagnostics / "shrimp.training.epoch_000032.json", {"epoch": 32, "train_seconds": 430.0})
     status = web._training_live_status(run_dir)
     assert status["sub_phase"] == "evaluating"
     assert "phase_progress" not in status
@@ -121,12 +121,12 @@ def test_supervisor_halted_reads_stalled_not_running(tmp_path: Path, monkeypatch
     """A tripped breaker (halted flag; EXIT/HALT tail in supervisor.log) must not
     read as "running": stage_status becomes stalled and no sub-phase is derived."""
     monkeypatch.chdir(tmp_path)
-    run_dir = _hexfield_run(tmp_path, "hexfield_halted", 31)
+    run_dir = _shrimp_run(tmp_path, "shrimp_halted", 31)
     _write_json(
-        run_dir / "diagnostics" / "hexfield.selfplay.live.json",
+        run_dir / "diagnostics" / "shrimp.selfplay.live.json",
         {"status": "completed", "epoch": 31, "timestamp": 0.0},
     )
-    _write_json(run_dir / "diagnostics" / "hexfield.selfplay.epoch_000031.json", {"epoch": 31})
+    _write_json(run_dir / "diagnostics" / "shrimp.selfplay.epoch_000031.json", {"epoch": 31})
     (run_dir / "supervisor.log").write_text(
         "[2026-07-04T18:53:57Z] RESUME from epoch_000030.pt\n"
         "[2026-07-04T18:53:57Z] LAUNCH out=train.out.log\n"
@@ -150,7 +150,7 @@ def test_supervisor_halted_reads_stalled_not_running(tmp_path: Path, monkeypatch
 
 def test_supervisor_up_after_launch(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.chdir(tmp_path)
-    run_dir = _hexfield_run(tmp_path, "hexfield_up", 32)
+    run_dir = _shrimp_run(tmp_path, "shrimp_up", 32)
     (run_dir / "supervisor.log").write_text(
         "[2026-07-04T18:54:02Z] EXIT pid=74331 code=1 uptime=5s\n"
         "[2026-07-04T19:12:26Z] RESUME from epoch_000030.pt\n"
@@ -166,7 +166,7 @@ def test_supervisor_up_after_launch(tmp_path: Path, monkeypatch: Any) -> None:
 
 def test_latest_checkpoint_summary(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.chdir(tmp_path)
-    run_dir = _hexfield_run(tmp_path, "hexfield_ckpt", 32)
+    run_dir = _shrimp_run(tmp_path, "shrimp_ckpt", 32)
     ckpts = run_dir / "checkpoints"
     ckpts.mkdir(parents=True)
     (ckpts / "epoch_000030.pt").write_bytes(b"0")
@@ -184,10 +184,10 @@ def test_epoch_history_marks_in_flight_epoch(tmp_path: Path, monkeypatch: Any) -
     """The currently-running epoch gets a provisional row (status in_progress +
     live self-play counters); without live_status behavior is unchanged."""
     monkeypatch.chdir(tmp_path)
-    run_dir = _hexfield_run(tmp_path, "hexfield_inflight", 32)
+    run_dir = _shrimp_run(tmp_path, "shrimp_inflight", 32)
     import time as _time
     _write_json(
-        run_dir / "diagnostics" / "hexfield.selfplay.live.json",
+        run_dir / "diagnostics" / "shrimp.selfplay.live.json",
         {
             "status": "running",
             "epoch": 32,
@@ -212,15 +212,15 @@ def test_epoch_history_marks_in_flight_epoch(tmp_path: Path, monkeypatch: Any) -
 
 def test_training_epochs_strip_marks_in_flight_epoch(tmp_path: Path, monkeypatch: Any) -> None:
     monkeypatch.chdir(tmp_path)
-    run_dir = _hexfield_run(tmp_path, "hexfield_strip", 32)
+    run_dir = _shrimp_run(tmp_path, "shrimp_strip", 32)
     diagnostics = run_dir / "diagnostics"
     import time as _time
     _write_json(
-        diagnostics / "hexfield.selfplay.live.json",
+        diagnostics / "shrimp.selfplay.live.json",
         {"status": "running", "epoch": 32, "timestamp": _time.time(), "games_finished": 5, "requested_games": 256},
     )
     # Epoch 31 finished: segment file + merged epoch json -> never marked.
-    _write_json(diagnostics / "hexfield.selfplay.epoch_000031.json", {"epoch": 31, "status": "completed"})
+    _write_json(diagnostics / "shrimp.selfplay.epoch_000031.json", {"epoch": 31, "status": "completed"})
     _write_json(
         diagnostics / "epoch_000031.json",
         {"status": "completed", "metadata": {"result": {"epoch": 31}}},
