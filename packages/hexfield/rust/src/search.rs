@@ -2065,7 +2065,9 @@ const KNOWN_DIVERGENCE_KEYS: &[&str] = &[
     "gumbel_nonroot_select",
     "gumbel_c_visit",
     "gumbel_c_scale",
+    "gumbel_target_c_scale",
     "gumbel_m",
+    "gumbel_draw_temperature",
     "gumbel_target_min_visits",
     "gumbel_play_prune",
 ];
@@ -2153,8 +2155,15 @@ fn resolve_divergences(
         if let Some(v) = overrides.get_item("gumbel_c_scale")? {
             dv.gumbel_c_scale = v.extract()?;
         }
+        // Export-only target σ override (absent => target keeps gumbel_c_scale).
+        if let Some(v) = overrides.get_item("gumbel_target_c_scale")? {
+            dv.gumbel_target_c_scale = Some(v.extract()?);
+        }
         if let Some(v) = overrides.get_item("gumbel_m")? {
             dv.gumbel_m = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("gumbel_draw_temperature")? {
+            dv.gumbel_draw_temperature = v.extract()?;
         }
         if let Some(v) = overrides.get_item("gumbel_target_min_visits")? {
             dv.gumbel_target_min_visits = v.extract()?;
@@ -2446,11 +2455,15 @@ fn build_search_result_payload_native(
     // flag is off, none of these keys appear.
     let div = &search.divergences;
     let gumbel = if div.gumbel_target {
+        // Export-only σ softening: gumbel_target_c_scale overrides c_scale in the
+        // target's σ call ONLY, so π' can be flattened without touching the SH
+        // ranking or interior selection (both keep div.gumbel_c_scale).
+        let target_c_scale = div.gumbel_target_c_scale.unwrap_or(div.gumbel_c_scale);
         let (gumbel_ids, gumbel_weights, gumbel_logits) = gumbel_target_policy(
             root,
             baseline,
             div.gumbel_c_visit,
-            div.gumbel_c_scale,
+            target_c_scale,
             div.gumbel_target_min_visits,
         );
         Some(GumbelTargetNative {
@@ -3222,5 +3235,112 @@ mod fallback_tests {
                 .expect("positive mass yields a pick");
             assert_eq!(picked, S3, "only the positive-weight action is selectable");
         }
+    }
+
+    // --- Export-only σ softening: gumbel_target_c_scale (lever 1) --------------
+
+    /// Root with two searched edges carrying distinct Qs and distinct logits,
+    /// plus a root_logits map, so gumbel_target_policy exercises the full σ path.
+    /// Qs are modest (+0.2 / 0.0) so the softening test's softmax stays away from
+    /// the one-hot saturation region where a c_scale change is invisible.
+    fn target_root() -> RustNode {
+        // edge A1: 5 visits, sum 1.0 => Q=+0.2 ; edge A2: 4 visits, sum 0.0 =>
+        // Q=0.0. Distinct Qs so a smaller c_scale provably flattens the target.
+        let mut root = node(
+            vec![edge(A1, 0.6, 5, 1.0), edge(A2, 0.4, 4, 0.0)],
+            Vec::new(),
+        );
+        // Distinct logits (raw, unconstrained sign) keyed by action id.
+        root.root_logits = Some([(A1, 0.2f32), (A2, -0.2f32)].into_iter().collect());
+        root
+    }
+
+    #[test]
+    fn target_c_scale_unset_is_bit_identical_to_gumbel_c_scale() {
+        // The resolver `gumbel_target_c_scale.unwrap_or(gumbel_c_scale)` must make
+        // an unset override bit-identical to computing the target with the plain
+        // gumbel_c_scale — no drift from the default path.
+        let root = target_root();
+        let c_visit = 50.0f32;
+        let c_scale = 1.0f32;
+        // Reference: the exporter called with c_scale directly.
+        let (ref_ids, ref_w, ref_l) = gumbel_target_policy(&root, None, c_visit, c_scale, 1);
+        // Resolved value when the override is None (mirrors search.rs call site).
+        let div = Divergences::gumbel(); // gumbel_target_c_scale defaults to None
+        let resolved = div.gumbel_target_c_scale.unwrap_or(div.gumbel_c_scale);
+        assert_eq!(resolved, c_scale, "unset override resolves to gumbel_c_scale");
+        let (ids, w, l) = gumbel_target_policy(&root, None, c_visit, resolved, 1);
+        assert_eq!(ids, ref_ids);
+        assert_eq!(l, ref_l, "logits output is independent of c_scale");
+        // Bit-identical weights (same inputs => same float ops).
+        assert_eq!(w, ref_w, "unset target c_scale must be bit-identical");
+    }
+
+    #[test]
+    fn target_c_scale_softens_and_matches_reference_softmax() {
+        // With gumbel_target_c_scale = 0.35 the exported weights must equal an
+        // independent softmax(l + σ(q, max_n, c_visit, 0.35)) over the support and
+        // be strictly flatter (lower top-1 mass) than the c_scale=1.0 target.
+        // c_visit=1.0 keeps the σ gain small enough that neither target saturates
+        // to a one-hot (where a c_scale change would be invisible in f32).
+        let root = target_root();
+        let c_visit = 1.0f32;
+        let soft = 0.35f32;
+
+        // Exporter output at the softened scale.
+        let (ids, weights, _logits) = gumbel_target_policy(&root, None, c_visit, soft, 1);
+
+        // Independent reference over the same (ascending action_id) support.
+        let logit_map = root.root_logits.clone().unwrap();
+        let (completed, v_mix) = gumbel_completed_q(&root, &logit_map);
+        let max_n = root.edges.iter().map(|e| e.visits).max().unwrap();
+        let mut support: Vec<PackedCoord> =
+            root.edges.iter().filter(|e| e.visits >= 1).map(|e| e.action_id).collect();
+        support.sort_unstable();
+        assert_eq!(ids, support, "exporter uses ascending action_id support");
+        let ref_scores: Vec<f32> = support
+            .iter()
+            .map(|a| {
+                let l = logit_map.get(a).copied().unwrap_or(0.0);
+                let q = completed.get(a).copied().unwrap_or(v_mix);
+                l + gumbel_sigma(q, max_n, c_visit, soft)
+            })
+            .collect();
+        let ref_weights = gumbel_softmax(&ref_scores);
+        for (w, r) in weights.iter().zip(ref_weights.iter()) {
+            assert!((w - r).abs() < 1e-6, "softened target must match reference");
+        }
+
+        // Strictly flatter than the c_scale=1.0 target: lower top-1 mass.
+        let (_full_ids, full_weights, _fl) = gumbel_target_policy(&root, None, c_visit, 1.0, 1);
+        let top1_soft = weights.iter().copied().fold(f32::MIN, f32::max);
+        let top1_full = full_weights.iter().copied().fold(f32::MIN, f32::max);
+        assert!(
+            top1_soft < top1_full,
+            "softened top-1 mass {top1_soft} must be below the c_scale=1.0 top-1 {top1_full}"
+        );
+    }
+
+    /// The strict KNOWN_DIVERGENCE_KEYS gate must accept every key the python
+    /// side emits — the 2026-07-04 deploy crashed because the new lever keys
+    /// were parsed but missing from the whitelist. Exercises the real pyo3
+    /// resolve path with both new keys present.
+    #[test]
+    fn resolve_divergences_accepts_the_new_lever_keys() {
+        Python::initialize();
+        Python::attach(|py| {
+            let overrides = PyDict::new(py);
+            overrides.set_item("gumbel_target_c_scale", 0.35f32).unwrap();
+            overrides.set_item("gumbel_draw_temperature", 1.0f32).unwrap();
+            let dv = resolve_divergences(None, Some(&overrides))
+                .expect("new lever keys must pass the known-keys gate");
+            assert_eq!(dv.gumbel_target_c_scale, Some(0.35));
+            assert_eq!(dv.gumbel_draw_temperature, 1.0);
+
+            // The gate itself still rejects a genuinely unknown key.
+            let bogus = PyDict::new(py);
+            bogus.set_item("gumbel_bogus_lever", 1.0f32).unwrap();
+            assert!(resolve_divergences(None, Some(&bogus)).is_err());
+        });
     }
 }

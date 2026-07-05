@@ -38,10 +38,11 @@ device = "cuda"
 search_visits = 1024
 pcr_full_proportion = 0.33
 pcr_fast_visits = 192
-# Gentle exploration on the value-only Fast plies (67% of moves): T=0.1 samples
-# the guard-filtered delta-visit histogram at exponent 1/T=10 (near-argmax). At
-# T>0 Fast no longer takes the greedy LCB pick / ml_final_pick (those need T==0).
-pcr_fast_temperature = 0.1
+# Keep this at 0.0: Fast moves take the greedy LCB pick (T==0), ml_final_pick
+# engaged. A paired self-play probe (same net/seed) showed even T=0.1 on the
+# value-only Fast plies induces a P0 outcome skew (+7pp) that poisons the value
+# labels (z targets) for every training row.
+pcr_fast_temperature = 0.0
 active_games = 192
 c_puct = 1.5
 # In-flight batch depth for the self-play serve loop. At this channel width the
@@ -77,8 +78,8 @@ root_policy_temperature = 1.1
 root_policy_temperature_early = 1.15
 root_policy_temperature_halflife = 19.0
 # ml_* selection levers apply only on the T==0 paths (fast/eval greedy pick). With
-# pcr_fast_temperature = 0.1 above, Fast moves no longer hit T==0, so ml_final_pick
-# now scopes to the eval/lockstep arenas only.
+# pcr_fast_temperature = 0.0 above, Fast moves take the T==0 pick, so ml_final_pick
+# covers them as well as the eval/lockstep arenas.
 ml_two_sided = false
 ml_final_pick_band = 0.08
 max_game_plies = 256
@@ -91,7 +92,15 @@ gumbel_nonroot_select = true
 gumbel_target_enabled = true
 gumbel_c_visit = 50.0
 gumbel_c_scale = 1.0
+# Softens ONLY the exported π' target: σ-gain drops from ~278x to ~97x (published
+# Gumbel-AZ practice is ~80x). Search behavior (SH ranking, interior select) is
+# unchanged — it keeps gumbel_c_scale = 1.0.
+gumbel_target_c_scale = 0.35
 gumbel_m = 32
+# Widens the top-m candidate DRAW only: candidates sample from softmax(logits/1.5)
+# without replacement. The SH ranking, the played move, and the exported target
+# all still use raw logits; 1.0 (or unset) = the plain logit+g draw.
+gumbel_draw_temperature = 1.5
 gumbel_target_min_visits = 1
 gumbel_play_prune = true
 export_root_prior_logits = true

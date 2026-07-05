@@ -95,7 +95,17 @@ class SelfplayConfig:
     gumbel_nonroot_select: bool = False
     gumbel_c_visit: float = 50.0
     gumbel_c_scale: float = 1.0
+    # Export-only σ softening for the improved-policy target π'. When set, this
+    # c_scale overrides gumbel_c_scale in the exported target's σ call ONLY (the
+    # in-search SH ranking and interior selection keep gumbel_c_scale). None =>
+    # the target uses gumbel_c_scale, so behavior is unchanged.
+    gumbel_target_c_scale: float | None = None
     gumbel_m: int = 16
+    # Draw temperature τ applied to the LOGIT only in the Gumbel-Top-m draw sort
+    # (candidate set ~ softmax(logits/τ) without replacement). 1.0 (or <=0) = the
+    # current logit+g draw; τ>1 widens the sampled candidate set. Affects ONLY the
+    # draw — the SH σ ranking, exported target, and TSS force-include use raw logits.
+    gumbel_draw_temperature: float = 1.0
     gumbel_target_min_visits: int = 1
     # Play-policy quota prune: sample the PLAYED move (Full moves, T>0) from the
     # delta-visit histogram with round-0 quota losers zeroed — removes the SH
@@ -416,8 +426,18 @@ def build_divergence_overrides(sp: SelfplayConfig, *, disabled: bool = False) ->
         "gumbel_c_visit": float(sp.gumbel_c_visit),
         "gumbel_c_scale": float(sp.gumbel_c_scale),
         "gumbel_m": int(sp.gumbel_m),
+        # Draw temperature is always concrete (default 1.0 = today's draw).
+        "gumbel_draw_temperature": float(sp.gumbel_draw_temperature),
         "gumbel_target_min_visits": int(sp.gumbel_target_min_visits),
         "gumbel_play_prune": bool(sp.gumbel_play_prune),
+        # Export-only target σ override: emitted ONLY when set so an unset field
+        # leaves the Rust default (target keeps gumbel_c_scale) untouched. This is
+        # the sole override key that may be absent from the dict.
+        **(
+            {"gumbel_target_c_scale": float(sp.gumbel_target_c_scale)}
+            if sp.gumbel_target_c_scale is not None
+            else {}
+        ),
     }
 
 

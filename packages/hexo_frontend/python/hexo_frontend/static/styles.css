@@ -1094,6 +1094,16 @@ body.bot-thinking .legal {
   background: rgba(255, 206, 86, 0.10);
 }
 
+/* Supervisor alarm pill: a tripped breaker / dead trainer must be the loudest
+   thing in the band — it silently blocks relaunches while the stage still
+   reads "running". */
+.hist-pill-halt {
+  border-color: rgba(255, 99, 132, 0.7);
+  background: rgba(255, 99, 132, 0.14);
+  color: #ffd9e0;
+  font-weight: 700;
+}
+
 /* R6: fast-poll freshness readout ("live · updated Ns ago"). Its text belongs
    to the 1s histUpdateLiveTick interval (textContent only), so it stays empty
    — and collapses — until the first successful /api/training/live poll. */
@@ -1460,6 +1470,18 @@ body.bot-thinking .legal {
 .hist-epoch-tag-pending {
   border: 1px solid rgba(143, 155, 170, 0.3);
   color: var(--muted);
+}
+
+/* Provisional in-flight epoch row: accent tag + pulsing to read as "live,
+   numbers still moving", clearly distinct from saved/pending. */
+.hist-epoch-tag-running {
+  border: 1px solid rgba(39, 215, 230, 0.55);
+  color: #aef2f8;
+  animation: histPulse 2.8s ease-in-out infinite;
+}
+
+.hist-epoch-inprogress .hist-epoch-sp {
+  color: var(--text);
 }
 
 .hist-epoch-chevron {

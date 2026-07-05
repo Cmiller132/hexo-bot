@@ -927,6 +927,10 @@ function histLiveEpochBoundary(prev, next) {
   const nextSp = next.selfplay_live ? String(next.selfplay_live.status || "") : "";
   if (nextSp === "completed" && prevSp && prevSp !== "completed") return true;
   if (String(prev.stage || "") !== String(next.stage || "")) return true;
+  // A sub-phase flip (self-play -> selecting window -> training -> evaluating)
+  // means the in-flight epoch's provisional row + segment files changed; pull
+  // the refresh forward so the epoch table tracks the phase within seconds.
+  if (String(prev.sub_phase || "") !== String(next.sub_phase || "")) return true;
   return false;
 }
 
@@ -3155,6 +3159,15 @@ function formatGib(value) {
   return `${number.toFixed(1)} GiB`;
 }
 
+// Compact age/duration: 42 -> "42s", 310 -> "5.2m", 7300 -> "2.0h".
+function formatAge(seconds) {
+  const n = asFinite(seconds);
+  if (n === null) return "--";
+  if (n < 90) return `${Math.round(n)}s`;
+  if (n < 5400) return `${(n / 60).toFixed(1)}m`;
+  return `${(n / 3600).toFixed(1)}h`;
+}
+
 // --- History v2 Region 1: status band (#histStatusBand + #histHealthDrawer). ---
 // One wrapping flex row: stage pill (+ live dot during fresh selfplay), an
 // optional inline progress bar, watchdog resource chips, learning-health stat
@@ -3187,16 +3200,48 @@ function renderHistStatusBand(runs) {
   const liveSuffix = live
     ? ` · ${Number(live.games_finished || 0)}/${Number(live.requested_games || 0)} · ${formatRate(live.search_pos_s, "pos/s")}`
     : "";
-  parts.push(`<span id="histStagePill" class="hist-pill">${liveDot}<span>${escapeText(`${runStageLabel(status)}${liveSuffix}`)}</span></span>`);
+  // The live suffix already carries the games counter, so drop the sub-phase
+  // detail (also "games N/M") from the label while self-play is live.
+  const labelStatus = live && status && status.sub_phase_detail
+    ? { ...status, sub_phase_detail: null }
+    : status;
+  parts.push(`<span id="histStagePill" class="hist-pill">${liveDot}<span>${escapeText(`${runStageLabel(labelStatus)}${liveSuffix}`)}</span></span>`);
 
-  // Inline progress: live selfplay games are the primary signal; the
-  // training_progress file is normally absent (no current producer emits it),
-  // so it is only a fallback. No bar at all otherwise.
+  // Supervisor health. A tripped breaker (halted flag) silently blocks
+  // relaunches while events.jsonl still reads "running", so it outranks
+  // everything else in the band; a dead trainer (EXIT with no later LAUNCH)
+  // is the same signal, softer; a crashy-but-relaunching run gets a warn chip.
+  const sup = status && status.supervisor && typeof status.supervisor === "object" ? status.supervisor : null;
+  if (sup) {
+    const crashTitle = sup.last_crash ? `last crash: ${sup.last_crash}` : "";
+    if (sup.halted) {
+      parts.push(`<span class="hist-pill hist-pill-halt" title="${escapeAttr(crashTitle || "breaker tripped")}">supervisor HALTED · clear supervisor_halted.flag to resume</span>`);
+    } else if (sup.trainer_presumed_up === false) {
+      const exitAge = asFinite(sup.last_exit_age_seconds);
+      parts.push(`<span class="hist-pill hist-pill-halt" title="${escapeAttr(crashTitle || "no LAUNCH after the last EXIT in supervisor.log")}">trainer down${exitAge !== null ? ` · exited ${formatAge(exitAge)} ago` : ""}</span>`);
+    } else if (asFinite(sup.exits_last_hour) !== null && Number(sup.exits_last_hour) > 0) {
+      parts.push(histChip("restarts", `${Number(sup.exits_last_hour)} in last hour`, crashTitle, "hist-chip-warn"));
+    }
+  }
+
+  // Inline progress: live selfplay games are the primary signal; the derived
+  // phase progress (hexfield training pass: elapsed vs typical duration) comes
+  // next; the training_progress file is normally absent (no current producer
+  // emits it), so it is only a fallback. No bar at all otherwise.
   let barFrac = null;
   let barLabel = "";
   if (live && asFinite(live.requested_games) !== null && Number(live.requested_games) > 0) {
     barFrac = Number(live.games_finished || 0) / Number(live.requested_games);
     barLabel = `selfplay ${Number(live.games_finished || 0)}/${Number(live.requested_games)}`;
+  } else if (status && status.phase_progress && typeof status.phase_progress === "object"
+    && asFinite(status.phase_progress.elapsed_seconds) !== null
+    && asFinite(status.phase_progress.typical_seconds) !== null
+    && Number(status.phase_progress.typical_seconds) > 0) {
+    const pp = status.phase_progress;
+    // Typical duration is an estimate; cap the fill so a slow pass reads as
+    // "nearly there", never as a false 100%.
+    barFrac = Math.min(Number(pp.elapsed_seconds) / Number(pp.typical_seconds), 0.98);
+    barLabel = `${pp.phase || "phase"} ${formatAge(Number(pp.elapsed_seconds))} / ~${formatAge(Number(pp.typical_seconds))}`;
   } else if (status && status.training_progress && typeof status.training_progress === "object") {
     const tp = status.training_progress;
     barFrac = asFinite(tp.progress);
@@ -3233,6 +3278,22 @@ function renderHistStatusBand(runs) {
       chips.push(histChip("GPU", `${formatGib(watchdog.gpu_free_gb)} free`, gpuTitle, warnClass));
     }
     if (chips.length) parts.push(`<span id="histResources" class="hist-resources">${chips.join("")}</span>`);
+  }
+
+  // Latest checkpoint + age: the at-a-glance "how stale are the weights"
+  // readout. Warn tint once the age exceeds ~2h (a healthy epoch is well
+  // under an hour, so 2h means the run stopped making checkpoints).
+  const ckptInfo = status && status.latest_checkpoint && typeof status.latest_checkpoint === "object" ? status.latest_checkpoint : null;
+  if (ckptInfo && ckptInfo.name) {
+    const ckptAge = asFinite(ckptInfo.age_seconds);
+    const ckptStale = ckptAge !== null && ckptAge > 2 * 3600;
+    const ckptEpoch = asFinite(ckptInfo.epoch);
+    parts.push(histChip(
+      "ckpt",
+      `${ckptEpoch !== null ? `e${ckptEpoch}` : String(ckptInfo.name)} · ${ckptAge !== null ? `${formatAge(ckptAge)} ago` : "--"}`,
+      `${String(ckptInfo.name)}${ckptStale ? " — no new checkpoint for over 2h" : ""}`,
+      ckptStale ? "hist-chip-warn" : "",
+    ));
   }
 
   // Learning-health stat chips ("--" when null so a young run never throws).
@@ -4674,8 +4735,16 @@ function renderHistEpochTable(runs) {
     const live = liveRun !== null && entry.run === liveRun && liveEpoch === epoch;
     const inspected = !!(histInspectEpoch && histInspectEpoch.run === entry.run && histInspectEpoch.epoch === epoch);
     const expanded = histExpandedEpochs.has(key);
+    // Provisional in-flight row (server marks the currently-running epoch):
+    // during self-play the live counters replace the absent per-epoch stats;
+    // afterwards the phase fills the train/eval cells until real data lands.
+    const inProg = row.in_progress && typeof row.in_progress === "object" ? row.in_progress : null;
     const smp = asFinite(sp.samples_added);
-    const spText = `${smp !== null ? smp : "--"} smp · len μ${formatDecimal(sp.game_length_mean, 1)}/${formatDecimal(sp.game_length_median, 0)} · ${formatRate(sp.search_positions_per_second, "pos/s")}`;
+    let spText = `${smp !== null ? smp : "--"} smp · len μ${formatDecimal(sp.game_length_mean, 1)}/${formatDecimal(sp.game_length_median, 0)} · ${formatRate(sp.search_positions_per_second, "pos/s")}`;
+    if (inProg && inProg.selfplay_live && typeof inProg.selfplay_live === "object") {
+      const l = inProg.selfplay_live;
+      spText = `self-play ${Number(l.games_finished || 0)}/${Number(l.requested_games || 0)} games · ${formatRate(l.search_pos_s, "pos/s")} · ${formatAge(l.elapsed_seconds)}`;
+    }
     // Inline diverging win-balance bar: P0 left, draws middle, P1 right.
     const p0 = asFinite(sp.win_p0_fraction);
     const p1 = asFinite(sp.win_p1_fraction);
@@ -4689,17 +4758,31 @@ function renderHistEpochTable(runs) {
         + `<span class="hist-bal-draw" style="width:${widthOf(draw)}%"></span>`
         + `<span class="hist-bal-p1" style="width:${widthOf(p1)}%"></span></span>`;
     }
-    const trainText = training && asFinite(training.loss) !== null
+    let trainText = training && asFinite(training.loss) !== null
       ? `loss ${formatDecimal(training.loss, 3)}`
       : (training && training.status) || "pending";
+    let trainTitle = trainText;
     const evalReady = evaluation && (asFinite(evaluation.wins) !== null ||
       asFinite(evaluation.losses) !== null || asFinite(evaluation.mean_turns) !== null);
-    const evalText = evalReady
+    let evalText = evalReady
       ? `${Number(evaluation.wins || 0)}-${Number(evaluation.losses || 0)} · ${formatDecimal(evaluation.mean_turns, 1)}t`
       : (evaluation && evaluation.status) || "pending";
+    if (inProg) {
+      if (trainText === "pending" && inProg.phase === "training") {
+        trainText = "training…";
+        trainTitle = inProg.detail ? `training · ${inProg.detail}` : "training pass running";
+      } else if (trainText === "pending" && inProg.phase === "selecting window") {
+        trainText = "selecting…";
+        trainTitle = "selecting the training window";
+      }
+      if (evalText === "pending" && inProg.phase === "evaluating") evalText = "evaluating…";
+    }
     // §1.2: any truthy checkpoint path OR name counts as saved (the two
     // producer shapes are {path,bytes,modified} and {path,name}).
     const ckpt = row.checkpoint && (row.checkpoint.path || row.checkpoint.name) ? "saved" : "pending";
+    const stateTag = inProg
+      ? `<span class="hist-epoch-tag hist-epoch-tag-running" title="${escapeAttr(`Epoch ${epoch} in progress — ${inProg.phase || "running"}${inProg.detail ? ` (${inProg.detail})` : ""}; figures are provisional`)}">in progress</span>`
+      : `<span class="hist-epoch-tag hist-epoch-tag-${ckpt}">${ckpt}</span>`;
     const buffer = sp.buffer && typeof sp.buffer === "object" ? sp.buffer : null;
     const chevron = buffer
       ? `<button class="hist-epoch-chevron" type="button" data-hist-epoch-toggle="${escapeAttr(key)}" aria-expanded="${expanded ? "true" : "false"}" title="${expanded ? "Hide" : "Show"} buffer and loss detail">${expanded ? "▴" : "▾"}</button>`
@@ -4707,14 +4790,14 @@ function renderHistEpochTable(runs) {
     const runTag = multiRun
       ? `<span class="hist-epoch-run" title="${escapeAttr(entry.run)}">${escapeText(entry.run)}</span>`
       : "";
-    return `<div class="hist-epoch-row${live ? " hist-epoch-live" : ""}${inspected ? " hist-epoch-inspected" : ""}" data-hist-epoch-inspect="${escapeAttr(key)}" title="${escapeAttr(live ? `Currently running epoch — click to inspect` : `Inspect epoch ${epoch}`)}">
+    return `<div class="hist-epoch-row${live ? " hist-epoch-live" : ""}${inProg ? " hist-epoch-inprogress" : ""}${inspected ? " hist-epoch-inspected" : ""}" data-hist-epoch-inspect="${escapeAttr(key)}" title="${escapeAttr(live ? `Currently running epoch — click to inspect` : `Inspect epoch ${epoch}`)}">
       <button class="hist-epoch-num" type="button" data-hist-epoch="${epoch}" title="Filter the games list to epoch ${epoch}">e${epoch}</button>
       ${runTag}
       <span class="hist-epoch-cell hist-epoch-sp" title="${escapeAttr(spText)}">${escapeText(spText)}</span>
       ${balance}
-      <span class="hist-epoch-cell hist-epoch-train" title="${escapeAttr(trainText)}">${escapeText(trainText)}</span>
+      <span class="hist-epoch-cell hist-epoch-train" title="${escapeAttr(trainTitle)}">${escapeText(trainText)}</span>
       <span class="hist-epoch-cell hist-epoch-eval" title="${escapeAttr(evalText)}">${escapeText(evalText)}</span>
-      <span class="hist-epoch-tag hist-epoch-tag-${ckpt}">${ckpt}</span>
+      ${stateTag}
       ${chevron}
     </div>${expanded && buffer ? epochProgressDetail(buffer) : ""}`;
   }).join("");

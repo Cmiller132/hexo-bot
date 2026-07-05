@@ -143,6 +143,43 @@ def test_build_divergence_overrides() -> None:
     for key, value in on.items():
         assert value is not None, key
         assert isinstance(value, (bool, float, int)), (key, type(value))
+    # gumbel_draw_temperature is always emitted (default 1.0 = today's draw); the
+    # export-only gumbel_target_c_scale is OMITTED while unset (its Rust default
+    # keeps the target on gumbel_c_scale).
+    assert on["gumbel_draw_temperature"] == pytest.approx(1.0)
+    assert "gumbel_target_c_scale" not in on
+
+    # When set, both fields flow into the overrides dict as concrete floats.
+    from dataclasses import replace
+
+    sp2 = replace(sp, gumbel_target_c_scale=0.35, gumbel_draw_temperature=4.0)
+    on2 = build_divergence_overrides(sp2)
+    assert on2["gumbel_target_c_scale"] == pytest.approx(0.35)
+    assert on2["gumbel_draw_temperature"] == pytest.approx(4.0)
+    assert isinstance(on2["gumbel_target_c_scale"], float)
+
+
+def test_gumbel_target_c_scale_and_draw_temperature_toml_round_trip() -> None:
+    """Both new selfplay levers parse from a toml-shaped mapping and survive the
+    round-trip: the export-only gumbel_target_c_scale (float | None, default None)
+    and gumbel_draw_temperature (float, default 1.0)."""
+    from hexfield.config import parse_hexfield_config
+
+    # Defaults when absent: target override unset, draw temperature 1.0 (off).
+    default_sp = parse_hexfield_config({}).selfplay
+    assert default_sp.gumbel_target_c_scale is None
+    assert default_sp.gumbel_draw_temperature == pytest.approx(1.0)
+
+    # Explicit values round-trip through the [selfplay] section verbatim.
+    cfg = {
+        "selfplay": {
+            "gumbel_target_c_scale": 0.35,
+            "gumbel_draw_temperature": 4.0,
+        }
+    }
+    sp = parse_hexfield_config(cfg).selfplay
+    assert sp.gumbel_target_c_scale == pytest.approx(0.35)
+    assert sp.gumbel_draw_temperature == pytest.approx(4.0)
 
 
 @needs_native

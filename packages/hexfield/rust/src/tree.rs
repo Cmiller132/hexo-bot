@@ -92,8 +92,20 @@ pub struct Divergences {
     /// σ transform constants: σ(q)=(c_visit+max_b N(b))·c_scale·q.
     pub gumbel_c_visit: f32,
     pub gumbel_c_scale: f32,
+    /// Export-only σ scale override for the improved-policy target π'. When
+    /// `Some`, this c_scale replaces `gumbel_c_scale` in the σ call inside
+    /// gumbel_target_policy ONLY; the SH ranking and interior selection keep
+    /// `gumbel_c_scale`. `None` => the target uses `gumbel_c_scale` (unchanged).
+    pub gumbel_target_c_scale: Option<f32>,
     /// Candidate count m for Gumbel-Top-k (clamped to n_legal at the root).
     pub gumbel_m: u32,
+    /// Draw temperature τ applied to the LOGIT (only) in the Gumbel-Top-m draw
+    /// comparator in init_gumbel_root: sa = logit/τ + g(a). This samples the
+    /// candidate set from softmax(logits/τ) without replacement (Gumbel-top-k),
+    /// widening candidates at τ>1. Affects ONLY the draw sort — the SH σ ranking,
+    /// exported target, and TSS force-include all read raw logits. τ<=0 or 1.0 =>
+    /// exactly today's behavior.
+    pub gumbel_draw_temperature: f32,
     /// Target support floor: actions with N(a) < this are excluded from the
     /// target softmax support (then renormalized over survivors).
     pub gumbel_target_min_visits: u32,
@@ -131,7 +143,9 @@ impl Divergences {
             gumbel_nonroot_select: false,
             gumbel_c_visit: 50.0,
             gumbel_c_scale: 1.0,
+            gumbel_target_c_scale: None,
             gumbel_m: 16,
+            gumbel_draw_temperature: 1.0,
             gumbel_target_min_visits: 1,
             gumbel_play_prune: false,
         }
@@ -679,9 +693,17 @@ impl RustSearch {
                 .min(action_ids.len())
                 .max(1);
         }
+        // Draw temperature τ divides the LOGIT only in the top-m sort, sampling
+        // the candidate set from softmax(logits/τ) without replacement. τ<=0 or
+        // 1.0 leaves the draw at logit+g (today's behavior); the SH σ ranking,
+        // exported target, and TSS force-include below all keep raw logits.
+        let draw_tau = self.divergences.gumbel_draw_temperature;
+        let draw_tau = if draw_tau > 0.0 { draw_tau } else { 1.0 };
         action_ids.sort_by(|&a, &b| {
-            let sa = logit_map.get(&a).copied().unwrap_or(0.0) + gumbel[&a];
-            let sb = logit_map.get(&b).copied().unwrap_or(0.0) + gumbel[&b];
+            let la = logit_map.get(&a).copied().unwrap_or(0.0) / draw_tau;
+            let lb = logit_map.get(&b).copied().unwrap_or(0.0) / draw_tau;
+            let sa = la + gumbel[&a];
+            let sb = lb + gumbel[&b];
             // Descending by score; ties broken by action_id for determinism.
             sb.partial_cmp(&sa)
                 .unwrap_or(Ordering::Equal)
@@ -3015,6 +3037,109 @@ mod tests {
         let cumulative_max = s.nodes[0].edges.iter().map(|e| e.visits).max().unwrap_or(0);
         assert_eq!(delta_max, 0, "delta max_n must subtract the entry baseline");
         assert!(cumulative_max >= 500, "cumulative would be reuse-inflated");
+    }
+
+    // === Gumbel: draw temperature τ on the top-m sort (lever 2) ===
+
+    /// Reference top-m by the draw comparator `logit/τ + g(a)` (τ<=0 => 1.0),
+    /// mirroring init_gumbel_root's sort exactly (descending, action_id tie-break).
+    fn draw_topm(logits: &[(PackedCoord, f32)], seed: u64, tau: f32, m: usize) -> Vec<PackedCoord> {
+        let tau = if tau > 0.0 { tau } else { 1.0 };
+        let mut scored: Vec<(PackedCoord, f32)> = logits
+            .iter()
+            .map(|&(a, l)| (a, l / tau + gumbel_draw(seed.wrapping_add(a as u64))))
+            .collect();
+        scored.sort_by(|&(a, sa), &(b, sb)| {
+            sb.partial_cmp(&sa).unwrap().then_with(|| a.cmp(&b))
+        });
+        scored.into_iter().take(m).map(|(a, _)| a).collect()
+    }
+
+    #[test]
+    fn draw_temperature_unset_and_one_match_todays_top_m() {
+        // τ unset (gumbel() default 1.0) and an explicit τ=1.0 must both reproduce
+        // the raw logit+g draw: same survivor set as the reference with no divide.
+        let eval = gumbel_eval(12);
+        let logits = eval.logits.clone().unwrap();
+        let seed = 0x51EED_u64;
+        for tau in [None, Some(1.0f32)] {
+            let mut dv = Divergences::gumbel();
+            dv.gumbel_m = 5;
+            if let Some(t) = tau {
+                dv.gumbel_draw_temperature = t;
+            }
+            assert_eq!(dv.gumbel_draw_temperature, 1.0, "default/explicit τ is 1.0");
+            let mut s = build_search_from_eval(&eval, dv);
+            s.init_gumbel_root(seed, 256);
+            let got: HashSet<PackedCoord> =
+                s.gumbel_root.as_ref().unwrap().survivors.iter().copied().collect();
+            let expected: HashSet<PackedCoord> =
+                draw_topm(&logits, seed, 1.0, 5).into_iter().collect();
+            assert_eq!(got, expected, "τ=1 draw must equal today's logit+g top-m");
+        }
+    }
+
+    #[test]
+    fn draw_temperature_widens_candidate_set_and_preserves_raw_ranking_logits() {
+        // Peaked logits with a big head gap that τ=4 collapses below the Gumbel
+        // noise scale: at τ=1 the head dominates a low-noise tail candidate, but
+        // τ=4 shrinks logit/τ enough that a different action clears the top-m cut.
+        // Construct provably: action 0 logit 40 (always survives), then a tight
+        // cluster [6,5,4,3,2,1,0] whose ordering τ=4 (÷4 => [1.5,1.25,1,...])
+        // reshuffles against g(a). Search over seeds for a provable difference.
+        let logits: Vec<(PackedCoord, f32)> = vec![
+            (0, 40.0),
+            (1, 6.0),
+            (2, 5.0),
+            (3, 4.0),
+            (4, 3.0),
+            (5, 2.0),
+            (6, 1.0),
+            (7, 0.0),
+        ];
+        let priors: Vec<(PackedCoord, f32)> =
+            logits.iter().map(|&(a, _)| (a, 1.0 / logits.len() as f32)).collect();
+        let m = 4usize;
+
+        // Find a seed where the τ=1 and τ=4 candidate sets provably differ.
+        let seed = (0u64..10_000)
+            .find(|&s| {
+                let a: HashSet<_> = draw_topm(&logits, s, 1.0, m).into_iter().collect();
+                let b: HashSet<_> = draw_topm(&logits, s, 4.0, m).into_iter().collect();
+                a != b
+            })
+            .expect("a τ=1 vs τ=4 candidate-set difference must exist");
+
+        // τ=4: the search's survivor set must equal the τ=4 reference and DIFFER
+        // from the τ=1 reference (the widening actually took effect).
+        let eval = eval_with_priors_and_logits(priors.clone(), logits.clone(), 0.0);
+        let mut dv = Divergences::gumbel();
+        dv.gumbel_m = m as u32;
+        // SH would budget-calibrate m down; disable SH so the raw top-m is kept and
+        // the draw-temperature effect is isolated (target/select paths unaffected).
+        dv.gumbel_sequential_halving = false;
+        dv.gumbel_draw_temperature = 4.0;
+        let mut s = build_search_from_eval(&eval, dv);
+        s.init_gumbel_root(seed, 256);
+        let got: HashSet<PackedCoord> =
+            s.gumbel_root.as_ref().unwrap().survivors.iter().copied().collect();
+        let ref_tau4: HashSet<PackedCoord> = draw_topm(&logits, seed, 4.0, m).into_iter().collect();
+        let ref_tau1: HashSet<PackedCoord> = draw_topm(&logits, seed, 1.0, m).into_iter().collect();
+        assert_eq!(got, ref_tau4, "τ=4 survivor set must match the τ=4 draw");
+        assert_ne!(got, ref_tau1, "τ=4 must change the candidate set vs τ=1");
+
+        // The SH σ-ranking reads state.logits, which must remain the RAW logits
+        // (undivided) — the τ divide is confined to the draw sort. Assert every
+        // survivor's stored ranking logit equals its raw eval logit, not logit/τ.
+        let raw: HashMap<PackedCoord, f32> = logits.iter().copied().collect();
+        let state = s.gumbel_root.as_ref().unwrap();
+        for (&a, &stored) in state.logits.iter() {
+            assert_eq!(
+                stored, raw[&a],
+                "SH ranking logit for {a} must be raw ({}), not logit/τ",
+                raw[&a]
+            );
+        }
     }
 
     #[test]

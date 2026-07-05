@@ -46,6 +46,7 @@ import statistics
 import tempfile
 import zlib
 from collections.abc import Callable
+from datetime import datetime, timezone
 from email.utils import formatdate
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1627,7 +1628,7 @@ def _training_run(name: str) -> dict[str, object]:
         raise ValueError("Unknown training run")
     diagnostics_by_epoch = _diagnostics_by_epoch(run_dir)
     live_status = _training_live_status(run_dir)
-    epoch_history = _epoch_history(run_dir)
+    epoch_history = _epoch_history(run_dir, live_status)
     evaluation_history = _evaluation_history(run_dir)
     multistage_eval_history = _multistage_eval_history(run_dir)
     eval_pool = _eval_pool_summary(run_dir)
@@ -1995,6 +1996,34 @@ def _training_epochs(run_dir: Path) -> dict[str, object]:
                 "eval": _epoch_eval_record(eval_by_epoch.get(epoch)),
             }
         )
+
+    # Provisional in-flight record: the currently-running epoch (events.jsonl)
+    # has no segment files during self-play, and only some of them afterwards.
+    # Mark it (and synthesize it when wholly absent, all sub-blocks all-None)
+    # so the strip/inspector can label the epoch "in progress" instead of
+    # omitting it until the first segment lands.
+    events = _stage_status_from_events(diagnostics_dir / "events.jsonl")
+    current = events.get("epoch")
+    if (
+        isinstance(current, int)
+        and str(events.get("status") or "") == "running"
+        and not (diagnostics_dir / f"epoch_{current:06d}.json").is_file()
+    ):
+        record = next((rec for rec in records if rec["epoch"] == current), None)
+        if record is None:
+            record = {
+                "epoch": current,
+                "selfplay": _epoch_selfplay_record(None),
+                "select": _epoch_select_record(None),
+                "training": _epoch_training_record(None),
+                "eval": None,
+            }
+            records.append(record)
+            records.sort(key=lambda rec: rec["epoch"])
+        record["in_progress"] = True
+        live = _read_json_file(diagnostics_dir / f"{prefix}.selfplay.live.json")
+        if isinstance(live, dict) and live.get("epoch") == current:
+            record["live"] = _selfplay_live_summary(live)
     return {"run": run_dir.name, "epochs": records}
 
 
@@ -4078,13 +4107,23 @@ def _eval_pool_summary(run_dir: Path) -> dict[str, object] | None:
     }
 
 
-def _epoch_history(run_dir: Path) -> list[dict[str, object]]:
+def _epoch_history(
+    run_dir: Path,
+    live_status: dict[str, object] | None = None,
+) -> list[dict[str, object]]:
     """One merged row per epoch (ascending) for the trends charts + epoch
     table: pipeline results from ``diagnostics/epoch_*.json``, self-play and
     evaluation summaries from the ``dense_cnn.*.epoch_*.json`` files (with
     .hxr-derived game-stat backfill), optional policy-target/progress
     overlays, and checkpoint file stats. Rows without a finished pipeline
-    result get ``status: "partial"``."""
+    result get ``status: "partial"``.
+
+    When ``live_status`` (a ``_training_live_status`` block) reports an
+    actively-running epoch whose merged ``epoch_N.json`` has not landed yet,
+    that epoch gets a provisional row: ``status: "in_progress"`` plus an
+    ``in_progress`` block carrying the live phase/detail (and, during
+    self-play, the live games/pos-s counters), so the epoch table can show the
+    in-flight epoch instead of nothing for the first ~30 minutes of an epoch."""
 
     rows: dict[int, dict[str, object]] = {}
     diagnostics_dir = run_dir / "diagnostics"
@@ -4144,6 +4183,8 @@ def _epoch_history(run_dir: Path) -> list[dict[str, object]]:
                 "modified": stat.st_mtime if stat is not None else 0,
             }
 
+    _mark_in_flight_epoch(rows, live_status)
+
     for row in rows.values():
         if "status" not in row:
             row["status"] = "partial"
@@ -4164,6 +4205,51 @@ def _epoch_history(run_dir: Path) -> list[dict[str, object]]:
             if loss_buffer:
                 selfplay["buffer"] = loss_buffer
     return [rows[key] for key in sorted(rows)]
+
+
+def _mark_in_flight_epoch(
+    rows: dict[int, dict[str, object]],
+    live_status: dict[str, object] | None,
+) -> None:
+    """Synthesize/annotate the provisional row for the CURRENTLY RUNNING epoch.
+
+    Only the live epoch from events.jsonl is eligible, and only while its merged
+    ``epoch_N.json`` result has not landed (the row is absent or file-partial) --
+    historical partial rows from old crashes are never touched. ``stalled`` runs
+    (supervisor down/halted mid-epoch) keep their provisional row so the epoch
+    still shows, with the stalled phase making the state honest."""
+
+    if not isinstance(live_status, dict):
+        return
+    epoch = live_status.get("current_epoch")
+    stage_status = str(live_status.get("stage_status") or "")
+    if not isinstance(epoch, int) or stage_status not in ("running", "stalled"):
+        return
+    row = rows.get(epoch)
+    if row is not None and "status" in row:
+        # A finished pipeline result (completed/failed epoch_N.json) already
+        # merged for this epoch -> nothing in flight.
+        return
+    row = rows.setdefault(epoch, {"epoch": epoch})
+    phase = str(live_status.get("sub_phase") or "") or (
+        "stalled" if stage_status == "stalled" else "running"
+    )
+    in_progress: dict[str, object] = {"phase": phase}
+    detail = live_status.get("sub_phase_detail")
+    if detail is not None:
+        in_progress["detail"] = detail
+    progress = live_status.get("phase_progress")
+    if isinstance(progress, dict):
+        in_progress["progress"] = progress
+    selfplay_live = live_status.get("selfplay_live")
+    if (
+        phase == "self-play"
+        and isinstance(selfplay_live, dict)
+        and selfplay_live.get("epoch") == epoch
+    ):
+        in_progress["selfplay_live"] = selfplay_live
+    row["status"] = "in_progress"
+    row["in_progress"] = in_progress
 
 
 def _loss_buffer_from_training(training: dict[str, object]) -> dict[str, object]:
@@ -4870,12 +4956,11 @@ def _training_live_status(run_dir: Path) -> dict[str, object]:
     prefix = _diag_prefix(run_dir)
     events = _stage_status_from_events(diagnostics / "events.jsonl")
     watchdog = _read_last_jsonl(diagnostics / "resource_watchdog.jsonl")
-    # FOLLOW-UP (hexfield gap): hexfield does not emit a `<prefix>.performance_calibration.json`
-    # (it writes a differently-shaped `calibrate_performance.json`) nor a live
-    # `<prefix>.selfplay.live.json`. Both reads return None for hexfield runs -> the
-    # calibration / live-progress / sub-phase blocks are simply omitted (honest gap,
-    # not faked). The prefix is lineage-aware so this works automatically once
-    # hexfield emits these files.
+    # hexfield does not emit a `<prefix>.performance_calibration.json` (it writes a
+    # differently-shaped `calibrate_performance.json`), so the calibration block is
+    # omitted for hexfield runs (honest gap, not faked). It DOES emit the live
+    # `<prefix>.selfplay.live.json` (hexfield/selfplay.py _write_live, every ~3s
+    # during self-play), which feeds the live-progress + sub-phase blocks below.
     calibration = _read_json_file(diagnostics / f"{prefix}.performance_calibration.json")
     selfplay_live = _read_json_file(diagnostics / f"{prefix}.selfplay.live.json")
     training_progress = _latest_training_progress(diagnostics)
@@ -4911,16 +4996,35 @@ def _training_live_status(run_dir: Path) -> dict[str, object]:
         status["selfplay_live"] = _selfplay_live_summary(selfplay_live)
     if isinstance(training_progress, dict):
         status["training_progress"] = _training_progress_summary(training_progress)
-    sub_phase, sub_phase_detail = _derive_sub_phase(
-        run_dir,
-        diagnostics,
-        events,
-        selfplay_live if isinstance(selfplay_live, dict) else None,
-    )
-    if sub_phase is not None:
-        status["sub_phase"] = sub_phase
-        if sub_phase_detail is not None:
-            status["sub_phase_detail"] = sub_phase_detail
+    # Supervisor lifecycle (supervised runs only: supervisor.log present).
+    # A tripped breaker writes supervisor_halted.flag and silently blocks
+    # restarts while events.jsonl still ends in an unfinished stage_started,
+    # so without this the dashboard says "running" forever over a dead trainer.
+    supervisor = _supervisor_summary(run_dir)
+    trainer_down = False
+    if supervisor is not None:
+        status["supervisor"] = supervisor
+        trainer_down = bool(supervisor.get("halted")) or supervisor.get("trainer_presumed_up") is False
+        if trainer_down and str(status.get("stage_status") or "") == "running":
+            status["stage_status"] = "stalled"
+    latest_checkpoint = _latest_checkpoint_summary(run_dir)
+    if latest_checkpoint is not None:
+        status["latest_checkpoint"] = latest_checkpoint
+    # Within-epoch sub-phase: skipped when the trainer is known-down so a stale
+    # mid-epoch file set cannot claim an ever-"training" run.
+    if not trainer_down:
+        sub_phase, sub_phase_detail, phase_progress = _derive_sub_phase(
+            run_dir,
+            diagnostics,
+            events,
+            selfplay_live if isinstance(selfplay_live, dict) else None,
+        )
+        if sub_phase is not None:
+            status["sub_phase"] = sub_phase
+            if sub_phase_detail is not None:
+                status["sub_phase_detail"] = sub_phase_detail
+            if phase_progress is not None:
+                status["phase_progress"] = phase_progress
     return status
 
 
@@ -4929,31 +5033,36 @@ def _derive_sub_phase(
     diagnostics: Path,
     events: dict[str, object],
     selfplay_live: dict[str, object] | None,
-) -> tuple[str | None, str | None]:
-    """Derive the active within-epoch sub-phase (self-play / shuffling / training /
-    evaluating) for the CURRENT live epoch, purely from on-disk file signals.
+) -> tuple[str | None, str | None, dict[str, object] | None]:
+    """Derive the active within-epoch sub-phase (self-play / selecting window /
+    shuffling / training / evaluating) for the CURRENT live epoch, purely from
+    on-disk file signals, as ``(phase, detail, progress)``.
 
     A dense_cnn epoch runs self-play (~10 min) -> shuffle (~1 min) -> train (~2 min)
-    -> SealBot eval (~15-19 min), but the run-level ``stage`` stays ``epoch_NNNNNN``
-    the whole time, so the long eval reads as a stuck "epoch running". This surfaces
-    the sub-phase so the owner can tell self-play from the long eval.
+    -> SealBot eval (~15-19 min); a hexfield epoch runs self-play (~25-30 min) ->
+    window select (~25s) -> train (~5-8 min) -> moves-left audit / multistage eval +
+    checkpoint. The run-level ``stage`` stays ``epoch_NNNNNN`` the whole time, so
+    without this every non-selfplay minute reads as a stuck "epoch running".
 
-    Returns ``(None, None)`` when nothing can be derived (e.g. setup stages, stopped
-    runs, or models without these file signals) so callers fall back to the existing
-    ``stage``/``stage_status`` label. Robust to missing files."""
+    ``progress`` is an optional ``{"phase", "elapsed_seconds", "typical_seconds"}``
+    block (currently the hexfield training pass) that lets the client render a
+    progress bar. Returns ``(None, None, None)`` when nothing can be derived (setup
+    stages, stopped runs, or models without these file signals) so callers fall
+    back to the existing ``stage``/``stage_status`` label. Robust to missing files."""
 
     # Only derive during an actively-running epoch. Setup stages, finished/stopped
     # runs (no active stage) and non-epoch stages fall through to None, which keeps
     # stopped runs like hexgnn on their existing label.
     if str(events.get("status") or "") != "running":
-        return None, None
+        return None, None, None
     epoch = events.get("epoch")
     if not isinstance(epoch, int):
-        return None, None
+        return None, None, None
 
+    prefix = _diag_prefix(run_dir)
     sp_status = str((selfplay_live or {}).get("status") or "")
     sp_epoch = (selfplay_live or {}).get("epoch")
-    sp_age = _file_age_seconds(diagnostics / f"{_diag_prefix(run_dir)}.selfplay.live.json")
+    sp_age = _file_age_seconds(diagnostics / f"{prefix}.selfplay.live.json")
 
     # SELF-PLAY: live writer still running for this epoch and the file is fresh.
     if (
@@ -4965,26 +5074,79 @@ def _derive_sub_phase(
         finished = (selfplay_live or {}).get("games_finished")
         requested = (selfplay_live or {}).get("requested_games")
         detail = None
+        progress: dict[str, object] | None = None
         if isinstance(finished, int) and isinstance(requested, int) and requested > 0:
             detail = f"games {finished}/{requested}"
-        return "self-play", detail
+        return "self-play", detail, progress
 
-    # POST-SELF-PLAY (shuffle -> train -> eval). Self-play for this epoch reports
-    # completed, but the finished epoch_NNNNNN.json has not been written yet, so the
-    # run is somewhere in the brief shuffle/train or the long eval.
+    # POST-SELF-PLAY. Self-play for this epoch reports completed, but the finished
+    # epoch_NNNNNN.json has not been written yet, so the run is somewhere in the
+    # epoch tail. The tail differs per lineage.
     epoch_done = (diagnostics / f"epoch_{epoch:06d}.json").is_file()
     if sp_status == "completed" and sp_epoch == epoch and not epoch_done:
+        if prefix == "hexfield":
+            return _hexfield_post_selfplay_phase(diagnostics, prefix, epoch)
         shuffle_age = _shuffle_dir_age_seconds(run_dir, epoch)
         if shuffle_age is None:
             # Shuffle output for this epoch not on disk yet -> still shuffling.
-            return "shuffling", None
+            return "shuffling", None, None
         # Shuffle done. Training is ~2 min; treat the window right after the shuffle
         # dir appears as training, and everything after as the long SealBot eval.
         if shuffle_age <= 150.0:
-            return "training", None
-        return "evaluating", "SealBot"
+            return "training", None, None
+        return "evaluating", "SealBot", None
 
-    return None, None
+    return None, None, None
+
+
+def _hexfield_post_selfplay_phase(
+    diagnostics: Path,
+    prefix: str,
+    epoch: int,
+) -> tuple[str, str | None, dict[str, object] | None]:
+    """hexfield epoch tail from the per-segment diagnostics files, each written
+    the moment its phase completes: ``<prefix>.selfplay.epoch_N.json`` (self-play
+    done) -> ``.select`` (window selection done, ~25s) -> ``.training`` (training
+    pass done, ~5-8 min) -> moves-left audit / multistage eval + checkpoint +
+    the merged ``epoch_N.json``. During the training pass the select file's age
+    IS the elapsed training time; the typical duration comes from the most
+    recent finished epochs' ``train_seconds``, giving the client an honest
+    "4.2m elapsed · ~7m typical" progress readout."""
+
+    if (diagnostics / f"{prefix}.training.epoch_{epoch:06d}.json").is_file():
+        # Training done; the remainder is the moves-left audit + checkpoint
+        # write (seconds), or the multistage eval on eval epochs (minutes).
+        return "evaluating", "audit / eval / checkpoint", None
+    select_age = _file_age_seconds(diagnostics / f"{prefix}.select.epoch_{epoch:06d}.json")
+    if select_age is None:
+        # Self-play done but no select output yet: the brief window selection.
+        return "selecting window", None, None
+    typical = _recent_train_seconds(diagnostics, prefix, epoch)
+    detail = f"{select_age / 60.0:.1f}m elapsed"
+    if typical is not None:
+        detail += f" · ~{typical / 60.0:.0f}m typical"
+    progress = {
+        "phase": "training",
+        "elapsed_seconds": select_age,
+        "typical_seconds": typical,
+    }
+    return "training", detail, progress
+
+
+def _recent_train_seconds(diagnostics: Path, prefix: str, epoch: int) -> float | None:
+    """``train_seconds`` (fallback ``seconds``) from the newest finished
+    ``<prefix>.training.epoch_*.json`` within the 5 epochs before ``epoch``,
+    or None when no recent epoch has one (fresh runs, schema gaps)."""
+
+    for prev in range(epoch - 1, max(epoch - 6, 0), -1):
+        payload = _read_json_file(diagnostics / f"{prefix}.training.epoch_{prev:06d}.json")
+        if isinstance(payload, dict):
+            seconds = _optional_float(payload.get("train_seconds"))
+            if seconds is None:
+                seconds = _optional_float(payload.get("seconds"))
+            if seconds is not None and seconds > 0.0:
+                return seconds
+    return None
 
 
 def _file_age_seconds(path: Path) -> float | None:
@@ -5226,6 +5388,115 @@ def _selfplay_live_summary(payload: dict[str, object]) -> dict[str, object]:
         "requested_games": payload.get("requested_games"),
         "active_games": payload.get("active_games"),
         "elapsed_seconds": payload.get("elapsed_seconds"),
+    }
+
+
+# Supervisor lifecycle lines: "[2026-07-04T18:54:08Z] EXIT pid=74407 code=1 ...".
+_SUPERVISOR_LINE_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]\s*(.*)$")
+_SUPERVISOR_LOG_TAIL_BYTES = 32768
+
+
+def _supervisor_ts(stamp: str) -> float | None:
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _supervisor_summary(run_dir: Path) -> dict[str, object] | None:
+    """Supervisor lifecycle summary from the run's ``supervisor.log`` tail plus
+    the ``supervisor_halted.flag`` breaker file.
+
+    The training supervisor (scripts/supervise.sh) appends one-line lifecycle
+    events: LAUNCH / RESUME / EXIT / ``CRASH|`` (crash excerpt lines) /
+    RELAUNCH / HALT / ABORT. The trainer is presumed up while the last
+    launch/exit-shaped event is a LAUNCH; a tripped breaker writes the halted
+    flag and stops relaunching WITHOUT finishing the events.jsonl stage, so
+    this block is what keeps a halted run from reading as "running" forever.
+    Returns None when the run has no supervisor.log (non-supervised runs), so
+    the block is omitted rather than faked."""
+
+    log_path = run_dir / "supervisor.log"
+    stat = _safe_stat(log_path)
+    if stat is None:
+        return None
+    try:
+        with log_path.open("rb") as handle:
+            if stat.st_size > _SUPERVISOR_LOG_TAIL_BYTES:
+                handle.seek(-_SUPERVISOR_LOG_TAIL_BYTES, os.SEEK_END)
+            tail = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+    now = wall_clock()
+    last_launch_ts: float | None = None
+    last_exit_ts: float | None = None
+    last_event = ""  # last lifecycle-shaping event kind: launch / exit / halt / abort / supervisor-exit
+    last_resume: str | None = None
+    last_crash_line: str | None = None
+    exits_last_hour = 0
+    for raw in tail.splitlines():
+        match = _SUPERVISOR_LINE_RE.match(raw.strip())
+        if match is None:
+            continue
+        ts = _supervisor_ts(match.group(1))
+        body = match.group(2)
+        if body.startswith("LAUNCH"):
+            last_launch_ts = ts
+            last_event = "launch"
+        elif body.startswith("EXIT"):
+            last_exit_ts = ts
+            last_event = "exit"
+            if ts is not None and (now - ts) <= 3600.0:
+                exits_last_hour += 1
+        elif body.startswith("HALT"):
+            last_event = "halt"
+        elif body.startswith("ABORT"):
+            last_event = "abort"
+        elif "SUPERVISOR exit" in body:
+            last_event = "supervisor-exit"
+        elif body.startswith("RESUME from "):
+            last_resume = body[len("RESUME from "):].strip()
+        elif body.startswith("CRASH|"):
+            crash_text = body[len("CRASH|"):].strip()
+            if crash_text and not crash_text.startswith("Traceback"):
+                last_crash_line = crash_text[:300]
+    halted = (run_dir / "supervisor_halted.flag").is_file()
+    return {
+        "halted": halted,
+        "trainer_presumed_up": (not halted) and last_event == "launch",
+        "last_launch_age_seconds": (now - last_launch_ts) if last_launch_ts is not None else None,
+        "last_exit_age_seconds": (now - last_exit_ts) if last_exit_ts is not None else None,
+        "last_resume": last_resume,
+        "exits_last_hour": exits_last_hour,
+        "last_crash": last_crash_line,
+    }
+
+
+def _latest_checkpoint_summary(run_dir: Path) -> dict[str, object] | None:
+    """Newest ``checkpoints/*.pt`` by mtime as ``{name, epoch, modified,
+    age_seconds}``, or None when the run has no checkpoints yet. The age is the
+    at-a-glance "how stale is the latest weights file" readout: during a healthy
+    run it never exceeds roughly one epoch's wall time."""
+
+    checkpoints_dir = run_dir / "checkpoints"
+    newest_path: Path | None = None
+    newest_mtime = 0.0
+    try:
+        for path in checkpoints_dir.glob("*.pt"):
+            stat = _safe_stat(path)
+            if stat is not None and stat.st_mtime > newest_mtime:
+                newest_mtime = stat.st_mtime
+                newest_path = path
+    except OSError:
+        return None
+    if newest_path is None:
+        return None
+    return {
+        "name": newest_path.name,
+        "epoch": _coerce_epoch(None, newest_path.name),
+        "modified": newest_mtime,
+        "age_seconds": max(0.0, wall_clock() - newest_mtime),
     }
 
 
