@@ -251,10 +251,49 @@ finishes never skip or duplicate:
 
 ## Search behavior
 
-Bot moves run the as-trained main_7 gumbel search profile: everything except
-the per-game visit budget (the chosen `sims`) is parsed from
-`SHOWCASE_SEARCH_CONFIG` (default `configs/hexfield_main_7.toml`, section
-`[model.config.selfplay]`). Opening plies are temperature-sampled like the
-eval arena so games vary; later moves are greedy. Analysis `?search=1` runs
-the same profile at a capped budget (`SHOWCASE_ANALYSIS_VISIT_CAP`, default
-64).
+Bot moves run each checkpoint's as-trained search profile: everything except
+the per-game visit budget (the chosen `sims`) is parsed from a profile TOML's
+`[model.config.selfplay]` section. Checkpoints without a `search_profile` key
+share the global default (`SHOWCASE_SEARCH_CONFIG`, default
+`configs/hexfield_main_7.toml`, the gumbel profile). Opening plies are
+temperature-sampled like the eval arena so games vary; later moves are
+greedy. Analysis `?search=1` runs the position's checkpoint profile at a
+capped budget (`SHOWCASE_ANALYSIS_VISIT_CAP`, default 64).
+
+### Per-checkpoint search profiles (legacy PUCT bots)
+
+A `[[checkpoint]]` entry may set `search_profile` to serve that checkpoint
+with the search it trained under. Resolution order: a bare name
+(`"hexfield_main_5"`) resolves against the built-in profiles dir
+(`apps/showcase/profiles/`, shipped in the server image); a path resolves
+relative to the bots.toml directory; absolute paths pass through. A missing
+profile file fails catalogue load at startup, not the first move. Each worker
+parses one `SearchProfile` per unique profile.
+
+Shipped profiles: `hexfield_main_4`, `hexfield_main_5` (PUCT era; the Gumbel
+flags default off, selecting the plain PUCT root) and `hexfield_main_7` (the
+same values as the global default, for catalogues that name every profile
+explicitly). The PUCT profiles are distilled to the knobs this repo's strict
+config parser knows; every training-run knob missing from that set (root
+Dirichlet noise, forced playouts, the zeroed visit-scaled c_puct term) is
+inert under eval/serve conditions, so the distilled profile reproduces the
+training repo's eval-arena search exactly.
+
+Two display keys support legacy entries in the picker: `group` (section
+heading, e.g. `group = "earlier runs"`; ungrouped entries form the first
+section) and `search = "puct"` (renders the PUCT-search tag). Both ride the
+normal metadata passthrough of `GET /api/bots`.
+
+Example entry:
+
+```toml
+[[checkpoint]]
+id = "main5-ep105"
+checkpoint = "models/hexfield_main5_infer.pt"
+label = "Hexfield main_5"
+run = "hexfield_main_5"
+epoch = 105
+search_profile = "hexfield_main_5"
+group = "earlier runs"
+search = "puct"
+```

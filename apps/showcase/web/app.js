@@ -8,8 +8,8 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=3";
-import { createBoard, findWin, key } from "./board.js?v=3";
+import * as api from "./api.js?v=4";
+import { createBoard, findWin, key } from "./board.js?v=4";
 
 "use strict";
 
@@ -367,23 +367,64 @@ let botsNorm = null;
 // old always-first behavior
 const sel = { ckpt: null, ckptLabel: "", sims: 0, color: 0 };
 
+/* Picker grouping by the catalogue's `group` display key: ungrouped entries
+ * form the default group and come first; named groups follow in order of
+ * first appearance; bots.toml order is preserved within each group. */
+function groupedCheckpoints() {
+  const order = [];
+  const byName = new Map();
+  for (const c of botsNorm.checkpoints) {
+    const g = c.group || "";
+    if (!byName.has(g)) {
+      byName.set(g, []);
+      order.push(g);
+    }
+    byName.get(g).push(c);
+  }
+  const at = order.indexOf("");
+  if (at > 0) {
+    order.splice(at, 1);
+    order.unshift("");
+  }
+  return order.map(name => ({ name, items: byName.get(name) }));
+}
+
+/* The default pick (and the "latest" tag): the last entry of the FIRST group,
+ * i.e. the newest rung of the current ladder, not whatever legacy entry
+ * happens to close the catalogue. */
+function latestCheckpoint(groups) {
+  const items = groups.length ? groups[0].items : [];
+  return items[items.length - 1] || null;
+}
+
 function renderPickers() {
   const list = $("ckptList");
   list.textContent = "";
-  botsNorm.checkpoints.forEach((c, i) => {
-    const latest = i === botsNorm.checkpoints.length - 1;
-    const b = document.createElement("button");
-    b.className = "bot" + (c.id === sel.ckpt ? " sel" : "");
-    b.dataset.ckpt = c.id;
-    b.setAttribute("role", "radio");
-    b.setAttribute("aria-checked", c.id === sel.ckpt);
-    const meta = [c.meta, latest ? '<span class="tag">latest</span>' : ""]
-      .filter(Boolean).join(" · ");
-    b.innerHTML = `<span class="bot-row"><span class="bot-name"></span>` +
-      `<span class="bot-meta">${meta}</span></span>`;
-    b.querySelector(".bot-name").textContent = c.label;
-    list.appendChild(b);
-  });
+  const groups = groupedCheckpoints();
+  const latest = latestCheckpoint(groups);
+  for (const g of groups) {
+    if (g.name) {
+      const h = document.createElement("div");
+      h.className = "bot-group";
+      h.textContent = g.name;
+      list.appendChild(h);
+    }
+    for (const c of g.items) {
+      const b = document.createElement("button");
+      b.className = "bot" + (c.id === sel.ckpt ? " sel" : "");
+      b.dataset.ckpt = c.id;
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", c.id === sel.ckpt);
+      const tags = [];
+      if (latest && c.id === latest.id) tags.push('<span class="tag">latest</span>');
+      if (c.search === "puct") tags.push('<span class="tag puct">PUCT search</span>');
+      const meta = [c.meta, ...tags].filter(Boolean).join(" · ");
+      b.innerHTML = `<span class="bot-row"><span class="bot-name"></span>` +
+        `<span class="bot-meta">${meta}</span></span>`;
+      b.querySelector(".bot-name").textContent = c.label;
+      list.appendChild(b);
+    }
+  }
   const seg = $("simSeg");
   seg.textContent = "";
   for (const s of botsNorm.sims) {
@@ -444,7 +485,7 @@ async function loadBots() {
       await sleep(4000);
     }
   }
-  const last = botsNorm.checkpoints[botsNorm.checkpoints.length - 1];
+  const last = latestCheckpoint(groupedCheckpoints());
   sel.ckpt = last ? last.id : null;
   sel.ckptLabel = last ? last.label : "";
   sel.sims = botsNorm.sims[botsNorm.sims.length - 1] || 0;

@@ -62,7 +62,13 @@ def tiny_checkpoint(tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="session")
 def bots_toml(tiny_checkpoint, tmp_path_factory) -> Path:
-    """One-checkpoint catalogue over the tiny net, allowed sims {8, 16}."""
+    """Two-checkpoint catalogue over the tiny net, allowed sims {8, 16}.
+
+    The second entry serves the same weights through the as-trained main_5
+    PUCT profile with the `group`/`search` display keys, so the suite
+    exercises per-checkpoint profile routing and the picker metadata end to
+    end (each worker parses two profiles).
+    """
     path = tmp_path_factory.mktemp("cfg") / "bots.toml"
     path.write_text(
         f"""sims = [8, 16]
@@ -74,6 +80,16 @@ label = "Tiny test bot"
 run = "showcase_tiny_test"
 epoch = 0
 games_trained = 12345
+
+[[checkpoint]]
+id = "tiny-puct"
+checkpoint = '{tiny_checkpoint.as_posix()}'
+label = "Tiny PUCT bot"
+run = "showcase_tiny_test"
+epoch = 0
+search_profile = "hexfield_main_5"
+group = "earlier runs"
+search = "puct"
 """
     )
     return path

@@ -103,6 +103,7 @@ WORKDIR /app
 # SHOWCASE_* defaults in server/showcase/config.py are repo-root-relative and
 # WORKDIR is the in-image repo root.
 COPY apps/showcase/server apps/showcase/server
+COPY apps/showcase/profiles apps/showcase/profiles
 COPY apps/showcase/web apps/showcase/web
 COPY apps/showcase/bots.example.toml apps/showcase/bots.example.toml
 COPY configs configs

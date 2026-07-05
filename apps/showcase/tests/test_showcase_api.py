@@ -57,17 +57,26 @@ def resign(client, game_id: str, headers) -> dict:
 def test_healthz_and_bots(client):
     health = client.get("/healthz").json()
     assert health["ok"] is True
-    assert health["checkpoints"] == 1
+    assert health["checkpoints"] == 2
 
     bots = client.get("/api/bots").json()
     assert bots["sims"] == [8, 16]
-    assert len(bots["checkpoints"]) == 1
-    entry = bots["checkpoints"][0]
-    assert entry["id"] == "tiny"
+    assert len(bots["checkpoints"]) == 2
+    by_id = {entry["id"]: entry for entry in bots["checkpoints"]}
+
+    entry = by_id["tiny"]
     assert entry["run"] == "showcase_tiny_test"
     assert entry["epoch"] == 0
     assert entry["label"]
     assert entry["games_trained"] == 12345  # passthrough display metadata
+    assert "group" not in entry and "search" not in entry
+
+    # group/search ride the same metadata passthrough; search_profile is a
+    # server-side key and never reaches the API.
+    legacy = by_id["tiny-puct"]
+    assert legacy["group"] == "earlier runs"
+    assert legacy["search"] == "puct"
+    assert "search_profile" not in legacy
 
 
 def test_catalogue_times_sims_creates_bot_rows_lazily(client, settings):

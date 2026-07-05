@@ -21,12 +21,16 @@ imports it for `BotSpec`/`load_bots_toml`/`BotPool` without paying (or
 depending on) the model stack. Workers do the heavy imports in
 `_WorkerRuntime` after multiprocessing spawn.
 
-Search behavior mirrors the training run: the as-trained knobs (Gumbel root /
-sequential-halving profile, widening, FPU, TSS) are parsed from the training
-TOML's `[model.config.selfplay]` section (`SHOWCASE_SEARCH_CONFIG`,
-default `configs/hexfield_main_7.toml`); only the visit budget varies per
-game. Opening plies are temperature-sampled exactly like the eval arena, so
-games do not all open identically.
+Search behavior mirrors each checkpoint's training run: the as-trained knobs
+(Gumbel root / sequential-halving profile, widening, FPU, TSS) are parsed from
+a profile TOML's `[model.config.selfplay]` section; only the visit budget
+varies per game. A `[[checkpoint]]` entry may name its own profile via
+`search_profile` (a bare name resolves against the built-in profiles dir,
+`apps/showcase/profiles/`), so PUCT-era checkpoints are served with the search
+they trained under; entries without one share the global default
+(`SHOWCASE_SEARCH_CONFIG`, default `configs/hexfield_main_7.toml`). Opening
+plies are temperature-sampled exactly like the eval arena, so games do not all
+open identically.
 """
 
 from __future__ import annotations
@@ -66,9 +70,14 @@ class BotPoolTimeout(TimeoutError):
 
 DEFAULT_SIMS = (16, 64, 256, 512)
 
+# Built-in search profiles shipped alongside the server (bare `search_profile`
+# names in bots.toml resolve here).
+PROFILES_DIR = Path(__file__).resolve().parents[2] / "profiles"
+
 # Keys of a [[checkpoint]] table the server itself consumes; anything else is
-# passed through verbatim as display metadata (e.g. games_trained).
+# passed through verbatim as display metadata (e.g. games_trained, group).
 _CHECKPOINT_REQUIRED = {"id", "checkpoint", "label", "run", "epoch"}
+_CHECKPOINT_SERVER_KEYS = _CHECKPOINT_REQUIRED | {"search_profile"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +91,9 @@ class CheckpointSpec:
     checkpoint: Path
     weights_sha: str
     meta: dict  # optional display metadata (scalars only), served verbatim
+    # Resolved profile toml this checkpoint searches with; None selects the
+    # global settings.search_config default.
+    search_profile: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,15 +112,38 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _resolve_search_profile(ref: str, bots_dir: Path) -> Path:
+    """Resolve a checkpoint's `search_profile` reference to a profile toml.
+
+    Resolution order: a bare name (a single path component with no .toml
+    suffix, e.g. "hexfield_main_5") resolves against the built-in
+    `PROFILES_DIR`; otherwise the reference is a path, taken relative to the
+    bots.toml directory unless absolute. The file must exist so a bad
+    reference fails at catalogue load, not on the first move.
+    """
+    candidate = Path(ref)
+    if len(candidate.parts) == 1 and candidate.suffix != ".toml":
+        candidate = PROFILES_DIR / f"{ref}.toml"
+    elif not candidate.is_absolute():
+        candidate = (bots_dir / candidate).resolve()
+    if not candidate.is_file():
+        raise FileNotFoundError(
+            f"search_profile {ref!r}: profile not found: {candidate}"
+        )
+    return candidate
+
+
 def load_bots_toml(path: Path | str) -> Catalogue:
     """Parse and validate bots.toml.
 
     Schema: repeated `[[checkpoint]]` tables with `id`, `checkpoint` (relative
-    paths resolve against the toml's directory), `label`, `run`, `epoch`; any
-    extra scalar keys become display metadata. One optional top-level
+    paths resolve against the toml's directory), `label`, `run`, `epoch`, and
+    an optional `search_profile` (see `_resolve_search_profile`); any extra
+    scalar keys become display metadata (e.g. `group` for picker grouping,
+    `search = "puct"` for the legacy-search tag). One optional top-level
     `sims = [...]` array is the global allowed search-budget set (default
-    `DEFAULT_SIMS`). Checkpoints must exist (the sha is part of the bots-table
-    identity key).
+    `DEFAULT_SIMS`). Checkpoints and referenced profiles must exist (the sha
+    is part of the bots-table identity key).
     """
     path = Path(path)
     with open(path, "rb") as fh:
@@ -139,7 +174,13 @@ def load_bots_toml(path: Path | str) -> Catalogue:
             checkpoint = (path.parent / checkpoint).resolve()
         if not checkpoint.is_file():
             raise FileNotFoundError(f"checkpoint {slug!r}: file not found: {checkpoint}")
-        meta = {key: value for key, value in entry.items() if key not in _CHECKPOINT_REQUIRED}
+        profile_ref = entry.get("search_profile")
+        search_profile = (
+            _resolve_search_profile(str(profile_ref), path.parent)
+            if profile_ref is not None
+            else None
+        )
+        meta = {key: value for key, value in entry.items() if key not in _CHECKPOINT_SERVER_KEYS}
         for key, value in meta.items():
             if not isinstance(value, (str, int, float, bool)):
                 raise ValueError(
@@ -154,6 +195,7 @@ def load_bots_toml(path: Path | str) -> Catalogue:
                 checkpoint=checkpoint,
                 weights_sha=_file_sha256(checkpoint),
                 meta=meta,
+                search_profile=search_profile,
             )
         )
     return Catalogue(checkpoints=tuple(specs), sims=sims)
@@ -165,13 +207,17 @@ def load_bots_toml(path: Path | str) -> Catalogue:
 
 
 class SearchProfile:
-    """As-trained search invocation, parsed once per worker from the training TOML.
+    """As-trained search invocation, parsed from a profile TOML.
 
-    Everything except the per-bot visit budget comes from the run config:
-    c_puct, widening, FPU, TSS, and the divergence overrides (which carry the
-    Gumbel root/sequential-halving levers main_7 trains with). The virtual
-    batch size and opening sampling mirror the eval arena's single-root CPU
-    settings rather than the GPU self-play pipeline depth.
+    The source is either a full training config or a distilled profile from
+    `PROFILES_DIR`; both carry the same `[model.config.selfplay]` and
+    `[model.config.multi_stage_eval]` sections. Everything except the per-bot
+    visit budget comes from there: c_puct, widening, FPU, TSS, and the
+    divergence overrides (which carry the Gumbel root/sequential-halving
+    levers for a Gumbel-era profile, and leave them off for a PUCT-era one).
+    The virtual batch size and opening sampling mirror the eval arena's
+    single-root CPU settings rather than the GPU self-play pipeline depth.
+    Parsed once per unique profile per worker (see `_WorkerRuntime`).
     """
 
     def __init__(self, config_path: Path | str) -> None:
@@ -208,6 +254,13 @@ class SearchProfile:
         Selection happens IN-SEARCH via `move_temperatures` (the scalar
         `temperature` argument must stay 0.0; per-root behavior rides the
         list), so callers play `result["action_id"]` directly.
+
+        The kwarg set mirrors the training repo's eval arena exactly.
+        root_policy_temperature and root_fpu_reduction are deliberately NOT
+        passed even though the Rust signature accepts them: only the self-play
+        driver threads them into search, while the eval arena leaves them at
+        the Rust defaults for every profile, Gumbel and PUCT alike. As-trained
+        serving here means the eval-arena invocation.
         """
         sp = self.selfplay
         return session.search(
@@ -259,11 +312,14 @@ class _LoadedBot:
     model: Any
     evaluator: Any
     session: Any
+    profile: SearchProfile
 
 
 class _WorkerRuntime:
     """Everything one worker process holds resident: the catalogue, one search
-    session per checkpoint, and the shared search profile.
+    session per checkpoint, and one parsed SearchProfile per unique profile
+    toml (checkpoints without a `search_profile` share the
+    settings.search_config default).
 
     Device: `settings.device` (SHOWCASE_DEVICE) is resolved once per worker at
     init (see showcase.device). When it resolves to an accelerator, a startup
@@ -295,7 +351,17 @@ class _WorkerRuntime:
             log.warning("%s", note)
 
         self.policy_floor = settings.policy_floor
-        self.profile = SearchProfile(settings.search_config)
+        # One parse per unique profile toml; the settings.search_config
+        # default is parsed only if some checkpoint actually uses it.
+        profiles: dict[Path, SearchProfile] = {}
+
+        def profile_for(spec: CheckpointSpec) -> SearchProfile:
+            key = spec.search_profile or Path(settings.search_config)
+            profile = profiles.get(key)
+            if profile is None:
+                profile = profiles[key] = SearchProfile(key)
+            return profile
+
         self.bots: dict[str, _LoadedBot] = {}
         checked = False
         for spec in specs:
@@ -330,12 +396,13 @@ class _WorkerRuntime:
                 model=model,
                 evaluator=HexfieldEvaluator(model, device=device),
                 session=_rust.HexfieldMctsSession(max_states=65_536),
+                profile=profile_for(spec),
             )
         self.device = device
         log.info(
             "showcase worker ready: device=%s (requested %r), %d checkpoint(s), "
-            "torch_threads=%d",
-            device, settings.device, len(self.bots), threads,
+            "%d search profile(s), torch_threads=%d",
+            device, settings.device, len(self.bots), len(profiles), threads,
         )
 
     @staticmethod
@@ -368,12 +435,12 @@ class _WorkerRuntime:
         played: list[dict] = []
         ply = len(actions)
         while engine.terminal(state) is None and engine.current_player(state) == entry_player:
-            result = self.profile.search_one(
+            result = bot.profile.search_one(
                 bot.session, bot.evaluator, state,
                 game_key=game_key,
                 visits=int(visits),
                 seed=seed * 5003 + ply,
-                temperature=self.profile.move_temperature(ply),
+                temperature=bot.profile.move_temperature(ply),
             )
             action_id = int(result["action_id"])
             q, r = unpack_action_id(action_id)
@@ -411,7 +478,7 @@ class _WorkerRuntime:
         )
         if want_search and terminal is None:
             payload["search"] = analysis.searched_eval(
-                bot.session, bot.evaluator, self.profile, state,
+                bot.session, bot.evaluator, bot.profile, state,
                 # Throwaway tree key: high bit set so it can never collide with
                 # a live game's 48-bit key.
                 game_key=(1 << 63) | (seed & ((1 << 48) - 1)),

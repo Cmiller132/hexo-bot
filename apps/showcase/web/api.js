@@ -71,15 +71,19 @@ export async function getBots() {
   const raw = await request("/api/bots");
   if (raw && !Array.isArray(raw) && Array.isArray(raw.checkpoints)) {
     const checkpoints = raw.checkpoints.map(c => {
-      // extra scalar keys beyond the fixed ones are display metadata
-      // (e.g. games = "3.4M games"); fall back to the run name
+      // extra scalar keys beyond the fixed and structural ones are display
+      // metadata (e.g. games = "3.4M games"); fall back to the run name.
+      // `group` drives picker grouping and `search` the legacy-search tag,
+      // so both are lifted out rather than joined into the meta line.
       const extras = Object.entries(c)
-        .filter(([k, v]) => !["id", "label", "run", "epoch"].includes(k) &&
+        .filter(([k, v]) => !["id", "label", "run", "epoch", "group", "search"].includes(k) &&
                             (typeof v === "string" || typeof v === "number"))
         .map(([, v]) => String(v));
       return {
         id: String(c.id ?? c.checkpoint_id),
         label: String(c.label ?? c.id ?? c.checkpoint_id),
+        group: typeof c.group === "string" ? c.group : "",
+        search: typeof c.search === "string" ? c.search : "",
         meta: extras.length ? extras.join(" · ") : (c.run ? String(c.run) : ""),
       };
     });
@@ -98,6 +102,8 @@ export async function getBots() {
       groups.set(gk, {
         id: gk,
         label: e.epoch !== undefined ? `ep ${e.epoch}` : String(e.label ?? e.id),
+        group: "",
+        search: "",
         meta: e.run ? String(e.run) : "",
         rungs: new Map(),
       });
