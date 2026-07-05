@@ -34,6 +34,12 @@
     <button class="tab active" data-view="play" role="tab" aria-selected="true">Play</button>
     <button class="tab" data-view="analysis" role="tab" aria-selected="false">Analysis</button>
   </nav>
+  <!-- plain link, deliberately NOT class="tab": the tab click handler in app.js
+       binds every .tab and calls activateView(dataset.view) — a .tab link with
+       no data-view would blank the views on ctrl/middle-click. Styled to match
+       the tabs via .k-btn + inline metric overrides. -->
+  <a class="k-btn" href="./learn/"
+     style="font-size:11px;letter-spacing:.18em;padding:6px 14px;border-color:transparent;text-decoration:none">How it works</a>
 </header>
 
 <main>

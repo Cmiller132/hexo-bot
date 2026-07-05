@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The search &mdash; how Hexo works</title>
+<meta name="description" content="Gumbel-Top-m root sampling, sequential halving, threat-space search, and the batched scheduler behind Hexo's move search.">
+<!--
+  Accuracy sources (all claims verified against the implementation):
+  - packages/hexfield/rust/src/tree.rs        — Divergences (gumbel_* flags/defaults), init_gumbel_root,
+      seed_gumbel_round_caps, maybe_advance_gumbel_round, select_gumbel_root_edge,
+      select_gumbel_nonroot_edge, gumbel_sigma, gumbel_completed_q, GumbelRootState
+      (rounds_for = ceil(log2 m), budget_calibrated_m, GUMBEL_MIN_ROUND0_VISITS = 4)
+  - packages/hexfield/rust/src/search.rs      — run_continuous scheduler, select_continuous_pass
+      (per-slot in-flight cap = virtual_batch_size, drained-slot SH barrier), gumbel_target_policy,
+      select_action_with_lcb, lcb_pick / ml_final_pick, visit_policy (delta-visit histogram),
+      SEED_STREAM_GUMBEL, ACTIVE_ROOT_LIMIT = 512
+  - packages/hexfield/rust/src/threats_shared.rs — threat = active single-colour 6-window with count >= 4;
+      placements budget B (2 at FirstStone, 1 at Opening/SecondStone); hitting-set defense;
+      tactical_cells = own winning completions ∪ empties of every opponent >=4 window
+  - packages/hexfield/rust/src/cache.rs       — FIFO eval cache, EVAL_CACHE_MAX_STATES = 262,144,
+      keyed by state hash; Arc-shared evaluations
+  - configs/hexfield_main_7.toml [model.config.selfplay] — search_visits=1024, pcr_fast_visits=192,
+      virtual_batch_size=48, flush_target=1024, active_root_limit=192, lcb_z=1.6, tss_enabled=true,
+      gumbel_m=32, gumbel_c_visit=50.0, gumbel_c_scale=1.0, gumbel_target_c_scale=0.35,
+      gumbel_draw_temperature=1.5, gumbel_play_prune=true; [multi_stage_eval] full_search_visits=512,
+      eval_virtual_batch_size=32
+  - apps/showcase/server/showcase/bots.py     — SearchProfile: as-trained divergence overrides,
+      serve-side virtual batch = eval_virtual_batch_size (32), per-bot visit budgets from the catalogue
+-->
+<style>
+/* Token fallback + minimal structural fallback. learn.css (shared, loaded after
+   this block) is the real stylesheet; everything here only has to keep the page
+   readable if it is absent. Figure internals are fully styled here since they
+   are page-specific. */
+:root{
+  --bg:#101317; --tile:#161b21; --line:#242c35; --line-soft:#1c232b;
+  --text:#d4dbe3; --muted:#79848f; --dim:#4c565f;
+  --accent:#e8e2d6; --accent-dim:#57534a;
+  --p0:#4f93ff; --p0-soft:#7fb1ff; --p1:#ff5650; --p1-soft:#ff8781;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+html{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.65}
+body{margin:0}
+.learn-header{border-bottom:1px solid var(--line);padding:14px 20px}
+.learn-nav{display:flex;gap:18px;flex-wrap:wrap;max-width:860px;margin:0 auto}
+.learn-nav a{color:var(--muted);text-decoration:none;font-size:.95rem}
+.learn-nav a:hover{color:var(--text)}
+.learn-nav a[aria-current="page"]{color:var(--accent)}
+.learn-main{max-width:860px;margin:0 auto;padding:32px 20px 64px}
+.learn-main h1{color:var(--accent);font-weight:600;letter-spacing:.01em}
+.learn-main h2{color:var(--accent);font-weight:600;margin-top:2.6em;border-top:1px solid var(--line-soft);padding-top:1.6em}
+.learn-main a{color:var(--p0-soft)}
+.learn-main code{font-family:var(--mono);font-size:.88em;color:var(--accent);background:var(--tile);border:1px solid var(--line-soft);border-radius:3px;padding:0 4px}
+.learn-footer{border-top:1px solid var(--line);padding:18px 20px}
+.learn-footer nav{max-width:860px;margin:0 auto;display:flex;justify-content:space-between}
+.learn-footer a{color:var(--muted);text-decoration:none}
+.learn-footer a:hover{color:var(--text)}
+.fig{background:var(--tile);border:1px solid var(--line);border-radius:6px;margin:1.8em 0;padding:16px}
+.fig svg{display:block;width:100%;height:auto}
+.fig-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-size:.85rem;color:var(--muted)}
+.fig-controls button{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:5px 12px;font:inherit;font-size:.85rem;cursor:pointer}
+.fig-controls button:hover{border-color:var(--dim)}
+.fig-controls button:focus-visible,.fig-controls input:focus-visible{outline:2px solid var(--p0);outline-offset:2px}
+.fig-controls label{display:inline-flex;gap:6px;align-items:center}
+.fig-controls input[type=range]{accent-color:var(--p0);width:110px}
+.fig-controls input[type=checkbox]{accent-color:var(--p0)}
+.fig-controls .readout{font-family:var(--mono);color:var(--accent);font-size:.8rem}
+.fig figcaption{color:var(--muted);font-size:.85rem;margin-top:10px;line-height:1.5}
+.fig .note{color:var(--dim);font-size:.75rem;font-family:var(--mono)}
+.eq{font-family:var(--mono);font-size:.9em;color:var(--accent);background:var(--tile);border:1px solid var(--line-soft);border-radius:4px;padding:8px 14px;margin:1em 0;overflow-x:auto;white-space:nowrap}
+</style>
+<link rel="stylesheet" href="learn.css">
+</head>
+<body>
+
+<header class="learn-header">
+  <nav class="learn-nav" aria-label="How it works">
+    <a href="index.html">Overview</a>
+    <a href="network.html">The network</a>
+    <a href="search.html" aria-current="page">The search</a>
+    <a href="training.html">The training</a>
+  </nav>
+</header>
+
+<main class="learn-main">
+  <h1>The search</h1>
+
+  <p>The <a href="network.html">network</a> answers a position in one forward pass: a policy over
+  moves and a value estimate. The search is what turns that guess into a decision. It is a
+  <em>policy-improvement operator</em>: spend a budget of look-aheads, let measured outcomes correct
+  the network's first impressions, and come back with a move choice — and a training target — that
+  is reliably better than the raw policy alone.</p>
+
+  <!-- MCTS substrate + gumbel machinery: tree.rs Divergences::gumbel() builds on production();
+       PUCT paths still exist (Fast moves without a gumbel root, interior fallback), but the trained
+       config enables gumbel_root / gumbel_sequential_halving / gumbel_nonroot_select / gumbel_target.
+       Dirichlet noise / forced playouts: removed; configs/hexfield_main_7.toml:54-57. -->
+  <p>Honestly stated, the engine underneath is a fairly classical Monte-Carlo tree search: a tree of
+  positions, edges with visit counts and running values, batched network evaluations at the leaves,
+  PUCT-style selection machinery with first-play urgency and progressive widening. What Hexo trains
+  and serves, though, is the <strong>Gumbel AlphaZero</strong> configuration (Danihelka et&nbsp;al.
+  2022) layered on that substrate: a Gumbel-Top-m sample picks the root candidates, sequential
+  halving splits the visit budget among them, and a deterministic visit-regularized rule replaces
+  PUCT at interior nodes. The classic exploration tricks — Dirichlet noise at the root, forced
+  playouts — were deliberately removed from this codebase; the Gumbel machinery <em>is</em> the
+  exploration story.</p>
+
+  <h2 id="gumbel">Gumbel-Top-m at the root</h2>
+
+  <!-- init_gumbel_root: tree.rs — g(a)~Gumbel(0,1) per legal action, top-m by logit/τ + g(a);
+       τ = gumbel_draw_temperature = 1.5 divides the LOGIT ONLY in the draw comparator; SH ranking,
+       played move, and exported target read raw logits (tree.rs comments at the draw site).
+       gumbel_m = 32 (config), budget-calibrated (GUMBEL_MIN_ROUND0_VISITS = 4, floor of 2). -->
+  <p>The root of each search does not consider every legal move — on an unbounded board that would
+  smear a finite budget over hundreds of cells. Instead it samples <strong>m&nbsp;candidates without
+  replacement</strong> using the Gumbel-max trick: draw independent noise
+  <code>g(a)&nbsp;~&nbsp;Gumbel(0,1)</code> for every legal move and keep the top&nbsp;m by
+  <code>logit(a)/&tau;&nbsp;+&nbsp;g(a)</code>. That comparator is exactly equivalent to sampling m
+  moves, one after another without replacement, from <code>softmax(logits/&tau;)</code> — strong
+  moves are picked often, weak moves are picked occasionally, and no move is ever starved of
+  probability. The draw temperature <code>&tau;&nbsp;=&nbsp;1.5</code> widens <em>only this draw</em>:
+  it flattens which candidates get sampled, but the halving scores, the played move, and the exported
+  training target all read the raw logits — &tau; changes who gets auditioned, never how the audition
+  is judged.</p>
+
+  <p>This is why Dirichlet root noise could be deleted. Classic AlphaZero perturbs the prior and
+  then lets PUCT spend most of the budget on the (noisy) favorite anyway; the exploration is smeared
+  and mostly wasted. Here the randomness lives in <em>which m moves enter the tournament</em>, and
+  the entire visit budget is then concentrated on those m — every candidate gets enough visits for
+  its measured value to actually mean something. In the main training run <code>m&nbsp;=&nbsp;32</code>;
+  when a search runs with a smaller budget (evaluation matches, the live site's smaller bots), m is
+  automatically walked down the halving ladder until every round-0 candidate can afford at least 4
+  visits, and never below a 2-candidate tournament.</p>
+
+  <figure class="fig" id="fig-gumbel">
+    <div class="fig-controls" role="group" aria-label="Gumbel draw controls">
+      <button id="g-draw" type="button">Draw g ~ Gumbel(0,1)</button>
+      <button id="g-draw100" type="button">Draw &times;100</button>
+      <button id="g-reset" type="button">Reset counts</button>
+      <label for="g-tau">&tau; <input type="range" id="g-tau" min="1" max="2.5" step="0.1" value="1.5"></label>
+      <span class="readout" id="g-tau-read">&tau; = 1.5</span>
+      <span class="readout" id="g-count">draws: 0</span>
+    </div>
+    <svg id="g-svg" viewBox="0 0 720 400" role="img" aria-label="Interactive bar chart: 20 candidate moves with network priors, Gumbel noise stacked on scaled logits, and the top 8 candidates highlighted after each draw"></svg>
+    <figcaption><strong>Sampling the root candidates.</strong> Top panel: the network prior
+    softmax(logits) over 20 illustrative moves; dashes mark softmax(logits/&tau;) and dots the
+    empirical frequency each move wins the <em>first</em> pick across repeated draws — they converge.
+    Bottom panel: one draw. Solid bars are logit/&tau;; the lighter segment stacked on each is that
+    draw's Gumbel noise (drawn downward when negative). The m&nbsp;=&nbsp;8 highest totals (outlined,
+    ticked) become this move's candidates. Raise &tau; and the deterministic bars shrink relative to
+    the noise: the draw flattens, low-prior moves audition more often. Illustrative logits; m is 8
+    here for legibility, 32 in training.</figcaption>
+  </figure>
+
+  <h2 id="sh">Sequential halving</h2>
+
+  <!-- SH structure: tree.rs rounds_for = ceil(log2 m); seed_gumbel_round_caps: per-survivor
+       cumulative cap = entry_visits + floor(budget/(R·|A_r|)), min 1; barrier maybe_advance_gumbel_round
+       requires ALL survivors at cap (and a drained slot, search.rs:1519-1540); rank by
+       g(a)+logits(a)+σ(completedQ(a)); keep ceil(|A_r|/2); final survivor cap = u32::MAX.
+       σ: tree.rs gumbel_sigma = (c_visit + max_b N(b))·c_scale·q, c_visit=50, c_scale=1.0.
+       completedQ/v_mix: tree.rs gumbel_completed_q. -->
+  <p>The visit budget <code>n</code> for the move is then run as a knockout tournament over the m
+  candidates, in <code>R&nbsp;=&nbsp;&lceil;log&#8322;&nbsp;m&rceil;</code> rounds. Each round, every
+  surviving candidate receives an <em>equal</em> quota of
+  <code>&lfloor;n&nbsp;/&nbsp;(R&nbsp;&middot;&nbsp;|A&#7523;|)&rfloor;</code> fresh visits (at least
+  one). When all survivors have met their quota — a real barrier: the round cannot advance while any
+  evaluation is still in flight — they are ranked and the worse half is eliminated,
+  keeping <code>&lceil;|A&#7523;|/2&rceil;</code>, until one remains. The final survivor absorbs
+  whatever budget is left. The ranking score is</p>
+
+  <p class="eq">g(a) + logit(a) + &sigma;(q&#770;(a)) &nbsp;&nbsp;where&nbsp;&nbsp; &sigma;(q) = (c_visit + max&#8322; N(b)) &middot; c_scale &middot; q</p>
+
+  <p>with <code>c_visit&nbsp;=&nbsp;50</code>, <code>c_scale&nbsp;=&nbsp;1.0</code>, and
+  <code>max&#8322;&nbsp;N(b)</code> the largest visit count any root move earned <em>this move</em>
+  (on a reused tree, inherited visits are subtracted out so stale counts can't inflate &sigma;).
+  Here <code>q&#770;</code> is the <em>completed</em> Q: a candidate that has visits reports its
+  measured average; one that doesn't yet gets a principled interpolation of the node's own value
+  estimate and the visit-weighted average of its searched siblings, rather than a lucky default.
+  The shape of &sigma; is the point: at 20-odd visits the multiplier is already &asymp;70&times;, so
+  a fraction of a pawn's worth of measured value difference dwarfs any logit gap. The prior and the
+  noise decide who <em>enters</em>; measured Q rapidly decides who <em>survives</em>.</p>
+
+  <p>Compare that to what PUCT does with the same budget: the prior favorite soaks up the majority
+  of visits, and a low-prior move that happens to be tactically decisive may see single-digit visits
+  — too few for its Q to be trusted, so it is never promoted. Sequential halving spends the budget
+  where the <em>decision</em> needs it: equally at first, then doubling down only on moves that
+  survive scrutiny. A "hidden gem" — low prior, genuinely strong — only has to out-measure half the
+  field for one round to keep earning visits.</p>
+
+  <figure class="fig" id="fig-sh">
+    <div class="fig-controls" role="group" aria-label="Sequential halving controls">
+      <button id="sh-play" type="button">Play</button>
+      <button id="sh-step" type="button">Step round</button>
+      <button id="sh-reset" type="button">Reset</button>
+      <label><input type="radio" name="sh-preset" value="lucky" checked> lucky prior</label>
+      <label><input type="radio" name="sh-preset" value="gem"> hidden gem</label>
+      <span class="readout" id="sh-status">round 1/3 &middot; quota 21</span>
+    </div>
+    <svg id="sh-svg" viewBox="0 0 720 340" role="img" aria-label="Animated sequential-halving bracket: eight candidate columns accumulate visits round by round; the worse half grays out each round until one survivor is crowned"></svg>
+    <figcaption><strong>The tournament.</strong> Eight candidates (m&nbsp;=&nbsp;8 here for
+    legibility), budget n&nbsp;=&nbsp;512, so R&nbsp;=&nbsp;3 rounds with per-survivor quotas
+    21&nbsp;&rarr;&nbsp;42&nbsp;&rarr;&nbsp;85. Bars grow as visits land; each column shows its
+    running q&#770;. At each barrier the survivors are ranked by g&nbsp;+&nbsp;logit&nbsp;+&nbsp;&sigma;(q&#770;)
+    and the bottom half grays out. In <em>lucky prior</em>, the highest-prior move measures mediocre
+    and is dropped once &sigma; outweighs its logit head start. In <em>hidden gem</em>, a
+    seventh-ranked prior with a genuinely high Q wins the bracket — the case PUCT's visit
+    concentration systematically misses. Each reset redraws g and the simulated evaluations: who
+    gets eliminated when varies run to run, while a real Q edge keeps winning — which is the point.</figcaption>
+  </figure>
+
+  <h2 id="tss">Threat-space search</h2>
+
+  <!-- threats_shared.rs: threat = active single-colour length-6 window with count >= 4;
+       B = placements_remaining (2 FirstStone, 1 Opening/SecondStone); own win-now = count-5 any B,
+       count-4 only B==2; defense = min hitting set over opponent windows' empties, forced loss if > B.
+       tactical_cells = own winning completions ∪ empties of every opponent >=4 window.
+       Force-include: tree.rs init_gumbel_root — "Tactical cells are added to the m budget, not
+       counted against it." Also injected at every node expansion (add_node_from_eval) and used as a
+       leaf verdict override + a played-move guard (search.rs select_continuous_leaves,
+       tactical_guard_weights). -->
+  <p>A sampled candidate set has one frightening failure mode: what if the one move that blocks a
+  four-in-a-row simply isn't drawn? Hexo closes that hole with a deterministic tactical scanner
+  that runs alongside the search. It watches the board's length-6 windows (Hexo is a Connect-6-style
+  game: after the opening, each turn places up to two stones) and flags any <em>active</em> window —
+  all one colour — holding 4 or more stones. From those windows it derives, phase-aware, the
+  <strong>tactical set</strong>: the cells that complete an own win this turn, plus every empty cell
+  of every opponent threat window. Defense is a hitting set, not fill-every-gap: one stone in any
+  empty of a threat window kills it, and if no <code>B</code>-stone hitting set covers all opponent
+  windows (B&nbsp;=&nbsp;2 on the turn's first stone, 1 otherwise), the position is scored as a
+  proven loss outright.</p>
+
+  <p>At the root, every legal tactical cell is <strong>force-included in the candidate set</strong> —
+  appended <em>on top of</em> the m budget, not counted against it, even if its logit+noise score
+  ranked far below the top-m. So the draw can never miss the blocking move. The same scanner also
+  injects tactical cells as guaranteed children at every expanded node, overrides leaf values with
+  proven win/loss verdicts, and vetoes a proven-losing move at the final pick.</p>
+
+  <figure class="fig" id="fig-tss">
+    <div class="fig-controls" role="group" aria-label="Threat-space search controls">
+      <button id="t-draw" type="button">Draw candidates</button>
+      <button id="t-draw25" type="button">Draw &times;25</button>
+      <label><input type="checkbox" id="t-toggle"> threat-space injection</label>
+      <span class="readout" id="t-stat">block in candidates: &ndash;</span>
+    </div>
+    <svg id="t-svg" viewBox="0 0 720 330" role="img" aria-label="Hex board with a four-in-a-row threat; drawn candidate cells are outlined, and with injection enabled the blocking cells are always included and marked"></svg>
+    <figcaption><strong>Why the draw needs a safety net.</strong> Red has four in a row in a live
+    6-window (one end already blocked); blue, to move, must play one of the two marked empties
+    (&#9651;) or lose. Each draw samples m&nbsp;=&nbsp;8 candidates (outlined) from an illustrative
+    policy over the empty cells. With injection <em>off</em>, repeated draws sometimes miss both
+    blocking cells — watch the counter. With injection <em>on</em>, the scanner's tactical cells are
+    always appended to the candidate set (solid red outline, "+TSS"), beyond the m budget.</figcaption>
+  </figure>
+
+  <h2 id="scheduler">Serving many games at once</h2>
+
+  <!-- run_continuous (search.rs): one slot per game; select_continuous_pass caps per-slot in-flight
+       leaves at virtual_batch_size (48 selfplay / 32 serve via bots.py SearchProfile); leaves queue and
+       flush to the evaluator (flush_target = 1024 in training); virtual loss diversifies in-flight
+       descents; cache.rs FIFO eval cache 262,144 states keyed by state hash + duplicate merging;
+       tree reuse: advance_root promotes the played child, fresh gumbel draw per move (SEED_STREAM_GUMBEL,
+       mix_seed(base_seed, game_key, ply)); active_root_limit 192 (config) under hard cap 512. -->
+  <p>None of the above would be affordable if each game ran its search alone: a single tree produces
+  leaf positions one at a time, and a network evaluated one position at a time leaves the device
+  almost idle. Hexo's driver is a <strong>continuous batched scheduler</strong>. Every active game
+  owns a slot with its own tree; each pass, every slot descends its tree and emits leaf positions
+  until it has up to <code>virtual_batch_size</code> evaluations in flight (48 during training, 32
+  on this site) — a <em>virtual loss</em> temporarily marks each in-flight path down so parallel
+  descents spread instead of piling onto one line. All slots' leaves land in a shared queue, which
+  is flushed to the network as one large batch; results fan back, back up their trees, and the slots
+  immediately produce more work. Duplicate positions in a batch are evaluated once, and a bounded
+  FIFO cache (262,144 entries, keyed by a 64-bit hash of the position) means a re-visited position
+  costs a lookup instead of a forward pass.</p>
+
+  <p>Two more economies matter. When a move is played, the tree isn't discarded: the chosen child is
+  promoted to be the new root, keeping its whole subtree of visits — each new move then gets a fresh
+  Gumbel draw over the promoted root, and the halving quotas count only visits earned since, so
+  reuse never distorts the tournament. And because the sequential-halving barrier only fires when a
+  slot has zero evaluations in flight, correctness survives all this asynchrony: rounds never advance
+  on half-backed-up statistics. Training runs 192 games per device this way; the public site uses the
+  same scheduler, which is why several visitors can each play a searched opponent on one box.</p>
+
+  <figure class="fig" id="fig-sched">
+    <div class="fig-controls" role="group" aria-label="Scheduler animation controls">
+      <button id="s-play" type="button">Pause</button>
+      <label for="s-lanes">games <input type="range" id="s-lanes" min="1" max="8" step="1" value="4"></label>
+      <span class="readout" id="s-lanes-read">4 lanes</span>
+      <span class="readout" id="s-fill">batch fill: &ndash;</span>
+      <span class="readout" id="s-busy">evaluator busy: &ndash;</span>
+      <span class="note">illustrative timing, not measured</span>
+    </div>
+    <svg id="s-svg" viewBox="0 0 720 300" role="img" aria-label="Animated lane diagram: game lanes emit leaf evaluation requests into a shared batching queue, the evaluator consumes batches, and results fan back to the lanes"></svg>
+    <figcaption><strong>The batching loop.</strong> Each lane is one game's search slot, emitting
+    leaf requests (dots) into the shared queue whenever it has in-flight headroom. The evaluator
+    consumes the queue in batches and results fan back to their trees. Drag the slider: with one
+    lane the evaluator starves between requests; with more lanes batches fill and evaluator
+    utilization climbs — the whole reason one device can serve many concurrent games. Timings are
+    cartooned for legibility.</figcaption>
+  </figure>
+
+  <h2 id="played">What comes out of a search</h2>
+
+  <!-- Played move: search.rs select_action_with_lcb — T==0 with lcb_move_selection: LCB pick
+       (Q − z·σ/√n, z = lcb_z = 1.6, eligibility delta >= max(lcb_min_visits=8,
+       lcb_visit_fraction=0.1 · max delta)), fallback visit-argmax; TSS guard zeroes proven-losing
+       moves first; ml_final_pick decisiveness tie-break within ml_final_pick_band. At T>0 (opening
+       plies) the delta-visit histogram is sampled with gumbel_play_prune zeroing round-0 quota losers.
+       Target: gumbel_target_policy — π'(a) = softmax(logits + σ(completedQ)) with export-only
+       c_scale = gumbel_target_c_scale = 0.35. -->
+  <p>Two artifacts leave every finished search. The <strong>played move</strong>: at temperature
+  zero — every serious move on this site — the pick starts from the argmax of this move's visit
+  histogram, but a lower-confidence-bound rule gets the last word: among moves with enough fresh
+  visits (at least 8, and at least 10% of the leader's), it plays the one with the best
+  <code>Q&nbsp;&minus;&nbsp;z&middot;&sigma;/&radic;n</code> at <code>z&nbsp;=&nbsp;1.6</code> —
+  preferring a well-measured good move over a barely-sampled great-looking one — with a
+  decisiveness tie-break among near-equals and the tactical guard vetoing any proven loser. (During
+  training's few opening plies at T&nbsp;&gt;&nbsp;0, the histogram is sampled instead, with
+  candidates that never survived a halving pruned out first — their visits were schedule, not
+  endorsement.) And the <strong>training target</strong>: not the visit counts, but the improved
+  policy <code>&pi;&prime;(a)&nbsp;=&nbsp;softmax(logits&nbsp;+&nbsp;&sigma;(completedQ))</code>, a
+  denser, better-calibrated signal than counts alone — softened for export
+  (<code>c_scale&nbsp;=&nbsp;0.35</code>) so the network isn't trained on near-one-hot spikes. Where
+  &pi;&prime; goes next is the subject of <a href="training.html#targets">the training</a>.</p>
+
+</main>
+
+<footer class="learn-footer">
+  <nav aria-label="Section pages">
+    <a class="prev" href="network.html">&larr; The network</a>
+    <a class="next" href="training.html">The training &rarr;</a>
+  </nav>
+</footer>
+
+<script>
+(function(){
+"use strict";
+var SVGNS="http://www.w3.org/2000/svg";
+function el(name,attrs,parent){var e=document.createElementNS(SVGNS,name);if(attrs)for(var k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function txt(x,y,s,attrs,parent){var a=attrs||{};a.x=x;a.y=y;var e=el("text",a,parent);e.textContent=s;return e;}
+function css(v,fb){return "var("+v+","+fb+")";}
+var C={line:css("--line","#242c35"),lineSoft:css("--line-soft","#1c232b"),text:css("--text","#d4dbe3"),
+  muted:css("--muted","#79848f"),dim:css("--dim","#4c565f"),accent:css("--accent","#e8e2d6"),
+  accentDim:css("--accent-dim","#57534a"),p0:css("--p0","#4f93ff"),p0s:css("--p0-soft","#7fb1ff"),
+  p1:css("--p1","#ff5650"),p1s:css("--p1-soft","#ff8781"),tile:css("--tile","#161b21"),bg:css("--bg","#101317")};
+var MONO="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
+var REDUCED=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+function gumbel(){var u=Math.random();u=Math.min(Math.max(u,1e-12),1-1e-12);return -Math.log(-Math.log(u));}
+function softmax(xs){var m=-Infinity,i;for(i=0;i<xs.length;i++)if(xs[i]>m)m=xs[i];var s=0,out=[];for(i=0;i<xs.length;i++){out.push(Math.exp(xs[i]-m));s+=out[i];}for(i=0;i<out.length;i++)out[i]/=s;return out;}
+function gaussian(){var u=Math.random()||1e-9,v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+
+/* ============================== FIG 1: Gumbel-Top-m ============================== */
+(function(){
+var svg=document.getElementById("g-svg");if(!svg)return;
+var LOGITS=[2.3,1.8,1.5,1.2,1.0,0.8,0.6,0.45,0.3,0.15,0.0,-0.2,-0.4,-0.6,-0.8,-1.0,-1.25,-1.5,-1.8,-2.2];
+var N=LOGITS.length,M=8,tau=1.5;
+var X0=48,COLW=33,BARW=20;
+function colX(i){return X0+i*COLW;}
+/* panel A: priors + frequencies (y 14..96); panel B: draw (baseline y 268) */
+var PA_BASE=96,PA_H=78,PA_SCALE=PA_H/0.34;
+var PB_BASE=268,PB_SCALE=22;
+var counts=new Array(N).fill(0),draws=0;
+var lastG=null,lastTop=null;
+/* static scaffold */
+el("line",{x1:X0-14,y1:PA_BASE,x2:X0+N*COLW,y2:PA_BASE,stroke:C.line,"stroke-width":1},svg);
+el("line",{x1:X0-14,y1:PB_BASE,x2:X0+N*COLW,y2:PB_BASE,stroke:C.line,"stroke-width":1},svg);
+txt(X0-14,26,"priors softmax(logits) / first-pick frequency",{fill:C.muted,"font-size":"11","font-family":MONO},svg);
+txt(X0-14,118,"one draw: logit/τ (solid) + g (light), top-8 outlined",{fill:C.muted,"font-size":"11","font-family":MONO},svg);
+txt(X0+N*COLW-2,396,"candidates sorted by logit — illustrative",{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"end"},svg);
+var gDyn=el("g",{},svg);
+for(var i=0;i<N;i++)txt(colX(i)+BARW/2,378,String(i+1),{fill:C.dim,"font-size":"9","font-family":MONO,"text-anchor":"middle"},svg);
+var tauSlider=document.getElementById("g-tau"),tauRead=document.getElementById("g-tau-read"),cntRead=document.getElementById("g-count");
+function render(noiseScale){
+  gDyn.textContent="";
+  var pri=softmax(LOGITS),tgt=softmax(LOGITS.map(function(l){return l/tau;})),i;
+  for(i=0;i<N;i++){ /* panel A */
+    var h=pri[i]*PA_SCALE;
+    el("rect",{x:colX(i),y:PA_BASE-h,width:BARW,height:Math.max(h,0.5),fill:C.accentDim,opacity:.75},gDyn);
+    var ty=PA_BASE-tgt[i]*PA_SCALE;
+    el("line",{x1:colX(i)-3,y1:ty,x2:colX(i)+BARW+3,y2:ty,stroke:C.p0s,"stroke-width":1.5,"stroke-dasharray":"3 2"},gDyn);
+    if(draws>0){var f=counts[i]/draws;el("circle",{cx:colX(i)+BARW/2,cy:PA_BASE-f*PA_SCALE,r:2.6,fill:C.p1s},gDyn);}
+  }
+  for(i=0;i<N;i++){ /* panel B */
+    var d=LOGITS[i]/tau,x=colX(i);
+    var y0=PB_BASE,y1=PB_BASE-d*PB_SCALE;
+    el("rect",{x:x,y:Math.min(y0,y1),width:BARW,height:Math.max(Math.abs(y1-y0),0.5),fill:C.accentDim},gDyn);
+    if(lastG){
+      var g=lastG[i]*(noiseScale===undefined?1:noiseScale);
+      var y2=y1-g*PB_SCALE;
+      el("rect",{x:x+2,y:Math.min(y1,y2),width:BARW-4,height:Math.max(Math.abs(y2-y1),0.5),fill:g>=0?C.p0:C.p1,opacity:.55},gDyn);
+      if(lastTop&&noiseScale===undefined&&lastTop.indexOf(i)>=0){
+        el("rect",{x:x-2,y:Math.min(y0,y2)-3,width:BARW+4,height:Math.abs(y2-y0)+6,fill:"none",stroke:C.accent,"stroke-width":1.4},gDyn);
+        txt(x+BARW/2,Math.min(y0,y2)-8,"✓",{fill:C.accent,"font-size":"11","text-anchor":"middle"},gDyn);
+      }
+    }
+  }
+  var lg=PA_BASE-72;
+  txt(X0+N*COLW-2,lg,"— softmax(logits/τ)   ● empirical",{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"end"},gDyn);
+}
+function topM(g){
+  var idx=[];for(var i=0;i<N;i++)idx.push(i);
+  idx.sort(function(a,b){return (LOGITS[b]/tau+g[b])-(LOGITS[a]/tau+g[a]);});
+  return idx.slice(0,M);
+}
+var animId=null;
+function oneDraw(animate){
+  var g=[];for(var i=0;i<N;i++)g.push(gumbel());
+  lastG=g;lastTop=topM(g);
+  counts[lastTop[0]]++;draws++;
+  cntRead.textContent="draws: "+draws;
+  if(animId)cancelAnimationFrame(animId);
+  if(!animate||REDUCED){render();return;}
+  var t0=null;
+  function frame(ts){
+    if(t0===null)t0=ts;
+    var p=Math.min((ts-t0)/420,1);
+    render(p<1?p*p*(3-2*p):undefined);
+    if(p<1)animId=requestAnimationFrame(frame);else animId=null;
+  }
+  animId=requestAnimationFrame(frame);
+}
+document.getElementById("g-draw").addEventListener("click",function(){oneDraw(true);});
+document.getElementById("g-draw100").addEventListener("click",function(){
+  for(var k=0;k<99;k++){var g=[],i;for(i=0;i<N;i++)g.push(gumbel());counts[topM(g)[0]]++;draws++;}
+  oneDraw(false);
+});
+document.getElementById("g-reset").addEventListener("click",function(){
+  counts=new Array(N).fill(0);draws=0;lastG=null;lastTop=null;cntRead.textContent="draws: 0";render();
+});
+tauSlider.addEventListener("input",function(){
+  tau=parseFloat(tauSlider.value);tauRead.textContent="τ = "+tau.toFixed(1);
+  counts=new Array(N).fill(0);draws=0;cntRead.textContent="draws: 0 (τ changed)";
+  if(lastG)lastTop=topM(lastG);
+  render();
+});
+render();
+})();
+
+/* ============================== FIG 2: Sequential halving ============================== */
+(function(){
+var svg=document.getElementById("sh-svg");if(!svg)return;
+var BUDGET=512,MCAND=8,R=3;
+var QUOTA=[Math.floor(BUDGET/(R*8)),Math.floor(BUDGET/(R*4)),Math.floor(BUDGET/(R*2))]; /* 21,42,85 */
+var PRESETS={
+  lucky:{logits:[2.4,1.7,1.3,0.9,0.6,0.3,0.0,-0.4],
+         trueQ:[0.02,0.10,0.28,0.05,-0.05,0.12,-0.15,-0.20],
+         note:"A has the top prior but a mediocre Q"},
+  gem:{logits:[2.4,1.7,1.3,0.9,0.6,0.3,0.0,-0.4],
+       trueQ:[0.05,0.02,0.08,-0.05,0.00,-0.10,0.38,-0.20],
+       note:"G is drawn on a weak prior but its Q proves out"}};
+var LABELS=["A","B","C","D","E","F","G","H"];
+var X0=70,COLW=76,BARW=40,BASE=278,VSCALE=1.15;
+var st,playing=false,rafId=null;
+var statusEl=document.getElementById("sh-status"),playBtn=document.getElementById("sh-play");
+function presetName(){var r=document.querySelector('input[name="sh-preset"]:checked');return r?r.value:"lucky";}
+function reset(){
+  var p=PRESETS[presetName()];
+  st={p:p,round:0,visits:[],sums:[],alive:[],g:[],target:[],done:false,winner:-1,spent:0};
+  for(var i=0;i<MCAND;i++){st.visits.push(0);st.sums.push(0);st.alive.push(true);st.g.push(gumbel());st.target.push(QUOTA[0]);}
+  stopPlay();render();
+}
+function stopPlay(){playing=false;playBtn.textContent="Play";if(rafId){cancelAnimationFrame(rafId);rafId=null;}}
+function qhat(i){return st.visits[i]>0?st.sums[i]/st.visits[i]:0;}
+function visitOne(i){st.visits[i]++;st.spent++;st.sums[i]+=st.p.trueQ[i]+gaussian()*0.35;}
+function aliveBelowTarget(){var out=[];for(var i=0;i<MCAND;i++)if(st.alive[i]&&st.visits[i]<st.target[i])out.push(i);return out;}
+function aliveCount(){var n=0;for(var i=0;i<MCAND;i++)if(st.alive[i])n++;return n;}
+function halve(){
+  var maxN=0,i;for(i=0;i<MCAND;i++)if(st.visits[i]>maxN)maxN=st.visits[i];
+  var scored=[];
+  for(i=0;i<MCAND;i++)if(st.alive[i])scored.push([i,st.g[i]+st.p.logits[i]+(50+maxN)*1.0*qhat(i)]);
+  scored.sort(function(a,b){return b[1]-a[1];});
+  var keep=Math.max(Math.ceil(scored.length/2),1);
+  for(i=keep;i<scored.length;i++)st.alive[scored[i][0]]=false;
+  st.round++;
+  if(aliveCount()===1||st.round>=R){
+    for(i=0;i<MCAND;i++)if(st.alive[i]){st.winner=i;st.target[i]=st.visits[i]+Math.max(BUDGET-st.spent,0);}
+    st.round=R;
+    if(BUDGET-st.spent<=0)st.done=true;
+  }else{
+    var per=QUOTA[st.round];
+    for(i=0;i<MCAND;i++)if(st.alive[i])st.target[i]=st.visits[i]+per;
+  }
+}
+function tick(nVisits){
+  if(st.done)return;
+  var given=0;
+  while(given<nVisits){
+    var open=aliveBelowTarget();
+    if(open.length===0){
+      if(st.winner>=0){st.done=true;break;}
+      halve();
+      if(st.done)break;
+      continue;
+    }
+    /* largest-deficit-first mirrors select_gumbel_root_edge */
+    var pick=open[0],bd=-1,j;
+    for(j=0;j<open.length;j++){var d=st.target[open[j]]-st.visits[open[j]];if(d>bd){bd=d;pick=open[j];}}
+    visitOne(pick);given++;
+    if(st.winner>=0&&st.visits[st.winner]>=st.target[st.winner]){st.done=true;break;}
+  }
+}
+function render(){
+  svg.textContent="";
+  el("line",{x1:30,y1:BASE,x2:690,y2:BASE,stroke:C.line},svg);
+  var i;
+  for(i=0;i<MCAND;i++){
+    var x=X0+i*COLW,h=st.visits[i]*VSCALE,alive=st.alive[i];
+    var gcol=el("g",{opacity:alive?1:0.32},svg);
+    el("rect",{x:x,y:BASE-h,width:BARW,height:Math.max(h,1),fill:alive?C.p0:C.dim,opacity:alive?0.85:1},gcol);
+    if(alive&&!st.done&&st.target[i]>st.visits[i]&&st.target[i]<9000){
+      var ty=BASE-st.target[i]*VSCALE;
+      el("line",{x1:x-3,y1:ty,x2:x+BARW+3,y2:ty,stroke:C.p0s,"stroke-width":1,"stroke-dasharray":"2 3"},gcol);
+    }
+    txt(x+BARW/2,BASE+16,LABELS[i],{fill:alive?C.text:C.dim,"font-size":"12","font-family":MONO,"text-anchor":"middle"},gcol);
+    txt(x+BARW/2,BASE+30,"logit "+st.p.logits[i].toFixed(1),{fill:C.dim,"font-size":"9","font-family":MONO,"text-anchor":"middle"},gcol);
+    txt(x+BARW/2,BASE+44,"N "+st.visits[i],{fill:alive?C.muted:C.dim,"font-size":"9","font-family":MONO,"text-anchor":"middle"},gcol);
+    if(alive&&st.visits[i]>0)txt(x+BARW/2,BASE-h-8,"q̂ "+qhat(i).toFixed(2),{fill:C.accent,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gcol);
+    if(!alive)txt(x+BARW/2,BASE-h-8,"×",{fill:C.p1,"font-size":"12","text-anchor":"middle","font-family":MONO},svg);
+    if(st.done&&i===st.winner){
+      var cy=BASE-h-34;
+      el("path",{d:"M"+(x+BARW/2-10)+","+(cy+8)+" l4,-10 l6,7 l6,-7 l4,10 z",fill:C.accent},svg);
+      txt(x+BARW/2,cy+22,"survivor",{fill:C.accent,"font-size":"10","font-family":MONO,"text-anchor":"middle"},svg);
+    }
+  }
+  txt(36,24,st.p.note,{fill:C.muted,"font-size":"11","font-family":MONO},svg);
+  txt(36,42,"score at halving: g + logit + (50 + max N)·q̂",{fill:C.dim,"font-size":"10","font-family":MONO},svg);
+  var rTxt=st.done?"done · "+st.spent+" visits spent":"round "+Math.min(st.round+1,R)+"/"+R+" · quota "+(st.winner>=0?"rest":QUOTA[Math.min(st.round,R-1)]);
+  statusEl.textContent=rTxt;
+}
+function loop(){
+  if(!playing)return;
+  tick(3);render();
+  if(st.done){stopPlay();return;}
+  rafId=requestAnimationFrame(loop);
+}
+playBtn.addEventListener("click",function(){
+  if(playing){stopPlay();return;}
+  if(st.done)reset();
+  playing=true;playBtn.textContent="Pause";
+  if(REDUCED){while(!st.done)tick(50);render();stopPlay();return;}
+  rafId=requestAnimationFrame(loop);
+});
+document.getElementById("sh-step").addEventListener("click",function(){
+  stopPlay();
+  if(st.done)return;
+  var startRound=st.round,guard=0;
+  while(!st.done&&st.round===startRound&&guard++<2000)tick(10);
+  render();
+});
+document.getElementById("sh-reset").addEventListener("click",reset);
+var radios=document.querySelectorAll('input[name="sh-preset"]');
+for(var r=0;r<radios.length;r++)radios[r].addEventListener("change",reset);
+reset();
+})();
+
+/* ============================== FIG 3: Threat-space search ============================== */
+(function(){
+var svg=document.getElementById("t-svg");if(!svg)return;
+var SIZE=26,CX=360,CY=158,M=8,TAU=1.5;
+function hx(q,r){return CX+SIZE*(Math.sqrt(3)*q+Math.sqrt(3)/2*r);}
+function hy(q,r){return CY+SIZE*1.5*r;}
+function hexPts(q,r){
+  var cx=hx(q,r),cy=hy(q,r),pts=[];
+  for(var k=0;k<6;k++){var a=Math.PI/180*(60*k-30);pts.push((cx+SIZE*0.94*Math.cos(a)).toFixed(1)+","+(cy+SIZE*0.94*Math.sin(a)).toFixed(1));}
+  return pts.join(" ");
+}
+/* radius-3 disc */
+var cells=[];
+for(var q=-3;q<=3;q++)for(var r=-3;r<=3;r++)if(Math.abs(q+r)<=3)cells.push([q,r]);
+var RED=[[-2,0],[-1,0],[0,0],[1,0]],BLUE=[[-3,0]];
+var BLOCK=[[2,0],[3,0]]; /* empties of the single live >=4 window (-2..3,0) */
+function isIn(list,q,r){for(var i=0;i<list.length;i++)if(list[i][0]===q&&list[i][1]===r)return true;return false;}
+var empties=cells.filter(function(c){return !isIn(RED,c[0],c[1])&&!isIn(BLUE,c[0],c[1]);});
+/* illustrative policy: prefers cells near stones, deterministic hash jitter; the
+   blocking cells get a middling prior — the failure mode this figure is about */
+function h2(q,r){var n=(q*73856093)^(r*19349663);n=(n^(n>>13))*1274126177;n=(n^(n>>16))>>>0;return n/4294967296;}
+function distToStones(q,r){
+  var best=99,all=RED.concat(BLUE);
+  for(var i=0;i<all.length;i++){
+    var dq=q-all[i][0],dr=r-all[i][1];
+    var d=(Math.abs(dq)+Math.abs(dr)+Math.abs(dq+dr))/2;
+    if(d<best)best=d;
+  }
+  return best;
+}
+var logitOf={};
+empties.forEach(function(c){
+  var l=1.4-0.55*distToStones(c[0],c[1])+(h2(c[0],c[1])-0.5)*1.6;
+  if(isIn(BLOCK,c[0],c[1]))l-=0.9;
+  logitOf[c[0]+","+c[1]]=l;
+});
+var board=el("g",{},svg),marks=el("g",{},svg);
+cells.forEach(function(c){
+  el("polygon",{points:hexPts(c[0],c[1]),fill:C.bg,stroke:C.lineSoft,"stroke-width":1},board);
+});
+RED.forEach(function(c){el("circle",{cx:hx(c[0],c[1]),cy:hy(c[0],c[1]),r:SIZE*0.52,fill:C.p1},board);});
+BLUE.forEach(function(c){el("circle",{cx:hx(c[0],c[1]),cy:hy(c[0],c[1]),r:SIZE*0.52,fill:C.p0},board);});
+/* threat-window empties marker (always visible) */
+BLOCK.forEach(function(c){
+  var x=hx(c[0],c[1]),y=hy(c[0],c[1]);
+  el("path",{d:"M"+x+","+(y-7)+" L"+(x+7)+","+(y+6)+" L"+(x-7)+","+(y+6)+" Z",fill:"none",stroke:C.p1s,"stroke-width":1.5},board);
+});
+txt(20,24,"red: four in a row · blue to move (1 placement)",{fill:C.muted,"font-size":"11","font-family":MONO},svg);
+txt(20,42,"△ = empties of the live 6-window — the only saving moves",{fill:C.dim,"font-size":"10","font-family":MONO},svg);
+txt(20,310,"policy over empty cells is illustrative",{fill:C.dim,"font-size":"10","font-family":MONO},svg);
+var statEl=document.getElementById("t-stat"),toggle=document.getElementById("t-toggle");
+var nDraws=0,nHit=0;
+function draw(){
+  var scored=empties.map(function(c){return {c:c,s:logitOf[c[0]+","+c[1]]/TAU+gumbel()};});
+  scored.sort(function(a,b){return b.s-a.s;});
+  var cand=scored.slice(0,M).map(function(o){return o.c;});
+  var hitNatural=cand.some(function(c){return isIn(BLOCK,c[0],c[1]);});
+  var injected=[];
+  if(toggle.checked){
+    BLOCK.forEach(function(b){if(!cand.some(function(c){return c[0]===b[0]&&c[1]===b[1];}))injected.push(b);});
+  }
+  nDraws++;if(hitNatural||toggle.checked)nHit++;
+  marks.textContent="";
+  cand.forEach(function(c){
+    el("polygon",{points:hexPts(c[0],c[1]),fill:"none",stroke:C.accent,"stroke-width":1.6},marks);
+  });
+  injected.forEach(function(c){
+    el("polygon",{points:hexPts(c[0],c[1]),fill:"none",stroke:C.p1,"stroke-width":2.2},marks);
+    txt(hx(c[0],c[1]),hy(c[0],c[1])-SIZE*0.72,"+TSS",{fill:C.p1s,"font-size":"9","font-family":MONO,"text-anchor":"middle"},marks);
+  });
+  if(!hitNatural&&!toggle.checked){
+    txt(560,60,"block MISSED",{fill:C.p1,"font-size":"12","font-family":MONO,"text-anchor":"middle"},marks);
+  }else if(injected.length>0){
+    txt(560,60,"block injected",{fill:C.p0s,"font-size":"12","font-family":MONO,"text-anchor":"middle"},marks);
+  }else{
+    txt(560,60,"block in draw",{fill:C.muted,"font-size":"12","font-family":MONO,"text-anchor":"middle"},marks);
+  }
+  statEl.textContent="block in candidates: "+nHit+"/"+nDraws+(toggle.checked?" (TSS on)":" (TSS off)");
+}
+document.getElementById("t-draw").addEventListener("click",draw);
+document.getElementById("t-draw25").addEventListener("click",function(){for(var k=0;k<25;k++)draw();});
+toggle.addEventListener("change",function(){nDraws=0;nHit=0;draw();});
+draw();
+})();
+
+/* ============================== FIG 4: batched scheduler ============================== */
+(function(){
+var svg=document.getElementById("s-svg");if(!svg)return;
+var W=720,H=300,LANE_X=60,LANE_W=120,QX=400,QY0=250,EVX=500,EVY=90,EVW=150,EVH=120;
+var CAP=12,EVAL_TIME=55,STARVE=80,MAXIF=4,COOL=22;
+var lanesN=4,lanes=[],dots=[],queueLanes=[],busy=0,starve=0,flash=0;
+var frames=0,busyFrames=0,batches=0,fillSum=0,lastBatch=0;
+var playing=!REDUCED;
+var playBtn=document.getElementById("s-play"),lanesSlider=document.getElementById("s-lanes");
+var lanesRead=document.getElementById("s-lanes-read"),fillRead=document.getElementById("s-fill"),busyRead=document.getElementById("s-busy");
+var gStatic=el("g",{},svg),gDots=el("g",{},svg);
+function laneY(i){return 36+i*(228/Math.max(lanesN,1))+114/Math.max(lanesN,1);}
+function buildLanes(){
+  lanes=[];dots=[];queueLanes=[];busy=0;starve=0;flash=0;
+  frames=0;busyFrames=0;batches=0;fillSum=0;lastBatch=0;
+  for(var i=0;i<lanesN;i++)lanes.push({inFlight:0,cool:(i*7)%COOL});
+  drawStatic();
+}
+function drawStatic(){
+  gStatic.textContent="";
+  for(var i=0;i<lanesN;i++){
+    var y=laneY(i);
+    el("rect",{x:LANE_X,y:y-14,width:LANE_W,height:28,rx:4,fill:C.bg,stroke:C.line},gStatic);
+    txt(LANE_X+10,y+4,"game "+(i+1),{fill:C.muted,"font-size":"10","font-family":MONO},gStatic);
+    /* tiny tree glyph */
+    var tx=LANE_X+LANE_W-26,ty=y;
+    el("circle",{cx:tx,cy:ty-6,r:2.5,fill:C.accentDim},gStatic);
+    el("line",{x1:tx,y1:ty-6,x2:tx-6,y2:ty+5,stroke:C.accentDim},gStatic);
+    el("line",{x1:tx,y1:ty-6,x2:tx+6,y2:ty+5,stroke:C.accentDim},gStatic);
+    el("circle",{cx:tx-6,cy:ty+5,r:2,fill:C.accentDim},gStatic);
+    el("circle",{cx:tx+6,cy:ty+5,r:2,fill:C.accentDim},gStatic);
+  }
+  el("rect",{x:QX-16,y:QY0-CAP*15-8,width:32,height:CAP*15+16,rx:4,fill:"none",stroke:C.line},gStatic);
+  txt(QX,QY0+22,"queue",{fill:C.muted,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gStatic);
+  el("rect",{x:EVX,y:EVY,width:EVW,height:EVH,rx:6,fill:C.bg,stroke:C.line,id:"s-evbox"},gStatic);
+  txt(EVX+EVW/2,EVY+EVH/2-4,"evaluator",{fill:C.text,"font-size":"12","font-family":MONO,"text-anchor":"middle"},gStatic);
+  txt(EVX+EVW/2,EVY+EVH/2+14,"(the network)",{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gStatic);
+  txt(EVX+EVW/2,EVY-10,"batch ≤ "+CAP,{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gStatic);
+}
+function queuePos(k){return {x:QX,y:QY0-k*15-7};}
+function step(){
+  frames++;
+  var i;
+  for(i=0;i<lanesN;i++){ /* emit */
+    var L=lanes[i];
+    if(L.cool>0){L.cool--;continue;}
+    if(L.inFlight<MAXIF&&queueLanes.length<CAP*2){
+      L.inFlight++;L.cool=COOL+((i*13+frames)%9);
+      dots.push({phase:"toQ",t:0,dur:26,lane:i,x0:LANE_X+LANE_W,y0:laneY(i)});
+    }
+  }
+  for(i=dots.length-1;i>=0;i--){ /* move dots */
+    var d=dots[i];d.t++;
+    if(d.phase==="toQ"&&d.t>=d.dur){queueLanes.push(d.lane);dots.splice(i,1);}
+    else if(d.phase==="back"&&d.t>=d.dur){lanes[d.lane].inFlight=Math.max(lanes[d.lane].inFlight-1,0);dots.splice(i,1);}
+  }
+  if(busy>0){ /* evaluator */
+    busy--;busyFrames++;
+    if(busy===0){
+      for(i=0;i<lastBatch;i++){
+        var ln=queueLanes.shift();
+        if(ln===undefined)break;
+        if(ln>=lanesN){continue;}
+        dots.push({phase:"back",t:-i*2,dur:24,lane:ln,x0:EVX,y0:EVY+EVH/2});
+      }
+      flash=0;
+    }
+  }else{
+    starve++;
+    if(queueLanes.length>=CAP||(queueLanes.length>0&&starve>STARVE)){
+      lastBatch=Math.min(CAP,queueLanes.length);
+      batches++;fillSum+=lastBatch/CAP;busy=EVAL_TIME;starve=0;flash=1;
+    }
+  }
+}
+function ease(p){return p*p*(3-2*p);}
+function render(){
+  gDots.textContent="";
+  var qn=Math.min(queueLanes.length,CAP*2),k;
+  for(k=0;k<qn;k++){
+    var qp=queuePos(Math.min(k,CAP+3));
+    el("circle",{cx:qp.x,cy:qp.y,r:4.5,fill:k<CAP?C.p0:C.dim},gDots);
+  }
+  for(k=0;k<dots.length;k++){
+    var d=dots[k];if(d.t<0)continue;
+    var p=ease(Math.min(d.t/d.dur,1)),x,y;
+    if(d.phase==="toQ"){
+      var q0=queuePos(Math.min(queueLanes.length,CAP+3));
+      x=d.x0+(q0.x-14-d.x0)*p;y=d.y0+(q0.y-d.y0)*p;
+      el("circle",{cx:x,cy:y,r:4,fill:C.p0s},gDots);
+    }else{
+      var tx=LANE_X+LANE_W,ty=laneY(d.lane);
+      x=d.x0+(tx-d.x0)*p;y=d.y0+(ty-d.y0)*p-Math.sin(p*Math.PI)*40;
+      el("circle",{cx:x,cy:y,r:4,fill:C.p1s},gDots);
+    }
+  }
+  if(busy>0){
+    el("rect",{x:EVX,y:EVY,width:EVW,height:EVH,rx:6,fill:"none",stroke:C.p0,"stroke-width":2,opacity:0.35+0.65*(busy/EVAL_TIME)},gDots);
+    txt(EVX+EVW/2,EVY+EVH-12,"batch of "+lastBatch,{fill:C.p0s,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gDots);
+  }
+  fillRead.textContent="batch fill: "+(batches?Math.round(100*fillSum/batches)+"%":"–")+(lastBatch?" (last "+lastBatch+"/"+CAP+")":"");
+  busyRead.textContent="evaluator busy: "+(frames>60?Math.round(100*busyFrames/frames)+"%":"–");
+}
+function loop(){
+  if(!playing)return;
+  step();render();
+  requestAnimationFrame(loop);
+}
+playBtn.addEventListener("click",function(){
+  playing=!playing;
+  playBtn.textContent=playing?"Pause":"Play";
+  if(playing)requestAnimationFrame(loop);
+});
+lanesSlider.addEventListener("input",function(){
+  lanesN=parseInt(lanesSlider.value,10);
+  lanesRead.textContent=lanesN+(lanesN===1?" lane":" lanes");
+  buildLanes();render();
+});
+buildLanes();
+if(playing){playBtn.textContent="Pause";requestAnimationFrame(loop);}
+else{playBtn.textContent="Play";for(var w=0;w<400;w++)step();render();}
+})();
+
+})();
+</script>
+</body>
+</html>
