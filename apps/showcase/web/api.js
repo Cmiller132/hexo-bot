@@ -147,7 +147,14 @@ export const setNickname = (id, nickname) =>
 
 export const getGamesFeed = () => request("/api/games");
 
-export const getAnalysis = (id, ply) =>
-  request(`/api/game/${id}/analysis?ply=${ply}`);
+/* ckpt (a catalogue checkpoint id) routes the analysis to that checkpoint's
+ * net; omitted = the game's own bot, which also keeps the request compatible
+ * with servers that predate the selector. */
 
-export const getSummary = id => request(`/api/game/${id}/summary`);
+export const getAnalysis = (id, ply, ckpt) =>
+  request(`/api/game/${id}/analysis?ply=${ply}` +
+    (ckpt ? `&checkpoint_id=${encodeURIComponent(ckpt)}` : ""));
+
+export const getSummary = (id, ckpt) =>
+  request(`/api/game/${id}/summary` +
+    (ckpt ? `?checkpoint_id=${encodeURIComponent(ckpt)}` : ""));

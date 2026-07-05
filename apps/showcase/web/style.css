@@ -182,10 +182,10 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 .k-btn.done{color:var(--accent);border-color:var(--accent-dim)}
 .k-btn:disabled{opacity:.35;cursor:default}
 
-/* checkpoint catalogue */
-#ckptList{max-height:240px;overflow-y:auto}
-#ckptList::-webkit-scrollbar{width:6px}
-#ckptList::-webkit-scrollbar-thumb{background:var(--line)}
+/* checkpoint catalogue (play picker + analysis selector) */
+#ckptList,#anaCkptList{max-height:240px;overflow-y:auto}
+#ckptList::-webkit-scrollbar,#anaCkptList::-webkit-scrollbar{width:6px}
+#ckptList::-webkit-scrollbar-thumb,#anaCkptList::-webkit-scrollbar-thumb{background:var(--line)}
 .bot{
   display:block;width:100%;text-align:left;
   padding:8px 10px;

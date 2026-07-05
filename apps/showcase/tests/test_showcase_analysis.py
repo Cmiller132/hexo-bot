@@ -1,5 +1,6 @@
 """Analysis + summary endpoints: payload sanity, caching (incl. schema-version
-recompute), searched eval, bounds, and the public six_in_line archive read."""
+recompute), searched eval, bounds, the public six_in_line archive read, and
+the per-checkpoint analysis selector (?checkpoint_id=)."""
 
 from __future__ import annotations
 
@@ -28,10 +29,16 @@ def finished_game(client) -> dict:
     return final
 
 
-def _analysis(client, game_id: str, ply: int, search: bool = False) -> dict:
+def _analysis(
+    client, game_id: str, ply: int, search: bool = False, ckpt: str | None = None,
+) -> dict:
     resp = client.get(
         f"/api/game/{game_id}/analysis",
-        params={"ply": ply, **({"search": "1"} if search else {})},
+        params={
+            "ply": ply,
+            **({"search": "1"} if search else {}),
+            **({"checkpoint_id": ckpt} if ckpt is not None else {}),
+        },
         headers=fresh_ip(),
     )
     assert resp.status_code == 200, resp.text
@@ -204,3 +211,148 @@ def test_summary_shape_and_cache(client, archived_six_game):
     assert second["cached"] is True
     for key in ("value", "stv", "moves_left", "to_move", "ply_count"):
         assert second[key] == first[key]
+
+
+# ---------------------------------------------------------------------------
+# checkpoint selector (?checkpoint_id=)
+# ---------------------------------------------------------------------------
+
+
+def test_selector_unknown_checkpoint_404(client, finished_game):
+    game_id = finished_game["id"]
+    resp = client.get(
+        f"/api/game/{game_id}/analysis",
+        params={"ply": 0, "checkpoint_id": "nope"},
+        headers=fresh_ip(),
+    )
+    assert resp.status_code == 404
+    assert "nope" in resp.json()["detail"]
+    resp = client.get(
+        f"/api/game/{game_id}/summary",
+        params={"checkpoint_id": "nope"},
+        headers=fresh_ip(),
+    )
+    assert resp.status_code == 404
+
+
+def test_selector_per_checkpoint_cache_and_analysis(client, finished_game, settings):
+    """Two checkpoints analyzing the same (game, ply) cache independently, and
+    the default cache row keeps serving after a selector round trip."""
+    import sqlite3
+
+    game_id = finished_game["id"]
+    default = _analysis(client, game_id, ply=0)
+    assert default["checkpoint_id"] == "tiny"
+    assert _analysis(client, game_id, ply=0)["cached"] is True
+
+    other = _analysis(client, game_id, ply=0, ckpt="tiny-puct")
+    assert other["cached"] is False  # the default row did not serve this
+    assert other["checkpoint_id"] == "tiny-puct"
+    assert -1.0 <= other["value"] <= 1.0
+    assert other["legal_count"] == default["legal_count"]
+    assert _analysis(client, game_id, ply=0, ckpt="tiny-puct")["cached"] is True
+    assert _analysis(client, game_id, ply=0)["cached"] is True  # default intact
+
+    conn = sqlite3.connect(settings.db_path)
+    rows = conn.execute(
+        "SELECT DISTINCT c.bot_id, b.slug, b.visits FROM analysis_cache c"
+        " JOIN bots b ON b.id = c.bot_id WHERE c.game_id = ? AND c.ply = 0",
+        (game_id,),
+    ).fetchall()
+    assert len(rows) == 2  # one row per analyzing checkpoint
+    by_slug = {slug: visits for _, slug, visits in rows}
+    assert by_slug["tiny"] == 8  # the game's own bot row
+    assert by_slug["tiny-puct"] == 0  # analysis-only sentinel row
+
+    # Analysis-only bot rows never surface in the stats views (no games).
+    stats = client.get("/api/stats").json()
+    assert all(row["visits"] != 0 for row in stats["bots"])
+
+
+def test_selector_of_the_games_own_checkpoint_shares_the_default_cache(client, finished_game):
+    game_id = finished_game["id"]
+    ply = finished_game["ply"]  # a ply no other test analyzes for this game
+    assert _analysis(client, game_id, ply=ply)["cached"] is False
+    explicit = _analysis(client, game_id, ply=ply, ckpt="tiny")
+    assert explicit["cached"] is True  # same cache row as the default request
+    assert explicit["checkpoint_id"] == "tiny"
+
+
+def test_selector_searched_eval_uses_the_selected_bot(client, finished_game, settings):
+    """?checkpoint_id=tiny-puct&search=1 on a game played vs tiny runs the
+    searched eval on the tiny-puct worker bot, i.e. under its as-trained PUCT
+    profile (profile binding per slug is covered in test_showcase_profiles)."""
+    payload = _analysis(client, finished_game["id"], ply=2, search=True, ckpt="tiny-puct")
+    assert payload["checkpoint_id"] == "tiny-puct"
+    search = payload["search"]
+    assert 1 <= search["visits"] <= settings.analysis_search_visit_cap
+    assert -1.0 <= search["root_value"] <= 1.0
+    again = _analysis(client, finished_game["id"], ply=2, search=True, ckpt="tiny-puct")
+    assert again["cached"] is True
+    assert again["search"]["visits"] == search["visits"]
+
+
+def test_selector_summary_per_checkpoint(client, archived_six_game):
+    game_id = archived_six_game["id"]
+    ply_count = archived_six_game["ply_count"]
+    client.get(f"/api/game/{game_id}/summary", headers=fresh_ip())  # default cached
+    first = client.get(
+        f"/api/game/{game_id}/summary",
+        params={"checkpoint_id": "tiny-puct"},
+        headers=fresh_ip(),
+    )
+    assert first.status_code == 200, first.text
+    first = first.json()
+    assert first["cached"] is False  # keyed apart from the default summary
+    assert first["checkpoint_id"] == "tiny-puct"
+    assert len(first["value"]) == ply_count + 1
+    second = client.get(
+        f"/api/game/{game_id}/summary",
+        params={"checkpoint_id": "tiny-puct"},
+        headers=fresh_ip(),
+    ).json()
+    assert second["cached"] is True
+    assert second["value"] == first["value"]
+    assert client.get(
+        f"/api/game/{game_id}/summary", headers=fresh_ip()
+    ).json()["cached"] is True  # default row intact
+
+
+def test_selector_covers_games_vs_retired_checkpoints(client):
+    """A feed game against a checkpoint that left the catalogue: the default
+    analysis 409s (unchanged), but any current checkpoint can analyze it."""
+    session = drive_six_in_line_session()
+    db = client.app.state.db
+    bot_db_id = db.upsert_bot(
+        slug="retired", label="Retired bot", run="old_run", epoch=99,
+        visits=8, weights_sha="retired-sha", active_from=now_iso(),
+    )
+    db.create_game(
+        game_id=session.game_id, bot_id=bot_db_id, human_color=0,
+        started_at=now_iso(), client_hash="scripted",
+    )
+    db.finalize_game(
+        game_id=session.game_id, finished_at=now_iso(), status="finished",
+        result=1, termination="six_in_line", ply_count=len(session.actions),
+        duration_s=1.0,
+        record=encode_hxr(
+            game_id=session.game_id, bot_slug="retired", human_color=0,
+            action_ids=session.actions, winner=0, termination="six_in_line",
+            seed=session.seed,
+        ),
+    )
+    assert client.get(
+        f"/api/game/{session.game_id}/analysis", params={"ply": 0}, headers=fresh_ip()
+    ).status_code == 409
+    assert client.get(
+        f"/api/game/{session.game_id}/summary", headers=fresh_ip()
+    ).status_code == 409
+    payload = _analysis(client, session.game_id, ply=0, ckpt="tiny")
+    assert payload["checkpoint_id"] == "tiny"
+    summary = client.get(
+        f"/api/game/{session.game_id}/summary",
+        params={"checkpoint_id": "tiny"},
+        headers=fresh_ip(),
+    )
+    assert summary.status_code == 200, summary.text
+    assert summary.json()["checkpoint_id"] == "tiny"

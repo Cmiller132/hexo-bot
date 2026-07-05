@@ -9,6 +9,9 @@ Complete API (docs/showcase 01):
     POST /api/game/{id}/nickname      set nickname on the finished game
     GET  /api/game/{id}/analysis      per-ply model insight (cached; public, finished only)
     GET  /api/game/{id}/summary       per-ply value/stv/moves_left series (cached)
+                                      (both take ?checkpoint_id= to analyze under
+                                      any catalogue checkpoint; default is the
+                                      game's own bot)
     GET  /api/games                   recent finished games feed (public, paginated)
     GET  /api/bots                    catalogue metadata (checkpoints + allowed sims)
     GET  /api/stats                   public aggregates
@@ -75,6 +78,15 @@ _ANALYSIS_VERSION = 2
 # analysis_cache "ply" slot for the whole-game summary payload (real plies are
 # always >= 0, so -1 can never collide).
 _SUMMARY_PLY = -1
+
+# analysis_cache rows key on a bots-table id. Default analysis (no selector)
+# keys under the game's own bot row, so pre-selector cache entries stay valid.
+# Analyzing under a DIFFERENT catalogue checkpoint keys under an analysis-only
+# bots row for that checkpoint at this sentinel visit count: 0 is never a
+# playable sims value, and the stats views only surface bots with games, so
+# these rows stay invisible. A checkpoint refresh changes the weights sha and
+# therefore the row, invalidating those cached entries automatically.
+_ANALYSIS_BOT_VISITS = 0
 
 _FEED_LIMIT_MAX = 50
 _FEED_LIMIT_DEFAULT = 20
@@ -210,6 +222,29 @@ def create_app(settings: Settings) -> FastAPI:
         if spec is None:
             raise HTTPException(409, "this game's checkpoint is no longer in the catalogue")
         return bot_row, spec
+
+    def _analysis_target(
+        row: dict[str, Any], checkpoint_id: str | None,
+    ) -> tuple[CheckpointSpec, int]:
+        """Resolve which catalogue checkpoint analyzes a finished game, plus
+        the bots-table id its analysis_cache rows key under.
+
+        No selector means the game's own checkpoint (existing behavior,
+        including the 409 when it left the catalogue). An explicit selector
+        may be ANY catalogue entry — a feed game against a retired checkpoint
+        stays analyzable under a current one. Selecting the game's own
+        checkpoint shares the default cache rows; any other selection keys
+        under the `_ANALYSIS_BOT_VISITS` analysis-only bot row."""
+        if checkpoint_id is None:
+            _, spec = _bot_row_and_spec(row["bot_id"])
+            return spec, int(row["bot_id"])
+        spec = app.state.catalogue.get(checkpoint_id)
+        if spec is None:
+            raise HTTPException(404, f"unknown checkpoint {checkpoint_id!r}")
+        bot_row = app.state.db.get_bot(int(row["bot_id"]))
+        if bot_row is not None and bot_row["slug"] == spec.slug:
+            return spec, int(row["bot_id"])
+        return spec, _bot_db_id(spec, _ANALYSIS_BOT_VISITS)
 
     def _public_read_allowed(request: Request) -> None:
         """Token-bucket gate for public (cookieless) reads of finished games."""
@@ -447,7 +482,11 @@ def create_app(settings: Settings) -> FastAPI:
     async def analysis(
         game_id: str, request: Request,
         ply: int = Query(ge=0), search: bool = False,
+        checkpoint_id: str | None = Query(default=None, max_length=128),
     ):
+        """Per-position model insight. `checkpoint_id` selects which catalogue
+        checkpoint's net (and as-trained search profile) analyzes the position;
+        default is the game's own bot."""
         if not app.state.analysis_bucket.allow(_client_key(request)):
             raise HTTPException(429, "too many analysis requests; slow down")
         row = app.state.db.get_game(game_id)
@@ -455,12 +494,11 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(404, "unknown game")
         if row["status"] == "active":
             raise HTTPException(409, "analysis is available after the game finishes")
-        _, spec = _bot_row_and_spec(row["bot_id"])
+        spec, bot_db_id = _analysis_target(row, checkpoint_id)
         actions = _record_actions(game_id)
         if ply > len(actions):
             raise HTTPException(422, f"ply {ply} out of range (game has {len(actions)} plies)")
 
-        bot_db_id = int(row["bot_id"])
         payload = _versioned_cache_get(game_id, ply, bot_db_id)
         cached = payload is not None
         if payload is None or (search and "search" not in payload):
@@ -485,12 +523,17 @@ def create_app(settings: Settings) -> FastAPI:
         return {"game_id": game_id, "checkpoint_id": spec.slug, "cached": cached, **payload}
 
     @app.get("/api/game/{game_id}/summary")
-    async def summary(game_id: str, request: Request):
+    async def summary(
+        game_id: str, request: Request,
+        checkpoint_id: str | None = Query(default=None, max_length=128),
+    ):
         """Whole-game per-ply {value, stv, moves_left, to_move} series for the
         value/ply chart. Index i is the position AFTER ply i (arrays have
         ply_count + 1 entries; entry 0 is the empty board). Computed lazily on
         first request — one chunked batched forward over every position — and
-        cached in analysis_cache under the ply = -1 slot."""
+        cached in analysis_cache under the ply = -1 slot. `checkpoint_id`
+        selects which catalogue checkpoint's net computes the series; default
+        is the game's own bot."""
         if not app.state.analysis_bucket.allow(_client_key(request)):
             raise HTTPException(429, "too many analysis requests; slow down")
         row = app.state.db.get_game(game_id)
@@ -498,10 +541,9 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(404, "unknown game")
         if row["status"] == "active":
             raise HTTPException(409, "summary is available after the game finishes")
-        _, spec = _bot_row_and_spec(row["bot_id"])
+        spec, bot_db_id = _analysis_target(row, checkpoint_id)
         actions = _record_actions(game_id)
 
-        bot_db_id = int(row["bot_id"])
         payload = _versioned_cache_get(game_id, _SUMMARY_PLY, bot_db_id)
         cached = payload is not None
         if payload is None:

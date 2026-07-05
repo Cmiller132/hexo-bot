@@ -8,8 +8,8 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=4";
-import { createBoard, findWin, key } from "./board.js?v=4";
+import * as api from "./api.js?v=5";
+import { createBoard, findWin, key } from "./board.js?v=5";
 
 "use strict";
 
@@ -354,6 +354,7 @@ analyzeBtn.addEventListener("click", () => {
     moves: play.moves.slice(),
     label: play.label,
     sims: play.sims,
+    ckpt: play.snap.bot && play.snap.bot.checkpoint_id,
     termination: res.termination,
     winner: res.winner,
     winLine: Array.isArray(play.snap.winning_line) ? play.snap.winning_line : null,
@@ -397,8 +398,10 @@ function latestCheckpoint(groups) {
   return items[items.length - 1] || null;
 }
 
-function renderPickers() {
-  const list = $("ckptList");
+/* Grouped checkpoint list, shared by the play picker and the analysis
+ * selector: group headers, "latest" tag on the newest current-ladder rung,
+ * PUCT tag on legacy-search entries. */
+function buildCkptList(list, selectedId) {
   list.textContent = "";
   const groups = groupedCheckpoints();
   const latest = latestCheckpoint(groups);
@@ -411,10 +414,10 @@ function renderPickers() {
     }
     for (const c of g.items) {
       const b = document.createElement("button");
-      b.className = "bot" + (c.id === sel.ckpt ? " sel" : "");
+      b.className = "bot" + (c.id === selectedId ? " sel" : "");
       b.dataset.ckpt = c.id;
       b.setAttribute("role", "radio");
-      b.setAttribute("aria-checked", c.id === sel.ckpt);
+      b.setAttribute("aria-checked", c.id === selectedId);
       const tags = [];
       if (latest && c.id === latest.id) tags.push('<span class="tag">latest</span>');
       if (c.search === "puct") tags.push('<span class="tag puct">PUCT search</span>');
@@ -425,6 +428,10 @@ function renderPickers() {
       list.appendChild(b);
     }
   }
+}
+
+function renderPickers() {
+  buildCkptList($("ckptList"), sel.ckpt);
   const seg = $("simSeg");
   seg.textContent = "";
   for (const s of botsNorm.sims) {
@@ -501,6 +508,10 @@ const ana = {
   cache: new Map(), pending: new Map(), rlUntil: 0,
   summary: null, summaryState: "idle", // idle | loading | done | missing
   opa: 0.85, autoTimer: null,
+  // ckpt: catalogue checkpoint analyzing this game; defaultCkpt: the game's
+  // own bot. Equal (or null ckpt) means the server default — the param is
+  // omitted, which also keeps requests valid on pre-selector servers.
+  ckpt: null, defaultCkpt: null, botLabel: "",
 };
 
 const anaCursor = $("anaCursor"), anaTag = $("anaTag");
@@ -638,10 +649,10 @@ async function loadSummary() {
   ana.summaryState = "loading";
   chartNote.hidden = false;
   chartNote.textContent = "loading value trace…";
-  const id = ana.id;
+  const id = ana.id, ck = ana.ckpt;
   try {
-    const raw = await api.getSummary(id);
-    if (ana.id !== id) return;
+    const raw = await api.getSummary(id, anaCkptParam());
+    if (ana.id !== id || ana.ckpt !== ck) return;
     ana.summary = normalizeSummary(raw, ana.n);
     ana.summaryState = ana.summary ? "done" : "missing";
     if (ana.summary) {
@@ -664,7 +675,7 @@ async function loadSummary() {
       chartNote.textContent = "unexpected summary shape from server";
     }
   } catch (e) {
-    if (ana.id !== id) return;
+    if (ana.id !== id || ana.ckpt !== ck) return;
     ana.summaryState = e.status === 404 ? "missing" : "idle"; // idle: retry later
     chartNote.hidden = false;
     chartNote.textContent = e.status === 404
@@ -679,11 +690,12 @@ function ensureAnalysis(p) {
   if (ana.cache.has(p)) return Promise.resolve(ana.cache.get(p));
   if (Date.now() < ana.rlUntil) return Promise.resolve(null);
   if (ana.pending.has(p)) return ana.pending.get(p);
-  const id = ana.id;
-  const prom = api.getAnalysis(id, p)
+  const id = ana.id, ck = ana.ckpt;
+  const prom = api.getAnalysis(id, p, anaCkptParam())
     .then(pl => {
       ana.pending.delete(p);
-      if (ana.id === id) ana.cache.set(p, pl);
+      if (ana.id !== id || ana.ckpt !== ck) return null; // game/net switched mid-flight
+      ana.cache.set(p, pl);
       return pl;
     })
     .catch(e => {
@@ -705,6 +717,59 @@ function renderHeat(payload, p) {
   const mover = Number.isInteger(payload.to_move) ? payload.to_move : moverAfter(p);
   anaBoard.setHeat(payload.policy, mover === 0 ? H0 : H1, mover === 0 ? H0R : H1R, ana.opa);
 }
+
+// ---- analysis checkpoint selector -------------------------------------------------
+
+/* The checkpoint_id to send with analysis/summary requests: only an explicit
+ * non-default pick rides the wire (see the ana state comment). */
+const anaCkptParam = () =>
+  (ana.ckpt && ana.ckpt !== ana.defaultCkpt ? ana.ckpt : null);
+
+function anaCkptLabel() {
+  if (ana.ckpt && botsNorm) {
+    const c = botsNorm.checkpoints.find(x => x.id === ana.ckpt);
+    if (c) return c.label;
+  }
+  return ana.botLabel || "net";
+}
+
+function updateAnaFine() {
+  $("anaFine").textContent = `policy priors · ${anaCkptLabel()} · no search`;
+}
+
+function renderAnaCkpts() {
+  const list = $("anaCkptList");
+  if (!list || !botsNorm) return; // cached pre-selector index.html
+  buildCkptList(list, ana.ckpt);
+}
+
+/* Switch the analyzing net: drop all per-net state, then refetch the summary
+ * and the current position under the new checkpoint. The scrubber position
+ * (and a running autoplay) are kept. */
+function setAnalysisCkpt(id) {
+  if (!ana.id || id === ana.ckpt) return;
+  ana.ckpt = id;
+  document.querySelectorAll("#anaCkptList .bot").forEach(x => {
+    const on = x.dataset.ckpt === id;
+    x.classList.toggle("sel", on);
+    x.setAttribute("aria-checked", on);
+  });
+  ana.cache = new Map();
+  ana.pending = new Map();
+  ana.rlUntil = 0;
+  ana.summary = null;
+  ana.summaryState = "idle";
+  chart.setData(null);
+  updateAnaFine();
+  loadSummary();
+  setPly(ana.ply, true);
+}
+
+const anaCkptListEl = $("anaCkptList");
+if (anaCkptListEl) anaCkptListEl.addEventListener("click", e => {
+  const b = e.target.closest(".bot");
+  if (b) setAnalysisCkpt(b.dataset.ckpt);
+});
 
 // ---- value readout ----------------------------------------------------------------
 
@@ -885,11 +950,18 @@ function openAnalysis(rec) {
   ana.rlUntil = 0;
   ana.summary = null;
   ana.summaryState = "idle";
+  ana.botLabel = rec.label || "";
+  // selector default = the game's own bot; a game against a checkpoint no
+  // longer in the catalogue starts with nothing selected (server default)
+  ana.defaultCkpt = rec.ckpt || null;
+  ana.ckpt = rec.ckpt && botsNorm &&
+    botsNorm.checkpoints.some(c => c.id === rec.ckpt) ? rec.ckpt : null;
+  renderAnaCkpts();
   plyRange.max = Math.max(1, ana.n);
   plyMax.textContent = ana.n;
   const vs = rec.label ? `vs ${rec.label}·${rec.sims || "?"}` : "game";
   anaTag.textContent = `game ${String(rec.id).slice(0, 8)} · ${vs}`;
-  $("anaFine").textContent = `policy priors · ${rec.label || "net"} · no search`;
+  updateAnaFine();
   buildMoveList();
   chart.setData(null);
   const copyBtn = $("copyLink");
@@ -925,6 +997,7 @@ async function loadServerGame(id) {
       moves: norm,
       label: snap.bot && snap.bot.label,
       sims: snap.bot && (snap.bot.sims ?? snap.bot.visits),
+      ckpt: snap.bot && snap.bot.checkpoint_id,
       termination: res.termination,
       winner: res.winner,
       winLine: Array.isArray(snap.winning_line) ? snap.winning_line : null,

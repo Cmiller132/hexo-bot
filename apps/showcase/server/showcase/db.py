@@ -62,6 +62,9 @@ CREATE TABLE IF NOT EXISTS analysis_cache (
   payload  BLOB NOT NULL,
   PRIMARY KEY (game_id, ply, bot_id)
 );
+-- bot_id is the checkpoint that PRODUCED the analysis: the game's own bot row
+-- for default requests, or an analysis-only row (visits = 0, never playable)
+-- when the analysis endpoints run under a selected catalogue checkpoint.
 
 CREATE VIEW IF NOT EXISTS v_bot_stats AS
 SELECT b.slug, b.label, b.epoch, b.visits,
