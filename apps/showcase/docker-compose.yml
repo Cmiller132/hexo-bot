@@ -54,6 +54,13 @@ services:
       - no-new-privileges:true
     cpus: 7
     mem_limit: 6g
+    # GPU (Intel XPU) deployment: do NOT uncomment here — layer the override
+    # file instead, which swaps in Dockerfile.xpu and adds the device
+    # passthrough + render-group gid (kept out of this file so the CPU
+    # deployment never requires /dev/dri):
+    #   docker compose -f docker-compose.yml -f docker-compose.xpu.yml up -d --build
+    # devices: ["/dev/dri:/dev/dri"]        # what the override adds
+    # group_add: ["${RENDER_GID}"]          # stat -c %g /dev/dri/renderD128
     # Local testing ONLY (the tunnel needs no published port):
     # ports:
     #   - "127.0.0.1:8000:8000"

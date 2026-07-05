@@ -1,0 +1,35 @@
+# XPU (Intel Arc GPU) override — layer over the base file, from apps/showcase/:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.xpu.yml up -d --build
+#
+# The CPU deployment (`docker compose up -d`) is untouched by this file's
+# existence; it never requires /dev/dri. See "GPU (XPU) deployment" in
+# deploy/README.md for prerequisites (host /dev/dri bound into the LXC) and
+# validation steps.
+#
+# RENDER_GID goes in the same .env as the other variables: the numeric group
+# id owning the render node INSIDE this host/LXC —
+#
+#   stat -c %g /dev/dri/renderD128
+#
+# `group_add` grants the container's non-root app user that gid; without it
+# the device nodes are mounted but unreadable and torch.xpu reports no device.
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: apps/showcase/Dockerfile.xpu
+    environment:
+      # Explicit rather than auto: on the GPU deployment a silent fall-through
+      # to cpu should be visible as the worker's "falling back" warning in the
+      # logs, not masked by auto looking intentional.
+      SHOWCASE_DEVICE: xpu
+      # Startup CPU-vs-XPU parity self-check (default already on when the
+      # device is not cpu; spelled out here for discoverability). On failure
+      # the workers serve on cpu and log loudly instead of serving wrong moves.
+      SHOWCASE_DEVICE_SELFCHECK: "1"
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:?set RENDER_GID in .env (stat -c %g /dev/dri/renderD128)}"

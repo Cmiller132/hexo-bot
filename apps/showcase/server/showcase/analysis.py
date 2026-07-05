@@ -40,15 +40,28 @@ STV_HEAD = "stvalue_2"
 _SUMMARY_CHUNK = 64
 
 
-def _forward_cpu(model: Any, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Full-head forward with the fp32 relative-position-bias path.
+def _model_forward(model: Any, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Full-head forward on whatever device the model lives on, with the fp32
+    relative-position-bias path.
 
-    `build_attn_bias` gathers the bias table in fp16 under no-grad (the GPU
-    serve path); running under `enable_grad` takes the fp32 master path
-    instead, which is unconditionally safe on CPU. Negligible cost for a
-    single position."""
+    The batch comes off `collate_rows` on the CPU; when the worker runs the
+    model on an accelerator (SHOWCASE_DEVICE=xpu/cuda) the inputs move there
+    first. `build_attn_bias` gathers the bias table in fp16 under no-grad (the
+    CUDA serve path); running under `enable_grad` takes the fp32 master path
+    instead, which is unconditionally safe on CPU and XPU (the fast fused
+    kernels are `is_cuda`-gated anyway). Negligible cost for a single
+    position; downstream `.item()`/`.tolist()` reads are the D2H sync."""
+    device = next(model.parameters()).device
+    feats, nbr, mask, coords = (
+        batch["feats"], batch["nbr"], batch["mask"], batch["coords"]
+    )
+    if device.type != "cpu":
+        feats = feats.to(device)
+        nbr = nbr.to(device)
+        mask = mask.to(device)
+        coords = coords.to(device)
     with torch.enable_grad():
-        out = model.forward(batch["feats"], batch["nbr"], batch["mask"], batch["coords"])
+        out = model.forward(feats, nbr, mask, coords)
     return {k: v.detach() for k, v in out.items()}
 
 
@@ -71,7 +84,7 @@ def net_eval(model: Any, state: Any, *, policy_floor: float) -> dict[str, Any]:
     """
     support, features = featurize(state)
     batch = collate_rows([(support, features)])
-    out = _forward_cpu(model, batch)
+    out = _model_forward(model, batch)
 
     legal_count = support.legal_count
     value = float(decode_binned_value(out["value"][0].reshape(1, -1).float()).item())
@@ -106,7 +119,7 @@ def summary_eval(model: Any, rows: list[tuple[Any, Any]]) -> dict[str, Any]:
     moves_left: list[float] = []
     for start in range(0, len(rows), _SUMMARY_CHUNK):
         batch = collate_rows(rows[start : start + _SUMMARY_CHUNK])
-        out = _forward_cpu(model, batch)
+        out = _model_forward(model, batch)
         values += [round(v, 6) for v in decode_binned_value(out["value"].float()).tolist()]
         stvs += [round(v, 6) for v in decode_binned_value(out[STV_HEAD].float()).tolist()]
         moves_left += [round(v, 3) for v in decode_moves_left(out["moves_left"].float()).tolist()]

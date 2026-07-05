@@ -233,6 +233,7 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 }
 .mg-cell .n{font-family:var(--mono);font-size:16px;color:var(--text)}
 .mg-cell .n.is-p0{color:var(--p0-soft)}
+.mg-cell .n.is-p1{color:var(--p1-soft)}
 .mg-cell .l{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
 .line-btn{
   margin-top:14px;width:100%;

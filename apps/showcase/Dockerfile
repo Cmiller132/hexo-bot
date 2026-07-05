@@ -21,6 +21,9 @@
 # The image contains NO checkpoints: bots.toml + weights are a read-only
 # volume (see docker-compose.yml). HEXFIELD_* arch env is not baked either —
 # radius/arch belong with the mounted weights and come from compose.
+#
+# GPU variant: Dockerfile.xpu (Intel Arc / torch XPU, opt-in via
+# docker-compose.xpu.yml). Its builder stage mirrors this one — keep in sync.
 
 ##############################################################################
 # Stage 1 — builder: rustup (pinned) + maturin, wheels for the three crates

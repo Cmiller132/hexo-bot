@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import itertools
+import logging
 import multiprocessing as mp
 import os
 import threading
@@ -44,6 +45,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
+
+log = logging.getLogger("showcase.bots")
 
 _READY = "__ready__"
 _SEED_MASK = (1 << 63) - 1
@@ -260,7 +263,18 @@ class _LoadedBot:
 
 class _WorkerRuntime:
     """Everything one worker process holds resident: the catalogue, one search
-    session per checkpoint, and the shared search profile."""
+    session per checkpoint, and the shared search profile.
+
+    Device: `settings.device` (SHOWCASE_DEVICE) is resolved once per worker at
+    init (see showcase.device). When it resolves to an accelerator, a startup
+    CPU-vs-device parity self-check runs on the FIRST checkpoint's net — the
+    device either serves the same numbers as CPU within tolerance or the whole
+    worker falls back to cpu (never serve wrong moves). The check is per
+    device, not per checkpoint: all catalogue nets share the arch code paths,
+    so one parity pass vouches for the backend. Only the model/evaluator move;
+    the Rust search session is device-agnostic (it calls back into the
+    evaluator for every batch).
+    """
 
     def __init__(self, specs: list[CheckpointSpec], settings: Settings) -> None:
         import torch
@@ -273,17 +287,56 @@ class _WorkerRuntime:
         from hexfield import _rust
         from hexfield.inference import HexfieldEvaluator
 
+        from . import device as devmod
+
+        resolved = devmod.resolve_device(settings.device)
+        device = resolved.device
+        for note in resolved.notes:
+            log.warning("%s", note)
+
         self.policy_floor = settings.policy_floor
         self.profile = SearchProfile(settings.search_config)
         self.bots: dict[str, _LoadedBot] = {}
+        checked = False
         for spec in specs:
             model = _load_checkpoint(spec.checkpoint)
+            if device != "cpu" and not checked:
+                checked = True
+                if devmod.selfcheck_wanted(settings.device_selfcheck, device):
+                    check = devmod.verify_device(model, device)
+                    if check.ok:
+                        log.info(
+                            "device self-check passed on %s: max |dvalue|=%.2e "
+                            "|dpolicy|=%.2e (tol %.0e)",
+                            device, check.value_diff, check.policy_diff,
+                            devmod.SELFCHECK_TOL,
+                        )
+                    else:
+                        log.warning(
+                            "DEVICE SELF-CHECK FAILED on %s (|dvalue|=%.3g "
+                            "|dpolicy|=%.3g%s) — FALLING BACK TO CPU so no "
+                            "wrong moves are served; investigate the %s stack",
+                            device, check.value_diff, check.policy_diff,
+                            f", error: {check.error}" if check.error else "",
+                            device,
+                        )
+                        device = "cpu"
+                if device != "cpu":
+                    # Trigger lazy backend init / kernel JIT off the hot path.
+                    model.to(device)
+                    devmod.warmup(model, device)
             self.bots[spec.slug] = _LoadedBot(
                 spec=spec,
                 model=model,
-                evaluator=HexfieldEvaluator(model, device="cpu"),
+                evaluator=HexfieldEvaluator(model, device=device),
                 session=_rust.HexfieldMctsSession(max_states=65_536),
             )
+        self.device = device
+        log.info(
+            "showcase worker ready: device=%s (requested %r), %d checkpoint(s), "
+            "torch_threads=%d",
+            device, settings.device, len(self.bots), threads,
+        )
 
     @staticmethod
     def _replay(actions: list[int]) -> Any:
@@ -412,6 +465,12 @@ def _worker_main(
     payload is `{"ok": ...}` or `{"error": traceback}`. Discard jobs carry
     `job_id=None` and get no reply. `None` on the job queue shuts down.
     """
+    # Fresh spawned process: give it a stderr log handler so the one-time
+    # device-resolution/self-check lines land in `docker compose logs`.
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s worker-{worker_index} %(name)s %(levelname)s %(message)s",
+    )
     try:
         runtime = _WorkerRuntime(specs, settings)
     except Exception:

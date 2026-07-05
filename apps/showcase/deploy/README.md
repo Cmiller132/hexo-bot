@@ -1,7 +1,8 @@
 # Showcase deployment — ops runbook
 
 The stack is two containers (`docker-compose.yml` one directory up): `app`
-(the game server, CPU inference) and `cloudflared` (a Cloudflare tunnel that
+(the game server, CPU inference by default — see "GPU (XPU) deployment" below
+for the Intel Arc variant) and `cloudflared` (a Cloudflare tunnel that
 carries all public traffic — no host port is published).
 
 Everything below runs from `apps/showcase/` on the deploy machine.
@@ -58,6 +59,91 @@ Everything below runs from `apps/showcase/` on the deploy machine.
 
 ```bash
 git pull && docker compose up -d --build
+```
+
+(GPU deployments: append the override file to every `docker compose` command —
+see below.)
+
+## GPU (XPU) deployment — Intel Arc
+
+Opt-in variant that runs hexfield inference on an Intel GPU via torch's
+native XPU backend (`Dockerfile.xpu` + `docker-compose.xpu.yml`). The CPU
+stack remains the default; nothing below is required for it. Ship the GPU
+variant only if it benchmarks faster than CPU at showcase batch sizes.
+
+### Prerequisites
+
+1. **Host GPU visible in the container's host** (for an LXC: bind `/dev/dri`
+   into the container in the Proxmox CT config — on this deployment that is
+   already done; the A310 is `card1` + `renderD128`).
+
+2. **Render group gid** — the container's app user needs the gid that owns
+   the render node *inside* the LXC:
+
+   ```bash
+   stat -c %g /dev/dri/renderD128
+   ```
+
+   Put the number in `.env` as `RENDER_GID=<gid>` (see `.env.example`).
+   No GPU driver install is needed on the LXC itself beyond the kernel module
+   the Proxmox host already loads — the user-mode stack (level-zero loader +
+   Intel compute runtime) lives inside the image.
+
+### Launch
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.xpu.yml up -d --build
+```
+
+The override swaps the build to `Dockerfile.xpu` (torch `2.12.1+xpu` from
+`https://download.pytorch.org/whl/xpu` on an ubuntu-24.04 base with Intel's
+level-zero/compute-runtime packages), passes `/dev/dri` through, adds the
+render gid, and sets `SHOWCASE_DEVICE=xpu`.
+
+### Confirm the card is seen
+
+```bash
+# torch sees the GPU:
+docker compose exec app python3 -c \
+  "import torch; print(torch.xpu.is_available(), torch.xpu.get_device_name(0))"
+# expected: True Intel(R) Arc(TM) A310 Graphics
+
+# lower-level check if that prints False:
+docker compose exec app clinfo -l
+
+# the workers picked it up (one line per worker):
+docker compose logs app | grep "worker ready"
+# expected: device=xpu (requested 'xpu')
+```
+
+At startup each worker runs a CPU-vs-XPU parity self-check on a fixed
+position (`SHOWCASE_DEVICE_SELFCHECK`, on by default off-cpu). If the check
+fails, the worker logs `DEVICE SELF-CHECK FAILED ... FALLING BACK TO CPU` and
+serves on cpu — correct moves always win over fast moves. Grep the log for
+`self-check` after first launch.
+
+### The SHOWCASE_DEVICE knob
+
+`SHOWCASE_DEVICE` (in `server/showcase/config.py`, settable via compose
+`environment:`): `auto` (default; prefers xpu, then cuda, then cpu) | `cpu` |
+`xpu` | `cuda`. Explicit accelerator requests fall back to cpu with a logged
+warning when unavailable. The override file pins `xpu` so an accidental
+CPU fall-through is visible in the logs rather than masked by `auto`.
+
+### Benchmark before shipping
+
+Play a few games / hit `/api/game/{id}/summary` on both stacks and compare
+move latency at the deployed visit budgets (or time a scripted game). The
+A310 runs hexfield's *eager* fp32 paths (the fast fused kernels are
+CUDA-only), so XPU is not automatically a win over 7 modern CPU cores —
+measure, then keep whichever is faster. If XPU wins big, raise
+`SHOWCASE_MAX_ACTIVE_GAMES`/`SHOWCASE_WORKERS`.
+
+### Reverting to CPU
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.xpu.yml down
+docker compose up -d --build
 ```
 
 ## Refresh the model ladder

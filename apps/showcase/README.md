@@ -39,6 +39,12 @@ compose is already set up that way. First-run walkthrough, model-dir layout,
 and the ops runbook (update / logs / backup / kill switch):
 [`deploy/README.md`](deploy/README.md).
 
+An opt-in Intel-GPU variant (`Dockerfile.xpu` + `docker-compose.xpu.yml`)
+runs inference on torch's native XPU backend; device selection is the
+`SHOWCASE_DEVICE` env (`auto | cpu | xpu | cuda`, worker-side, with a startup
+CPU-vs-device parity self-check and automatic cpu fallback). See the
+"GPU (XPU) deployment" section of [`deploy/README.md`](deploy/README.md).
+
 ## Running locally
 
 From the repo root, in an env with the repo's extensions built (see the main
@@ -114,6 +120,12 @@ moves, and analysis. 429 beyond caps.
 checkpoint must be in the catalogue (404 otherwise) and `sims` must be in the
 allowed set from `GET /api/bots` (422 otherwise). Returns the game-state
 payload below and sets the `showcase_token` httpOnly cookie.
+
+`human_color` is `0` (human moves first, blue), `1` (human moves second,
+red), or `"random"` (the server flips a coin); the resolved 0/1 is echoed as
+`human_color` in every game-state payload. With the human as player 1 the bot
+owns the opening move — the create response arrives as `bot_thinking` and the
+client polls until the bot's first stone lands.
 
 ### GET /api/bots
 

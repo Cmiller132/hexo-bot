@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -82,7 +83,10 @@ _FEED_LIMIT_DEFAULT = 20
 class CreateGameRequest(BaseModel):
     checkpoint_id: str
     sims: int
-    human_color: Literal[0, 1] = 0
+    # 0 = human moves first (blue), 1 = human moves second (red), "random" =
+    # the server flips a coin; the resolved 0/1 is echoed as `human_color` in
+    # the game-state payload. Plain 0/1 stays the wire format for back-compat.
+    human_color: Literal[0, 1, "random"] = 0
 
 
 class MoveRequest(BaseModel):
@@ -319,10 +323,17 @@ def create_app(settings: Settings) -> FastAPI:
         if sum(1 for s in active if s.client_hash == client_hash) >= settings.max_games_per_ip:
             raise HTTPException(429, "active-game limit reached; finish or resign first")
 
+        # "random" resolves server-side to a fair 0/1; color stays keyed to
+        # player index (player0 = blue moves first). When the human resolves
+        # to 1 the bot owns the opening: `session.bot_to_move` is true below
+        # and the bot turn is enqueued right away.
+        human_color: int = (
+            os.urandom(1)[0] & 1 if body.human_color == "random" else body.human_color
+        )
         bot_db_id = _bot_db_id(spec, body.sims)
         session = GameSession.create(
             bot_slug=spec.slug, bot_db_id=bot_db_id, bot_label=spec.label,
-            bot_epoch=spec.epoch, sims=body.sims, human_color=body.human_color,
+            bot_epoch=spec.epoch, sims=body.sims, human_color=human_color,
             client_hash=client_hash,
         )
         # One token per client: reuse the cookie so a client's games all

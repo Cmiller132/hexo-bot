@@ -1,0 +1,175 @@
+# syntax=docker/dockerfile:1
+# Hexo showcase image — XPU (Intel Arc GPU) inference variant.
+#
+# Opt-in GPU flavor of ./Dockerfile (which stays the CPU default). Use via the
+# compose override, from apps/showcase/:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.xpu.yml up -d --build
+#
+# or manually from the repo root:
+#
+#   docker build -f apps/showcase/Dockerfile.xpu .
+#
+# What differs from the CPU image — ONLY the runtime stage:
+#   * torch comes from the PyTorch XPU wheel index (torch==2.12.1+xpu,
+#     https://download.pytorch.org/whl/xpu). Since torch 2.5 Intel-GPU support
+#     is NATIVE in these wheels (torch.xpu, no intel-extension-for-pytorch —
+#     ipex is discontinued upstream); the oneAPI *user-mode* runtime (SYCL,
+#     UMF, ...) rides along as pip dependencies of the +xpu wheel.
+#   * the runtime base is ubuntu:24.04 (noble) instead of python:3.12-slim
+#     (bookworm): Intel publishes its GPU driver apt repo for Ubuntu, not
+#     Debian. Noble's system python IS 3.12, so the cp312 wheels from the
+#     builder install unchanged (built on bookworm glibc 2.36 <= noble 2.39).
+#   * the Intel compute runtime / level-zero stack is installed from Intel's
+#     graphics repo: libze1 (level-zero loader), libze-intel-gpu1 (the
+#     level-zero GPU driver, formerly intel-level-zero-gpu), intel-opencl-icd
+#     (OpenCL, optional but cheap) + clinfo for diagnosis. This is the
+#     user-mode half; the i915/xe KERNEL driver comes from the host via
+#     `devices: /dev/dri` + a `group_add` render-gid entry (see
+#     docker-compose.xpu.yml and deploy/README.md).
+#
+# DEPLOY-TIME VALIDATION: this file is authored on a machine with no Intel
+# GPU or Docker. The wheel version (2.12.1+xpu, verified present on the index)
+# and the Intel repo package names (verified against Intel's noble 'client'
+# repo docs) are best-effort-correct but must be validated on the A310 LXC:
+#   docker compose exec app python3 -c \
+#     "import torch; print(torch.xpu.is_available(), torch.xpu.get_device_name(0))"
+#
+# Stage 1 is IDENTICAL to ./Dockerfile's builder (keep them in sync — the
+# docker layer cache dedupes the shared steps automatically).
+
+##############################################################################
+# Stage 1 — builder: rustup (pinned) + maturin, wheels for the three crates
+##############################################################################
+FROM python:3.12-slim-bookworm AS builder
+
+# rustc needs a C linker; zstd-sys (hexo_utils) compiles C via cc.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned rust toolchain (matches the toolchain the wheels were verified with).
+ARG RUST_VERSION=1.95.0
+RUN curl -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+ARG MATURIN_VERSION=1.14.1
+RUN pip install --no-cache-dir "maturin==${MATURIN_VERSION}"
+
+WORKDIR /src
+
+# Workspace root + the three member crates (paths per the workspace manifest).
+COPY Cargo.toml Cargo.lock ./
+COPY packages/hexo_engine packages/hexo_engine
+COPY packages/hexo_utils packages/hexo_utils
+COPY packages/hexfield packages/hexfield
+
+# --locked: build exactly the dependency set in the committed Cargo.lock.
+RUN maturin build --release --locked -o /wheels -i python3.12 \
+        -m packages/hexo_engine/Cargo.toml \
+    && maturin build --release --locked -o /wheels -i python3.12 \
+        -m packages/hexo_utils/Cargo.toml \
+    && maturin build --release --locked -o /wheels -i python3.12 \
+        -m packages/hexfield/Cargo.toml
+
+##############################################################################
+# Stage 2 — runtime: ubuntu 24.04 (python 3.12) + XPU torch + level-zero
+##############################################################################
+FROM ubuntu:24.04 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# python3.12 is noble's system python (matches the cp312 wheels). curl:
+# healthcheck; sqlite3: ops runbook; gnupg/ca-certificates: Intel repo key.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+        python3.12 \
+        python3.12-venv \
+        sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Intel graphics repo (noble 'client') -> user-mode GPU compute stack:
+#   libze1            level-zero loader (what torch.xpu dlopens)
+#   libze-intel-gpu1  level-zero driver for Intel GPUs (pulls libigc/libigdfcl
+#                     JIT + libigdgmm12; package name in current repo versions —
+#                     older repos called it intel-level-zero-gpu)
+#   intel-opencl-icd  OpenCL ICD (optional; sycl-ls/clinfo coverage)
+#   clinfo            diagnosis: `docker compose exec app clinfo -l`
+RUN curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key \
+        | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble client" \
+        > /etc/apt/sources.list.d/intel-gpu-noble.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libze1 \
+        libze-intel-gpu1 \
+        intel-opencl-icd \
+        clinfo \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Venv (noble's system python is PEP-668 externally-managed). Putting it first
+# on PATH makes `python3`/`uvicorn` resolve to it everywhere (CMD, exec).
+RUN python3.12 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# XPU torch from the PyTorch xpu index — same version as the CPU image's
+# torch==2.12.1+cpu, different flavor tag. The +xpu wheel's pip dependencies
+# bring the oneAPI user-mode runtime (intel-sycl-rt & friends); no oneAPI
+# basekit and no intel-extension-for-pytorch. Everything else matches
+# ./Dockerfile's pins exactly.
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/xpu \
+        torch==2.12.1+xpu \
+        fastapi==0.139.0 \
+        "uvicorn[standard]==0.50.0" \
+        numpy==2.5.0 \
+        lz4==4.4.5 \
+        zstandard==0.25.0 \
+        /wheels/*.whl \
+    && rm -rf /wheels
+
+WORKDIR /app
+
+# Same app payload as ./Dockerfile (see its comments).
+COPY apps/showcase/server apps/showcase/server
+COPY apps/showcase/web apps/showcase/web
+COPY apps/showcase/bots.example.toml apps/showcase/bots.example.toml
+COPY configs configs
+
+# XDG_CACHE_HOME: the SYCL runtime / level-zero JIT persist compiled-kernel
+# caches under the XDG cache dir. The compose stack runs a read-only rootfs
+# where only /data, /tmp (tmpfs) and /dev/shm are writable — point the cache
+# at /tmp so the JIT cache works (per-boot; a cold container re-JITs once).
+ENV PYTHONPATH=/app/apps/showcase/server \
+    SHOWCASE_DB_PATH=/data/showcase.db \
+    SHOWCASE_DEVICE=xpu \
+    XDG_CACHE_HOME=/tmp/.cache
+
+# Non-root. /data is the SQLite volume mountpoint. NOTE: ubuntu:24.04 ships a
+# default 'ubuntu' user at uid 1000; we keep the same dedicated uid 10001 as
+# the CPU image. GPU access comes from compose's `group_add` (host render
+# gid), not from baking a group here — gids differ per host.
+RUN useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin app \
+    && mkdir -p /data \
+    && chown app:app /data
+USER app
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+    CMD ["curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+
+# Single uvicorn process by design: SHOWCASE_WORKERS controls the model
+# worker-process pool (bots.py); the web process itself never imports torch.
+CMD ["uvicorn", "showcase.app:app", "--host", "0.0.0.0", "--port", "8000"]

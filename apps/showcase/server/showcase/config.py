@@ -21,6 +21,18 @@ def _env_float(name: str, default: float) -> float:
     return float(os.environ.get(name, "").strip() or default)
 
 
+def _env_opt_bool(name: str) -> bool | None:
+    """Tri-state boolean env: unset/empty -> None (caller-defined default)."""
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return None
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} must be a boolean (0/1/true/false), got {raw!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     """Complete showcase configuration. All knobs, one place."""
@@ -43,6 +55,14 @@ class Settings:
     policy_floor: float
     torch_threads: int
     ip_salt: str
+    # Inference device request (auto | cpu | xpu | cuda) — resolved per worker
+    # process at init by showcase.device.resolve_device; `auto` prefers xpu,
+    # then cuda, then cpu. Defaults keep existing constructors (tests) on the
+    # auto->cpu path.
+    device: str = "auto"
+    # Startup CPU-vs-device parity self-check (None -> on when the resolved
+    # device is not cpu). See showcase.device.verify_device.
+    device_selfcheck: bool | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -63,11 +83,15 @@ class Settings:
             ),
             static_dir=Path(os.environ.get("SHOWCASE_STATIC_DIR", "apps/showcase/web")),
             workers=_env_int("SHOWCASE_WORKERS", 2),
-            max_active_games=_env_int("SHOWCASE_MAX_ACTIVE_GAMES", 8),
-            max_games_per_ip=_env_int("SHOWCASE_MAX_GAMES_PER_IP", 2),
-            moves_per_minute=_env_int("SHOWCASE_MOVES_PER_MINUTE", 60),
-            analysis_per_minute=_env_int("SHOWCASE_ANALYSIS_PER_MINUTE", 20),
-            games_per_hour=_env_int("SHOWCASE_GAMES_PER_HOUR", 30),
+            # Capacity defaults (each env-overridable). global=16 assumes the
+            # deploy has GPU/CPU headroom for that many concurrent searches;
+            # an XPU-backed deploy raises real capacity well past this, but 16
+            # stays the safe code default — bump via env in the compose file.
+            max_active_games=_env_int("SHOWCASE_MAX_ACTIVE_GAMES", 16),
+            max_games_per_ip=_env_int("SHOWCASE_MAX_GAMES_PER_IP", 4),
+            moves_per_minute=_env_int("SHOWCASE_MOVES_PER_MINUTE", 120),
+            analysis_per_minute=_env_int("SHOWCASE_ANALYSIS_PER_MINUTE", 40),
+            games_per_hour=_env_int("SHOWCASE_GAMES_PER_HOUR", 60),
             idle_timeout_s=_env_float("SHOWCASE_IDLE_TIMEOUT_S", 600.0),
             bot_timeout_s=_env_float("SHOWCASE_BOT_TIMEOUT_S", 120.0),
             finished_ttl_s=_env_float("SHOWCASE_FINISHED_TTL_S", 6 * 3600.0),
@@ -76,4 +100,6 @@ class Settings:
             policy_floor=_env_float("SHOWCASE_POLICY_FLOOR", 1e-4),
             torch_threads=_env_int("SHOWCASE_TORCH_THREADS", 0),
             ip_salt=os.environ.get("SHOWCASE_IP_SALT", "") or secrets.token_hex(16),
+            device=os.environ.get("SHOWCASE_DEVICE", "").strip().lower() or "auto",
+            device_selfcheck=_env_opt_bool("SHOWCASE_DEVICE_SELFCHECK"),
         )

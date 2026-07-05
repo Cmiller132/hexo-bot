@@ -159,9 +159,18 @@ function ingestMoves(snap) {
   for (const s of added) play.moves.push({ q: s.q, r: s.r, color: s.color });
 }
 
+/* meta-grid "you" cell: blue/red per the RESOLVED human_color (the server
+ * echoes it in every snapshot; with "random" it is decided at create time) */
+function showYouColor(hc) {
+  const el = $("youColor");
+  el.textContent = hc === 1 ? "red" : "blue";
+  el.className = "n " + (hc === 1 ? "is-p1" : "is-p0");
+}
+
 function ingestPlay(snap) {
   play.snap = snap;
   ingestMoves(snap);
+  if (Number.isInteger(snap.human_color)) showYouColor(snap.human_color);
   const finished = snap.status === "finished";
   const term = finished && snap.result ? snap.result.termination : null;
   const winCells = term === "six_in_line"
@@ -281,7 +290,10 @@ async function newGame() {
   play.creating = true;
   resignBtn.disabled = true;
   try {
-    const snap = await api.createGame(botsNorm.payloadFor(sel.ckpt, sel.sims));
+    const snap = await api.createGame({
+      ...botsNorm.payloadFor(sel.ckpt, sel.sims),
+      human_color: sel.color,
+    });
     play.id = snap.id;
     play.moves = [];
     play.staged = null;
@@ -344,7 +356,9 @@ analyzeBtn.addEventListener("click", () => {
 // ---- bot pickers ---------------------------------------------------------------
 
 let botsNorm = null;
-const sel = { ckpt: null, ckptLabel: "", sims: 0 };
+// color: 0 (first, blue) | 1 (second, red) | "random" — default preserves the
+// old always-first behavior
+const sel = { ckpt: null, ckptLabel: "", sims: 0, color: 0 };
 
 function renderPickers() {
   const list = $("ckptList");
@@ -393,6 +407,16 @@ $("simSeg").addEventListener("click", e => {
   if (!b) return;
   sel.sims = +b.dataset.sims;
   document.querySelectorAll("#simSeg button").forEach(x => {
+    const on = x === b;
+    x.classList.toggle("sel", on);
+    x.setAttribute("aria-checked", on);
+  });
+});
+$("colorSeg").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  sel.color = b.dataset.color === "random" ? "random" : +b.dataset.color;
+  document.querySelectorAll("#colorSeg button").forEach(x => {
     const on = x === b;
     x.classList.toggle("sel", on);
     x.setAttribute("aria-checked", on);

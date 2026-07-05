@@ -55,6 +55,15 @@
         <div id="ckptList" role="radiogroup" aria-label="Checkpoint"></div>
         <h2 class="k gap">Strength</h2>
         <div class="seg" id="simSeg" role="radiogroup" aria-label="Simulations"></div>
+        <h2 class="k gap">Play as</h2>
+        <div class="seg" id="colorSeg" role="radiogroup" aria-label="Play as">
+          <button data-color="0" class="sel" role="radio" aria-checked="true"
+                  title="Player 1 — blue, moves first">First</button>
+          <button data-color="1" role="radio" aria-checked="false"
+                  title="Player 2 — red, moves second">Second</button>
+          <button data-color="random" role="radio" aria-checked="false"
+                  title="Coin flip">Random</button>
+        </div>
       </div>
 
       <div class="sec">
@@ -66,7 +75,7 @@
         <div class="meta-grid">
           <div class="mg-cell"><div class="n" id="plyCount">&mdash;</div><div class="l">ply</div></div>
           <div class="mg-cell"><div class="n" id="turnCount">&mdash;</div><div class="l">turn</div></div>
-          <div class="mg-cell"><div class="n is-p0">blue</div><div class="l">you</div></div>
+          <div class="mg-cell"><div class="n is-p0" id="youColor">blue</div><div class="l">you</div></div>
         </div>
         <button class="line-btn" id="resignBtn">New game</button>
         <button class="line-btn" id="analyzeBtn" hidden>Analyze this game</button>

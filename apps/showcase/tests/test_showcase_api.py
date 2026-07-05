@@ -23,7 +23,8 @@ def fresh_ip() -> dict[str, str]:
 
 
 def create_game(
-    client, headers, checkpoint_id: str = "tiny", sims: int = 8, human_color: int = 0,
+    client, headers, checkpoint_id: str = "tiny", sims: int = 8,
+    human_color: int | str = 0,
 ) -> dict:
     resp = client.post(
         "/api/game",
@@ -141,12 +142,72 @@ def test_full_game_to_terminal_or_20_plies(client):
 def test_bot_moves_first_when_human_is_player1(client):
     headers = fresh_ip()
     snap = create_game(client, headers, human_color=1)
-    assert snap["status"] == "bot_thinking"
+    assert snap["human_color"] == 1
+    assert snap["status"] == "bot_thinking"  # bot owns the opening ply
     snap = poll_until(client, snap["id"])
     assert snap["status"] == "your_turn"
     assert snap["ply"] == 1  # the bot's opening turn is a single stone
     assert snap["stones"] == [{"q": 0, "r": 0, "color": 0}]
+    # ... and the human now has a real turn to play
+    assert snap["to_move"] == 1
+    assert snap["legal"]
     resign(client, snap["id"], headers)
+
+
+def test_random_human_color_resolves_and_echoes(client, settings):
+    """human_color="random" resolves server-side to a fair 0/1, echoed in the
+    snapshot and recorded in the games row; junk values are rejected."""
+    seen: set[int] = set()
+    for i in range(16):
+        headers = fresh_ip()
+        snap = create_game(client, headers, human_color="random")
+        assert snap["human_color"] in (0, 1)
+        if i == 0:  # the DB row records the resolved color, not "random"
+            row = sqlite3.connect(settings.db_path).execute(
+                "SELECT human_color FROM games WHERE id = ?", (snap["id"],)
+            ).fetchone()
+            assert row[0] == snap["human_color"]
+        seen.add(snap["human_color"])
+        resign(client, snap["id"], headers)
+        if seen == {0, 1} and i >= 1:
+            break
+    assert seen == {0, 1}  # 16 coin flips landing one-sided: ~0.003%
+
+    resp = client.post(
+        "/api/game",
+        json={"checkpoint_id": "tiny", "sims": 8, "human_color": "coin"},
+        headers=fresh_ip(),
+    )
+    assert resp.status_code == 422  # only 0 | 1 | "random"
+
+
+def test_full_game_as_player2_to_terminal_or_10_plies(client):
+    """A whole game with the human as player 1 (second to act): the bot opens,
+    turn alternation stays consistent, and the game reaches a terminal state
+    or a clean resignation after ~10 plies."""
+    headers = fresh_ip()
+    snap = create_game(client, headers, human_color=1)
+    game_id = snap["id"]
+    assert snap["status"] == "bot_thinking"
+    snap = poll_until(client, game_id)
+
+    while snap["status"] != "finished" and snap["ply"] < 10:
+        if snap["status"] == "your_turn":
+            assert snap["to_move"] == snap["human_color"] == 1
+            cell = snap["legal"][(snap["ply"] * 7) % len(snap["legal"])]
+            resp = client.post(f"/api/game/{game_id}/move", json=cell, headers=headers)
+            assert resp.status_code == 200, resp.text
+            snap = resp.json()
+            assert snap["last_move"] == {**cell, "color": 1}
+            assert len(snap["stones"]) == snap["ply"]
+        else:
+            snap = poll_until(client, game_id)
+
+    if snap["status"] != "finished":
+        snap = resign(client, game_id, headers)
+    assert snap["status"] == "finished"
+    assert snap["result"]["termination"] in ("six_in_line", "resign")
+    assert len(snap["stones"]) == snap["ply"]
 
 
 def test_illegal_move_rejected(client):
