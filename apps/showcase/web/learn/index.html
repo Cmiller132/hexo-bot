@@ -16,6 +16,8 @@
     <a href="network.html">The network</a>
     <a href="search.html">The search</a>
     <a href="training.html">The training</a>
+    <a href="results.html">The results</a>
+    <a href="systems.html">The systems</a>
   </nav>
 </header>
 
@@ -24,14 +26,14 @@
 <h1>hexfield <span class="h-dim">&mdash; how it works</span></h1>
 
 <p class="lede">
-hexfield is an AlphaZero-family agent for Hexo, a Connect6-family game played on
-an unbounded hexagonal grid. One neural network reads a position and returns a
-<em>policy</em> (a distribution over legal moves) and a <em>value</em> (who is
-winning); a Gumbel Monte-Carlo tree search uses that network to look ahead and
-returns a move stronger than the raw policy; and the network is trained entirely
-on its own games to imitate what the search found. There is no human game
-database in the loop &mdash; only an optional behavioral-cloning warm start
-before it begins. This page is the map; the three chapters walk each part.
+The bot you&rsquo;re playing is hexfield, an AlphaZero-family agent. One neural
+network reads a position and returns a <em>policy</em> (a distribution over
+legal moves) and a <em>value</em> (who is winning); a Gumbel Monte-Carlo tree
+search uses that network to look ahead and returns a move stronger than the raw
+policy; and the network is trained entirely on its own games to imitate what
+the search found. There is no human game database in the loop &mdash; only an
+optional behavioral-cloning warm start before it begins. This page is the map;
+the chapters that follow walk each part.
 </p>
 
 <h2 id="loop"><span class="sec-no">01</span>the loop</h2>
@@ -197,9 +199,9 @@ quality, so these are recalibrated as the run matures.
 <h2 id="unusual"><span class="sec-no">03</span>why this is unusual</h2>
 
 <p>
-<b>The board has no edges, so the input has no shape.</b> Hexo is played on an
-unbounded hexagonal grid: there is no 19&times;19 plane to convolve over, and a
-game can wander anywhere. Instead of cropping a fixed window, hexfield builds a
+<b>The board has no edges, so the input has no shape.</b> There is no
+19&times;19 plane to convolve over, and a game can wander anywhere on the
+unbounded grid. Instead of cropping a fixed window, hexfield builds a
 <span class="term" title="stones + legal cells + a one-cell halo">support set</span>
 &mdash; exactly the cells that matter right now (stones, legal moves, and a
 one-cell halo) &mdash; and feeds the network a variable-size graph that grows
@@ -213,7 +215,7 @@ is built &rarr;</a>
 <p>
 <b>Global attention over an irregular point set.</b> Convolutions on this graph
 are direction-typed &mdash; the neighbour along each of the six hex axes gets
-its own weights, because line direction is the entire point of a connection game
+its own weights, because which axis a line runs along is the whole point
 &mdash; but they only spread information one ring per block. Interleaved
 attention blocks give every cell a view of the whole position in a single step:
 all-pairs attention over the support cells plus 8 learned summary tokens, with a
@@ -236,6 +238,14 @@ The improved root distribution is exactly what the network trains toward
 force-includes tactical cells so the candidate draw can never miss a
 win-in-one. <!-- src: configs/hexfield_main_7.toml gumbel_m = 32, policy_target = "gumbel", tss_enabled = true -->
 <a href="search.html#gumbel">How the search works &rarr;</a>
+</p>
+
+<p>
+Two more chapters sit past the algorithm: <a href="results.html">the
+results</a> tracks this run&rsquo;s real evaluation data &mdash; watch the bot
+you&rsquo;re facing get stronger epoch by epoch &mdash; and
+<a href="systems.html">the systems</a> covers the engineering underneath, the
+part that keeps the loop fed.
 </p>
 
 </main>

@@ -80,6 +80,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 .nx-schem .wire{stroke:var(--dim);stroke-width:1;fill:none}
 .nx-kbd{font-family:var(--mono);font-size:10px;color:var(--dim);
   letter-spacing:.08em}
+/* fig 4 real-data controls */
+#realCtl4:not([hidden]),#blk4{display:contents}
+.fig-controls select{font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.06em;color:var(--text);background:var(--bg);
+  border:1px solid var(--line);padding:4px 8px;cursor:pointer}
+.fig-controls select:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+.nx-qcell{fill:none;stroke:var(--accent-dim);stroke-width:1.4;
+  stroke-dasharray:3 2;cursor:pointer;outline:none}
+.nx-qcell:hover{stroke:var(--accent)}
+.nx-qcell:focus-visible{stroke:var(--accent);stroke-width:1.8}
+.nx-qcell.nx-sel{stroke:var(--accent);stroke-width:1.8;stroke-dasharray:none}
 @media (max-width:640px){.nx-bar{grid-template-columns:16px 96px 1fr 38px}}
 </style>
 </head>
@@ -92,6 +103,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     <a href="network.html" class="current" aria-current="page">The network</a>
     <a href="search.html">The search</a>
     <a href="training.html">The training</a>
+    <a href="results.html">The results</a>
+    <a href="systems.html">The systems</a>
   </nav>
 </header>
 
@@ -99,14 +112,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 
 <h1>The network <span class="h-dim">— a graph net for an unbounded board</span></h1>
 <p class="lede">
-Hexo has no board edges: stones land on an infinite hexagonal lattice, and the
-playable region drifts wherever the game goes. hexfield's network therefore is
-not an image CNN over a fixed crop — it is a <em>set network over a graph</em>
-whose input size changes every single move. This page walks through that
-architecture exactly as implemented: the support set, the 15 per-cell features,
-hex convolution as message passing, global attention with a learned hex-geometry
-bias, and the output heads. Every figure below runs on one fixed toy position
-(15 stones, player&nbsp;0 to move) with the real formulas from the featurizer.
+The board you play on has no edges, and the playable region drifts wherever the
+game goes — so the network reading your position is not an image CNN over a
+fixed crop. It is a <em>set network over a graph</em> whose input size changes
+every single move. This page walks through that architecture exactly as
+implemented: the support set, the 15 per-cell features, hex convolution as
+message passing, global attention with a learned hex-geometry bias, and the
+output heads. The board figures run on a real position from the shipped
+net&rsquo;s snapshot data (a quiet middlegame, 15 stones, player&nbsp;0 to
+move) with the real formulas from the featurizer — and the attention figure
+shows the shipped net&rsquo;s actual learned weights.
 </p>
 
 <div class="note">
@@ -126,12 +141,12 @@ trunk <code>CCACCACCACCACCA</code>, support radius 4 — 8,128,812 parameters).
 <h2><span class="sec-no">01</span>The board as a graph</h2>
 
 <p>
-A convolutional net wants a fixed <code>H×W</code> tensor. Hexo refuses to
-provide one: the rules allow a stone on any empty cell within hex-distance 8 of
-an existing stone, so the playable region is an amoeba that grows outward all
-game and can wander arbitrarily far from the origin. Cropping a fixed window
-either wastes computation on empty wilderness or, worse, cuts off stones. Since
-Hexo has no fixed board, hexfield builds a <strong>support set</strong> — the finite
+A convolutional net wants a fixed <code>H×W</code> tensor. This game refuses to
+provide one: with legality reaching hex-distance 8 from the nearest stone, the
+playable region is an amoeba that grows outward all game and can wander
+arbitrarily far from the origin. Cropping a fixed window either wastes
+computation on empty wilderness or, worse, cuts off stones. With no fixed board
+to crop, hexfield builds a <strong>support set</strong> — the finite
 set of cells that matter right now — and feeds the network exactly that, as a
 variable-length list of nodes plus a neighbour graph.
 </p>
@@ -195,7 +210,7 @@ move. In index order:
 <code>empty = 1 − own − opp</code>.</li>
 <li><code>3</code> <strong>legal</strong> — 1 on the legal prefix, 0 elsewhere.</li>
 <li><code>4</code> <strong>phase-is-second-stone</strong> — 1 on every node when the
-mover is placing the second stone of their two-stone turn.</li>
+mover is placing the second stone of the turn.</li>
 <li><code>5</code> <strong>first-stone</strong> — marks where this turn's first stone
 just landed (only during that second-stone phase).</li>
 <li><code>6</code> <strong>player-colour</strong> — 1 everywhere when player 0 is to
@@ -219,13 +234,15 @@ The hot and win planes come from scanning every length-6 single-colour window
 on the three win axes — the same threat definition the search's tactical layer
 uses. That is deliberate: the network's input vocabulary and the game's tactics
 speak the same language. The inspector below computes all 15 values with the
-real formulas for the toy position; note there are no win-now cells here
-(nobody has five in a window yet), so features 13–14 are honestly zero
+real formulas, on the <code>quiet_midgame</code> position from the shipped
+net's snapshot data — 15 stones, both sides still staking out territory, no
+window holding more than three stones of one colour. Nothing is forced here,
+so the hot features (9–10) and win-now features (13–14) are honestly zero
 everywhere.
 </p>
 
 <figure class="fig" id="fig-features">
-  <figcaption><b>Figure 2</b> — feature inspector. Click (or tab + arrow keys to) any cell; the 15 input values are computed live with the formulas from features.py.</figcaption>
+  <figcaption><b>Figure 2</b> — feature inspector, on the real quiet_midgame position from data/attention.json. Click (or tab + arrow keys to) any cell; the 15 input values are computed live with the formulas from features.py.</figcaption>
   <div class="fig-body nx-flex">
     <div class="nx-boardwrap"><svg id="svg2" role="img" aria-label="Hex board; select a cell to inspect its features"></svg></div>
     <div class="nx-side"><div class="nx-bars" id="bars2"></div></div>
@@ -257,8 +274,8 @@ neighbours in the fixed direction order <code>D</code> (the rotate-60 orbit of
 into a <code>(N, 7·C)</code> matrix and applies <em>one</em> GEMM against a
 <code>(7, C_in, C_out)</code> weight. The weights are
 <strong>direction-typed</strong>: the neighbour in the Q direction is mixed with
-different learned weights than the neighbour in the R direction — in a
-six-in-a-row game, which axis a line runs along is the whole point.
+different learned weights than the neighbour in the R direction — which axis a
+line runs along is the whole point.
 </p>
 <p>
 <strong>What happens at the support's edge?</strong> A missing neighbour is stored
@@ -332,7 +349,7 @@ rel_bias_index</code>):
 disk);</li>
 <li>rows 217–224 vs 225–232 — ring buckets for distance 9–16, split by whether
 the offset is <em>collinear with a win axis</em> — the geometry that decides
-whether two stones can ever share a six-in-a-row is baked into the bias
+whether two stones can ever share a winning line is baked into the bias
 vocabulary;</li>
 <li>row 233 — everything beyond distance 16;</li>
 <li>rows 234–236 — cell↔token and token↔token pairs.</li>
@@ -346,17 +363,45 @@ scratchpads that every cell can write to and read from. They are extra
 participants, not a bottleneck: cells still talk to each other directly. The
 scalar heads later read specific token pairs (§05).
 </p>
+<p>
+The visualizer below shows <strong>real attention rows from the shipped ep58
+net</strong>, exported for four positions from its own games
+(<code>data/attention.json</code>). A few things the trained heads actually do.
+Head 0 in blocks 0 and 4 is a <em>token sink</em>: for most queries nearly all
+of its mass lands on the summary tokens — token 4 in the first block at
+weights &asymp;1.0, token 6 in the last at &asymp;0.65–0.73 — a parked, "nothing
+geometric to say" state, which is why the token chips matter: without them the
+head would look empty. Block 2's head 1 is razor-sharp tactics: in the
+split-four position, queried from the gap, it puts 0.88 of its mass on the
+stone that completes the four. And in the double-threat position, block 3's
+head 1 queried from a threat-window cell puts 0.90 on (&minus;3,&nbsp;3) — the
+forced blocking gap.
+<!-- Observed in data/attention.json (hexfield_main_7, ep58):
+     block0 head0: token 4 weight 0.994-1.000 on most queries, all positions;
+     block4 head0: token 6 weight 0.653 (last_stone) / 0.728 (opening_stone)
+       in four_threat;
+     block2 head1: cell (5,1) [stone] weight 0.880 from query (4,1) top_policy
+       in four_threat;
+     block3 head1: cell (-3,3) weight 0.904 from query (-3,-1) threat_cell
+       in double_threat.
+     Verified by script against the JSON on 2026-07-05. -->
+</p>
 
 <figure class="fig fig-wide" id="fig-attn">
-  <figcaption><b>Figure 4</b> — attention visualizer. Click a query cell; heat and rays show where that cell attends. Patterns are <b>illustrative — real weights are learned</b>; the three synthetic heads convey multi-head diversity, and the bias toggle shows how the learned rel-pos table shapes scores by offset.</figcaption>
+  <figcaption id="cap4"><b>Figure 4</b> — attention visualizer, <b>real weights from the shipped ep58 net</b>. Pick a position, block and head, then click an outlined query cell; heat and rays show where that query attends, and the right-hand chips show its mass on the 8 summary tokens.</figcaption>
   <div class="fig-body nx-boardwrap"><svg id="svg4" role="img" aria-label="Hex board with attention heat from a selected query cell to all cells and 8 summary tokens"></svg></div>
   <div class="fig-controls">
+    <span id="realCtl4" hidden>
+      <label for="pos4">position</label>
+      <select id="pos4" aria-label="position"></select>
+      <label>block</label><span id="blk4"></span>
+    </span>
     <label>head</label>
-    <button type="button" data-h="0" class="sel">1 · local</button>
-    <button type="button" data-h="1">2 · axis</button>
-    <button type="button" data-h="2">3 · stones</button>
+    <button type="button" data-h="0" class="sel">0</button>
+    <button type="button" data-h="1">1</button>
+    <button type="button" data-h="2">2</button>
     <span class="spacer"></span>
-    <button type="button" id="bias4" class="on" aria-pressed="true">rel-pos bias: on</button>
+    <button type="button" id="bias4" class="on" aria-pressed="true" hidden>rel-pos bias: on</button>
   </div>
   <div class="fig-readout" id="ro4" aria-live="polite"></div>
 </figure>
@@ -479,11 +524,14 @@ function hexPts(cx,cy,s){var p='';for(var i=0;i<6;i++){
   p+=(cx+s*Math.cos(a)).toFixed(2)+','+(cy+s*Math.sin(a)).toFixed(2)+' ';}
   return p.trim();}
 
-/* Toy position: 15 chronological placements [q,r,owner]. ordinal = array
-   index; placement_index = ordinal+1. Turn structure 1-then-2-2-2 => next
-   mover (ordinal 15) is player 0, phase FirstStone. */
-var RECORDS=[[0,0,0],[0,-1,1],[-1,-1,1],[0,1,0],[1,1,0],[2,-1,1],[2,-2,1],
-             [-1,1,0],[2,1,0],[2,0,1],[-2,0,1],[-2,3,0],[-3,2,0],[2,-3,1],[1,3,1]];
+/* Real position: the quiet_midgame snapshot from data/attention.json
+   (hexfield_main_7, ep58 export) — 15 chronological placements [q,r,owner],
+   owners derived from the fixed turn structure. ordinal = array index;
+   placement_index = ordinal+1. Turn structure 1-then-2-2-2 => next mover
+   (ordinal 15) is player 0, phase FirstStone. Inlined so figs 1-3 need no
+   fetch; matches the JSON's moves/stones lists exactly. */
+var RECORDS=[[0,0,0],[1,1,1],[0,2,1],[2,-1,0],[1,-2,0],[-1,2,1],[3,0,1],
+             [-1,1,0],[-2,0,0],[2,2,1],[-2,3,1],[0,-1,0],[3,-2,0],[1,3,1],[4,-1,1]];
 var CUR=0, N_PLACED=RECORDS.length;
 var STONES=new Map();
 RECORDS.forEach(function(rec,i){STONES.set(K(rec[0],rec[1]),{q:rec[0],r:rec[1],owner:rec[2],ord:i});});
@@ -766,7 +814,7 @@ var FEATS=buildFeatures(SUP);
     setReadout('ro2','cell ('+c.n.q+', '+c.n.r+') — '+c.n.kind,note+'.');
   }
   wireNav(board,pick,{halo:true});
-  pick(board.byKey.get('3,1'));   /* start on a hot cell of the blue threat */
+  pick(board.byKey.get('4,-1'));  /* start on the newest stone: recency 1.0 */
 })();
 
 /* ================= FIG 3 — conv stencil + receptive field ================= */
@@ -828,111 +876,276 @@ var FEATS=buildFeatures(SUP);
   $('l3minus').addEventListener('click',function(){if(layers>1){layers--;apply();}});
   $('l3plus').addEventListener('click',function(){if(layers<10){layers++;apply();}});
   wireNav(board,pick,{halo:true});
-  pick(board.byKey.get('-2,1'));  /* hot cell at the blue line's left end */
+  pick(board.byKey.get('-2,1'));  /* a central legal cell */
 })();
 
-/* ================= FIG 4 — attention visualizer ================= */
+/* ================= FIG 4 — attention visualizer =================
+   Real mode: rows from data/attention.json (hexfield_main_7, ep58) — four
+   curated positions, 5 blocks × 3 heads, ~6 query cells each; sparse cell
+   weights (floor 1e-3) plus all 8 summary-token weights per row. Cited
+   observations verified against the JSON: block0 head0 token4 ≈ 1.0
+   (token sink); block4 head0 token6 0.653–0.728 in four_threat; block2
+   head1 → 0.880 on stone (5,1) from query (4,1) in four_threat; block3
+   head1 → 0.904 on (-3,3) from query (-3,-1) in double_threat.
+   Fallback (fetch unavailable, e.g. file://): the previous synthetic
+   generator over the shared quiet_midgame board, labelled illustrative. */
 (function(){
-  var svg=$('svg4');
-  var board=paintBoard(svg,SUP,{focusable:'all',heat:true});
-  /* extend viewBox rightward for the 8 token chips */
-  var vb=svg.getAttribute('viewBox').split(' ').map(Number);
-  var tokX=vb[0]+vb[2]+18,tokW=30,tokH=(vb[3]-24)/8;
-  svg.setAttribute('viewBox',vb[0]+' '+vb[1]+' '+(vb[2]+tokW+44)+' '+vb[3]);
-  var gT=el('g',{},svg);
-  var lab=el('text',{x:tokX+tokW/2,y:vb[1]+10,'text-anchor':'middle',
-    'class':'nx-lab on'},gT);lab.textContent='tokens';
-  var toks=[];
-  for(var t=0;t<8;t++){
-    var ty=vb[1]+18+t*tokH;
-    el('rect',{x:tokX,y:ty,width:tokW,height:tokH-4,'class':'nx-tok'},gT);
-    var hh=el('rect',{x:tokX,y:ty,width:tokW,height:tokH-4,
-      'class':'nx-tokheat','fill-opacity':'0'},gT);
-    var tl=el('text',{x:tokX+tokW/2,y:ty+(tokH-4)/2+3,'text-anchor':'middle',
-      'class':'nx-lab'},gT);
-    tl.textContent='t'+t;
-    toks.push({heat:hh,cx:tokX,cy:ty+(tokH-4)/2});
-  }
-  var gRays=el('g',{},svg);
-  var head=0,biasOn=true,sel=null;
-  var HEADNOTE=[
-    'head 1 (synthetic): a LOCAL head — mass decays with hex distance, like a learned bias that favours the exact-offset disk rows.',
-    'head 2 (synthetic): an AXIS head — mass follows the three win axes through the query. The real bias table has dedicated on-win-axis ring rows (217–224), so axis-selective heads are exactly what the parameterization affords.',
-    'head 3 (synthetic): a STONE head — mass concentrates on stones, hotter for recent and threat-adjacent ones (content, not geometry).'];
-  function scores(qc){
-    var n=SUP.nodes.length,out=new Float64Array(n+8);
-    for(var i=0;i<n;i++){
-      var t=SUP.nodes[i],dq=t.q-qc.n.q,dr=t.r-qc.n.r,d=hexDist(dq,dr);
-      var stone=t.kind==='stone',f=FEATS[i],s=0;
-      if(head===0){s=(biasOn?1.8-0.65*d:0.15)+(stone?0.5:0);}
-      else if(head===1){
-        var ax=onWinAxis(dq,dr);
-        s=ax?1.7-(biasOn?0.08*d:0):-1.4-(biasOn?0.15*d:0);
-        if(ax&&stone)s+=1.0;
-        if(ax&&(f[9]||f[10]))s+=0.8;
-      }else{
-        s=stone?1.2+1.8*Math.max(f[7],f[8]):(f[9]||f[10])?0.9:-1.3;
-        if(biasOn)s-=0.07*d;
-      }
-      out[i]=s;
-    }
-    for(var k=0;k<8;k++)
-      out[n+k]=head===2?0.6:head===0?-1.2:-0.2;
-    /* softmax */
-    var mx=-1e9,i2;for(i2=0;i2<out.length;i2++)mx=Math.max(mx,out[i2]);
-    var sum=0;for(i2=0;i2<out.length;i2++){out[i2]=Math.exp(out[i2]-mx);sum+=out[i2];}
-    for(i2=0;i2<out.length;i2++)out[i2]/=sum;
-    return out;
-  }
-  function apply(){
-    if(!sel)return;
-    var p=scores(sel),n=SUP.nodes.length,pmax=0,i;
-    for(i=0;i<p.length;i++)pmax=Math.max(pmax,p[i]);
-    board.cells.forEach(function(c){
-      var v=p[c.n.i]/pmax;
-      c.heat.setAttribute('fill-opacity',(0.85*v).toFixed(3));
-    });
-    for(i=0;i<8;i++)
-      toks[i].heat.setAttribute('fill-opacity',(0.85*p[n+i]/pmax).toFixed(3));
-    /* top-8 rays (excluding self) */
-    gRays.innerHTML='';
-    var order=[];
-    for(i=0;i<p.length;i++)if(i!==sel.n.i)order.push(i);
-    order.sort(function(a,b){return p[b]-p[a];});
-    for(i=0;i<8&&i<order.length;i++){
-      var j=order[i],tx,ty;
-      if(j<n){tx=board.cells[j].cx;ty=board.cells[j].cy;}
-      else{tx=toks[j-n].cx;ty=toks[j-n].cy;}
-      el('line',{x1:sel.cx,y1:sel.cy,x2:tx,y2:ty,'class':'nx-ray',
-        'stroke-width':(0.5+3.2*p[j]/pmax).toFixed(2),
-        'stroke-opacity':(0.25+0.5*p[j]/pmax).toFixed(2)},gRays);
-    }
-    setReadout('ro4',
-      'query ('+sel.n.q+', '+sel.n.r+') · head '+(head+1)+' · rel-pos bias '+
-      (biasOn?'on':'off')+' · illustrative',
-      HEADNOTE[head]+(biasOn?'':' Bias off: with no distance/direction term, scores flatten — the learned 237-row table is what gives each head its geometric shape.'));
-  }
-  function pick(c){
-    if(sel)sel.poly.classList.remove('nx-sel');
-    sel=c;c.poly.classList.add('nx-sel');apply();
-  }
+  var svg=$('svg4'),cap=$('cap4');
   var hbtns=document.querySelectorAll('#fig-attn .fig-controls button[data-h]');
-  hbtns.forEach(function(b){
-    b.addEventListener('click',function(){
-      head=+b.getAttribute('data-h');
-      hbtns.forEach(function(x){x.classList.toggle('sel',x===b);});
+  var head=0;
+  function setHead(h){head=h;
+    hbtns.forEach(function(x){x.classList.toggle('sel',+x.getAttribute('data-h')===h);});}
+
+  /* board painter for an arbitrary position block from the JSON: nodes come
+     straight from support.coords (segments [legal|stones|halo] by the counts),
+     so attention row indices map 1:1 onto drawn cells. Token chips at right. */
+  function paintReal(pos){
+    svg.innerHTML='';
+    var coords=pos.support.coords,lc=pos.support.legal_count,sc=pos.support.stone_count;
+    var own={};pos.stones.forEach(function(s){own[K(s[0],s[1])]=s[2];});
+    var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+    coords.forEach(function(c){var xy=XY(c[0],c[1]);
+      minX=Math.min(minX,xy[0]);maxX=Math.max(maxX,xy[0]);
+      minY=Math.min(minY,xy[1]);maxY=Math.max(maxY,xy[1]);});
+    var pad=HR+6;
+    var vb=[minX-pad,minY-pad,maxX-minX+2*pad,maxY-minY+2*pad];
+    var tokX=vb[0]+vb[2]+18,tokW=30,tokH=(vb[3]-24)/8;
+    svg.setAttribute('viewBox',vb[0].toFixed(1)+' '+vb[1].toFixed(1)+' '+
+      (vb[2]+tokW+44).toFixed(1)+' '+vb[3].toFixed(1));
+    var gC=el('g',{},svg),gH=el('g',{},svg),gS=el('g',{},svg),gT=el('g',{},svg);
+    var cells=[];
+    coords.forEach(function(c,i){
+      var xy=XY(c[0],c[1]),kind=i<lc?'nx-legal':(i<lc+sc?'nx-stonecell':'nx-halo');
+      el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),'class':'nx-cell '+kind},gC);
+      var heat=el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),
+        'class':'nx-heat','fill-opacity':'0'},gH);
+      var o=own[K(c[0],c[1])];
+      if(o!==undefined)el('circle',{cx:xy[0],cy:xy[1],r:HR*.52,
+        'class':o===0?'nx-stone0':'nx-stone1'},gS);
+      cells.push({cx:xy[0],cy:xy[1],heat:heat});
+    });
+    var lab=el('text',{x:tokX+tokW/2,y:vb[1]+10,'text-anchor':'middle',
+      'class':'nx-lab on'},gT);lab.textContent='tokens';
+    var toks=[];
+    for(var t=0;t<8;t++){
+      var ty=vb[1]+18+t*tokH;
+      el('rect',{x:tokX,y:ty,width:tokW,height:tokH-4,'class':'nx-tok'},gT);
+      var hh=el('rect',{x:tokX,y:ty,width:tokW,height:tokH-4,
+        'class':'nx-tokheat','fill-opacity':'0'},gT);
+      var tl=el('text',{x:tokX+tokW/2,y:ty+(tokH-4)/2+3,'text-anchor':'middle',
+        'class':'nx-lab'},gT);
+      tl.textContent='t'+t;
+      toks.push({heat:hh,cx:tokX,cy:ty+(tokH-4)/2});
+    }
+    var gRays=el('g',{},svg),gQ=el('g',{},svg);
+    return {cells:cells,toks:toks,gRays:gRays,gQ:gQ};
+  }
+
+  /* ---------------- real-data mode ---------------- */
+  function initReal(data){
+    var POS=data.positions;
+    /* open on four_threat · block 2 · head 1 · the gap query — the
+       razor-sharp row: 0.88 on the stone completing the split four */
+    var pi=1,qi=2,block=2,board=null,qpolys=[];
+    setHead(1);
+    $('realCtl4').hidden=false;
+    var selEl=$('pos4');
+    POS.forEach(function(p,i){
+      var o=document.createElement('option');
+      o.value=String(i);o.textContent=p.id;selEl.appendChild(o);
+    });
+    selEl.value=String(pi);
+    var blkWrap=$('blk4'),bbtns=[];
+    for(var b=0;b<data.blocks;b++)(function(b){
+      var bt=document.createElement('button');bt.type='button';bt.textContent=String(b);
+      bt.setAttribute('aria-label','block '+b);
+      bt.addEventListener('click',function(){
+        block=b;bbtns.forEach(function(x,j){x.classList.toggle('sel',j===b);});apply();});
+      blkWrap.appendChild(bt);bbtns.push(bt);
+    })(b);
+    bbtns[block].classList.add('sel');
+    function pos(){return POS[pi];}
+    function rebuild(){
+      board=paintReal(pos());qpolys=[];
+      pos().queries.forEach(function(q,k){
+        var c=board.cells[q.node];
+        var poly=el('polygon',{points:hexPts(c.cx,c.cy,HR-.8),'class':'nx-qcell',
+          tabindex:'0',role:'button',
+          'aria-label':'query '+q.role+' at '+q.cell[0]+','+q.cell[1]},board.gQ);
+        poly.addEventListener('click',function(){pick(k);});
+        poly.addEventListener('keydown',function(e){
+          if(e.key==='Enter'||e.key===' '){e.preventDefault();pick(k);}});
+        qpolys.push(poly);
+      });
+      pick(Math.min(qi,pos().queries.length-1));
+    }
+    function pick(k){
+      qi=k;
+      qpolys.forEach(function(p2,j){p2.classList.toggle('nx-sel',j===k);});
+      apply();
+    }
+    function apply(){
+      var p=pos(),q=p.queries[qi],row=p.attention[block][head][qi];
+      var n=p.support.coords.length,i,k2;
+      var pmax=1e-9;
+      for(i=0;i<8;i++)pmax=Math.max(pmax,row.tokens[i]);
+      var entries=[];
+      for(k2 in row.cells){entries.push([+k2,row.cells[k2]]);pmax=Math.max(pmax,row.cells[k2]);}
+      board.cells.forEach(function(c){c.heat.setAttribute('fill-opacity','0');});
+      entries.forEach(function(e2){
+        board.cells[e2[0]].heat.setAttribute('fill-opacity',(0.85*e2[1]/pmax).toFixed(3));});
+      var tokMass=0;
+      for(i=0;i<8;i++){tokMass+=row.tokens[i];
+        board.toks[i].heat.setAttribute('fill-opacity',(0.85*row.tokens[i]/pmax).toFixed(3));}
+      /* rays: top-8 targets (cells + tokens), excluding the query node */
+      var all=entries.filter(function(e2){return e2[0]!==q.node;});
+      for(i=0;i<8;i++)all.push([n+i,row.tokens[i]]);
+      all.sort(function(a,b2){return b2[1]-a[1];});
+      board.gRays.innerHTML='';
+      var qc=board.cells[q.node];
+      for(i=0;i<8&&i<all.length;i++){
+        var j=all[i][0],w=all[i][1];
+        if(w<=0)continue;
+        var tx,ty2;
+        if(j<n){tx=board.cells[j].cx;ty2=board.cells[j].cy;}
+        else{tx=board.toks[j-n].cx;ty2=board.toks[j-n].cy;}
+        el('line',{x1:qc.cx,y1:qc.cy,x2:tx,y2:ty2,'class':'nx-ray',
+          'stroke-width':(0.5+3.2*w/pmax).toFixed(2),
+          'stroke-opacity':(0.25+0.5*w/pmax).toFixed(2)},board.gRays);
+      }
+      var tops=entries.sort(function(a,b2){return b2[1]-a[1];}).slice(0,3)
+        .map(function(e2){
+          var c=p.support.coords[e2[0]];
+          var isStone=e2[0]>=p.support.legal_count&&
+            e2[0]<p.support.legal_count+p.support.stone_count;
+          return '('+c[0]+','+c[1]+')'+(isStone?' stone':'')+' '+e2[1].toFixed(2);
+        });
+      setReadout('ro4',
+        p.id+' · query ('+q.cell[0]+', '+q.cell[1]+') '+q.role+' · block '+block+
+        ' · head '+head+' · real weights (ep58)',
+        p.title+'. Tokens hold '+Math.round(100*tokMass)+'% of this row'+
+        (entries.length?'; top cells: '+tops.join(', ')+'.':
+          ' — a token-sink row: no cell weight above the 0.001 export floor.'));
+    }
+    selEl.addEventListener('change',function(){pi=+selEl.value;qi=0;rebuild();});
+    hbtns.forEach(function(b2){
+      b2.addEventListener('click',function(){setHead(+b2.getAttribute('data-h'));apply();});});
+    rebuild();
+  }
+
+  /* ---------------- synthetic fallback (offline / file://) ---------------- */
+  function initSynthetic(){
+    cap.innerHTML='<b>Figure 4</b> — attention visualizer. Click a query cell; heat and rays show where that cell attends. Patterns are <b>illustrative — real weights are learned</b> (the real ep58 rows load when this page is served over HTTP); the three synthetic heads convey multi-head diversity, and the bias toggle shows how the learned rel-pos table shapes scores by offset.';
+    $('bias4').hidden=false;
+    var labels=['1 · local','2 · axis','3 · stones'];
+    hbtns.forEach(function(b2,i){b2.textContent=labels[i];});
+    setHead(0);
+    var board=paintBoard(svg,SUP,{focusable:'all',heat:true});
+    /* extend viewBox rightward for the 8 token chips */
+    var vb=svg.getAttribute('viewBox').split(' ').map(Number);
+    var tokX=vb[0]+vb[2]+18,tokW=30,tokH=(vb[3]-24)/8;
+    svg.setAttribute('viewBox',vb[0]+' '+vb[1]+' '+(vb[2]+tokW+44)+' '+vb[3]);
+    var gT=el('g',{},svg);
+    var lab=el('text',{x:tokX+tokW/2,y:vb[1]+10,'text-anchor':'middle',
+      'class':'nx-lab on'},gT);lab.textContent='tokens';
+    var toks=[];
+    for(var t=0;t<8;t++){
+      var ty=vb[1]+18+t*tokH;
+      el('rect',{x:tokX,y:ty,width:tokW,height:tokH-4,'class':'nx-tok'},gT);
+      var hh=el('rect',{x:tokX,y:ty,width:tokW,height:tokH-4,
+        'class':'nx-tokheat','fill-opacity':'0'},gT);
+      var tl=el('text',{x:tokX+tokW/2,y:ty+(tokH-4)/2+3,'text-anchor':'middle',
+        'class':'nx-lab'},gT);
+      tl.textContent='t'+t;
+      toks.push({heat:hh,cx:tokX,cy:ty+(tokH-4)/2});
+    }
+    var gRays=el('g',{},svg);
+    var biasOn=true,sel=null;
+    var HEADNOTE=[
+      'head 1 (synthetic): a LOCAL head — mass decays with hex distance, like a learned bias that favours the exact-offset disk rows.',
+      'head 2 (synthetic): an AXIS head — mass follows the three win axes through the query. The real bias table has dedicated on-win-axis ring rows (217–224), so axis-selective heads are exactly what the parameterization affords.',
+      'head 3 (synthetic): a STONE head — mass concentrates on stones, hotter for recent ones (content, not geometry).'];
+    function scores(qc){
+      var n=SUP.nodes.length,out=new Float64Array(n+8);
+      for(var i=0;i<n;i++){
+        var t=SUP.nodes[i],dq=t.q-qc.n.q,dr=t.r-qc.n.r,d=hexDist(dq,dr);
+        var stone=t.kind==='stone',f=FEATS[i],s=0;
+        if(head===0){s=(biasOn?1.8-0.65*d:0.15)+(stone?0.5:0);}
+        else if(head===1){
+          var ax=onWinAxis(dq,dr);
+          s=ax?1.7-(biasOn?0.08*d:0):-1.4-(biasOn?0.15*d:0);
+          if(ax&&stone)s+=1.0;
+          if(ax&&(f[9]||f[10]))s+=0.8;
+        }else{
+          s=stone?1.2+1.8*Math.max(f[7],f[8]):(f[9]||f[10])?0.9:-1.3;
+          if(biasOn)s-=0.07*d;
+        }
+        out[i]=s;
+      }
+      for(var k=0;k<8;k++)
+        out[n+k]=head===2?0.6:head===0?-1.2:-0.2;
+      /* softmax */
+      var mx=-1e9,i2;for(i2=0;i2<out.length;i2++)mx=Math.max(mx,out[i2]);
+      var sum=0;for(i2=0;i2<out.length;i2++){out[i2]=Math.exp(out[i2]-mx);sum+=out[i2];}
+      for(i2=0;i2<out.length;i2++)out[i2]/=sum;
+      return out;
+    }
+    function apply(){
+      if(!sel)return;
+      var p=scores(sel),n=SUP.nodes.length,pmax=0,i;
+      for(i=0;i<p.length;i++)pmax=Math.max(pmax,p[i]);
+      board.cells.forEach(function(c){
+        var v=p[c.n.i]/pmax;
+        c.heat.setAttribute('fill-opacity',(0.85*v).toFixed(3));
+      });
+      for(i=0;i<8;i++)
+        toks[i].heat.setAttribute('fill-opacity',(0.85*p[n+i]/pmax).toFixed(3));
+      /* top-8 rays (excluding self) */
+      gRays.innerHTML='';
+      var order=[];
+      for(i=0;i<p.length;i++)if(i!==sel.n.i)order.push(i);
+      order.sort(function(a,b){return p[b]-p[a];});
+      for(i=0;i<8&&i<order.length;i++){
+        var j=order[i],tx,ty;
+        if(j<n){tx=board.cells[j].cx;ty=board.cells[j].cy;}
+        else{tx=toks[j-n].cx;ty=toks[j-n].cy;}
+        el('line',{x1:sel.cx,y1:sel.cy,x2:tx,y2:ty,'class':'nx-ray',
+          'stroke-width':(0.5+3.2*p[j]/pmax).toFixed(2),
+          'stroke-opacity':(0.25+0.5*p[j]/pmax).toFixed(2)},gRays);
+      }
+      setReadout('ro4',
+        'query ('+sel.n.q+', '+sel.n.r+') · head '+(head+1)+' · rel-pos bias '+
+        (biasOn?'on':'off')+' · illustrative',
+        HEADNOTE[head]+(biasOn?'':' Bias off: with no distance/direction term, scores flatten — the learned 237-row table is what gives each head its geometric shape.'));
+    }
+    function pick(c){
+      if(sel)sel.poly.classList.remove('nx-sel');
+      sel=c;c.poly.classList.add('nx-sel');apply();
+    }
+    hbtns.forEach(function(b){
+      b.addEventListener('click',function(){
+        setHead(+b.getAttribute('data-h'));apply();
+      });
+    });
+    $('bias4').addEventListener('click',function(){
+      biasOn=!biasOn;
+      this.classList.toggle('on',biasOn);
+      this.setAttribute('aria-pressed',String(biasOn));
+      this.textContent='rel-pos bias: '+(biasOn?'on':'off');
       apply();
     });
-  });
-  $('bias4').addEventListener('click',function(){
-    biasOn=!biasOn;
-    this.classList.toggle('on',biasOn);
-    this.setAttribute('aria-pressed',String(biasOn));
-    this.textContent='rel-pos bias: '+(biasOn?'on':'off');
-    apply();
-  });
-  wireNav(board,pick,{halo:true});
-  pick(board.byKey.get('-1,1'));  /* a stone inside the blue 4-line */
+    wireNav(board,pick,{halo:true});
+    pick(board.byKey.get('-1,1'));  /* a mover stone near the centre */
+  }
+
+  if(window.fetch){
+    fetch('data/attention.json')
+      .then(function(r){if(!r.ok)throw new Error('http '+r.status);return r.json();})
+      .then(initReal)
+      .catch(function(){initSynthetic();});
+  }else{
+    initSynthetic();
+  }
 })();
 
 /* ================= FIG 5 — architecture schematic =================

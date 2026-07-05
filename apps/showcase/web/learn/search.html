@@ -76,11 +76,14 @@ body{margin:0}
 <body>
 
 <header class="learn-header">
+  <a class="wordmark" href="../">hexo</a>
   <nav class="learn-nav" aria-label="How it works">
     <a href="index.html">Overview</a>
     <a href="network.html">The network</a>
-    <a href="search.html" aria-current="page">The search</a>
+    <a href="search.html" class="current" aria-current="page">The search</a>
     <a href="training.html">The training</a>
+    <a href="results.html">The results</a>
+    <a href="systems.html">The systems</a>
   </nav>
 </header>
 
@@ -222,10 +225,10 @@ body{margin:0}
        leaf verdict override + a played-move guard (search.rs select_continuous_leaves,
        tactical_guard_weights). -->
   <p>A sampled candidate set has one frightening failure mode: what if the one move that blocks a
-  four-in-a-row simply isn't drawn? Hexo closes that hole with a deterministic tactical scanner
-  that runs alongside the search. It watches the board's length-6 windows (Hexo is a Connect-6-style
-  game: after the opening, each turn places up to two stones) and flags any <em>active</em> window —
-  all one colour — holding 4 or more stones. From those windows it derives, phase-aware, the
+  four simply isn't drawn? Hexo closes that hole with a deterministic tactical scanner
+  that runs alongside the search. It watches the board's length-6 windows and flags any
+  <em>active</em> window — all one colour — holding 4 or more stones. From those windows it
+  derives, phase-aware, the
   <strong>tactical set</strong>: the cells that complete an own win this turn, plus every empty cell
   of every opponent threat window. Defense is a hitting set, not fill-every-gap: one stone in any
   empty of a threat window kills it, and if no <code>B</code>-stone hitting set covers all opponent

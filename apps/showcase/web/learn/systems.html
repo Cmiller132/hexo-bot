@@ -1,0 +1,832 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hexo — how it works — the systems</title>
+<meta name="description" content="The engineering under hexfield: the Rust rules engine and its incremental win/threat windows, the .hxr game record, the serving path behind this site, and the Arc A310 it runs on.">
+<link rel="stylesheet" href="learn.css">
+<style>
+/* Inline fallback: design tokens + minimal base so this page is readable even
+   if learn.css has not been generated yet. learn.css, when present, carries the
+   full scaffold and simply re-declares these tokens identically. */
+:root{
+  --bg:#101317;--tile:#161b21;--line:#242c35;--line-soft:#1c232b;
+  --text:#d4dbe3;--muted:#79848f;--dim:#4c565f;
+  --accent:#e8e2d6;--accent-dim:#57534a;
+  --p0:#4f93ff;--p0-soft:#7fb1ff;--p1:#ff5650;--p1-soft:#ff8781;
+  --mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,"Roboto Mono",monospace;
+  --sans:ui-sans-serif,system-ui,"Segoe UI",sans-serif;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--sans)}
+.learn-main{max-width:880px;margin:0 auto;padding:24px}
+.fig{border:1px solid var(--line);background:var(--tile);margin:22px 0}
+.fig svg{display:block;width:100%;height:auto}
+
+/* ---- page-specific (systems.html) figure internals, prefixed sy- ---- */
+/* fig 1 — incremental windows */
+.sy-cell{fill:#12161c;stroke:var(--line-soft);stroke-width:1;cursor:pointer;
+  outline:none;transition:stroke .12s ease}
+.sy-cell:hover{stroke:var(--muted)}
+.sy-cell:focus-visible{stroke:var(--accent);stroke-width:1.6}
+.sy-stone0{fill:var(--p0)}.sy-stone1{fill:var(--p1)}
+.sy-stone0,.sy-stone1{pointer-events:none}
+.sy-win{stroke:var(--accent);stroke-width:7;stroke-linecap:round;fill:none;
+  opacity:0;pointer-events:none;animation:syflash 1.1s ease}
+.sy-win.thr0{stroke:var(--p0-soft)}
+.sy-win.thr1{stroke:var(--p1-soft)}
+.sy-win.won{animation:none;opacity:.55}
+@keyframes syflash{0%{opacity:.55}100%{opacity:0}}
+.sy-tracked{stroke:var(--dim);stroke-width:4;stroke-linecap:round;fill:none;
+  opacity:.14;pointer-events:none}
+.sy-lab{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;fill:var(--dim)}
+/* fig 2 — byte layout */
+.sy-seg{stroke:var(--line);stroke-width:1;cursor:pointer;outline:none;
+  transition:stroke .12s ease,fill-opacity .12s ease}
+.sy-seg:hover,.sy-seg:focus-visible{stroke:var(--accent)}
+.sy-seg.hot{stroke:var(--accent);stroke-width:1.5}
+.sy-sh{fill:#1a2027}.sy-sm{fill:#221f1a}.sy-sv{fill:#1d2732}.sy-so{fill:#171c23}
+.sy-bt{font-family:var(--mono);font-size:9px;fill:var(--muted);
+  pointer-events:none}
+.sy-bt.dim{fill:var(--dim)}
+/* fig 3 — request flow (self-contained clone of the sysmap idiom) */
+.sy-flow text{font-family:var(--mono)}
+.sy-flow .edge{stroke:var(--dim);stroke-width:1;fill:none}
+.sy-flow .elab{font-size:9.5px;letter-spacing:.06em;fill:var(--dim)}
+.sy-flow .plate{cursor:pointer;outline:none}
+.sy-flow .plate rect{fill:#171c23;stroke:var(--line);
+  transition:stroke .15s ease,fill .15s ease}
+.sy-flow .plate .pt{font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+  fill:var(--text);transition:fill .15s ease}
+.sy-flow .plate .ps{font-size:9px;letter-spacing:.03em;fill:var(--dim)}
+.sy-flow .plate:hover rect,.sy-flow .plate:focus rect,
+.sy-flow .plate:focus-visible rect{stroke:var(--accent-dim);fill:#1a2027}
+.sy-flow .plate:hover .pt,.sy-flow .plate:focus .pt{fill:var(--accent)}
+.sy-flow .plate:focus-visible rect{stroke:var(--accent)}
+.sy-flow .inset{fill:#11161c;stroke:var(--line);stroke-dasharray:5 4}
+.sy-flow .itag{font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;
+  fill:var(--dim)}
+.sy-flow .ah{fill:var(--accent)}
+/* fig 4 — benchmark bars + warmup strip */
+.sy-bar{stroke:var(--line);stroke-width:1;cursor:pointer;outline:none;
+  transition:stroke .12s ease}
+.sy-bar:hover,.sy-bar:focus-visible{stroke:var(--accent)}
+.sy-bar.cpu{fill:#232b35}.sy-bar.xpu{fill:var(--accent);fill-opacity:.78}
+.sy-ax{stroke:var(--line-soft);stroke-width:1}
+.sy-jit{fill:var(--accent-dim);fill-opacity:.45}
+.sy-warm{fill:#1d2732}
+</style>
+</head>
+<body>
+
+<header class="learn-header">
+  <a class="wordmark" href="../">hexo</a>
+  <nav class="learn-nav" aria-label="How it works">
+    <a href="index.html">Overview</a>
+    <a href="network.html">The network</a>
+    <a href="search.html">The search</a>
+    <a href="training.html">The training</a>
+    <a href="results.html">The results</a>
+    <a href="systems.html" class="current" aria-current="page">The systems</a>
+  </nav>
+</header>
+
+<main class="learn-main">
+
+<h1>The systems <span class="h-dim">— the engineering under the model</span></h1>
+
+<p class="lede">
+Everything the other chapters describe runs on a small stack of deliberately
+boring machinery: a Rust rules engine that never rescans the board, a game
+record that costs about four bytes a move, a serving path that keeps each
+game&rsquo;s search tree alive in one process, and a &sim;$100 GPU that serves
+this entire site. This page is the non-ML engineering, read straight from the
+code.
+</p>
+
+<div class="note">
+<b>Ground truth.</b> Checked against
+<code>packages/hexo_engine/rust/src/</code> (board, windows, packed action
+ids), <code>packages/hexo_utils/rust/src/records.rs</code> (the
+<code>.hxr</code> codec), <code>packages/hexfield/rust/src/</code>
+(search sessions, eval cache), and
+<code>apps/showcase/server/showcase/</code> plus
+<code>apps/showcase/Dockerfile.xpu</code> (the production deployment).
+</div>
+
+<h2 id="engine"><span class="sec-no">01</span>the rules engine</h2>
+
+<p>
+The engine is a Rust crate behind a PyO3 bridge
+(<code>hexo_engine._rust</code>): Python, the search, and this website all
+hold opaque Rust state handles, and every placement goes through the same
+authority &mdash; an illegal move is a raised error, not a corrupted board.
+Because the board is unbounded, storage is sparse: a hash map of occupied
+cells plus an insertion-ordered list, no grid anywhere.
+<!-- src: hexo_engine/rust/src/board.rs:20-29 (AHashMap + occupied Vec);
+     python/hexo_engine/api.py:107-119 (apply_action raises IllegalActionError) -->
+</p>
+
+<p>
+The interesting part is what a placement updates. A stone sits inside exactly
+<b>18 six-cell windows</b> &mdash; the three line axes of the hex grid, times
+the six positions the stone can occupy inside a length-6 window &mdash; and
+those 18 are the <em>only</em> windows whose status that stone can change. The
+engine keeps a window store: for every window ever touched, two 6-bit masks
+(one per colour). A placement ORs one bit into 18 masks and reads the result:
+a window with all six bits of one colour is a win; a single-colour window with
+four or more stones is a threat. That is the entire win/threat detector &mdash;
+constant work per move, whether the game has 10 stones or 300, and never a
+board rescan.
+<!-- src: hexo_engine/rust/src/tactics.rs:14-17 (WINDOW_LEN=6,
+     WINDOWS_PER_PLACEMENT = 3*6 = 18), :422-465 (update loop),
+     :189-208 (threat = single-colour count>=4; win = count 6) -->
+</p>
+
+<p>
+Two more stores ride the same incremental discipline. The legal-move store
+maintains the radius-8 disk around the stones (every placement opens up to
+217 new cells and closes its own), so &ldquo;list the legal moves&rdquo; is a
+copy, not a computation. And a live-threats index mirrors the window store so
+that <em>&ldquo;does anyone have a threat right now?&rdquo;</em> is an O(1)
+read &mdash; that is the question threat-space search asks before every single
+move, and it is why TSS can afford to ask it. When you see the search
+force-include a double-threat cell, the data it read was these same masks.
+<!-- src: hexo_engine/rust/src/legal.rs:18 (LEGAL_RADIUS=8), :115-146;
+     tactics.rs:344-354 (live_threats index, "hexgt TSS hot path"),
+     :410-412 (has_threats O(1)) -->
+Every mutation also returns an undo delta &mdash; the search rolls positions
+back instead of copying them.
+<!-- src: board.rs:83-117 (place_with_delta / undo_place) -->
+</p>
+
+<p>
+The last piece is the currency the whole system trades in: the
+<b>packed action id</b>. A coordinate <code>(q,&nbsp;r)</code> becomes one
+<code>u32</code> &mdash; each axis offset into an unsigned 16-bit lane, then
+<code>q&nbsp;&lt;&lt;&nbsp;16&nbsp;|&nbsp;r</code> &mdash; chosen so plain
+integer order equals deterministic <code>(q,&nbsp;r)</code> order. The same
+encoding is implemented three times, byte-for-byte compatibly &mdash; Rust,
+Python, and the board JS on this site &mdash; because these ids are persisted
+in training shards and game records; a cross-language test pins them together.
+<!-- src: legal.rs:20-42 (pack_coord/unpack_coord, COORD_OFFSET = 1<<15),
+     :6-12 (canonical; duplicated in python types.py + frontend JS;
+     tests/test_hexo_engine_rust_bridge.py is the cross-language check) -->
+</p>
+
+<figure class="fig">
+  <figcaption>fig 1 &middot; <b>incremental window updates</b> &middot; click or use arrow keys + enter to place stones &middot; real turn order (1, then 2-2-2&hellip;)</figcaption>
+  <div class="fig-body">
+    <svg id="syBoard" viewBox="-320 -170 640 340" role="application"
+         aria-label="Interactive hex board demonstrating incremental six-cell window updates. Arrow keys move between cells, Enter or Space places a stone.">
+      <g id="syTracked"></g>
+      <g id="syCells"></g>
+      <g id="syStones"></g>
+      <g id="syFlash"></g>
+    </svg>
+  </div>
+  <div class="fig-controls">
+    <button type="button" id="syReset">reset</button>
+    <button type="button" id="syToggle" aria-pressed="false">show all tracked windows</button>
+    <span class="spacer"></span>
+    <span class="val" id="syCount">0 windows tracked</span>
+  </div>
+  <div class="fig-readout" id="syRo" aria-live="polite">
+    <span class="ro-k">window store</span>
+    <span class="ro-t">place a stone — the 18 six-cell windows through it flash; threat windows flash in the owner&rsquo;s colour. The store never rescans: only those 18 masks change.</span>
+  </div>
+</figure>
+
+<h2 id="records"><span class="sec-no">02</span>the game record</h2>
+
+<p>
+Every finished game &mdash; a self-play game on the training box, an arena
+game in the evaluator, and the game you just played on this site &mdash; is
+written in one binary format: <code>.hxr</code>. A file starts with the magic
+<code>HEXOREC1</code> and a small header (schema version, engine rules
+version, backend string, the player list), then zero or more length-prefixed
+game payloads. Each payload is self-contained: game id, optional seed
+(zigzag varint), a status byte, the move stream as raw <code>u32</code>
+little-endian packed action ids, then optional winner, placement count, and an
+abort record for games that died mid-run. Writers flush per game, so a crashed
+self-play run leaves a readable prefix rather than a corrupt file; readers
+reject unknown schema versions and trailing bytes loudly.
+<!-- src: hexo_utils/rust/src/records.rs:7-13 (wire format doc + flush-per-game),
+     :32-34 (magic, schema v1), :518-534 (header fields),
+     :603-624 (payload encode: game_id, seed, status, u32 LE actions,
+     winner, placements, abort), :545-552 (UnsupportedVersion),
+     :893-901 (trailing-bytes rejection) -->
+</p>
+
+<p>
+The move stream is the whole cost: <b>4 bytes per ply</b>, plus roughly 60
+bytes of per-game metadata. A typical ~60-ply game is about 300 bytes &mdash;
+the packed-id encoding means a record stores <em>decisions, not boards</em>,
+and any consumer replays them through the engine to reconstruct every
+position. That is literally how this site works: your game is finalized as a
+one-game <code>.hxr</code> blob into the games database, and the analysis
+view replays those action ids through the same Rust engine before the network
+ever sees the position.
+<!-- src: apps/showcase/server/showcase/game.py:103-137 (encode_hxr -> blob),
+     app.py:232-246 (finalize_game stores record), :440-444 + game.py:139-150
+     (analysis decodes the blob's action ids), bots.py:341-349 (_replay) -->
+</p>
+
+<figure class="fig">
+  <figcaption>fig 2 &middot; <b>.hxr byte layout</b> &middot; a real showcase game blob &middot; hover or tab through the segments</figcaption>
+  <div class="fig-body">
+    <svg id="syRec" viewBox="0 0 820 132" role="group"
+         aria-label="Byte layout of a .hxr record: file header segments and game payload segments, with the move stream dominating.">
+    </svg>
+  </div>
+  <div class="fig-controls">
+    <label for="syPly">plies</label>
+    <input type="range" id="syPly" min="10" max="150" step="2" value="60"
+           aria-label="Game length in plies">
+    <span class="val" id="syPlyVal"></span>
+  </div>
+  <div class="fig-readout" id="syRecRo" aria-live="polite">
+    <span class="ro-k">record size</span>
+    <span class="ro-t"></span>
+  </div>
+</figure>
+
+<h2 id="serving"><span class="sec-no">03</span>from your click to a move</h2>
+
+<p>
+When you play here, your click becomes
+<code>POST /api/game/{id}/move</code> against a FastAPI process that owns no
+model at all &mdash; it checks your session cookie and a token bucket, applies
+your stone through the Rust engine, and enqueues a bot-turn job. Jobs route
+<b>sticky</b>: <code>game_key&nbsp;%&nbsp;workers</code> pins each game to one
+of two worker processes, because that worker is where your game&rsquo;s state
+lives &mdash; each worker holds the full checkpoint catalogue, one network and
+one Rust search session per checkpoint, resident for its lifetime.
+<!-- src: app.py:387-407 (move route: cookie auth, move_bucket, lock),
+     bots.py:588-589 (_route = game_key % workers), :11-14 (sticky routing
+     docstring), :279-339 (_WorkerRuntime residency), config.py:85 (workers
+     default 2; deployment runs 2) -->
+</p>
+
+<p>
+Inside the worker, the session searches with the run&rsquo;s as-trained knobs
+(Gumbel root, sequential halving, TSS &mdash; only the visit budget you picked
+varies), and two reuse layers do the heavy lifting. The <b>per-game tree</b>:
+the session keeps one search tree per <code>game_key</code>; after it plays a
+move it advances the root into the chosen child, so your next move usually
+starts from an already-grown subtree instead of scratch. The <b>eval
+cache</b>: every evaluated position is keyed by a state hash and kept in a
+FIFO-bounded map (the crate default holds 262,144 states; this site
+configures 65,536 per checkpoint session), so transpositions and re-searches
+never hit the GPU twice. Leaves that do miss are batched &mdash; the search
+collects up to 32 of them and makes one network forward per batch. The bot
+plays its whole turn (one or two stones) in a single job, then the tree for a
+finished game is explicitly discarded on its sticky worker.
+<!-- src: bots.py:24-29 + 167-231 (SearchProfile: as-trained knobs from the
+     training TOML, virtual_batch_size 32), search.rs:621-644 (root_hash
+     tree reuse), :768-771 (advance_root after the move), :461-484
+     (per-game_key searches map + discard), cache.rs:13
+     (EVAL_CACHE_MAX_STATES = 262_144), :53-88 (state-hash keyed, FIFO
+     insertion-order eviction), bots.py:332 (max_states=65_536),
+     :351-391 (bot_turn plays 1-2 stones) -->
+</p>
+
+<p>
+The rate limits guard exactly one scarce thing: search compute. Moves are
+capped at 120/minute and new games at 60/hour per client, at most 16 games
+run concurrently server-wide and 4 per IP, and analysis requests (which can
+trigger small searches, capped at 64 visits) get 40/minute. Identity for all
+of this is the Cloudflare-reported client IP &mdash; the container has no
+directly exposed ingress.
+<!-- src: config.py:90-99 (limits + analysis_search_visit_cap 64),
+     app.py:108-135 (TokenBucket, CF-Connecting-IP), :305-325 (global +
+     per-IP active caps) -->
+</p>
+
+<figure class="fig fig-wide">
+  <figcaption>fig 3 &middot; <b>the serving path</b> &middot; hover or tab through a stage for its latency contribution</figcaption>
+  <!-- Latency notes in the plate data are as measured on this deployment:
+       everything outside the search body sums to ~tens of ms; the search is
+       the rest (visit budget x batched XPU forwards). -->
+  <svg class="sy-flow" viewBox="0 0 860 300" role="group"
+       aria-label="Request flow: browser to Cloudflare tunnel to FastAPI to a sticky worker holding the Rust search session and batched XPU evaluator, with the eval cache and SQLite at the edges.">
+    <defs>
+      <marker id="syAh" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
+      </marker>
+    </defs>
+
+    <path class="edge" d="M148 76 H196" marker-end="url(#syAh)"/>
+    <path class="edge" d="M344 76 H392" marker-end="url(#syAh)"/>
+    <path class="edge" d="M540 76 H588" marker-end="url(#syAh)"/>
+    <text class="elab" x="172" y="66" text-anchor="middle">https</text>
+    <text class="elab" x="368" y="66" text-anchor="middle">tunnel</text>
+    <text class="elab" x="564" y="66" text-anchor="middle">job queue</text>
+    <text class="elab" x="564" y="102" text-anchor="middle">game_key % 2</text>
+
+    <g class="plate" tabindex="0" data-k="browser"
+       data-info="Your click. The board JS packs (q, r) into the same u32 action id the engine uses and POSTs it. Round-trip cost: network only.">
+      <rect x="28" y="52" width="120" height="48"/>
+      <text class="pt" x="88" y="73" text-anchor="middle">browser</text>
+      <text class="ps" x="88" y="89" text-anchor="middle">your click</text>
+    </g>
+    <g class="plate" tabindex="0" data-k="cloudflare tunnel"
+       data-info="The only ingress. The container publishes no port; Cloudflare's edge terminates TLS and the tunnel delivers requests inward. Contributes the usual edge round-trip — order of tens of ms, dominated by your distance to the edge.">
+      <rect x="196" y="52" width="148" height="48"/>
+      <text class="pt" x="270" y="73" text-anchor="middle">cf tunnel</text>
+      <text class="ps" x="270" y="89" text-anchor="middle">tunnel-only ingress</text>
+    </g>
+    <g class="plate" tabindex="0" data-k="fastapi web process"
+       data-info="Owns no model. Cookie auth + token buckets, applies your stone through the Rust engine under the game lock (incremental update: microseconds), enqueues the bot turn, returns immediately. Sub-millisecond of real work.">
+      <rect x="392" y="52" width="148" height="48"/>
+      <text class="pt" x="466" y="73" text-anchor="middle">fastapi</text>
+      <text class="ps" x="466" y="89" text-anchor="middle">auth &middot; limits &middot; engine</text>
+    </g>
+    <g class="plate" tabindex="0" data-k="sticky worker"
+       data-info="One of 2 worker processes, chosen by game_key % 2 — the same worker every move of your game, because your search tree lives here. Queue hop + history replay: low milliseconds.">
+      <rect x="588" y="52" width="244" height="48"/>
+      <text class="pt" x="710" y="73" text-anchor="middle">worker process</text>
+      <text class="ps" x="710" y="89" text-anchor="middle">nets + sessions resident</text>
+    </g>
+
+    <rect class="inset" x="392" y="128" width="440" height="150"/>
+    <text class="itag" x="406" y="150">inside the worker — the search body (dominant)</text>
+
+    <path class="edge" d="M540 208 H588" marker-end="url(#syAh)"/>
+    <path class="edge" d="M588 236 H540" marker-end="url(#syAh)"/>
+    <text class="elab" x="564" y="200" text-anchor="middle">&le;32 leaves</text>
+    <text class="elab" x="564" y="252" text-anchor="middle">policy &middot; value</text>
+    <path class="edge" d="M710 100 V128"/>
+
+    <g class="plate" tabindex="0" data-k="rust search session"
+       data-info="Gumbel MCTS at your chosen visit budget (16-512) with the as-trained knobs. Reuses your game's tree via advance_root, asks TSS's O(1) threat check every move. This is where nearly all the wall time goes — it scales with the budget you picked.">
+      <rect x="412" y="168" width="128" height="88"/>
+      <text class="pt" x="476" y="200" text-anchor="middle">search</text>
+      <text class="ps" x="476" y="216" text-anchor="middle">per-game tree</text>
+      <text class="ps" x="476" y="230" text-anchor="middle">reuse + TSS</text>
+    </g>
+    <g class="plate" tabindex="0" data-k="batched evaluator"
+       data-info="Leaves the eval cache can't answer are packed up to 32 per batch and run as one forward on the Arc A310 (torch XPU, eager). Per-batch forwards are milliseconds-scale; the search issues as many as the budget needs.">
+      <rect x="588" y="168" width="128" height="88"/>
+      <text class="pt" x="652" y="200" text-anchor="middle">evaluator</text>
+      <text class="ps" x="652" y="216" text-anchor="middle">batch &le; 32</text>
+      <text class="ps" x="652" y="230" text-anchor="middle">xpu forward</text>
+    </g>
+    <g class="plate" tabindex="0" data-k="eval cache"
+       data-info="State-hash keyed, FIFO-bounded (65,536 states per checkpoint session on this site; crate default 262,144). Transpositions and re-searched positions never reach the GPU twice — a cache hit costs a hash lookup.">
+      <rect x="740" y="168" width="76" height="88"/>
+      <text class="pt" x="778" y="205" text-anchor="middle">cache</text>
+      <text class="ps" x="778" y="221" text-anchor="middle">fifo</text>
+      <text class="ps" x="778" y="235" text-anchor="middle">65,536</text>
+    </g>
+    <path class="edge" d="M716 208 H740" marker-end="url(#syAh)"/>
+
+    <g class="plate" tabindex="0" data-k="sqlite + .hxr"
+       data-info="On game end: the move list is encoded as a one-game .hxr blob and finalized into SQLite with the result row. Off the move path entirely — it costs you nothing mid-game.">
+      <rect x="28" y="168" width="180" height="60"/>
+      <text class="pt" x="118" y="194" text-anchor="middle">sqlite</text>
+      <text class="ps" x="118" y="212" text-anchor="middle">.hxr blob on finish</text>
+    </g>
+    <text class="elab" x="118" y="152" text-anchor="middle">game over &rarr; record persisted</text>
+  </svg>
+  <div class="fig-readout" id="syFlowRo" aria-live="polite">
+    <span class="ro-k">serving path</span>
+    <span class="ro-t">hover or tab through the stages. Measured here: everything outside the search body sums to tens of milliseconds; the search is the rest.</span>
+  </div>
+</figure>
+
+<h2 id="hardware"><span class="sec-no">04</span>the gpu it runs on</h2>
+
+<p>
+The whole site is served by one Intel <b>Arc A310</b> &mdash; a roughly $100,
+low-profile card &mdash; through <code>torch&nbsp;2.12.1+xpu</code>, the
+PyTorch wheel line where Intel-GPU support is native (<code>torch.xpu</code>,
+no extension package). There is a wrinkle worth being honest about: the
+training run&rsquo;s fast Triton kernels are CUDA-only and gated on
+<code>x.is_cuda</code>, so on this box every forward takes the plain eager
+fp32 paths &mdash; the same math, minus the hand-tuned kernels. Even so, the
+measured result on this deployment is <b>2.2&times;</b> single-move speed and
+<b>2.8&times;</b> concurrent throughput over the host&rsquo;s 7-core CPU
+baseline &mdash; batching favours the GPU, which is exactly the shape of the
+serving load.
+<!-- src: Dockerfile.xpu:14-18 + 131-140 (torch==2.12.1+xpu, native torch.xpu,
+     no ipex), device.py:19-22 (Triton kernels is_cuda-gated -> eager on XPU);
+     A310 + 2.2x/2.8x vs 7-core CPU: measured on this deployment -->
+</p>
+
+<p>
+Correctness is not assumed. Eager-on-XPU is an untested-in-CI combination, so
+at startup each worker forwards one fixed position on CPU and on the XPU and
+compares value and policy logits. Tolerance is 10<sup>&minus;2</sup>; the
+measured divergence here is about <b>5&times;10<sup>&minus;6</sup></b>. If the
+check ever failed &mdash; mismatch, non-finite output, or the device forward
+raising &mdash; the worker falls back to CPU and serves slow moves rather
+than wrong ones.
+<!-- src: device.py:41 (SELFCHECK_TOL 1e-2), :172-203 (verify_device: compare,
+     finite check, model moved back to CPU on failure), bots.py:301-327
+     (fallback wiring); ~5e-6 measured on this deployment -->
+</p>
+
+<p>
+The one operational quirk is the JIT. The first forwards after a worker starts
+compile the SYCL kernels for the network &mdash; about <b>27 seconds</b>,
+once per worker (two workers, compiled independently), absorbed at startup by
+a deliberate warmup so no player&rsquo;s first move eats it. The container
+runs a read-only filesystem with tunnel-only ingress, so the kernel cache
+lives on tmpfs: a rebooted container pays the 27 seconds once, then serves
+warm indefinitely.
+<!-- src: device.py:206-227 (warmup: JIT off the hot path + synchronize),
+     Dockerfile.xpu:150-157 (read-only rootfs, XDG_CACHE_HOME=/tmp,
+     per-boot re-JIT); ~27 s per worker measured on this deployment -->
+</p>
+
+<figure class="fig">
+  <figcaption>fig 4 &middot; <b>xpu vs cpu, as measured on this deployment</b> &middot; 7-core cpu baseline = 1.0&times; &middot; hover a bar</figcaption>
+  <div class="fig-body">
+    <svg id="syBench" viewBox="0 0 820 250" role="group"
+       aria-label="Grouped bars: XPU is 2.2 times faster per single move and 2.8 times higher concurrent throughput than the 7-core CPU baseline; below, a timeline shows the one-time 27 second SYCL JIT warmup per worker.">
+    </svg>
+  </div>
+  <div class="fig-readout" id="syBenchRo" aria-live="polite">
+    <span class="ro-k">deployment benchmark</span>
+    <span class="ro-t">relative to the same box&rsquo;s 7-core CPU: 2.2&times; single-move, 2.8&times; under concurrent games. The strip below is one worker&rsquo;s first minute after a container boot.</span>
+  </div>
+</figure>
+
+<p>
+That is the theme of the whole stack: the model is the only exotic part.
+Around it &mdash; incremental masks instead of rescans, four bytes a move,
+sticky processes, a parity check before trusting a backend &mdash; the
+engineering stays small enough to read in an afternoon, which is exactly what
+this page just did.
+</p>
+
+</main>
+
+<footer class="learn-footer">
+  <div class="foot-row">
+    <a href="results.html" rel="prev">&lsaquo; The results</a>
+    <span class="foot-spacer"></span>
+    <a href="index.html" rel="next">Back to the overview &rsaquo;</a>
+  </div>
+</footer>
+
+<script>
+(function () {
+"use strict";
+var SVGNS = "http://www.w3.org/2000/svg";
+function el(name, attrs, parent) {
+  var node = document.createElementNS(SVGNS, name);
+  for (var k in attrs) node.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+function readout(id) {
+  var ro = document.getElementById(id);
+  var k = ro.querySelector(".ro-k"), t = ro.querySelector(".ro-t");
+  return function (kk, tt) { k.textContent = kk; t.textContent = tt; };
+}
+
+/* ================= fig 1 — incremental window updates =================
+ * Mirrors hexo_engine/rust/src/tactics.rs exactly:
+ *   - 3 axes (Q=(1,0), R=(0,1), QR=(1,-1)), 6 offsets => 18 windows/placement
+ *     (tactics.rs:14-17, window_containing :489-492)
+ *   - masks: two 6-bit masks per window (tactics.rs:112-114)
+ *   - threat: single-colour count >= 4 (tactics.rs:189-198)
+ *   - win: single-colour count == 6 (tactics.rs:206-208)
+ * Turn order is the real game's: 1 stone, then 2-2-2... */
+(function () {
+  var S = 19, R = 5;                                   // hex size, board radius
+  var AXES = [[1, 0], [0, 1], [1, -1]];
+  var svg = document.getElementById("syBoard");
+  var gTracked = document.getElementById("syTracked");
+  var gCells = document.getElementById("syCells");
+  var gStones = document.getElementById("syStones");
+  var gFlash = document.getElementById("syFlash");
+  var set = readout("syRo");
+  var countEl = document.getElementById("syCount");
+  var toggleBtn = document.getElementById("syToggle");
+
+  function px(q, r) {
+    return [S * 1.7320508 * (q + r / 2), S * 1.5 * r];
+  }
+  function hexPath(cx, cy) {
+    var d = "";
+    for (var i = 0; i < 6; i++) {
+      var a = Math.PI / 180 * (60 * i - 30);
+      d += (i ? "L" : "M") + (cx + S * 0.94 * Math.cos(a)).toFixed(1) + " " +
+           (cy + S * 0.94 * Math.sin(a)).toFixed(1);
+    }
+    return d + "Z";
+  }
+
+  var stones, order, windows, showTracked = false, cells = {}, focused = "0,0";
+  function key(q, r) { return q + "," + r; }
+  function wkey(a, q, r) { return a + ":" + q + "," + r; }
+
+  // build cells (roving tabindex for keyboard access)
+  for (var q = -R; q <= R; q++) {
+    for (var r = -R; r <= R; r++) {
+      if (Math.abs(q + r) > R) continue;
+      var p = px(q, r);
+      var c = el("path", {
+        d: hexPath(p[0], p[1]), "class": "sy-cell", tabindex: "-1",
+        role: "button", "aria-label": "cell " + q + ", " + r
+      }, gCells);
+      (function (c, q, r) {
+        c.addEventListener("click", function () { place(q, r); focusCell(q, r); });
+        c.addEventListener("keydown", function (ev) {
+          var dq = 0, dr = 0;
+          if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); place(q, r); return; }
+          else if (ev.key === "ArrowLeft") dq = -1;
+          else if (ev.key === "ArrowRight") dq = 1;
+          else if (ev.key === "ArrowUp") dr = -1;
+          else if (ev.key === "ArrowDown") dr = 1;
+          else return;
+          ev.preventDefault();
+          var nq = q + dq, nr = r + dr;
+          if (cells[key(nq, nr)]) focusCell(nq, nr);
+        });
+      })(c, q, r);
+      cells[key(q, r)] = c;
+    }
+  }
+  function focusCell(q, r) {
+    cells[focused].setAttribute("tabindex", "-1");
+    focused = key(q, r);
+    cells[focused].setAttribute("tabindex", "0");
+    cells[focused].focus();
+  }
+  cells[focused].setAttribute("tabindex", "0");
+
+  function windowLine(a, sq, sr, parent, cls) {
+    // draw the window as a segment through its 6 cell centers (clipped visually
+    // by the viewBox; the store itself is unbounded, like the real board)
+    var v = AXES[a];
+    var p0 = px(sq, sr), p1 = px(sq + 5 * v[0], sr + 5 * v[1]);
+    return el("line", { x1: p0[0], y1: p0[1], x2: p1[0], y2: p1[1], "class": cls }, parent);
+  }
+
+  function owner(n) { return n === 0 ? 0 : (Math.floor((n - 1) / 2) % 2 === 0 ? 1 : 0); }
+
+  function place(q, r) {
+    var k = key(q, r);
+    if (stones[k] !== undefined) {
+      set("occupied", "(" + q + ", " + r + ") already holds a stone — the board authority would reject this (MoveError::Occupied)."); // board.rs:88-90
+      return;
+    }
+    var who = owner(order);
+    stones[k] = who; order++;
+    var p = px(q, r);
+    el("circle", { cx: p[0], cy: p[1], r: S * 0.52, "class": "sy-stone" + who }, gStones);
+
+    // exactly the Rust update: 3 axes x 6 offsets (tactics.rs:430-461)
+    while (gFlash.firstChild) gFlash.removeChild(gFlash.firstChild);
+    var newThreats = 0, wins = 0, newWindows = 0;
+    for (var a = 0; a < 3; a++) {
+      for (var off = 0; off < 6; off++) {
+        var sq = q - AXES[a][0] * off, sr = r - AXES[a][1] * off;
+        var wk = wkey(a, sq, sr);
+        var m = windows[wk];
+        if (!m) { m = windows[wk] = [0, 0]; newWindows++; }
+        m[who] |= (1 << off);
+        var mine = popcount(m[who]), theirs = popcount(m[1 - who]);
+        var cls = "sy-win";
+        if (theirs === 0 && mine === 6) { cls += " won"; wins++; }
+        else if (theirs === 0 && mine >= 4) { cls += " thr" + who; newThreats++; }
+        windowLine(a, sq, sr, gFlash, cls);
+      }
+    }
+    var total = Object.keys(windows).length;
+    countEl.textContent = total + " windows tracked";
+    var msg = "p" + who + " at (" + q + ", " + r + ") — updated 18 windows (" +
+      newWindows + " new to the store, now " + total + " total). " +
+      (wins ? "SIX IN LINE — a window mask hit 0b111111. " :
+       newThreats ? newThreats + " of them are now threats (≥4 one colour, other colour absent). " : "") +
+      "A from-scratch rescan would recompute all " + total + "; the engine touched 18.";
+    set("incremental update", msg);
+    if (showTracked) drawTracked();
+  }
+
+  function popcount(x) { var n = 0; while (x) { n += x & 1; x >>= 1; } return n; }
+
+  function drawTracked() {
+    while (gTracked.firstChild) gTracked.removeChild(gTracked.firstChild);
+    if (!showTracked) return;
+    for (var wk in windows) {
+      var parts = wk.split(":"), a = +parts[0], qr = parts[1].split(",");
+      windowLine(a, +qr[0], +qr[1], gTracked, "sy-tracked");
+    }
+  }
+
+  function reset() {
+    stones = {}; order = 0; windows = {};
+    while (gStones.firstChild) gStones.removeChild(gStones.firstChild);
+    while (gFlash.firstChild) gFlash.removeChild(gFlash.firstChild);
+    drawTracked();
+    countEl.textContent = "0 windows tracked";
+    set("window store", "place a stone — the 18 six-cell windows through it flash; threat windows flash in the owner’s colour. The store never rescans: only those 18 masks change.");
+  }
+  document.getElementById("syReset").addEventListener("click", reset);
+  toggleBtn.addEventListener("click", function () {
+    showTracked = !showTracked;
+    toggleBtn.setAttribute("aria-pressed", String(showTracked));
+    toggleBtn.classList.toggle("on", showTracked);
+    drawTracked();
+    if (showTracked) {
+      set("tracked windows", "every window any stone has ever touched (dim lines) — this is the set a naive full rescan would recompute after each move. The incremental store only ever writes to the 18 through the new stone.");
+    }
+  });
+  reset();
+})();
+
+/* ================= fig 2 — .hxr byte layout =================
+ * Field-exact per hexo_utils/rust/src/records.rs (schema v1) and the
+ * showcase writer (game.py encode_hxr):
+ *  header: magic 8 (records.rs:32) | version varint (:524) | rules varint
+ *          (:525) | backend "rust-pyo3" 1+9 (pybridge.rs:178) | player count 1
+ *          + 2 players: ("human","player0",label) + ("bot:<slug>","player1",label)
+ *  game:   'G' 1 + len varint (~2) | game_id uuid 1+36 (game.py:193) |
+ *          seed flag+varint(48-bit)=1+7 (game.py:174) | status 1 |
+ *          count varint | 4 B/move u32 LE (records.rs:608-611) |
+ *          winner 1+1+7 "playerN" | placements 1+1 | abort flag 1 */
+(function () {
+  var svg = document.getElementById("syRec");
+  var set = readout("syRecRo");
+  var slider = document.getElementById("syPly");
+  var plyVal = document.getElementById("syPlyVal");
+  var W = 820, BARX = 10, BARW = 800, BARH = 26;
+
+  function varlen(n) { return n < 128 ? 1 : (n < 16384 ? 2 : 3); }
+  function segments(plies) {
+    var moves = 4 * plies;
+    var count = varlen(plies);
+    var slug = 8; // representative checkpoint id length in bots.toml
+    var p1id = 4 + slug; // "bot:" + slug
+    var head = [
+      { n: "magic", b: 8, c: "sy-sh", d: "8 B — the literal bytes HEXOREC1. Readers refuse anything else (records.rs:32, :541-543)." },
+      { n: "versions", b: 2, c: "sy-sv", d: "2 B — schema version (v1) + engine rules version, both varints. Unknown schema versions are rejected loudly, never guessed at (records.rs:524-525, :545-552)." },
+      { n: "backend", b: 10, c: "sy-so", d: "10 B — length-prefixed engine backend string, “rust-pyo3” here (pybridge.rs:178; records.rs:526)." },
+      { n: "players", b: 1 + (1 + 5) + (1 + 7) + (2 + 5) + (1 + p1id) + (1 + 7) + (2 + p1id), c: "sy-sm", d: "count + two (id, role, label) entries — here (“human”, “player0”) and (“bot:<checkpoint>”, “player1”), all length-prefixed strings (records.rs:527-533; game.py:114-118)." }
+    ];
+    var payload = 57 + 2 * count + moves; // 37+8+1+count+moves+9+(1+count)+1
+    var game = [
+      { n: "G+len", b: 1 + varlen(payload), c: "sy-sh", d: "marker byte 'G' + varint payload length — each game is length-prefixed and self-contained; a crashed run leaves a readable prefix (records.rs:576-582, :11-13)." },
+      { n: "game id", b: 37, c: "sy-so", d: "37 B — length-prefixed UUID string (game.py:193). Self-play runs use shorter ids; this is the showcase's." },
+      { n: "seed", b: 8, c: "sy-sv", d: "8 B — presence flag + zigzag varint of the 48-bit game seed (records.rs:762-770; game.py:174)." },
+      { n: "st", b: 1, c: "sy-sm", d: "1 B — status byte: completed (1) or aborted (2) (records.rs:37-38, :607)." },
+      { n: "n", b: count, c: "sy-sv", d: count + " B — varint move count (records.rs:608)." },
+      { n: "move stream — 4 B × " + plies, b: moves, c: "sy-sh", d: moves + " B — the game itself: one u32 little-endian packed action id per ply, exactly the engine's (q,r) encoding. Decisions, not boards: replay through the engine reconstructs every position (records.rs:609-611; legal.rs:31-35)." },
+      { n: "winner", b: 9, c: "sy-so", d: "9 B — flag + “player0”/“player1” (records.rs:612; game.py:136)." },
+      { n: "pl", b: 1 + varlen(plies), c: "sy-sv", d: (1 + varlen(plies)) + " B — flag + varint placement count (records.rs:613)." },
+      { n: "ab", b: 1, c: "sy-sm", d: "1 B — abort flag, 0 for a completed game; aborted/timed-out games append stage + exception + message strings here (records.rs:614-622; game.py:126-133)." }
+    ];
+    return { head: head, game: game, moves: moves };
+  }
+
+  function sum(a) { var s = 0; for (var i = 0; i < a.length; i++) s += a[i].b; return s; }
+
+  function draw() {
+    var plies = +slider.value;
+    plyVal.textContent = plies + " plies";
+    var m = segments(plies);
+    var hb = sum(m.head), gb = sum(m.game);
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    function row(y, list, total, label) {
+      var t = el("text", { x: BARX, y: y - 7, "class": "sy-bt dim" }, svg);
+      t.textContent = label + " — " + total + " B";
+      var x = BARX;
+      for (var i = 0; i < list.length; i++) {
+        var s = list[i];
+        var w = Math.max(3, s.b / total * (BARW - (list.length - 1)));
+        var rect = el("rect", {
+          x: x, y: y, width: w, height: BARH, "class": "sy-seg " + s.c,
+          tabindex: "0", role: "img", "aria-label": s.n + ", " + s.b + " bytes"
+        }, svg);
+        (function (s, rect) {
+          function show() {
+            var hot = svg.querySelector(".sy-seg.hot");
+            if (hot) hot.classList.remove("hot");
+            rect.classList.add("hot");
+            set(s.n + " · " + s.b + " B", s.d);
+          }
+          rect.addEventListener("mouseenter", show);
+          rect.addEventListener("focus", show);
+        })(s, rect);
+        if (w > 30) {
+          var lab = el("text", { x: x + 4, y: y + BARH - 9, "class": "sy-bt" }, svg);
+          lab.textContent = s.n;
+        }
+        x += w + 1;
+      }
+    }
+    row(24, m.head, hb, "file header (once per file)");
+    row(84, m.game, gb, "one game payload (" + plies + " plies)");
+
+    var pct = Math.round(m.moves / gb * 100);
+    set("record size",
+      "a " + plies + "-ply game costs " + gb + " B (" + m.moves +
+      " B move stream = " + pct + "%); the one-game showcase blob is " +
+      (hb + gb) + " B with its header. Rule of thumb: 4 B × plies + ~60 B of metadata.");
+  }
+  slider.addEventListener("input", draw);
+  draw();
+})();
+
+/* ================= fig 3 — serving path hover readout ================= */
+(function () {
+  var set = readout("syFlowRo");
+  var DEF_K = "serving path";
+  var DEF_T = "hover or tab through the stages. Measured here: everything outside the search body sums to tens of milliseconds; the search is the rest.";
+  var plates = document.querySelectorAll(".sy-flow .plate");
+  for (var i = 0; i < plates.length; i++) {
+    (function (n) {
+      var show = function () { set(n.dataset.k, n.dataset.info); };
+      var hide = function () { set(DEF_K, DEF_T); };
+      n.addEventListener("mouseenter", show);
+      n.addEventListener("mouseleave", hide);
+      n.addEventListener("focus", show);
+      n.addEventListener("blur", hide);
+    })(plates[i]);
+  }
+})();
+
+/* ================= fig 4 — benchmark bars + jit warmup strip =================
+ * Numbers measured on this deployment (Arc A310, torch 2.12.1+xpu, vs the same
+ * box's 7-core CPU): 2.2x single-move, 2.8x concurrent throughput, ~27 s
+ * one-time SYCL JIT per worker (Dockerfile.xpu:150-157; device.py warmup). */
+(function () {
+  var svg = document.getElementById("syBench");
+  var set = readout("syBenchRo");
+
+  function bar(x, y, w, h, cls, label, info) {
+    var r = el("rect", {
+      x: x, y: y, width: w, height: h, "class": "sy-bar " + cls,
+      tabindex: "0", role: "img", "aria-label": label
+    }, svg);
+    function show() { set(label, info); }
+    r.addEventListener("mouseenter", show);
+    r.addEventListener("focus", show);
+    return r;
+  }
+  function txt(x, y, cls, s, anchor) {
+    var t = el("text", { x: x, y: y, "class": cls }, svg);
+    if (anchor) t.setAttribute("text-anchor", anchor);
+    t.textContent = s;
+    return t;
+  }
+
+  var BASE = 160, TOP = 34, UNIT = 40; // y baseline, headroom, px per 1.0x
+  el("line", { x1: 30, y1: BASE, x2: 790, y2: BASE, "class": "sy-ax" }, svg);
+
+  // group 1: single-move speed (relative, higher = faster)
+  txt(150, 24, "sy-lab", "single-move speed", "middle");
+  bar(90, BASE - UNIT, 52, UNIT, "cpu", "cpu 1.0×",
+    "7-core CPU baseline (torch CPU threads split across the 2 workers). Normalized to 1.0×.");
+  txt(116, BASE - UNIT - 6, "sy-bt", "1.0×", "middle");
+  bar(158, BASE - 2.2 * UNIT, 52, 2.2 * UNIT, "xpu", "xpu 2.2× single-move",
+    "One search at a time finishes 2.2× faster on the A310 — eager fp32 forwards, no Triton (those kernels are CUDA-only). Measured on this deployment.");
+  txt(184, BASE - 2.2 * UNIT - 6, "sy-bt", "2.2×", "middle");
+
+  // group 2: concurrent throughput
+  txt(420, 24, "sy-lab", "concurrent throughput", "middle");
+  bar(360, BASE - UNIT, 52, UNIT, "cpu", "cpu 1.0×",
+    "7-core CPU baseline under concurrent games. Normalized to 1.0×.");
+  txt(386, BASE - UNIT - 6, "sy-bt", "1.0×", "middle");
+  bar(428, BASE - 2.8 * UNIT, 52, 2.8 * UNIT, "xpu", "xpu 2.8× concurrent",
+    "With several games in flight the ≤32-leaf batches keep the GPU fed, so the gap widens to 2.8× — the shape the site's rate limits are sized around. Measured on this deployment.");
+  txt(454, BASE - 2.8 * UNIT - 6, "sy-bt", "2.8×", "middle");
+
+  txt(700, BASE - 8, "sy-bt dim", "vs 7-core cpu, same box", "middle");
+
+  // warmup timeline strip: 0..60 s, ~27 s JIT then warm
+  var TY = 196, TH = 18, TX = 90, TW = 640;
+  txt(30, TY + 13, "sy-lab", "worker boot");
+  var jw = 27 / 60 * TW;
+  var jit = el("rect", { x: TX, y: TY, width: jw, height: TH, "class": "sy-jit sy-bar", tabindex: "0", role: "img", "aria-label": "one-time SYCL JIT, about 27 seconds" }, svg);
+  var warm = el("rect", { x: TX + jw, y: TY, width: TW - jw, height: TH, "class": "sy-warm sy-bar", tabindex: "0", role: "img", "aria-label": "warm steady state" }, svg);
+  el("line", { x1: TX, y1: TY + TH + 8, x2: TX + TW, y2: TY + TH + 8, "class": "sy-ax" }, svg);
+  txt(TX, TY + TH + 22, "sy-bt dim", "0 s");
+  txt(TX + jw, TY + TH + 22, "sy-bt", "~27 s", "middle");
+  txt(TX + TW, TY + TH + 22, "sy-bt dim", "60 s", "end");
+  txt(TX + jw / 2, TY + 13, "sy-bt", "sycl jit", "middle");
+  txt(TX + jw + (TW - jw) / 2, TY + 13, "sy-bt", "warm — steady-state serving", "middle");
+  function jitInfo() {
+    set("one-time jit · ~27 s per worker",
+      "the first forwards JIT-compile the net's SYCL kernels. Each of the 2 workers pays it independently, at startup, behind a deliberate warmup — never on a player's move. Read-only container filesystem: the kernel cache lives on tmpfs, so each container boot pays this once.");
+  }
+  function warmInfo() {
+    set("warm steady state",
+      "after warmup the kernels are cached in-process; forwards run at the benchmarked speed for the container's lifetime.");
+  }
+  jit.addEventListener("mouseenter", jitInfo); jit.addEventListener("focus", jitInfo);
+  warm.addEventListener("mouseenter", warmInfo); warm.addEventListener("focus", warmInfo);
+})();
+
+})();
+</script>
+
+</body>
+</html>

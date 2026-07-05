@@ -71,6 +71,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     <a href="network.html">The network</a>
     <a href="search.html">The search</a>
     <a href="training.html" class="current" aria-current="page">The training</a>
+    <a href="results.html">The results</a>
+    <a href="systems.html">The systems</a>
   </nav>
 </header>
 
@@ -149,11 +151,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
        Artifacts: selfplay.py:287-310 (.hxr) and 372-385 (game_KEY.npz + json
        sidecar as commit marker, selfplay.py:865-870). -->
   <p>
-    One Hexo-specific wrinkle: after the first player's single opening stone,
-    every turn places <em>two</em> stones. Each placement is searched and
-    recorded as its own decision, with a phase feature (first or second stone
-    of the turn) so the net always knows which half of a turn it is choosing.
-    Every finished game leaves two artifacts: a compact per-game
+    Each placement — the opening single stone, then two per turn — is searched
+    and recorded as its own decision, with a phase feature (first or second
+    stone of the turn) so the net always knows which half of a turn it is
+    choosing. Every finished game leaves two artifacts: a compact per-game
     <code>.npz</code> training shard (committed by a JSON sidecar, so a
     power-cut mid-write never corrupts the buffer) and an entry in the
     epoch's <code>.hxr</code> game record for replay and analysis.
@@ -367,7 +368,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     That is deliberate: with steady learning-rate training a genuine
     regression shows up as a trend, not a single bad epoch, and gating on a
     ~50-Elo-noise measurement would mostly veto good checkpoints. The
-    verdict exists for the humans watching the run.
+    verdict exists for the humans watching the run. The run&rsquo;s actual
+    rating history, from this same eval pipeline, is on
+    <a href="results.html">the results</a> page.
   </p>
 
   <figure class="fig fig-wide" id="fig-rating">
@@ -393,11 +396,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     — but win or lose, the loop just keeps turning.
   </p>
   <p>
-    That's the last piece. For how the three parts fit together, head back to
-    <a href="index.html">the overview</a> — or revisit
-    <a href="network.html">the network</a> that evaluates positions and
-    <a href="search.html">the search</a> that turns those evaluations into
-    moves.
+    That closes the algorithm. For how the parts fit together, head back to
+    <a href="index.html">the overview</a> — or continue to
+    <a href="results.html">the results</a> to watch this loop's real rating
+    climb, measured every fifth epoch.
   </p>
 </main>
 
@@ -405,7 +407,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
   <div class="foot-row">
     <a href="search.html" rel="prev">‹ The search</a>
     <span class="foot-spacer"></span>
-    <a href="index.html" rel="next">Back to the overview ›</a>
+    <a href="results.html" rel="next">The results ›</a>
   </div>
 </footer>
 

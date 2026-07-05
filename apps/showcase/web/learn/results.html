@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hexo — how it works — the results</title>
+<meta name="description" content="What training actually bought: the real rating curve of the hexfield_main_7 run, four positions read by four checkpoints of the same net, and the policy-sharpening story — all from the run's own eval records.">
+<link rel="stylesheet" href="learn.css">
+<style>
+/* Inline fallback: design tokens + minimal base so this page is readable even
+   if learn.css has not been generated yet. learn.css, when present, carries the
+   full scaffold and simply re-declares these tokens identically. */
+:root{
+  --bg:#101317;--tile:#161b21;--line:#242c35;--line-soft:#1c232b;
+  --text:#d4dbe3;--muted:#79848f;--dim:#4c565f;
+  --accent:#e8e2d6;--accent-dim:#57534a;
+  --p0:#4f93ff;--p0-soft:#7fb1ff;--p1:#ff5650;--p1-soft:#ff8781;
+  --mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,"Roboto Mono",monospace;
+  --sans:ui-sans-serif,system-ui,"Segoe UI",sans-serif;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--sans)}
+.learn-main{max-width:880px;margin:0 auto;padding:24px}
+.fig{border:1px solid var(--line);background:var(--tile);margin:22px 0}
+.fig svg{display:block;width:100%;height:auto}
+
+/* ---- page-specific (results.html) figure internals, prefixed rs- ---- */
+/* fig 1 — rating curve */
+.rs-grid{stroke:var(--line-soft);stroke-width:1}
+.rs-zero{stroke:var(--dim);stroke-width:1}
+.rs-band{fill:var(--accent);fill-opacity:.07;stroke:none}
+.rs-curve{stroke:var(--accent);stroke-width:1.6;fill:none}
+.rs-curve.cand{stroke-dasharray:4 4;stroke-width:1.2}
+.rs-pt{fill:#171c23;stroke:var(--accent);stroke-width:1.4;cursor:pointer;
+  outline:none;transition:stroke-width .12s ease}
+.rs-pt.promote{fill:var(--accent)}
+.rs-pt.cand{fill:none;stroke-dasharray:2 2}
+.rs-pt:hover,.rs-pt:focus-visible{stroke-width:3}
+.rs-alab{font-family:var(--mono);font-size:9.5px;fill:var(--dim)}
+.rs-alab.on{fill:var(--muted)}
+/* fig 2 — board + priors */
+.rs-cell{fill:#12161c;stroke:var(--line-soft);stroke-width:1;outline:none}
+.rs-cell.foc{cursor:pointer;transition:stroke .12s ease}
+.rs-cell.foc:hover{stroke:var(--muted)}
+.rs-cell.foc:focus-visible{stroke:var(--accent);stroke-width:1.6}
+.rs-stonecell{fill:#12161c;stroke:var(--line-soft);stroke-width:1}
+.rs-stone0{fill:var(--p0)}.rs-stone1{fill:var(--p1)}
+.rs-stone0,.rs-stone1{pointer-events:none}
+.rs-pol{fill:var(--p0-soft);pointer-events:none;transition:fill-opacity .18s ease}
+.rs-hot{fill:none;stroke:var(--p1-soft);stroke-width:1.3;stroke-dasharray:3 2;
+  stroke-opacity:.75;pointer-events:none}
+.rs-first{fill:none;stroke:var(--accent);stroke-width:1.2;stroke-dasharray:2 2;
+  pointer-events:none}
+.rs-plab{font-family:var(--mono);font-size:8px;pointer-events:none}
+.rs-flex{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+.rs-flex>.rs-boardwrap{flex:1 1 340px;min-width:280px}
+.rs-flex>.rs-side{flex:1 1 220px;min-width:210px}
+.rs-stat{display:grid;grid-template-columns:92px 1fr 52px;gap:8px;align-items:center;
+  font-family:var(--mono);font-size:10.5px;color:var(--muted);padding:4px 2px;
+  border-bottom:1px solid var(--line-soft)}
+.rs-stat:last-child{border-bottom:none}
+.rs-stat .sk{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.rs-stat .sv{text-align:right;color:var(--text)}
+.rs-sb{position:relative;height:8px;background:#11161c;border:1px solid var(--line-soft)}
+.rs-sb .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)}
+.rs-sb .bf{position:absolute;top:0;bottom:0;transition:left .18s ease,width .18s ease}
+.rs-sb .bf.pos{background:var(--p0-soft)}
+.rs-sb .bf.neg{background:var(--p1-soft)}
+.rs-tomove{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--dim);padding:2px 2px 8px}
+.rs-tomove b{color:var(--p0-soft);font-weight:400}
+/* fig 3 — entropy bars */
+.rs-bar{stroke:var(--line);stroke-width:1;cursor:pointer;outline:none;
+  fill:var(--accent);transition:stroke .12s ease}
+.rs-bar:hover,.rs-bar:focus-visible{stroke:var(--accent)}
+.rs-blab{font-family:var(--mono);font-size:9px;fill:var(--muted);pointer-events:none}
+.rs-leg{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;fill:var(--muted)}
+</style>
+</head>
+<body>
+
+<header class="learn-header">
+  <a class="wordmark" href="../">hexo</a>
+  <nav class="learn-nav" aria-label="How it works">
+    <a href="index.html">Overview</a>
+    <a href="network.html">The network</a>
+    <a href="search.html">The search</a>
+    <a href="training.html">The training</a>
+    <a href="results.html" class="current" aria-current="page">The results</a>
+    <a href="systems.html">The systems</a>
+  </nav>
+</header>
+
+<main class="learn-main">
+
+<h1>The results <span class="h-dim">&mdash; strength over training</span></h1>
+
+<p class="lede">
+The training chapter ends with a loop that promises improvement; this page
+checks the receipt. Two instruments, both read from the run&rsquo;s own
+records: an arena that pits frozen checkpoints against a fixed pool every five
+epochs and fits one pooled rating over everything it has ever seen, and four
+curated positions read by four ages of the same network &mdash; no search,
+just the raw priors &mdash; to see what those rating points are made of.
+</p>
+
+<div class="note">
+<b>Ground truth.</b> Everything below is the real <code>hexfield_main_7</code>
+run. The figures fetch two snapshots baked from its records:
+<code>data/eval_history.json</code> (every multistage eval since epoch 5,
+parsed from the run&rsquo;s eval diagnostics) and
+<code>data/checkpoints.json</code> (the ep2 / ep14 / ep30 / ep58 nets reading
+four fixed positions). Nothing on this page is illustrative or synthetic.
+</div>
+
+<h2 id="curve"><span class="sec-no">01</span>the rating curve</h2>
+
+<p>
+Every five epochs the run branches off a <b>128-game evaluation at 512
+visits</b>. The candidate plays the reigning champion, a bracket of the
+run&rsquo;s own frozen checkpoints, the final nets of two earlier runs
+(<code>main5_ep105</code>, <code>main6_ep73</code>), and SealBot, a scripted
+tactical opponent. Checkpoint matches are <em>paired</em>: each opening is
+played twice with sides swapped and scored as a pair &mdash; the pentanomial
+records in the readout below are those LL&hellip;WW pair histograms. Every
+match edge accumulates into one pooled Bradley&ndash;Terry fit (70 edges over
+27 players by the latest eval), and the curve is the latest fit&rsquo;s rating
+for each frozen checkpoint label.
+</p>
+
+<p>
+Read the y-axis for what it is. SealBot is pinned at 0 to give the pool a zero
+point, and every number is a position <em>within this particular pool of
+frozen opponents</em> &mdash; not absolute Elo, not comparable to anything
+outside the run. The verdicts are informational too: this run promotes
+nothing. The next epoch trains from the newest weights whether the eval says
+PROMOTE or not, and ten of twelve verdicts were INCONCLUSIVE &mdash; which, at
+a 128-game budget with confidence intervals routinely &plusmn;100 points, is
+the honest expected outcome, not a failure.
+</p>
+
+<p>
+The shape is a climb with real dents in it. From &minus;21 at ep5 to +231 at
+ep60 is about 250 points of pool-relative strength, but the middle sags: the
+pooled table puts ep20 at &minus;97 and ep25 at &minus;177, below ep5&rsquo;s
+point estimate. Part of that is thin evidence &mdash; those labels spend their
+later lives as sparring targets (by the epoch-40 eval, ep40 swept ep20 eight
+pairs to none), and ep25&rsquo;s interval spans [&minus;447,&nbsp;+93] &mdash;
+but part may be a genuine mid-run trough; the intervals overlap far too much
+to say which. A caution on how noisy thin labels get: the epoch-25 weights sit
+in the pool under <em>two</em> labels, and rate +84 as
+<code>cand_ep25</code> but &minus;177 as the frozen <code>ep25</code>. Same
+network, different handful of games. The dip from ep45 (+150) to ep50 (+56) is
+the same story at smaller scale &mdash; this curve is compounding evidence,
+not telemetry, and it wobbles like it.
+</p>
+
+<div class="numstrip">
+  <div class="ns-cell"><div class="ns-n">12</div><div class="ns-l">evals &middot; ep5&ndash;ep65</div></div>
+  <div class="ns-cell"><div class="ns-n">128 <small>@ 512 visits</small></div><div class="ns-l">game budget per eval</div></div>
+  <div class="ns-cell"><div class="ns-n">&minus;21 &rarr; +231</div><div class="ns-l">pooled rating, ep5 &rarr; ep60</div></div>
+  <div class="ns-cell"><div class="ns-n">2 <small>of 12</small></div><div class="ns-l">promote verdicts (informational)</div></div>
+</div>
+
+<figure class="fig fig-wide">
+  <figcaption>fig 1 &middot; <b>pooled bradley&ndash;terry ratings, latest fit</b> &middot; band = 95% ci per label &middot; filled point = that epoch&rsquo;s eval said promote &middot; hollow = the newest candidate label &middot; hover or tab through the points</figcaption>
+  <div class="fig-body" id="rcBody">
+    <svg id="rcChart" viewBox="0 0 860 330" role="group"
+         aria-label="Line chart of pooled checkpoint ratings by epoch, with 95 percent confidence band. The curve climbs from about minus 21 at epoch 5 to plus 231 at epoch 60, with a dip below zero around epochs 20 to 25."></svg>
+  </div>
+  <div class="fig-readout" id="rcRo" aria-live="polite">
+    <span class="ro-k">rating curve</span>
+    <span class="ro-t">hover or tab through the points &mdash; each shows that epoch&rsquo;s verdict, the candidate-vs-champion record as pentanomial pairs, and sample sizes. Scale: pool-relative, SealBot pinned at 0.</span>
+  </div>
+</figure>
+
+<h2 id="reading"><span class="sec-no">02</span>four positions, four checkpoints</h2>
+
+<p>
+Ratings say the net got stronger; the positions say <em>where</em>. The four
+boards below are read by four checkpoints of the run with the search switched
+off entirely &mdash; what you see is the policy prior, value, 2-ply short-term
+value and moves-left straight out of the net. This is the instinct the search
+then sharpens: at play time these priors decide which handful of moves the
+1024-visit search even considers.
+</p>
+
+<p>
+Take the live four. The opponent&rsquo;s stones sit at q&nbsp;=&nbsp;1, 2, 3, 5
+on the r&nbsp;=&nbsp;1 row &mdash; a split four with its gap at (4,&nbsp;1)
+&mdash; and every live window through the four runs over that gap, so there is
+exactly one saving cell. <b>ep2 stares straight past it</b>: 0.41 of its mass
+goes to (0,&nbsp;1), the outside extension, after which (4,&nbsp;1) and
+(6,&nbsp;1) complete the six in a single opponent turn; the actual save gets
+0.06. ep14 has learned the fear but not the move &mdash; its value collapses
+to &minus;0.90, yet it still offers 0.37 on (0,&nbsp;1) and a fifth of its
+mass on (3,&nbsp;0), which defends nothing, while the save sits at 0.03. ep30
+is the first to rank the gap first (0.30). By <b>ep58 the read is clean: 0.52
+on (4,&nbsp;1)</b>, the wrong blocks demoted to noise, and the value back up
+to &minus;0.15 &mdash; worried, not resigned. Alarm arrived at epoch 14;
+technique took thirty more epochs.
+</p>
+
+<p>
+The double threat is the same lesson at two addresses: split fours on the
+r&nbsp;=&nbsp;1 row and the q&nbsp;=&nbsp;&minus;3 column, gaps at (4,&nbsp;1)
+and (&minus;3,&nbsp;3), and the mover&rsquo;s two placements this turn are
+both spoken for. ep2 gives that pair a combined 0.39 &mdash; its top move is,
+again, the useless (0,&nbsp;1) &mdash; ep14 0.71, ep30 0.85, and ep58 puts
+<b>0.99 on exactly those two cells</b>: the both-gaps read, off pure pattern.
+The 40-stone board makes the opposite point. With one live four left (empties
+(&minus;1,&nbsp;2) and (1,&nbsp;2)), even ep2 finds the block at 0.79 &mdash;
+blatant tactics are learned almost immediately &mdash; and what training adds
+is certainty (ep58: 0.990 on the block) plus a value head that finally agrees
+the position is winning (0.35&nbsp;&rarr;&nbsp;0.97). And the quiet
+middlegame refuses to sharpen at any age &mdash; which is the subject of the
+last section.
+</p>
+
+<figure class="fig fig-wide">
+  <figcaption>fig 2 &middot; <b>net priors only &mdash; no search</b> &middot; pale blue = the mover&rsquo;s prior (area &prop; &radic;p, tail below 0.001 trimmed) &middot; dashed red = cells of live opponent fours &middot; dashed ring = this turn&rsquo;s first stone &middot; hover or tab to a cell for its prior across all four checkpoints</figcaption>
+  <div class="fig-body rs-flex" id="pbBody">
+    <div class="rs-boardwrap"><svg id="pbBoard" role="group"
+      aria-label="Hex board with the selected position's stones and the selected checkpoint's policy prior overlaid on empty cells."></svg></div>
+    <div class="rs-side">
+      <div class="rs-tomove" id="pbMove"></div>
+      <div id="pbStats"></div>
+    </div>
+  </div>
+  <div class="fig-controls" id="pbPosBtns">
+    <label>position</label>
+  </div>
+  <div class="fig-controls" id="pbCkBtns">
+    <label>checkpoint</label>
+    <span class="spacer"></span>
+    <span class="val" id="pbVal"></span>
+  </div>
+  <div class="fig-readout" id="pbRo" aria-live="polite">
+    <span class="ro-k">loading&hellip;</span>
+    <span class="ro-t"></span>
+  </div>
+</figure>
+
+<h2 id="sharpening"><span class="sec-no">03</span>what training actually changes</h2>
+
+<p>
+One number summarises the section: the entropy of the policy over the legal
+set. The tactical boards collapse toward certainty as the run ages &mdash;
+the live four from 2.22 to 1.46 nats, the double threat
+1.87&nbsp;&rarr;&nbsp;1.43&nbsp;&rarr;&nbsp;1.16&nbsp;&rarr;&nbsp;0.75, the
+late-game block from 0.65 to 0.06, essentially a delta function. The quiet
+middlegame does not: 2.08, 2.02, 2.30, 1.82 &mdash; it starts diffuse and
+stays diffuse, and <b>ep30 is actually less sharp there than ep14</b>. That
+non-monotone wrinkle is worth keeping: training is not turning down a global
+temperature knob. It sharpens exactly where its own search kept finding forced
+continuations, and a quiet board with 141 legal moves and a dozen defensible
+plans <em>should</em> stay diffuse &mdash; a net that answered it with 99%
+confidence would be miscalibrated, not strong.
+</p>
+
+<figure class="fig">
+  <figcaption>fig 3 &middot; <b>policy entropy by position and checkpoint</b> &middot; nats over the legal softmax &middot; uniform over these legal sets would sit at 4.9&ndash;5.3 nats, far off the top of this chart &middot; hover a bar</figcaption>
+  <div class="fig-body" id="shBody">
+    <svg id="shChart" viewBox="0 0 860 300" role="group"
+         aria-label="Grouped bar chart: policy entropy for four positions at four checkpoints. Tactical positions fall toward zero across training; the quiet middlegame stays near two nats at every checkpoint."></svg>
+  </div>
+  <div class="fig-readout" id="shRo" aria-live="polite">
+    <span class="ro-k">policy sharpening</span>
+    <span class="ro-t">hover or tab through the bars &mdash; real entropies from the run&rsquo;s checkpoints, with each position&rsquo;s legal-move count and top-1 probability.</span>
+  </div>
+</figure>
+
+<p>
+The cause lives one page back: the policy target is the
+<a href="training.html#targets">search&rsquo;s improved distribution</a>, and
+search distributions are sharp precisely where sequential halving found a
+forced line and flat where it did not. Sixty epochs of that target, replayed
+through positions like these, is the difference between 0.41 on the wrong
+block and 0.52 on the only one. It is also playable: the
+<a href="../">play tab</a> serves this same ladder of checkpoints &mdash; pick
+an early one from the checkpoint list, then the newest, and feel the
+difference this page just measured.
+</p>
+
+</main>
+
+<footer class="learn-footer">
+  <div class="foot-row">
+    <a href="training.html" rel="prev">&lsaquo; The training</a>
+    <span class="foot-spacer"></span>
+    <a href="systems.html" rel="next">The systems &rsaquo;</a>
+  </div>
+</footer>
+
+<script>
+(function () {
+"use strict";
+var SVGNS = "http://www.w3.org/2000/svg";
+function el(name, attrs, parent) {
+  var node = document.createElementNS(SVGNS, name);
+  for (var k in attrs) node.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+function $(id) { return document.getElementById(id); }
+function readout(id) {
+  var ro = $(id);
+  var k = ro.querySelector(".ro-k"), t = ro.querySelector(".ro-t");
+  return function (kk, tt) { k.textContent = kk; t.textContent = tt; };
+}
+function failFig(bodyId, file) {
+  var body = $(bodyId);
+  while (body.firstChild) body.removeChild(body.firstChild);
+  var note = document.createElement("div");
+  note.className = "note";
+  note.style.margin = "0";
+  note.textContent = "This figure reads " + file + " at page load and could not fetch it. " +
+    "The live data needs the site server — open this page through it rather than from a local file.";
+  body.appendChild(note);
+}
+function fmtElo(x) { return (x < 0 ? "−" : "+") + Math.abs(Math.round(x)); }
+function fmtCi(ci) { return "[" + fmtElo(ci[0]) + ", " + fmtElo(ci[1]) + "]"; }
+/* pentanomial = counts of [0, 0.5, 1, 1.5, 2] points per mirrored pair */
+function pentStr(p) {
+  var names = ["LL", "L+D", "split", "W+D", "WW"];
+  var parts = [];
+  for (var i = 4; i >= 0; i--) {
+    if (p[i] > 0 || i === 0 || i === 2 || i === 4) parts.push(names[i] + " " + p[i]);
+  }
+  return parts.join(" · ");
+}
+
+/* ================= fig 1 — the rating curve =================
+ * Latest pooled Bradley-Terry table (fixed epN labels compound across evals;
+ * cand_epN labels are single-eval estimates — see eval_history.json notes). */
+fetch("data/eval_history.json")
+  .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+  .then(function (data) {
+    var set = readout("rcRo");
+    var svg = $("rcChart");
+    var latest = data.epochs[data.epochs.length - 1];
+    var byEpoch = {};
+    data.epochs.forEach(function (e) { byEpoch[e.epoch] = e; });
+
+    var pts = [];
+    latest.ratings.forEach(function (r) {
+      var m = /^ep(\d+)$/.exec(r.label);
+      if (m) pts.push({ epoch: +m[1], elo: r.elo, lo: r.elo_ci95[0], hi: r.elo_ci95[1] });
+    });
+    pts.sort(function (a, b) { return a.epoch - b.epoch; });
+    var candLabel = "cand_ep" + latest.epoch;
+    var cand = null;
+    latest.ratings.forEach(function (r) {
+      if (r.label === candLabel) cand = { epoch: latest.epoch, elo: r.elo, lo: r.elo_ci95[0], hi: r.elo_ci95[1] };
+    });
+
+    var L = 64, R = 24, T = 18, B = 40, W = 860, H = 330;
+    var eMin = pts[0].epoch, eMax = cand ? cand.epoch : pts[pts.length - 1].epoch;
+    var yLo = 1e9, yHi = -1e9;
+    pts.concat(cand ? [cand] : []).forEach(function (p) {
+      yLo = Math.min(yLo, p.lo); yHi = Math.max(yHi, p.hi);
+    });
+    yLo = Math.floor(yLo / 100) * 100 - 20; yHi = Math.ceil(yHi / 100) * 100 + 20;
+    function X(e) { return L + (e - eMin) / (eMax - eMin) * (W - L - R); }
+    function Y(v) { return T + (yHi - v) / (yHi - yLo) * (H - T - B); }
+
+    /* grid + axes */
+    for (var g = Math.ceil(yLo / 200) * 200; g <= yHi; g += 200) {
+      el("line", { x1: L, y1: Y(g), x2: W - R, y2: Y(g), "class": g === 0 ? "rs-zero" : "rs-grid" }, svg);
+      var gl = el("text", { x: L - 8, y: Y(g) + 3, "text-anchor": "end", "class": "rs-alab" }, svg);
+      gl.textContent = (g < 0 ? "−" : "") + Math.abs(g);
+    }
+    var z = el("text", { x: W - R, y: Y(0) - 5, "text-anchor": "end", "class": "rs-alab" }, svg);
+    z.textContent = "sealbot anchor = 0";
+    pts.concat(cand ? [cand] : []).forEach(function (p) {
+      var xl = el("text", { x: X(p.epoch), y: H - B + 16, "text-anchor": "middle", "class": "rs-alab on" }, svg);
+      xl.textContent = p.epoch;
+    });
+    var ax = el("text", { x: L, y: T - 4, "class": "rs-alab" }, svg);
+    ax.textContent = "pooled rating vs the frozen pool · epoch →";
+
+    /* CI band over the fixed labels */
+    var d = "";
+    pts.forEach(function (p, i) { d += (i ? "L" : "M") + X(p.epoch).toFixed(1) + " " + Y(p.hi).toFixed(1); });
+    for (var i = pts.length - 1; i >= 0; i--) d += "L" + X(pts[i].epoch).toFixed(1) + " " + Y(pts[i].lo).toFixed(1);
+    el("path", { d: d + "Z", "class": "rs-band" }, svg);
+
+    /* line through fixed labels, dashed extension to the newest candidate */
+    d = "";
+    pts.forEach(function (p, i) { d += (i ? "L" : "M") + X(p.epoch).toFixed(1) + " " + Y(p.elo).toFixed(1); });
+    el("path", { d: d, "class": "rs-curve" }, svg);
+    if (cand) {
+      var lastP = pts[pts.length - 1];
+      el("path", {
+        d: "M" + X(lastP.epoch).toFixed(1) + " " + Y(lastP.elo).toFixed(1) +
+           "L" + X(cand.epoch).toFixed(1) + " " + Y(cand.elo).toFixed(1),
+        "class": "rs-curve cand"
+      }, svg);
+    }
+
+    var DEF_K = "rating curve";
+    var DEF_T = "hover or tab through the points — each shows that epoch’s verdict, the candidate-vs-champion record as pentanomial pairs, and sample sizes. Scale: pool-relative, SealBot pinned at 0.";
+    function evalText(epoch) {
+      var e = byEpoch[epoch];
+      if (!e) {
+        return "no eval ran at epoch " + epoch + " — this label entered the pool afterwards " +
+          "(champion of the epoch-20 eval, bracket opponent later); its rating pools those games.";
+      }
+      var champ = null, seal = null, extra = 0;
+      e.edges.forEach(function (ed) {
+        if (ed.role === "champion") champ = ed;
+        else if (ed.role === "sealbot") seal = ed;
+        else extra++;
+      });
+      var t = "eval at epoch " + epoch + ": " + e.verdict;
+      if (e.primary && typeof e.primary.elo_diff === "number") {
+        t += " — " + e.candidate + " vs champion " + e.champion + ": " +
+          fmtElo(e.primary.elo_diff) + " " + fmtCi(e.primary.elo_diff_ci95);
+      }
+      if (champ && champ.pentanomial) {
+        t += " · champion pairs: " + pentStr(champ.pentanomial) +
+          " (" + champ.decided + " games @ " + champ.eval_visits + " visits)";
+      } else if (!champ) {
+        t += " — no champion edge this epoch; only the SealBot calibration match";
+      }
+      if (seal) {
+        t += " · sealbot " + Math.round(seal.winrate * seal.decided) + "/" + seal.decided;
+      }
+      if (extra > 0) t += " · +" + extra + " more edges into the pool";
+      t += " · budget " + e.games_budget + " games";
+      return t;
+    }
+    function wirePoint(node, p, isCand) {
+      var show = function () {
+        var k = (isCand ? candLabel + " (single-eval label)" : "ep" + p.epoch) +
+          " · pooled " + fmtElo(p.elo) + " · 95% ci " + fmtCi([p.lo, p.hi]);
+        set(k, evalText(p.epoch));
+      };
+      var hide = function () { set(DEF_K, DEF_T); };
+      node.addEventListener("mouseenter", show);
+      node.addEventListener("mouseleave", hide);
+      node.addEventListener("focus", show);
+      node.addEventListener("blur", hide);
+    }
+    pts.forEach(function (p) {
+      var e = byEpoch[p.epoch];
+      var cls = "rs-pt" + (e && e.verdict === "PROMOTE" ? " promote" : "");
+      var c = el("circle", {
+        cx: X(p.epoch), cy: Y(p.elo), r: 4.5, "class": cls, tabindex: "0", role: "img",
+        "aria-label": "epoch " + p.epoch + ", pooled rating " + Math.round(p.elo) +
+          (e ? ", verdict " + e.verdict : ", no eval this epoch")
+      }, svg);
+      wirePoint(c, p, false);
+    });
+    if (cand) {
+      var cc = el("circle", {
+        cx: X(cand.epoch), cy: Y(cand.elo), r: 4.5, "class": "rs-pt cand", tabindex: "0", role: "img",
+        "aria-label": "epoch " + cand.epoch + " candidate label, pooled rating " + Math.round(cand.elo)
+      }, svg);
+      wirePoint(cc, cand, true);
+    }
+  })
+  .catch(function () { failFig("rcBody", "data/eval_history.json"); });
+
+/* ================= figs 2 + 3 — positions, priors, sharpening ============ */
+fetch("data/checkpoints.json")
+  .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+  .then(function (data) {
+    buildReader(data);
+    buildSharpening(data);
+  })
+  .catch(function () {
+    failFig("pbBody", "data/checkpoints.json");
+    failFig("shBody", "data/checkpoints.json");
+    $("pbRo").querySelector(".ro-k").textContent = "no data";
+    $("pbRo").querySelector(".ro-t").textContent = "";
+  });
+
+/* ---- fig 2: the board reader (compact hex-render, same idiom as network.html) */
+function buildReader(data) {
+  var set = readout("pbRo");
+  var SQ3 = Math.sqrt(3), HR = 14;
+  function XY(q, r) { return [HR * (SQ3 * q + SQ3 / 2 * r), HR * 1.5 * r]; }
+  function hexPts(cx, cy, s) {
+    var p = "";
+    for (var i = 0; i < 6; i++) {
+      var a = Math.PI / 180 * (60 * i - 30);
+      p += (cx + s * Math.cos(a)).toFixed(2) + "," + (cy + s * Math.sin(a)).toFixed(2) + " ";
+    }
+    return p.trim();
+  }
+  function K(q, r) { return q + "," + r; }
+  var DIRS = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]];
+  var KEYMAP = { ArrowRight: [[1, 0], [1, -1]], ArrowLeft: [[-1, 0], [-1, 1]],
+                 ArrowUp: [[0, -1], [1, -1]], ArrowDown: [[0, 1], [-1, 1]] };
+
+  var CKS = data.checkpoints.map(function (c) { return c.id; });
+  var POS_SHORT = { quiet_midgame: "quiet midgame", four_threat: "live four",
+                    double_threat: "double threat", late_game: "late game" };
+  var svg = $("pbBoard");
+  var curPos = data.positions[1] || data.positions[0]; /* start on the live four */
+  var curCk = CKS[0];
+  var cells = null; /* Map key -> cell record */
+  var gLab = null;
+
+  /* per-position: cell -> {ckId: p} for the cross-checkpoint readout */
+  function policyMaps(pos) {
+    var m = {};
+    CKS.forEach(function (ck) {
+      pos.per_checkpoint[ck].policy.forEach(function (e) {
+        var k = K(e.q, e.r);
+        if (!m[k]) m[k] = {};
+        m[k][ck] = e.p;
+      });
+    });
+    return m;
+  }
+
+  /* stat rows (horizon-style readout) */
+  var statRows = {};
+  (function () {
+    var wrap = $("pbStats");
+    function row(id, label, signed) {
+      var d = document.createElement("div");
+      d.className = "rs-stat";
+      var sk = document.createElement("span"); sk.className = "sk"; sk.textContent = label;
+      var mid = document.createElement("span");
+      if (signed) {
+        mid.className = "rs-sb";
+        mid.innerHTML = '<span class="mid"></span><span class="bf pos"></span>';
+      }
+      var sv = document.createElement("span"); sv.className = "sv"; sv.textContent = "–";
+      d.appendChild(sk); d.appendChild(mid); d.appendChild(sv);
+      wrap.appendChild(d);
+      statRows[id] = { v: sv, bar: signed ? mid.querySelector(".bf") : null };
+    }
+    row("value", "value", true);
+    row("stv2", "2-ply value", true);
+    row("ml", "moves left", false);
+    row("H", "entropy", false);
+    row("top1", "top-1 prior", false);
+  })();
+  function setSigned(id, v) {
+    var r = statRows[id];
+    r.v.textContent = (v < 0 ? "−" : "+") + Math.abs(v).toFixed(2);
+    var w = Math.min(Math.abs(v), 1) * 50;
+    r.bar.className = "bf " + (v < 0 ? "neg" : "pos");
+    r.bar.style.width = w.toFixed(1) + "%";
+    r.bar.style.left = (v < 0 ? 50 - w : 50).toFixed(1) + "%";
+  }
+
+  function defaultReadout() {
+    set(curPos.title + " · " + curCk + " · net priors only — no search",
+        curPos.description);
+  }
+
+  var pmaps = null;
+  function cellReadout(k) {
+    var qr = k.split(",");
+    var m = pmaps[k] || {};
+    var parts = CKS.map(function (ck) {
+      return ck + " " + (m[ck] !== undefined ? m[ck].toFixed(3) : "<0.001");
+    });
+    var hot = curPos.threats.opp_hot.some(function (c) { return K(c[0], c[1]) === k; });
+    var cur = m[curCk] !== undefined ? m[curCk].toFixed(3) : "<0.001";
+    set("cell (" + qr[0] + ", " + qr[1] + ") — p = " + cur + " under " + curCk,
+        "across the ladder: " + parts.join(" · ") +
+        (hot ? " · a cell of a live opponent four" : ""));
+  }
+
+  function buildBoard(pos) {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    pmaps = policyMaps(pos);
+    var keys = {};
+    pos.stones.forEach(function (s) {
+      keys[K(s[0], s[1])] = true;
+      for (var dq = -2; dq <= 2; dq++) for (var dr = -2; dr <= 2; dr++) {
+        if (Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr)) <= 2)
+          keys[K(s[0] + dq, s[1] + dr)] = true;
+      }
+    });
+    Object.keys(pmaps).forEach(function (k) { keys[k] = true; });
+    pos.threats.opp_hot.forEach(function (c) { keys[K(c[0], c[1])] = true; });
+
+    var stoneAt = {};
+    pos.stones.forEach(function (s) { stoneAt[K(s[0], s[1])] = s[2]; });
+
+    var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+    Object.keys(keys).forEach(function (k) {
+      var qr = k.split(","), xy = XY(+qr[0], +qr[1]);
+      minX = Math.min(minX, xy[0]); maxX = Math.max(maxX, xy[0]);
+      minY = Math.min(minY, xy[1]); maxY = Math.max(maxY, xy[1]);
+    });
+    var pad = HR + 5;
+    svg.setAttribute("viewBox", (minX - pad).toFixed(1) + " " + (minY - pad).toFixed(1) + " " +
+      (maxX - minX + 2 * pad).toFixed(1) + " " + (maxY - minY + 2 * pad).toFixed(1));
+
+    var gBase = el("g", {}, svg), gHeat = el("g", {}, svg), gHot = el("g", {}, svg),
+        gStones = el("g", {}, svg);
+    gLab = el("g", {}, svg);
+    cells = {};
+    Object.keys(keys).forEach(function (k) {
+      var qr = k.split(","), q = +qr[0], r = +qr[1], xy = XY(q, r);
+      var owner = stoneAt[k];
+      var isStone = owner !== undefined;
+      var focusable = !isStone && (pmaps[k] !== undefined ||
+        pos.threats.opp_hot.some(function (c) { return K(c[0], c[1]) === k; }));
+      var poly = el("polygon", {
+        points: hexPts(xy[0], xy[1], HR - .8),
+        "class": isStone ? "rs-stonecell" : ("rs-cell" + (focusable ? " foc" : ""))
+      }, gBase);
+      var heat = null;
+      if (!isStone) heat = el("polygon", {
+        points: hexPts(xy[0], xy[1], HR - .8), "class": "rs-pol", "fill-opacity": "0"
+      }, gHeat);
+      if (isStone) el("circle", { cx: xy[0], cy: xy[1], r: HR * .53,
+        "class": owner === 0 ? "rs-stone0" : "rs-stone1" }, gStones);
+      if (focusable) {
+        poly.setAttribute("tabindex", "0");
+        poly.setAttribute("role", "button");
+        poly.setAttribute("aria-label", "cell " + q + ", " + r);
+        poly.addEventListener("mouseenter", function () { cellReadout(k); });
+        poly.addEventListener("mouseleave", defaultReadout);
+        poly.addEventListener("focus", function () { cellReadout(k); });
+        poly.addEventListener("blur", defaultReadout);
+        poly.addEventListener("keydown", function (ev) {
+          if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); cellReadout(k); return; }
+          var cand = KEYMAP[ev.key];
+          if (!cand) return;
+          ev.preventDefault();
+          for (var i = 0; i < cand.length; i++) {
+            var t = cells[K(q + cand[i][0], r + cand[i][1])];
+            if (t && t.focusable) { t.poly.focus(); return; }
+          }
+        });
+      }
+      cells[k] = { q: q, r: r, cx: xy[0], cy: xy[1], poly: poly, heat: heat,
+                   focusable: focusable, stone: isStone };
+    });
+    pos.threats.opp_hot.forEach(function (c) {
+      var xy = XY(c[0], c[1]);
+      el("polygon", { points: hexPts(xy[0], xy[1], HR - 2.4), "class": "rs-hot" }, gHot);
+    });
+    if (pos.first_stone) {
+      var xy = XY(pos.first_stone[0], pos.first_stone[1]);
+      el("circle", { cx: xy[0], cy: xy[1], r: HR * .72, "class": "rs-first" }, gStones);
+    }
+    $("pbMove").innerHTML = "<b>P0 (blue) to move</b> · " +
+      (pos.phase === "SecondStone"
+        ? "second stone of the turn — first at (" + pos.first_stone[0] + ", " + pos.first_stone[1] + ")"
+        : "first stone of the turn") +
+      " · " + pos.legal_count + " legal moves";
+  }
+
+  function applyCk() {
+    var pc = curPos.per_checkpoint[curCk];
+    Object.keys(cells).forEach(function (k) {
+      if (cells[k].heat) cells[k].heat.setAttribute("fill-opacity", "0");
+    });
+    while (gLab.firstChild) gLab.removeChild(gLab.firstChild);
+    pc.policy.forEach(function (e) {
+      var c = cells[K(e.q, e.r)];
+      if (!c || !c.heat) return;
+      var op = 0.92 * Math.sqrt(e.p);
+      c.heat.setAttribute("fill-opacity", op.toFixed(3));
+      if (e.p >= 0.05) {
+        var t = el("text", { x: c.cx, y: c.cy + 2.6, "text-anchor": "middle",
+          "class": "rs-plab", fill: op > 0.45 ? "#0c0f13" : "var(--text)" }, gLab);
+        t.textContent = Math.round(e.p * 100) + "%";
+      }
+    });
+    setSigned("value", pc.value);
+    setSigned("stv2", pc.stv2);
+    statRows.ml.v.textContent = pc.moves_left.toFixed(1);
+    statRows.H.v.textContent = pc.entropy_nats.toFixed(2) + " nats";
+    statRows.top1.v.textContent = Math.round(pc.top1_p * 100) + "%";
+    $("pbVal").textContent = curPos.id + " · " + curCk;
+    defaultReadout();
+  }
+
+  /* controls */
+  var posBtns = [], ckBtns = [];
+  data.positions.forEach(function (pos) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = POS_SHORT[pos.id] || pos.id;
+    b.setAttribute("aria-pressed", String(pos === curPos));
+    if (pos === curPos) b.classList.add("sel");
+    b.addEventListener("click", function () {
+      curPos = pos;
+      posBtns.forEach(function (x) {
+        x.b.classList.toggle("sel", x.pos === pos);
+        x.b.setAttribute("aria-pressed", String(x.pos === pos));
+      });
+      buildBoard(curPos);
+      applyCk();
+    });
+    $("pbPosBtns").appendChild(b);
+    posBtns.push({ b: b, pos: pos });
+  });
+  var ckWrap = $("pbCkBtns");
+  data.checkpoints.forEach(function (ck) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = ck.id;
+    b.setAttribute("aria-pressed", String(ck.id === curCk));
+    if (ck.id === curCk) b.classList.add("sel");
+    b.addEventListener("click", function () {
+      curCk = ck.id;
+      ckBtns.forEach(function (x) {
+        x.b.classList.toggle("sel", x.id === curCk);
+        x.b.setAttribute("aria-pressed", String(x.id === curCk));
+      });
+      applyCk();
+    });
+    ckWrap.insertBefore(b, ckWrap.querySelector(".spacer"));
+    ckBtns.push({ b: b, id: ck.id });
+  });
+
+  buildBoard(curPos);
+  applyCk();
+}
+
+/* ---- fig 3: entropy bars, positions x checkpoints, from sharpening.rows */
+function buildSharpening(data) {
+  var set = readout("shRo");
+  var svg = $("shChart");
+  var rows = data.sharpening.rows;
+  var CKS = data.checkpoints.map(function (c) { return c.id; });
+  var NAMES = { quiet_midgame: "quiet midgame", four_threat: "live four",
+                double_threat: "double threat", late_game: "late game" };
+  var OPS = [0.22, 0.42, 0.62, 0.85];
+
+  var L = 56, R = 20, T = 26, B = 44, W = 860, H = 300;
+  var yMax = 2.5;
+  function Y(v) { return T + (yMax - v) / yMax * (H - T - B); }
+  for (var g = 0; g <= yMax + 1e-9; g += 0.5) {
+    el("line", { x1: L, y1: Y(g), x2: W - R, y2: Y(g), "class": "rs-grid" }, svg);
+    var gl = el("text", { x: L - 8, y: Y(g) + 3, "text-anchor": "end", "class": "rs-alab" }, svg);
+    gl.textContent = g.toFixed(1);
+  }
+  var ax = el("text", { x: L, y: T - 10, "class": "rs-alab" }, svg);
+  ax.textContent = "policy entropy (nats) · uniform over these legal sets ≈ 4.9–5.3";
+
+  var groupW = (W - L - R) / rows.length;
+  var barW = 30, gap = 7;
+  var DEF_K = "policy sharpening";
+  var DEF_T = "hover or tab through the bars — real entropies from the run’s checkpoints, with each position’s legal-move count and top-1 probability.";
+  rows.forEach(function (row, ri) {
+    var gx = L + ri * groupW + (groupW - (barW * 4 + gap * 3)) / 2;
+    CKS.forEach(function (ck, ci) {
+      var Hv = row.entropy[ck];
+      var x = gx + ci * (barW + gap);
+      var y = Y(Hv), h = Math.max(1.5, Y(0) - y);
+      if (Y(0) - y < 1.5) y = Y(0) - 1.5;
+      var bar = el("rect", {
+        x: x, y: y, width: barW, height: h, "class": "rs-bar",
+        "fill-opacity": OPS[ci], tabindex: "0", role: "img",
+        "aria-label": (NAMES[row.position] || row.position) + " at " + ck + ": " +
+          Hv.toFixed(2) + " nats"
+      }, svg);
+      var vl = el("text", { x: x + barW / 2, y: y - 4, "text-anchor": "middle", "class": "rs-blab" }, svg);
+      vl.textContent = Hv.toFixed(2);
+      (function (row, ck, Hv) {
+        var show = function () {
+          set((NAMES[row.position] || row.position) + " · " + ck + " — " +
+              Hv.toFixed(2) + " nats over " + row.legal_count + " legal moves",
+              "top-1 prior " + Math.round(row.top1_p[ck] * 100) + "% · a uniform policy here would be " +
+              row.max_entropy_nats.toFixed(2) + " nats · checkpoints left to right: " + CKS.join(", "));
+        };
+        var hide = function () { set(DEF_K, DEF_T); };
+        bar.addEventListener("mouseenter", show);
+        bar.addEventListener("mouseleave", hide);
+        bar.addEventListener("focus", show);
+        bar.addEventListener("blur", hide);
+      })(row, ck, Hv);
+    });
+    var xl = el("text", { x: L + ri * groupW + groupW / 2, y: H - B + 18,
+      "text-anchor": "middle", "class": "rs-leg" }, svg);
+    xl.textContent = NAMES[row.position] || row.position;
+  });
+  /* checkpoint legend */
+  var lx = L;
+  CKS.forEach(function (ck, ci) {
+    el("rect", { x: lx, y: H - 16, width: 10, height: 10, "class": "rs-bar",
+      "fill-opacity": OPS[ci], "pointer-events": "none" }, svg);
+    var t = el("text", { x: lx + 15, y: H - 7, "class": "rs-leg" }, svg);
+    t.textContent = ck;
+    lx += 15 + ck.length * 8 + 22;
+  });
+}
+})();
+</script>
+
+</body>
+</html>
