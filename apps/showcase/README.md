@@ -28,6 +28,17 @@ The server imports `hexo_engine`, `hexfield`, and `hexo_utils` only. Model
 inference runs in `SHOWCASE_WORKERS` spawned worker processes, each holding
 the full catalogue resident; the web process never imports torch.
 
+## Docker
+
+The production deployment is containerized: a multi-stage `Dockerfile`
+(maturin-built extension wheels + CPU torch, serves `web/` statically) and a
+`docker-compose.yml` that pairs the server with a Cloudflare tunnel.
+Checkpoints are a mounted volume, never baked into the image. Note the build
+context is the REPO ROOT (`docker build -f apps/showcase/Dockerfile .`);
+compose is already set up that way. First-run walkthrough, model-dir layout,
+and the ops runbook (update / logs / backup / kill switch):
+[`deploy/README.md`](deploy/README.md).
+
 ## Running locally
 
 From the repo root, in an env with the repo's extensions built (see the main

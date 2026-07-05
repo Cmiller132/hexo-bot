@@ -1,0 +1,34 @@
+# Build-context filter for apps/showcase/Dockerfile (context = repo root —
+# the maturin builds need the workspace Cargo.toml/Cargo.lock plus
+# packages/{hexo_engine,hexo_utils,hexfield}).
+# Everything the image build does not consume stays out of the context.
+
+.git
+.gitignore
+.claude
+.venv
+docs
+models
+runs
+data
+scripts
+tests
+target
+**/target
+**/__pycache__
+**/.pytest_cache
+**/*.so
+**/*.pyd
+**/*.pyc
+**/*.pt
+**/*.log
+
+# Packages the showcase never imports (dev dashboard / training / runner)
+packages/hexo_frontend
+packages/hexo_runner
+packages/hexo_train
+
+# Showcase-local things that must never enter the image
+apps/showcase/tests
+apps/showcase/.env
+apps/showcase/deploy

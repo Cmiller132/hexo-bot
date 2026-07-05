@@ -10,6 +10,11 @@ __pycache__/
 *.log
 .claude/
 
+# Showcase deployment: secrets and mounted model dir (never committed)
+apps/showcase/.env
+apps/showcase/deploy/models/*
+!apps/showcase/deploy/models/.gitkeep
+
 # Data caches — keep only scaffolding .gitkeep files
 data/*
 !data/*/
