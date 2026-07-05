@@ -79,12 +79,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 <main class="learn-main">
   <h1>The training <span class="h-dim">— learning from its own games</span></h1>
   <p class="lede">
-    Nobody teaches Hexfield how to play. Each epoch it plays a batch of games
-    against itself, keeps a record of what its search concluded at every
-    decision, and then trains the network to predict those conclusions — and
-    the games' final outcomes — directly. The search is the teacher; the net
-    is the student; every few epochs a standalone evaluator measures whether
-    the student actually got stronger.
+    Hexfield trains only on its own games. Each epoch it plays a batch of
+    games against itself, records what its search concluded at every
+    decision, and trains the network to predict those conclusions and the
+    games' final outcomes. Every few epochs a standalone evaluator measures
+    whether the network got stronger.
   </p>
 
   <!-- All numbers below are the live run config: configs/hexfield_main_7.toml.
@@ -108,23 +107,22 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     re-selected over everything played so far, the net <b>trains</b> for a
     single pass over a sample of that window, a <b>checkpoint</b> is saved
     (every epoch, unconditionally), and an <b>evaluation</b> stage runs every
-    fifth epoch. Then the loop repeats with the slightly-better net.
+    fifth epoch. The loop then repeats with the updated net.
   </p>
   <p>
-    Self-play is not just "play your best move 256 times" — data that
-    exploitative would collapse into a handful of repeated games. Several
-    knobs deliberately shape the data:
+    Purely greedy self-play would collapse into a handful of repeated games,
+    so three mechanisms shape the data:
   </p>
   <ul>
     <!-- PCR = playout cap randomization: selfplay.py:467 "Fast
          (playout-cap-randomized) decisions"; full rows carry policy targets,
          fast rows are written value-only (policy_valid=0): selfplay.py:245-258,
          372-376. Fast plays the greedy T=0 LCB pick: config toml L41-45. -->
-    <li><b>Playout-cap randomization (PCR).</b> Only a random ~33% of decisions
+    <li><b>Playout-cap randomization (PCR).</b> A random ~33% of decisions
       get the full 1024-visit search; those become the rows the policy learns
-      from. The rest run a cheap 192-visit search and are played greedily
-      (temperature 0) — they exist to finish games fast and are recorded as
-      <em>value-only</em> rows. Cheap games mean more games, which means more
+      from. The rest run a 192-visit search, are played greedily
+      (temperature 0), and are recorded as
+      <em>value-only</em> rows. The lower cost yields more games and more
       diverse final outcomes for the value head, without diluting the policy
       targets with shallow searches.</li>
     <!-- Opening exploration: policy_init_fraction=0.25, avg 4 plies, max 8,
@@ -134,16 +132,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
       (average 4, at most 8) sampled straight from the net's prior at a high
       temperature, skipping search entirely; those init rows are never
       trained on. After that, moves are sampled with a play temperature that
-      starts at 1.0 and halves every 10 plies down to a floor of 0.15 —
-      exploratory early, near-deterministic late.</li>
+      starts at 1.0 and halves every 10 plies down to a floor of 0.15, so
+      play is exploratory early and near-deterministic late.</li>
     <!-- gumbel_draw_temperature=1.5 widens ONLY the candidate draw (toml
          L100-103, config.py:104-108). -->
     <li><b>A widened candidate draw.</b> The Gumbel root sampler picks its 32
       root candidates from a softened version of the prior
-      (draw&nbsp;temperature&nbsp;1.5). Only the <em>draw</em> is softened — the
-      ranking, the played move, and the exported target all use raw logits —
-      so the search occasionally examines moves the prior underrates, which is
-      exactly how the prior's blind spots get corrected.</li>
+      (draw&nbsp;temperature&nbsp;1.5). Only the <em>draw</em> is softened; the
+      ranking, the played move, and the exported target all use raw logits.
+      The search therefore occasionally examines moves the prior underrates,
+      which corrects the prior's blind spots.</li>
   </ul>
   <!-- Two-stones-per-turn: features.py:80-93 (record_phase/record_player) —
        P0 places one opening stone, then two placements per turn
@@ -151,7 +149,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
        Artifacts: selfplay.py:287-310 (.hxr) and 372-385 (game_KEY.npz + json
        sidecar as commit marker, selfplay.py:865-870). -->
   <p>
-    Each placement — the opening single stone, then two per turn — is searched
+    Each placement (the opening single stone, then two per turn) is searched
     and recorded as its own decision, with a phase feature (first or second
     stone of the turn) so the net always knows which half of a turn it is
     choosing. Every finished game leaves two artifacts: a compact per-game
@@ -176,10 +174,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     </div>
   </figure>
 
-  <h2 id="targets"><span class="sec-no">02</span>What the net learns from</h2>
+  <h2 id="targets"><span class="sec-no">02</span>Training targets</h2>
   <p>
-    Every full-search row stores a handful of targets. The two that matter
-    most:
+    Every full-search row stores several targets. The two primary ones:
   </p>
   <ul>
     <!-- π' target: config.py:82-84 (π'=softmax(logits+σ(completedQ)),
@@ -187,23 +184,23 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
          export-only softening gumbel_target_c_scale=0.35 (toml L98),
          min_visits=1 (toml L104). Per-row fallback to visit target:
          losses.py:244-257. policy_target="gumbel": toml L144. -->
-    <li><b>The improved policy π′.</b> Not the raw visit counts and not the
-      net's own prior, but the Gumbel-AlphaZero improved policy:
+    <li><b>The improved policy π′.</b> The Gumbel-AlphaZero improved policy:
       <span class="eq" style="display:block">π′ = softmax( logits + σ(completed&nbsp;Q) ),&nbsp;&nbsp;σ(q) = (c<sub>visit</sub> + max<sub>b</sub>&nbsp;N(b)) · c<sub>scale</sub> · q</span>
-      — the prior's logits nudged by each candidate's search-estimated value.
+      This is the prior's logits adjusted by each candidate's search-estimated
+      value.
       Candidates need at least 1 visit to enter the target's support, and the
       exported target uses a softened c<sub>scale</sub> of 0.35 (the search
-      itself ranks with 1.0), because the raw target was measurably too sharp
-      to be a good teaching signal. Rows without a π′ target fall back to the
+      itself ranks with 1.0), because the raw target proved too sharp
+      as a training signal. Rows without a π′ target fall back to the
       plain visit-count distribution, per row.</li>
     <!-- Hard z: selfplay.py:6-8 "finalizes targets (hard z ...)";
          samples.py:63-66 (+1/-1 from mover's perspective). Binning:
          losses.py:63-82 scalar_to_binned_target, VALUE_BINS=65
          (constants.py:74), adjacent-bin two-hot; decode = softmax
          expectation (losses.py:47-51). -->
-    <li><b>The outcome z.</b> The game's final result — +1 or −1 from the
-      mover's perspective — attached to every row of the game. The value head
-      is not a single number: it is a distribution over 65 support points
+    <li><b>The outcome z.</b> The game's final result, +1 or −1 from the
+      mover's perspective, attached to every row of the game. The value head
+      outputs a distribution over 65 support points
       spanning [−1,&nbsp;+1], trained with cross-entropy against a "two-hot"
       target that splits its mass between the two bins adjacent to z, and
       decoded at play time as the softmax expectation. Truncated games mask
@@ -216,25 +213,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
        Surprise reweight: KL(visit||prior) selfplay.py:180-187, uniform
        fraction .5 / max 8 (toml L129-130). -->
   <p>
-    Around those two sit auxiliary targets that regularize the trunk:
+    Auxiliary targets regularize the trunk:
     <b>short-term values</b> at horizons of 2, 6 and 16 turns (exponential
-    averages of future search values, decay (m−1)/(m+1) — a less noisy,
-    nearer-term echo of z), a <b>moves-left</b> head (turns until the game
-    ends, capped at 209 and binned the same way), the <b>opponent's reply
-    policy</b>, a per-move <b>Q head</b>, and a square-root-softened copy of
+    averages of future search values, decay (m−1)/(m+1)), a less noisy,
+    nearer-term signal than z; a <b>moves-left</b> head (turns until the game
+    ends, capped at 209 and binned the same way); the <b>opponent's reply
+    policy</b>; a per-move <b>Q head</b>; and a square-root-softened copy of
     π′ for a soft-policy head. In this run they are weighted 1.0 (policy),
     1.0 (value), 0.25 (opponent policy), 0.1 (short-term), 0.2 (moves-left),
-    0.1 (Q), 1.0 (soft). One more twist: rows where the search disagreed most
-    with the prior — measured as KL(visits‖prior) — get up to 8× weight in
-    the policy loss. The net spends its gradient where it was most wrong.
+    0.1 (Q), 1.0 (soft). Rows where the search disagreed most
+    with the prior, measured as KL(visits‖prior), get up to 8× weight in
+    the policy loss.
   </p>
   <p class="note">
-    <b>The key idea.</b> The policy head distills the <em>search</em> and the
-    value head distills the <em>future</em>. Whatever 1024 visits of search
-    concluded this generation becomes the next generation's zero-visit
-    instinct — and since the search starts from that better instinct, its own
-    conclusions improve too. That closed loop, run a couple hundred times, is
-    the entire training method.
+    <b>The loop.</b> The policy head distills the <em>search</em> and the
+    value head distills the <em>outcome</em>. What 1024 visits of search
+    concluded in one generation becomes the next generation's zero-visit
+    prior, and the next generation's search starts from that stronger prior.
+    This cycle, repeated a few hundred times, is the training method.
   </p>
 
   <figure class="fig fig-wide" id="fig-targets">
@@ -254,7 +250,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 
   <h2 id="replay"><span class="sec-no">03</span>The shuffle window</h2>
   <p>
-    The net never trains only on the newest games. Shards accumulate across
+    Shards accumulate across
     epochs, and each epoch trains on a <b>window</b> over the most recent
     rows, KataGo-style. If the run has produced T usable rows in total, the
     window covers the newest
@@ -265,30 +261,29 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
        trainer.py:281-288 with max(_, min_rows) clamp. -->
   <p class="eq">W(T) = 20,000 + 0.8 · ( x<sup>0.65</sup> − c<sup>0.65</sup> ) / ( 0.65 · c<sup>−0.35</sup> ),&nbsp;&nbsp; x = T − 20,000 + c,&nbsp; c = 20,000</p>
   <p>
-    rows — a power-law taper. Early on the window grows nearly one-for-one
+    rows, a power-law taper. Early on the window grows nearly one-for-one
     with new data (0.8 new window rows per new row); by a million rows the
     growth rate has tapered to about 0.2, so the window keeps sliding forward
     but covers an ever-smaller <em>fraction</em> of history. The cut is made
     in whole per-game shards, newest first. If the window exceeds 600,000
     rows, files are uniformly thinned back toward that target; from what
-    survives, 96,000 rows are drawn for exactly one training pass — no row
+    survives, 96,000 rows are drawn for exactly one training pass. No row
     repeats within an epoch, and a reuse governor caps training at 8 samples
-    per newly generated row so the optimizer can never spin on stale data.
+    per newly generated row, bounding how often stale data is revisited.
     <!-- select_recent_window whole-shard cut: window.py:657-675; keep_prob:
          window.py:645-654 with shuffle_keep_target_rows=600000 (toml L133);
          train_samples_per_epoch=96000 (toml L138); single pass, no repeat:
          trainer.py:9-19; governor max_train_bucket_per_new_data=8 (toml L139).
          Sampling within the window is uniform (no per-row freshness weights);
          recency preference comes from the sliding cut itself. -->
-    Within the window, sampling is uniform — recency bias comes from the
-    window's shape, not from per-row weights.
+    Within the window, sampling is uniform; recency preference comes from the
+    sliding cut rather than per-row weights.
   </p>
   <p>
-    Why a window at all? Pure-latest training is unstable: the net chases its
-    own newest quirks, forgets openings it no longer plays, and can oscillate.
-    Pure-everything training is stale: month-old games were played by a much
-    weaker player and teach outdated conclusions. The taper is the compromise
-    — old enough to be stable, new enough to keep up.
+    The window balances two failure modes. Training only on the newest games
+    is unstable: the data distribution shifts every epoch and openings that
+    stop appearing are forgotten. Training on all history is stale: old games
+    were played by a much weaker player. The taper sits between the two.
   </p>
   <!-- D6: 12 elements (6 rotations × 2 reflections): hexo_utils/encoding/
        symmetry.py:22 D6_SIZE=12; trainer.py:71,480-482 draws one per row per
@@ -296,11 +291,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
        augmentation doesn't apply; hex boards have the order-12 dihedral group. -->
   <p>
     At train time every sampled row is also re-expressed under one of the hex
-    board's <b>12 symmetries</b> — 6 rotations × 2 reflections, the dihedral
-    group D6 (hex boards get 12, not the 8 of square boards). The symmetry is
+    board's <b>12 symmetries</b> (6 rotations × 2 reflections, the dihedral
+    group D6). The symmetry is
     drawn deterministically per row per epoch, so a row that survives in the
-    window for 20 epochs is seen from up to 12 different angles: a 12× data
-    multiplier that costs nothing to store.
+    window for 20 epochs is seen in up to 12 different orientations, a 12×
+    data multiplier with no storage cost.
   </p>
 
   <figure class="fig fig-wide" id="fig-window">
@@ -311,7 +306,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
           <svg id="wnSvg" viewBox="0 0 660 250" role="img" aria-label="Epoch shards as bars with the training window shaded"></svg>
         </div>
         <div class="f3-inset">
-          <div class="f3-inset-tag">D6 — click to cycle 12 variants</div>
+          <div class="f3-inset-tag">D6 · click to cycle 12 variants</div>
           <svg id="d6Svg" viewBox="0 0 220 190" role="button" tabindex="0" aria-label="Cycle through the 12 symmetric variants of a position" style="cursor:pointer"></svg>
           <div class="d6-btnrow">
             <button id="d6Next">next variant</button>
@@ -328,7 +323,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     <div class="fig-readout" aria-live="polite" id="wnRO"></div>
   </figure>
 
-  <h2 id="eval"><span class="sec-no">04</span>Knowing it's improving</h2>
+  <h2 id="eval"><span class="sec-no">04</span>Evaluation</h2>
   <!-- Multistage eval: toml L151-159 (128 games, every 5 epochs, 512 visits,
        sealbot_share=.25 but sealbot_enabled=false L168, bracket_size=1 L169,
        permanent_anchors=[] L175, sprt disabled L162, verdict_reference_lag=5
@@ -340,15 +335,15 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
        enabled; disabled here, so the pool floats relative to its anchors.
        Resolution ~100-120 Elo/epoch: config.py:189-192. -->
   <p>
-    Loss curves alone can't tell you a Go-like bot got stronger — the loss
-    target itself moves every epoch. So every fifth epoch a standalone
+    Loss curves do not measure strength directly, because the loss
+    target moves every epoch. Every fifth epoch a standalone
     evaluator plays the fresh checkpoint through <b>128 paired games</b> at
     512 visits against a small roster of earlier checkpoints: a rung from a
     fixed log-spaced grid of past epochs plus a reference checkpoint lagged
     five epochs back. Pairs share an opening (temperature-sampled, then
-    seat-swapped), so both players face the same starts — common random
-    numbers that cancel opening luck out of the comparison. Each pair scores
-    <b>pentanomially</b> (0, ½, 1, 1½ or 2 points), which correctly accounts
+    seat-swapped), so both players face the same starts and opening luck
+    cancels out of the comparison. Each pair scores
+    <b>pentanomially</b> (0, ½, 1, 1½ or 2 points), which accounts
     for the correlation between a pair's two games, and every edge is pooled
     into a persisted <b>Bradley-Terry</b> rating fit across all checkpoints
     evaluated so far. A single 128-game epoch only resolves ~100–120 Elo;
@@ -356,20 +351,20 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
   </p>
   <p>
     An external minimax bot (SealBot) can be added as a cross-lineage
-    yardstick pinned at 0 Elo — the "zero-point" the whole rating scale hangs
-    from. In this run it's switched off, so ratings float relative to the
-    run's own anchor checkpoints: differences between epochs are meaningful,
+    reference pinned at 0 Elo, fixing the scale's zero point. It is disabled
+    in this run, so ratings float relative to the
+    run's own anchor checkpoints: differences between epochs are meaningful;
     the absolute numbers are not.
   </p>
   <p class="note">
-    <b>Informational, not gating.</b> The evaluator emits a
-    PROMOTE / REGRESS / INCONCLUSIVE verdict — and nothing reads it. Every
+    <b>Informational verdict.</b> The evaluator emits a
+    PROMOTE / REGRESS / INCONCLUSIVE verdict, and nothing consumes it. Every
     epoch's checkpoint becomes the next epoch's self-play engine regardless.
-    That is deliberate: with steady learning-rate training a genuine
-    regression shows up as a trend, not a single bad epoch, and gating on a
-    ~50-Elo-noise measurement would mostly veto good checkpoints. The
-    verdict exists for the humans watching the run. The run&rsquo;s actual
-    rating history, from this same eval pipeline, is on
+    With steady learning-rate training a genuine
+    regression shows up as a trend rather than a single bad epoch, and gating
+    on a measurement with ~50 Elo of noise would mostly veto good
+    checkpoints. The verdict is for the people monitoring the run. The
+    run&rsquo;s rating history, from this same eval pipeline, is on
     <a href="results.html">the results</a> page.
   </p>
 
@@ -384,22 +379,21 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     </div>
   </figure>
 
-  <h2 id="close"><span class="sec-no">05</span>The whole loop</h2>
+  <h2 id="close"><span class="sec-no">05</span>Summary</h2>
   <p>
     The net plays 256 games against itself, recording what its search
     concluded at every full-strength decision. It then trains on a tapered
     window of recent experience, learning to predict the search's improved
-    policy and the games' eventual outcomes in a single glance. The new
-    checkpoint immediately becomes the player for the next epoch's games, so
-    every generation's search distills into the next generation's instinct.
-    Every fifth epoch, paired matches against its own past measure the climb
-    — but win or lose, the loop just keeps turning.
+    policy and the games' eventual outcomes in a single forward pass. The new
+    checkpoint becomes the player for the next epoch's games, so
+    every generation's search distills into the next generation's prior.
+    Every fifth epoch, paired matches against earlier checkpoints measure
+    progress; the result does not gate the loop.
   </p>
   <p>
-    That closes the algorithm. For how the parts fit together, head back to
-    <a href="index.html">the overview</a> — or continue to
-    <a href="results.html">the results</a> to watch this loop's real rating
-    climb, measured every fifth epoch.
+    <a href="index.html">The overview</a> shows how the parts fit together.
+    <a href="results.html">The results</a> page shows this run's measured
+    rating over epochs.
   </p>
 </main>
 
@@ -441,7 +435,7 @@ function lcg(seed){var s=seed>>>0;return function(){s=(1664525*s+1013904223)>>>0
     {name:'train',tick:'96k rows · ~375 steps',
      desc:'One pass over 96,000 sampled rows, each under a fresh D6 symmetry. AdamW at lr 5e-4, batch 256 rows, adaptive grad-clip. No row repeats within the epoch.'},
     {name:'checkpoint',tick:'every epoch',
-     desc:'Save epoch_NNNNNN.pt unconditionally. This checkpoint is the self-play engine for the next epoch — no gate, no promotion decision.'},
+     desc:'Save epoch_NNNNNN.pt unconditionally. This checkpoint is the self-play engine for the next epoch; no gate or promotion decision applies.'},
     {name:'evaluate',tick:'128 games · every 5th',
      desc:'Every fifth epoch: 128 paired games at 512 visits vs earlier checkpoints, scored pentanomially, pooled into the Bradley-Terry rating fit. Informational only.'}
   ];
@@ -455,7 +449,9 @@ function lcg(seed){var s=seed>>>0;return function(){s=(1664525*s+1013904223)>>>0
   STAGES.forEach(function(st,i){
     var a0=i*SEG+GAP/2,a1=(i+1)*SEG-GAP/2;
     var g=el('g',{class:'wh-stage',tabindex:'0',role:'button',
-      'aria-label':st.name+' — '+st.tick},svg);
+      'aria-label':st.name+' · '+st.tick},svg);
+    // transparent wide stroke: tap-sized hit area for the arc (no visual change)
+    el('path',{d:arc(a0,a1,R),fill:'none',stroke:'transparent','stroke-width':'48'},g);
     el('path',{class:'wh-arc',d:arc(a0,a1,R)},g);
     var mid=(a0+a1)/2,lp=pol(mid,R+34);
     var anchor=Math.cos((mid-90)*Math.PI/180)>0.35?'start':(Math.cos((mid-90)*Math.PI/180)<-0.35?'end':'middle');
@@ -508,7 +504,7 @@ function lcg(seed){var s=seed>>>0;return function(){s=(1664525*s+1013904223)>>>0
     if(raf){cancelAnimationFrame(raf);raf=null;}
     if(done){tAcc=0;epoch++;epLab.textContent='epoch n+'+(epoch-1);
       prog.setAttribute('visibility','hidden');dot.setAttribute('visibility','hidden');
-      setRO('cycle complete','Checkpoint saved — the loop starts over with a slightly better net.');}
+      setRO('cycle complete','Checkpoint saved; the loop repeats with the updated net.');}
     else{tAcc+=performance.now()-t0;}
     t0=null;runBtn.setAttribute('aria-pressed','false');runBtn.classList.remove('on');
   }
@@ -565,15 +561,15 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
   // occasional overturn, hard z per mover) matches the real pipeline.
   var PLIES=[
     {ply:3, prior:[.22,.18,.16,.15,.15,.14], pi:[.34,.23,.14,.12,.09,.08], stv:[.04,.06,.10],
-     note:'Opening. The prior is diffuse; 1024 visits sharpen it only mildly — many moves really are close.'},
+     note:'Opening. The prior is diffuse; 1024 visits sharpen it only mildly, since many moves are close in value.'},
     {ply:9, prior:[.30,.25,.15,.12,.10,.08], pi:[.55,.21,.10,.07,.04,.03], stv:[.08,.13,.21],
      note:'The search agrees with the prior’s top pick and concentrates mass on it.'},
     {ply:12,prior:[.35,.24,.14,.12,.08,.07], pi:[.10,.08,.62,.11,.05,.04], stv:[.11,.19,.30],
-     note:'Overturned: search found C better than the prior’s favourite A. High KL(visits‖prior) — this row gets up-weighted (up to 8×) in the policy loss.'},
+     note:'Overturned: search found C better than the prior’s favourite A. KL(visits‖prior) is high, so this row is up-weighted (up to 8×) in the policy loss.'},
     {ply:24,prior:[.41,.22,.14,.10,.07,.06], pi:[.66,.15,.09,.05,.03,.02], stv:[.18,.28,.44],
      note:'Middlegame. The value trend (short-term horizons 2/6/16) is drifting toward the eventual winner.'},
     {ply:33,prior:[.55,.18,.10,.08,.05,.04], pi:[.80,.09,.05,.03,.02,.01], stv:[.35,.52,.71],
-     note:'The prior — trained on earlier generations of exactly this signal — is already close to the search’s answer.'},
+     note:'The prior, trained on earlier generations of this signal, is already close to the search’s answer.'},
     {ply:44,prior:[.62,.14,.09,.07,.04,.04], pi:[.93,.03,.02,.01,.005,.005], stv:[.62,.78,.90],
      note:'Near-forced late move: π′ is almost one-hot and z is no longer in doubt.'}
   ];
@@ -772,7 +768,7 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
       var xy=hexXY(p[0],p[1],SZ);
       el('circle',{class:s[2]?'hx-p1':'hx-p0',cx:CX+xy[0],cy:CY+xy[1],r:SZ*0.5},d6svg);
     });
-    txt(el('text',{class:'tick-t',x:CX,y:182,'text-anchor':'middle'},d6svg),'same position to the loss — 12 views to the net');
+    txt(el('text',{class:'tick-t',x:CX,y:182,'text-anchor':'middle'},d6svg),'same position to the loss; 12 views to the net');
     var rot=(vi%6)*60;
     d6val.textContent=(vi+1)+' / 12 · '+(vi===0?'identity':(vi===6?'reflect':('rot '+rot+'°'+(vi>=6?' + reflect':''))));
   }
@@ -797,7 +793,7 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
     var se=22+55*Math.exp(-e/30);
     pts.push({e:e,r:base+wob,se:se});
   }
-  // one soft dip to keep it honest
+  // one soft dip for realism
   pts[8].r-=38;
   var X0=56,X1=870,Y0=26,Y1=246;
   var rMax=760;
@@ -834,7 +830,10 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
     var lagged=Math.max(5,p.e-5);
     var rec='ep '+p.e+' · rating +'+Math.round(p.r)+' ± '+Math.round(p.se)+
       ' · 128 paired games @512 visits vs ep'+lagged+' + bracket rung'+
-      ' · pairs W/D/L '+w+'/'+dr+'/'+l+' · verdict '+verdict+' (informational — nothing gates)';
+      ' · pairs W/D/L '+w+'/'+dr+'/'+l+' · verdict '+verdict+' (informational; nothing gates)';
+    // transparent halo under the point: a tap-sized hit target (no visual change)
+    var hit=el('circle',{cx:px(p.e),cy:py(p.r),r:14,fill:'transparent',
+      style:'cursor:pointer'},svg);
     var c=el('circle',{class:'rc-pt',cx:px(p.e),cy:py(p.r),r:5,tabindex:'0',role:'button',
       'aria-label':rec},svg);
     function show(){
@@ -844,12 +843,15 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
       var b=document.createElement('span');b.className='ro-t';
       b.textContent='128 paired games at 512 visits (shared openings, seat-swapped) vs the ep'+lagged+
         ' reference and a log-grid rung · pentanomial pairs W/D/L '+w+'/'+dr+'/'+l+
-        ' · pooled into eval_pool.json. Verdict is informational — the checkpoint ships regardless.';
+        ' · pooled into eval_pool.json. Verdict is informational; the checkpoint ships regardless.';
       ro.appendChild(a);ro.appendChild(b);
     }
     c.addEventListener('mouseenter',show);
     c.addEventListener('focus',show);
+    c.addEventListener('click',show);
     c.addEventListener('keydown',function(ev){if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();show();}});
+    hit.addEventListener('mouseenter',show);
+    hit.addEventListener('click',show);
   });
 })();
 })();

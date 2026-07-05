@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hexo — how it works — the results</title>
-<meta name="description" content="What training actually bought: the real rating curve of the hexfield_main_7 run, four positions read by four checkpoints of the same net, and the policy-sharpening story — all from the run's own eval records.">
+<meta name="description" content="The rating curve of the hexfield_main_7 run, four positions read by four checkpoints of the same net, and policy-sharpening measurements, all from the run's eval records.">
 <link rel="stylesheet" href="learn.css">
 <style>
 /* Inline fallback: design tokens + minimal base so this page is readable even
    if learn.css has not been generated yet. learn.css, when present, carries the
-   full scaffold and simply re-declares these tokens identically. */
+   full scaffold and re-declares these tokens identically. */
 :root{
   --bg:#101317;--tile:#161b21;--line:#242c35;--line-soft:#1c232b;
   --text:#d4dbe3;--muted:#79848f;--dim:#4c565f;
@@ -96,12 +96,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 <h1>The results <span class="h-dim">&mdash; strength over training</span></h1>
 
 <p class="lede">
-The training chapter ends with a loop that promises improvement; this page
-checks the receipt. Two instruments, both read from the run&rsquo;s own
-records: an arena that pits frozen checkpoints against a fixed pool every five
-epochs and fits one pooled rating over everything it has ever seen, and four
-curated positions read by four ages of the same network &mdash; no search,
-just the raw priors &mdash; to see what those rating points are made of.
+This page reports the measured results of the run, read from its own records.
+It uses two instruments: an arena that plays frozen checkpoints against a
+fixed pool every five epochs and fits one pooled rating over all recorded
+games, and four fixed positions read by four checkpoints of the same network
+with the search disabled, showing the raw priors.
 </p>
 
 <div class="note">
@@ -117,11 +116,11 @@ four fixed positions). Nothing on this page is illustrative or synthetic.
 
 <p>
 Every five epochs the run branches off a <b>128-game evaluation at 512
-visits</b>. The candidate plays the reigning champion, a bracket of the
+visits</b>. The candidate plays the current champion, a bracket of the
 run&rsquo;s own frozen checkpoints, the final nets of two earlier runs
 (<code>main5_ep105</code>, <code>main6_ep73</code>), and SealBot, a scripted
 tactical opponent. Checkpoint matches are <em>paired</em>: each opening is
-played twice with sides swapped and scored as a pair &mdash; the pentanomial
+played twice with sides swapped and scored as a pair. The pentanomial
 records in the readout below are those LL&hellip;WW pair histograms. Every
 match edge accumulates into one pooled Bradley&ndash;Terry fit (70 edges over
 27 players by the latest eval), and the curve is the latest fit&rsquo;s rating
@@ -129,30 +128,29 @@ for each frozen checkpoint label.
 </p>
 
 <p>
-Read the y-axis for what it is. SealBot is pinned at 0 to give the pool a zero
-point, and every number is a position <em>within this particular pool of
-frozen opponents</em> &mdash; not absolute Elo, not comparable to anything
-outside the run. The verdicts are informational too: this run promotes
-nothing. The next epoch trains from the newest weights whether the eval says
-PROMOTE or not, and ten of twelve verdicts were INCONCLUSIVE &mdash; which, at
-a 128-game budget with confidence intervals routinely &plusmn;100 points, is
-the honest expected outcome, not a failure.
+SealBot is pinned at 0 to give the pool a zero
+point, and every number is a position within this pool of
+frozen opponents; the numbers are not absolute Elo and are not comparable
+outside the run. The verdicts are informational: the next epoch trains from
+the newest weights regardless of the verdict. Ten of twelve verdicts were
+INCONCLUSIVE, the expected outcome at
+a 128-game budget with confidence intervals routinely &plusmn;100 points.
 </p>
 
 <p>
-The shape is a climb with real dents in it. From &minus;21 at ep5 to +231 at
+The curve climbs overall with local dips. From &minus;21 at ep5 to +231 at
 ep60 is about 250 points of pool-relative strength, but the middle sags: the
 pooled table puts ep20 at &minus;97 and ep25 at &minus;177, below ep5&rsquo;s
-point estimate. Part of that is thin evidence &mdash; those labels spend their
-later lives as sparring targets (by the epoch-40 eval, ep40 swept ep20 eight
-pairs to none), and ep25&rsquo;s interval spans [&minus;447,&nbsp;+93] &mdash;
-but part may be a genuine mid-run trough; the intervals overlap far too much
-to say which. A caution on how noisy thin labels get: the epoch-25 weights sit
+point estimate. Part of that is thin evidence: those labels later serve
+mainly as opponents (by the epoch-40 eval, ep40 beat ep20 eight
+pairs to none), and ep25&rsquo;s interval spans [&minus;447,&nbsp;+93].
+Part may be a genuine mid-run trough; the intervals overlap too much
+to distinguish the two. Thin labels are noisy: the epoch-25 weights sit
 in the pool under <em>two</em> labels, and rate +84 as
-<code>cand_ep25</code> but &minus;177 as the frozen <code>ep25</code>. Same
-network, different handful of games. The dip from ep45 (+150) to ep50 (+56) is
-the same story at smaller scale &mdash; this curve is compounding evidence,
-not telemetry, and it wobbles like it.
+<code>cand_ep25</code> but &minus;177 as the frozen <code>ep25</code>, the
+same network rated on different games. The dip from ep45 (+150) to ep50 (+56)
+has the same character. The curve is accumulated evidence and moves as new
+games enter the pool.
 </p>
 
 <div class="numstrip">
@@ -170,55 +168,55 @@ not telemetry, and it wobbles like it.
   </div>
   <div class="fig-readout" id="rcRo" aria-live="polite">
     <span class="ro-k">rating curve</span>
-    <span class="ro-t">hover or tab through the points &mdash; each shows that epoch&rsquo;s verdict, the candidate-vs-champion record as pentanomial pairs, and sample sizes. Scale: pool-relative, SealBot pinned at 0.</span>
+    <span class="ro-t">hover or tab through the points; each shows that epoch&rsquo;s verdict, the candidate-vs-champion record as pentanomial pairs, and sample sizes. Scale: pool-relative, SealBot pinned at 0.</span>
   </div>
 </figure>
 
 <h2 id="reading"><span class="sec-no">02</span>four positions, four checkpoints</h2>
 
 <p>
-Ratings say the net got stronger; the positions say <em>where</em>. The four
-boards below are read by four checkpoints of the run with the search switched
-off entirely &mdash; what you see is the policy prior, value, 2-ply short-term
-value and moves-left straight out of the net. This is the instinct the search
-then sharpens: at play time these priors decide which handful of moves the
-1024-visit search even considers.
+The ratings measure overall strength; the positions show where it changed.
+The four boards below are read by four checkpoints of the run with the search
+disabled: the display shows the policy prior, value, 2-ply short-term
+value and moves-left directly from the net. At play time these priors decide
+which moves the 1024-visit search considers.
 </p>
 
 <p>
-Take the live four. The opponent&rsquo;s stones sit at q&nbsp;=&nbsp;1, 2, 3, 5
-on the r&nbsp;=&nbsp;1 row &mdash; a split four with its gap at (4,&nbsp;1)
-&mdash; and every live window through the four runs over that gap, so there is
-exactly one saving cell. <b>ep2 stares straight past it</b>: 0.41 of its mass
+In the live-four position, the opponent&rsquo;s stones sit at
+q&nbsp;=&nbsp;1, 2, 3, 5
+on the r&nbsp;=&nbsp;1 row, a split four with its gap at (4,&nbsp;1).
+Every live window through the four runs over that gap, so there is
+exactly one saving cell. <b>ep2 misses it</b>: 0.41 of its mass
 goes to (0,&nbsp;1), the outside extension, after which (4,&nbsp;1) and
-(6,&nbsp;1) complete the six in a single opponent turn; the actual save gets
-0.06. ep14 has learned the fear but not the move &mdash; its value collapses
-to &minus;0.90, yet it still offers 0.37 on (0,&nbsp;1) and a fifth of its
+(6,&nbsp;1) complete the six in a single opponent turn; the saving cell gets
+0.06. ep14&rsquo;s value drops
+to &minus;0.90, but it still puts 0.37 on (0,&nbsp;1) and a fifth of its
 mass on (3,&nbsp;0), which defends nothing, while the save sits at 0.03. ep30
-is the first to rank the gap first (0.30). By <b>ep58 the read is clean: 0.52
-on (4,&nbsp;1)</b>, the wrong blocks demoted to noise, and the value back up
-to &minus;0.15 &mdash; worried, not resigned. Alarm arrived at epoch 14;
-technique took thirty more epochs.
+is the first to rank the gap first (0.30). <b>ep58 puts 0.52
+on (4,&nbsp;1)</b>, assigns the wrong blocks near-zero mass, and reads the
+value at &minus;0.15. The value signal appeared at epoch 14;
+the correct policy took thirty more epochs.
 </p>
 
 <p>
-The double threat is the same lesson at two addresses: split fours on the
-r&nbsp;=&nbsp;1 row and the q&nbsp;=&nbsp;&minus;3 column, gaps at (4,&nbsp;1)
-and (&minus;3,&nbsp;3), and the mover&rsquo;s two placements this turn are
-both spoken for. ep2 gives that pair a combined 0.39 &mdash; its top move is,
-again, the useless (0,&nbsp;1) &mdash; ep14 0.71, ep30 0.85, and ep58 puts
-<b>0.99 on exactly those two cells</b>: the both-gaps read, off pure pattern.
-The 40-stone board makes the opposite point. With one live four left (empties
-(&minus;1,&nbsp;2) and (1,&nbsp;2)), even ep2 finds the block at 0.79 &mdash;
-blatant tactics are learned almost immediately &mdash; and what training adds
-is certainty (ep58: 0.990 on the block) plus a value head that finally agrees
-the position is winning (0.35&nbsp;&rarr;&nbsp;0.97). And the quiet
-middlegame refuses to sharpen at any age &mdash; which is the subject of the
-last section.
+The double-threat position has split fours on the
+r&nbsp;=&nbsp;1 row and the q&nbsp;=&nbsp;&minus;3 column, with gaps at
+(4,&nbsp;1)
+and (&minus;3,&nbsp;3); the mover&rsquo;s two placements this turn must cover
+both. ep2 gives that pair a combined 0.39 (its top move is
+again (0,&nbsp;1)), ep14 0.71, ep30 0.85, and ep58 puts
+<b>0.99 on exactly those two cells</b>, from the prior alone.
+On the 40-stone board, with one live four left (empties
+(&minus;1,&nbsp;2) and (1,&nbsp;2)), even ep2 finds the block at 0.79;
+simple tactics are learned early. Training adds
+certainty (ep58: 0.990 on the block) and a value head that reads
+the position as winning (0.35&nbsp;&rarr;&nbsp;0.97). The quiet
+middlegame stays diffuse at every checkpoint; section 03 covers this.
 </p>
 
 <figure class="fig fig-wide">
-  <figcaption>fig 2 &middot; <b>net priors only &mdash; no search</b> &middot; pale blue = the mover&rsquo;s prior (area &prop; &radic;p, tail below 0.001 trimmed) &middot; dashed red = cells of live opponent fours &middot; dashed ring = this turn&rsquo;s first stone &middot; hover or tab to a cell for its prior across all four checkpoints</figcaption>
+  <figcaption>fig 2 &middot; <b>net priors only (no search)</b> &middot; pale blue = the mover&rsquo;s prior (area &prop; &radic;p, tail below 0.001 trimmed) &middot; dashed red = cells of live opponent fours &middot; dashed ring = this turn&rsquo;s first stone &middot; hover or tab to a cell for its prior across all four checkpoints</figcaption>
   <div class="fig-body rs-flex" id="pbBody">
     <div class="rs-boardwrap"><svg id="pbBoard" role="group"
       aria-label="Hex board with the selected position's stones and the selected checkpoint's policy prior overlaid on empty cells."></svg></div>
@@ -241,21 +239,21 @@ last section.
   </div>
 </figure>
 
-<h2 id="sharpening"><span class="sec-no">03</span>what training actually changes</h2>
+<h2 id="sharpening"><span class="sec-no">03</span>policy sharpening</h2>
 
 <p>
-One number summarises the section: the entropy of the policy over the legal
-set. The tactical boards collapse toward certainty as the run ages &mdash;
+The entropy of the policy over the legal set summarises the change. The
+tactical boards move toward certainty as the run ages:
 the live four from 2.22 to 1.46 nats, the double threat
 1.87&nbsp;&rarr;&nbsp;1.43&nbsp;&rarr;&nbsp;1.16&nbsp;&rarr;&nbsp;0.75, the
-late-game block from 0.65 to 0.06, essentially a delta function. The quiet
-middlegame does not: 2.08, 2.02, 2.30, 1.82 &mdash; it starts diffuse and
-stays diffuse, and <b>ep30 is actually less sharp there than ep14</b>. That
-non-monotone wrinkle is worth keeping: training is not turning down a global
-temperature knob. It sharpens exactly where its own search kept finding forced
-continuations, and a quiet board with 141 legal moves and a dozen defensible
-plans <em>should</em> stay diffuse &mdash; a net that answered it with 99%
-confidence would be miscalibrated, not strong.
+late-game block from 0.65 to 0.06, nearly a point mass. The quiet
+middlegame does not: 2.08, 2.02, 2.30, 1.82. It stays diffuse,
+and <b>ep30 is less sharp there than ep14</b>. The
+non-monotone value shows that training does not apply a global sharpening.
+The policy sharpens where the search kept finding forced
+continuations, and a quiet board with 141 legal moves and many playable
+plans should stay diffuse; a 99%-confident answer there would be
+miscalibrated.
 </p>
 
 <figure class="fig">
@@ -266,20 +264,18 @@ confidence would be miscalibrated, not strong.
   </div>
   <div class="fig-readout" id="shRo" aria-live="polite">
     <span class="ro-k">policy sharpening</span>
-    <span class="ro-t">hover or tab through the bars &mdash; real entropies from the run&rsquo;s checkpoints, with each position&rsquo;s legal-move count and top-1 probability.</span>
+    <span class="ro-t">hover or tab through the bars; real entropies from the run&rsquo;s checkpoints, with each position&rsquo;s legal-move count and top-1 probability.</span>
   </div>
 </figure>
 
 <p>
-The cause lives one page back: the policy target is the
-<a href="training.html#targets">search&rsquo;s improved distribution</a>, and
-search distributions are sharp precisely where sequential halving found a
-forced line and flat where it did not. Sixty epochs of that target, replayed
-through positions like these, is the difference between 0.41 on the wrong
-block and 0.52 on the only one. It is also playable: the
-<a href="../">play tab</a> serves this same ladder of checkpoints &mdash; pick
-an early one from the checkpoint list, then the newest, and feel the
-difference this page just measured.
+The cause is the training target: the policy trains toward the
+<a href="training.html#targets">search&rsquo;s improved distribution</a>,
+which is sharp where sequential halving found a
+forced line and flat where it did not. Sixty epochs of that target produce
+the change from 0.41 on the wrong block to 0.52 on the correct one. The
+<a href="../">play tab</a> serves this same ladder of checkpoints, so the
+difference can be played against directly.
 </p>
 
 </main>
@@ -315,7 +311,7 @@ function failFig(bodyId, file) {
   note.className = "note";
   note.style.margin = "0";
   note.textContent = "This figure reads " + file + " at page load and could not fetch it. " +
-    "The live data needs the site server — open this page through it rather than from a local file.";
+    "The live data needs the site server; open this page through it rather than from a local file.";
   body.appendChild(note);
 }
 function fmtElo(x) { return (x < 0 ? "−" : "+") + Math.abs(Math.round(x)); }
@@ -399,11 +395,11 @@ fetch("data/eval_history.json")
     }
 
     var DEF_K = "rating curve";
-    var DEF_T = "hover or tab through the points — each shows that epoch’s verdict, the candidate-vs-champion record as pentanomial pairs, and sample sizes. Scale: pool-relative, SealBot pinned at 0.";
+    var DEF_T = "hover or tab through the points; each shows that epoch’s verdict, the candidate-vs-champion record as pentanomial pairs, and sample sizes. Scale: pool-relative, SealBot pinned at 0.";
     function evalText(epoch) {
       var e = byEpoch[epoch];
       if (!e) {
-        return "no eval ran at epoch " + epoch + " — this label entered the pool afterwards " +
+        return "no eval ran at epoch " + epoch + "; this label entered the pool afterwards " +
           "(champion of the epoch-20 eval, bracket opponent later); its rating pools those games.";
       }
       var champ = null, seal = null, extra = 0;
@@ -414,14 +410,14 @@ fetch("data/eval_history.json")
       });
       var t = "eval at epoch " + epoch + ": " + e.verdict;
       if (e.primary && typeof e.primary.elo_diff === "number") {
-        t += " — " + e.candidate + " vs champion " + e.champion + ": " +
+        t += " · " + e.candidate + " vs champion " + e.champion + ": " +
           fmtElo(e.primary.elo_diff) + " " + fmtCi(e.primary.elo_diff_ci95);
       }
       if (champ && champ.pentanomial) {
         t += " · champion pairs: " + pentStr(champ.pentanomial) +
           " (" + champ.decided + " games @ " + champ.eval_visits + " visits)";
       } else if (!champ) {
-        t += " — no champion edge this epoch; only the SealBot calibration match";
+        t += " · no champion edge this epoch, only the SealBot calibration match";
       }
       if (seal) {
         t += " · sealbot " + Math.round(seal.winrate * seal.decided) + "/" + seal.decided;
@@ -441,23 +437,33 @@ fetch("data/eval_history.json")
       node.addEventListener("mouseleave", hide);
       node.addEventListener("focus", show);
       node.addEventListener("blur", hide);
+      node.addEventListener("click", show);
+    }
+    /* transparent halo under a point: a tap-sized hit target (no visual change) */
+    function hitHalo(p) {
+      return el("circle", { cx: X(p.epoch), cy: Y(p.elo), r: 13,
+        fill: "transparent", style: "cursor:pointer" }, svg);
     }
     pts.forEach(function (p) {
       var e = byEpoch[p.epoch];
       var cls = "rs-pt" + (e && e.verdict === "PROMOTE" ? " promote" : "");
+      var hit = hitHalo(p);
       var c = el("circle", {
         cx: X(p.epoch), cy: Y(p.elo), r: 4.5, "class": cls, tabindex: "0", role: "img",
         "aria-label": "epoch " + p.epoch + ", pooled rating " + Math.round(p.elo) +
           (e ? ", verdict " + e.verdict : ", no eval this epoch")
       }, svg);
       wirePoint(c, p, false);
+      wirePoint(hit, p, false);
     });
     if (cand) {
+      var chit = hitHalo(cand);
       var cc = el("circle", {
         cx: X(cand.epoch), cy: Y(cand.elo), r: 4.5, "class": "rs-pt cand", tabindex: "0", role: "img",
         "aria-label": "epoch " + cand.epoch + " candidate label, pooled rating " + Math.round(cand.elo)
       }, svg);
       wirePoint(cc, cand, true);
+      wirePoint(chit, cand, true);
     }
   })
   .catch(function () { failFig("rcBody", "data/eval_history.json"); });
@@ -550,7 +556,7 @@ function buildReader(data) {
   }
 
   function defaultReadout() {
-    set(curPos.title + " · " + curCk + " · net priors only — no search",
+    set(curPos.title + " · " + curCk + " · net priors only (no search)",
         curPos.description);
   }
 
@@ -563,7 +569,7 @@ function buildReader(data) {
     });
     var hot = curPos.threats.opp_hot.some(function (c) { return K(c[0], c[1]) === k; });
     var cur = m[curCk] !== undefined ? m[curCk].toFixed(3) : "<0.001";
-    set("cell (" + qr[0] + ", " + qr[1] + ") — p = " + cur + " under " + curCk,
+    set("cell (" + qr[0] + ", " + qr[1] + ") · p = " + cur + " under " + curCk,
         "across the ladder: " + parts.join(" · ") +
         (hot ? " · a cell of a live opponent four" : ""));
   }
@@ -623,6 +629,7 @@ function buildReader(data) {
         poly.addEventListener("mouseleave", defaultReadout);
         poly.addEventListener("focus", function () { cellReadout(k); });
         poly.addEventListener("blur", defaultReadout);
+        poly.addEventListener("click", function () { cellReadout(k); });
         poly.addEventListener("keydown", function (ev) {
           if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); cellReadout(k); return; }
           var cand = KEYMAP[ev.key];
@@ -647,7 +654,7 @@ function buildReader(data) {
     }
     $("pbMove").innerHTML = "<b>P0 (blue) to move</b> · " +
       (pos.phase === "SecondStone"
-        ? "second stone of the turn — first at (" + pos.first_stone[0] + ", " + pos.first_stone[1] + ")"
+        ? "second stone of the turn; first at (" + pos.first_stone[0] + ", " + pos.first_stone[1] + ")"
         : "first stone of the turn") +
       " · " + pos.legal_count + " legal moves";
   }
@@ -745,7 +752,7 @@ function buildSharpening(data) {
   var groupW = (W - L - R) / rows.length;
   var barW = 30, gap = 7;
   var DEF_K = "policy sharpening";
-  var DEF_T = "hover or tab through the bars — real entropies from the run’s checkpoints, with each position’s legal-move count and top-1 probability.";
+  var DEF_T = "hover or tab through the bars; real entropies from the run’s checkpoints, with each position’s legal-move count and top-1 probability.";
   rows.forEach(function (row, ri) {
     var gx = L + ri * groupW + (groupW - (barW * 4 + gap * 3)) / 2;
     CKS.forEach(function (ck, ci) {
@@ -763,7 +770,7 @@ function buildSharpening(data) {
       vl.textContent = Hv.toFixed(2);
       (function (row, ck, Hv) {
         var show = function () {
-          set((NAMES[row.position] || row.position) + " · " + ck + " — " +
+          set((NAMES[row.position] || row.position) + " · " + ck + " · " +
               Hv.toFixed(2) + " nats over " + row.legal_count + " legal moves",
               "top-1 prior " + Math.round(row.top1_p[ck] * 100) + "% · a uniform policy here would be " +
               row.max_entropy_nats.toFixed(2) + " nats · checkpoints left to right: " + CKS.join(", "));
@@ -773,6 +780,7 @@ function buildSharpening(data) {
         bar.addEventListener("mouseleave", hide);
         bar.addEventListener("focus", show);
         bar.addEventListener("blur", hide);
+        bar.addEventListener("click", show);
       })(row, ck, Hv);
     });
     var xl = el("text", { x: L + ri * groupW + groupW / 2, y: H - B + 18,

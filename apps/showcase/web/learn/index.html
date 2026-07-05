@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hexfield &mdash; how it works</title>
-<meta name="description" content="How hexfield works: an AlphaZero-family agent for Hexo — graph-style network, Gumbel MCTS, self-play training.">
+<meta name="description" content="How hexfield works: an AlphaZero-family agent for Hexo with a graph-style network, Gumbel MCTS, and self-play training.">
 <link rel="stylesheet" href="learn.css">
 </head>
 <body>
@@ -31,9 +31,9 @@ network reads a position and returns a <em>policy</em> (a distribution over
 legal moves) and a <em>value</em> (who is winning); a Gumbel Monte-Carlo tree
 search uses that network to look ahead and returns a move stronger than the raw
 policy; and the network is trained entirely on its own games to imitate what
-the search found. There is no human game database in the loop &mdash; only an
-optional behavioral-cloning warm start before it begins. This page is the map;
-the chapters that follow walk each part.
+the search found. The loop uses no human game database; an optional
+behavioral-cloning warm start can precede it. This page is an overview, and the
+remaining pages describe each part.
 </p>
 
 <h2 id="loop"><span class="sec-no">01</span>the loop</h2>
@@ -42,14 +42,13 @@ the chapters that follow walk each part.
 Everything below runs as one repeating cycle, one epoch at a time. Self-play
 generates games with the current network; the trainer samples recent games and
 nudges the network toward the search&rsquo;s conclusions; the improved network
-is checkpointed and served back to self-play. Evaluation branches off the loop
-&mdash; in this codebase its verdict is <em>informational</em>: it measures
-strength against a pool of frozen opponents but does not gate or roll back a
-checkpoint.
+is checkpointed and served back to self-play. Evaluation runs outside the loop
+and its verdict is informational: it measures strength against a pool of frozen
+opponents and does not gate or roll back a checkpoint.
 </p>
 
 <figure class="fig fig-wide" id="system-map">
-  <figcaption>fig 1 &middot; <b>the hexfield system</b> &middot; hover or focus a node for detail &middot; click to open its chapter</figcaption>
+  <figcaption>fig 1 &middot; <b>the hexfield system</b> &middot; hover or focus a node for detail &middot; click to open its page</figcaption>
 
   <!-- Node subtitles and readout numbers below are sourced from:
        active_games = 192, search_visits = 1024, pcr_fast_visits = 192,
@@ -87,14 +86,14 @@ checkpoint.
 
     <!-- main loop nodes -->
     <a class="map-node" href="training.html#selfplay" tabindex="0" data-k="self-play"
-       data-info="The continuous batched scheduler keeps 192 games in flight against the current net. A third of moves get the full 1024-visit search and become training targets; the rest get a cheap 192-visit search that just keeps the game moving (playout cap randomization).">
+       data-info="The continuous batched scheduler keeps 192 games in flight against the current net. A third of moves get the full 1024-visit search and become training targets; the rest get a 192-visit search (playout cap randomization).">
       <rect x="30" y="58" width="150" height="62"/>
       <text class="nt" x="105" y="86" text-anchor="middle">self-play</text>
       <text class="ns" x="105" y="104" text-anchor="middle">192 games in flight</text>
     </a>
 
     <a class="map-node" href="training.html#replay" tabindex="0" data-k="replay window"
-       data-info="Each finished game is written as a compact .npz shard plus a .hxr game record. The trainer samples from a KataGo-style shuffle window over recent shards — only completed games, so every value label reflects a real outcome.">
+       data-info="Each finished game is written as a compact .npz shard plus a .hxr game record. The trainer samples from a KataGo-style shuffle window over recent shards. Only completed games are included, so every value label is a final outcome.">
       <rect x="240" y="58" width="150" height="62"/>
       <text class="nt" x="315" y="86" text-anchor="middle">replay window</text>
       <text class="ns" x="315" y="104" text-anchor="middle">moving shuffle window</text>
@@ -108,14 +107,14 @@ checkpoint.
     </a>
 
     <a class="map-node" href="training.html#eval" tabindex="0" data-k="checkpoint"
-       data-info="One .pt checkpoint per epoch; the next epoch's self-play serves it. The architecture (c=192, trunk CCACCACCACCACCA, 3 heads, support radius 4) is load-bearing — a checkpoint only loads into a net built with the same geometry.">
+       data-info="One .pt checkpoint per epoch; the next epoch's self-play serves it. A checkpoint loads only into a net built with the same geometry (c=192, trunk CCACCACCACCACCA, 3 heads, support radius 4).">
       <rect x="660" y="58" width="150" height="62"/>
       <text class="nt" x="735" y="86" text-anchor="middle">checkpoint</text>
       <text class="ns" x="735" y="104" text-anchor="middle">one .pt per epoch</text>
     </a>
 
     <a class="map-node" href="training.html#eval" tabindex="0" data-k="evaluation"
-       data-info="Every 5 epochs: a 128-game budget at 512 visits against frozen anchor checkpoints — paired openings with sides swapped, scored pentanomially, feeding a rolling Bradley-Terry/Elo pool. Informational: it reports strength but does not gate or roll back.">
+       data-info="Every 5 epochs: a 128-game budget at 512 visits against frozen anchor checkpoints. Openings are paired with sides swapped, scored pentanomially, and fed into a rolling Bradley-Terry/Elo pool. The verdict is informational and does not gate or roll back.">
       <rect x="660" y="210" width="150" height="62"/>
       <text class="nt" x="735" y="238" text-anchor="middle">evaluation</text>
       <text class="ns" x="735" y="256" text-anchor="middle">informational &middot; elo pool</text>
@@ -131,7 +130,7 @@ checkpoint.
     <text class="elab dim" x="225" y="308" text-anchor="middle">policy &middot; value</text>
 
     <a class="map-node" href="search.html#gumbel" tabindex="0" data-k="search"
-       data-info="Gumbel-Top-m root selection (m=32) with Sequential Halving over a PUCT tree — no Dirichlet noise. Threat-space search force-includes every live tactical cell into the root candidate set, and a shared batch queue feeds the GPU.">
+       data-info="Gumbel-Top-m root selection (m=32) with Sequential Halving over a PUCT tree. Threat-space search adds every live tactical cell to the root candidate set, and a shared batch queue feeds the GPU.">
       <rect x="52" y="232" width="120" height="88"/>
       <text class="nt" x="112" y="268" text-anchor="middle">search</text>
       <text class="ns" x="112" y="286" text-anchor="middle">gumbel mcts</text>
@@ -139,7 +138,7 @@ checkpoint.
     </a>
 
     <a class="map-node" href="network.html#support" tabindex="0" data-k="network"
-       data-info="HexfieldNet: a graph-style net over the variable-size support set — 15 features per cell, direction-typed hex convolutions interleaved with global attention, and policy / value / auxiliary heads. 8,128,812 parameters.">
+       data-info="HexfieldNet: a graph-style net over the variable-size support set, with 15 features per cell, direction-typed hex convolutions interleaved with global attention, and policy / value / auxiliary heads. 8,128,812 parameters.">
       <rect x="278" y="232" width="120" height="88"/>
       <text class="nt" x="338" y="268" text-anchor="middle">network</text>
       <text class="ns" x="338" y="286" text-anchor="middle">8.1M params</text>
@@ -149,7 +148,7 @@ checkpoint.
 
   <div class="fig-readout" id="mapReadout" aria-live="polite">
     <span class="ro-k">system map</span>
-    <span class="ro-t">hover or tab through the nodes &mdash; click one to open its chapter.</span>
+    <span class="ro-t">hover or tab through the nodes; click one to open its page.</span>
   </div>
 </figure>
 
@@ -158,7 +157,7 @@ checkpoint.
 <p>
 The shipped recipe is <code>configs/hexfield_main_7.toml</code> plus four
 environment variables that fix the network geometry. Every figure below is read
-off the code or config, not rounded folklore.
+from the code or config.
 </p>
 
 <div class="numstrip">
@@ -191,61 +190,56 @@ off the code or config, not rounded folklore.
 <div class="note">
 Search budgets differ by role: self-play full searches use
 <b>1024 visits</b>, self-play fast moves <b>192</b>, and the evaluation
-arena <b>512</b> &mdash; a stronger net needs fewer visits for equal move
-quality, so these are recalibrated as the run matures.
+arena <b>512</b>. A stronger net needs fewer visits for equal move
+quality, so these budgets are recalibrated as the run matures.
 <!-- src: configs/hexfield_main_7.toml search_visits/pcr_fast_visits/full_search_visits + header comment -->
 </div>
 
-<h2 id="unusual"><span class="sec-no">03</span>why this is unusual</h2>
+<h2 id="unusual"><span class="sec-no">03</span>properties of the design</h2>
 
 <p>
-<b>The board has no edges, so the input has no shape.</b> There is no
-19&times;19 plane to convolve over, and a game can wander anywhere on the
-unbounded grid. Instead of cropping a fixed window, hexfield builds a
-<span class="term" title="stones + legal cells + a one-cell halo">support set</span>
-&mdash; exactly the cells that matter right now (stones, legal moves, and a
-one-cell halo) &mdash; and feeds the network a variable-size graph that grows
-and shrinks with the game. Cells are ordered legal-first, which gives the
-<em>legal-prefix property</em>: the policy head&rsquo;s first
-<code>legal_count</code> outputs are exactly the legal moves, so the network can
-never score an illegal one. <a href="network.html#support">How the support set
-is built &rarr;</a>
+<b>Variable-size input.</b> The board is unbounded and a game can extend
+anywhere on the grid, so a fixed-size input plane is not usable. hexfield
+builds a <span class="term" title="stones + legal cells + a one-cell halo">support set</span>
+(stones, legal moves, and a one-cell halo) and feeds the network a
+variable-size graph that grows and shrinks with the game. Cells are ordered
+legal-first, which gives the <em>legal-prefix property</em>: the policy
+head&rsquo;s first <code>legal_count</code> outputs are exactly the legal
+moves, so the network cannot score an illegal one.
+<a href="network.html#support">How the support set is built &rarr;</a>
 </p>
 
 <p>
 <b>Global attention over an irregular point set.</b> Convolutions on this graph
-are direction-typed &mdash; the neighbour along each of the six hex axes gets
-its own weights, because which axis a line runs along is the whole point
-&mdash; but they only spread information one ring per block. Interleaved
-attention blocks give every cell a view of the whole position in a single step:
-all-pairs attention over the support cells plus 8 learned summary tokens, with a
+are direction-typed: the neighbour along each of the six hex axes gets its own
+weights, because the axis a line runs along determines its tactical meaning.
+A convolution spreads information one ring per block. Interleaved attention
+blocks give every cell a view of the whole position in a single step: all-pairs
+attention over the support cells plus 8 learned summary tokens, with a
 relative-position bias keyed on the exact hex offset between two cells (a
 217-offset disk, then ring buckets). A threat forming on the far side of the
-board is visible immediately, not after ten convolutions.
+board is visible after one attention block.
 <!-- src: constants.py BIAS_EXACT_ROWS = 217, NUM_TOKENS = 8; docs/HEXFIELD.md "Attention blocks" -->
 <a href="network.html#attention">How attention handles hex geometry &rarr;</a>
 </p>
 
 <p>
-<b>Gumbel-Top-m instead of Dirichlet noise.</b> Classic AlphaZero explores at
-the root by stirring Dirichlet noise into the prior and forcing playouts;
-hexfield removed those knobs entirely. It draws <code>m&nbsp;=&nbsp;32</code>
-root candidates by adding Gumbel noise to the policy logits, then runs
-Sequential Halving so the visit budget concentrates on survivors &mdash; with a
-guarantee that the played move improves on the raw policy even at small budgets.
-The improved root distribution is exactly what the network trains toward
+<b>Gumbel-Top-m root selection.</b> The search draws
+<code>m&nbsp;=&nbsp;32</code> root candidates by adding Gumbel noise to the
+policy logits, then runs Sequential Halving so the visit budget concentrates on
+survivors. Sampling without replacement gives exploration coverage at the root,
+and the played move improves on the raw policy in expectation even at small
+budgets. The improved root distribution is the policy training target
 (<code>policy_target&nbsp;=&nbsp;"gumbel"</code>), and threat-space search
-force-includes tactical cells so the candidate draw can never miss a
+force-includes tactical cells so the candidate draw cannot miss a
 win-in-one. <!-- src: configs/hexfield_main_7.toml gumbel_m = 32, policy_target = "gumbel", tss_enabled = true -->
 <a href="search.html#gumbel">How the search works &rarr;</a>
 </p>
 
 <p>
-Two more chapters sit past the algorithm: <a href="results.html">the
-results</a> tracks this run&rsquo;s real evaluation data &mdash; watch the bot
-you&rsquo;re facing get stronger epoch by epoch &mdash; and
-<a href="systems.html">the systems</a> covers the engineering underneath, the
-part that keeps the loop fed.
+<a href="results.html">The results</a> tracks this run&rsquo;s evaluation data
+epoch by epoch, and <a href="systems.html">the systems</a> covers the
+engineering that runs the loop.
 </p>
 
 </main>
@@ -264,7 +258,7 @@ part that keeps the loop fed.
   var k = ro.querySelector(".ro-k");
   var t = ro.querySelector(".ro-t");
   var DEF_K = "system map";
-  var DEF_T = "hover or tab through the nodes — click one to open its chapter.";
+  var DEF_T = "hover or tab through the nodes; click one to open its page.";
   function set(kk, tt) { k.textContent = kk; t.textContent = tt; }
   var nodes = document.querySelectorAll(".sysmap .map-node");
   for (var i = 0; i < nodes.length; i++) {

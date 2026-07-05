@@ -8,7 +8,7 @@
 <style>
 /* Inline fallback: design tokens + minimal base so this page is readable even
    if learn.css has not been generated yet. learn.css, when present, carries the
-   full scaffold and simply re-declares these tokens identically. */
+   full scaffold and re-declares these tokens identically. */
 :root{
   --bg:#101317;--tile:#161b21;--line:#242c35;--line-soft:#1c232b;
   --text:#d4dbe3;--muted:#79848f;--dim:#4c565f;
@@ -87,7 +87,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
   border:1px solid var(--line);padding:4px 8px;cursor:pointer}
 .fig-controls select:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 .nx-qcell{fill:none;stroke:var(--accent-dim);stroke-width:1.4;
-  stroke-dasharray:3 2;cursor:pointer;outline:none}
+  stroke-dasharray:3 2;cursor:pointer;outline:none;pointer-events:all}
 .nx-qcell:hover{stroke:var(--accent)}
 .nx-qcell:focus-visible{stroke:var(--accent);stroke-width:1.8}
 .nx-qcell.nx-sel{stroke:var(--accent);stroke-width:1.8;stroke-dasharray:none}
@@ -112,16 +112,15 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 
 <h1>The network <span class="h-dim">— a graph net for an unbounded board</span></h1>
 <p class="lede">
-The board you play on has no edges, and the playable region drifts wherever the
-game goes — so the network reading your position is not an image CNN over a
-fixed crop. It is a <em>set network over a graph</em> whose input size changes
-every single move. This page walks through that architecture exactly as
+The board is unbounded and the playable region moves with the game, so the
+input has no fixed size. The network is a <em>set network over a graph</em>,
+and its input size changes every move. This page describes the architecture as
 implemented: the support set, the 15 per-cell features, hex convolution as
 message passing, global attention with a learned hex-geometry bias, and the
 output heads. The board figures run on a real position from the shipped
 net&rsquo;s snapshot data (a quiet middlegame, 15 stones, player&nbsp;0 to
-move) with the real formulas from the featurizer — and the attention figure
-shows the shipped net&rsquo;s actual learned weights.
+move) with the formulas from the featurizer. The attention figure shows the
+shipped net&rsquo;s learned weights.
 </p>
 
 <div class="note">
@@ -130,7 +129,7 @@ shows the shipped net&rsquo;s actual learned weights.
 <code>constants.py</code>, <code>geometry.py</code> in
 <code>packages/hexfield/python/hexfield/</code>, and the shipped recipe
 <code>configs/hexfield_main_7.toml</code> (192 channels, 3 attention heads,
-trunk <code>CCACCACCACCACCA</code>, support radius 4 — 8,128,812 parameters).
+trunk <code>CCACCACCACCACCA</code>, support radius 4; 8,128,812 parameters).
 </div>
 
 <!-- ================================================================ -->
@@ -141,44 +140,40 @@ trunk <code>CCACCACCACCACCA</code>, support radius 4 — 8,128,812 parameters).
 <h2><span class="sec-no">01</span>The board as a graph</h2>
 
 <p>
-A convolutional net wants a fixed <code>H×W</code> tensor. This game refuses to
-provide one: with legality reaching hex-distance 8 from the nearest stone, the
-playable region is an amoeba that grows outward all game and can wander
-arbitrarily far from the origin. Cropping a fixed window either wastes
-computation on empty wilderness or, worse, cuts off stones. With no fixed board
-to crop, hexfield builds a <strong>support set</strong> — the finite
-set of cells that matter right now — and feeds the network exactly that, as a
+Legality reaches hex-distance 8 from the nearest stone, so the playable region
+grows throughout the game and can move arbitrarily far from the origin. A
+fixed <code>H×W</code> input window would waste computation on empty cells or
+cut off stones. hexfield builds a <strong>support set</strong>, the finite set
+of cells relevant to the current position, and feeds the network that set as a
 variable-length list of nodes plus a neighbour graph.
 </p>
 <p>The support has three layers, built in one multi-source BFS from the stones
 (<code>support.py</code>):</p>
 <ul>
-<li><strong>Stones</strong> — every occupied cell.</li>
-<li><strong>Legal cells</strong> — empty cells within hex-distance
-<em>R</em> of some stone. The engine's legality radius is 8; the model has its
-own knob, <code>HEXFIELD_SUPPORT_RADIUS</code>, and the shipped weights use
-<strong>4</strong> — the network deliberately restricts its candidate moves to a
-tighter ring around the action, which roughly quarters the node count per
+<li><strong>Stones</strong>: every occupied cell.</li>
+<li><strong>Legal cells</strong>: empty cells within hex-distance
+<em>R</em> of some stone. The engine's legality radius is 8; the model's
+radius is set by <code>HEXFIELD_SUPPORT_RADIUS</code>, and the shipped weights
+use <strong>4</strong>. The tighter radius restricts candidate moves to a
+smaller ring around the stones and roughly quarters the node count per
 evaluation.</li>
-<li><strong>Halo</strong> — the shell at distance exactly <em>R</em>+1: a one-cell
-border whose only job is to give edge cells a complete convolution stencil
-(§03). Halo cells are never playable.</li>
+<li><strong>Halo</strong>: the shell at distance exactly <em>R</em>+1, a one-cell
+border that gives edge cells a complete convolution stencil (§03). Halo cells
+are never playable.</li>
 </ul>
 <p>
-The nodes are stored in a load-bearing order:
+The nodes are stored in the order
 <code>[ legal | stones | halo ]</code>, each segment ascending by packed cell id.
 Because legal cells come first, the policy head's first
-<code>legal_count</code> outputs are <em>exactly</em> the legal moves — the
-<strong>legal-prefix invariant</strong>. Legality is structural: there is no
-separate move mask that could drift out of sync with the rules. At the empty
-opening position the entire support is 7 nodes (the forced origin move plus its
-6 halo neighbours); a crowded midgame runs to a few hundred. The network's
-input size changes every move, and nothing in the architecture ever assumes
-otherwise.
+<code>legal_count</code> outputs are exactly the legal moves (the
+<strong>legal-prefix invariant</strong>). There is no separate move mask that
+could drift out of sync with the rules. At the empty opening position the
+entire support is 7 nodes (the forced origin move plus its 6 halo neighbours);
+a crowded midgame runs to a few hundred.
 </p>
 
 <figure class="fig" id="fig-support">
-  <figcaption><b>Figure 1</b> — the support set. Drag the radius: the legal region and halo recompute live. Faint outlines are the unbounded lattice beyond the support — the network never sees them.</figcaption>
+  <figcaption><b>Figure 1</b> — the support set. Drag the radius: the legal region and halo recompute live. Faint outlines mark lattice cells outside the support; the network does not receive them.</figcaption>
   <div class="fig-body nx-boardwrap"><svg id="svg1" role="img" aria-label="Hex board showing stones, legal cells and halo for the chosen support radius"></svg></div>
   <div class="fig-controls">
     <label for="r1">support radius R</label>
@@ -197,7 +192,7 @@ otherwise.
      features.py build_features, window_scan, _opp_last_turn_cells,
      record_phase/record_player -->
 <section id="features">
-<h2><span class="sec-no">02</span>What each cell sees</h2>
+<h2><span class="sec-no">02</span>Per-cell features</h2>
 
 <p>
 Each support node carries <strong>15 features</strong>
@@ -206,39 +201,37 @@ Each support node carries <strong>15 features</strong>
 move. In index order:
 </p>
 <ul>
-<li><code>0–2</code> <strong>own-stone / opp-stone / empty</strong> — one-hot occupancy;
+<li><code>0–2</code> <strong>own-stone / opp-stone / empty</strong>: one-hot occupancy;
 <code>empty = 1 − own − opp</code>.</li>
-<li><code>3</code> <strong>legal</strong> — 1 on the legal prefix, 0 elsewhere.</li>
-<li><code>4</code> <strong>phase-is-second-stone</strong> — 1 on every node when the
+<li><code>3</code> <strong>legal</strong>: 1 on the legal prefix, 0 elsewhere.</li>
+<li><code>4</code> <strong>phase-is-second-stone</strong>: 1 on every node when the
 mover is placing the second stone of the turn.</li>
-<li><code>5</code> <strong>first-stone</strong> — marks where this turn's first stone
-just landed (only during that second-stone phase).</li>
-<li><code>6</code> <strong>player-colour</strong> — 1 everywhere when player 0 is to
+<li><code>5</code> <strong>first-stone</strong>: marks where this turn's first stone
+landed (only during that second-stone phase).</li>
+<li><code>6</code> <strong>player-colour</strong>: 1 everywhere when player 0 is to
 move.</li>
-<li><code>7–8</code> <strong>own / opp recency</strong> — <code>1/(1+age)</code> where
+<li><code>7–8</code> <strong>own / opp recency</strong>: <code>1/(1+age)</code> where
 <code>age = placements_made − placement_index</code>: the newest stone reads
-1.0, the one before ½, then ⅓… fresh stones glow.</li>
-<li><code>9–10</code> <strong>opp-hot / own-hot</strong> — empty cells inside a
+1.0, the one before ½, then ⅓.</li>
+<li><code>9–10</code> <strong>opp-hot / own-hot</strong>: empty cells inside a
 six-cell single-colour window already holding ≥ 4 stones (threats; active once
 ≥ 7 stones are placed).</li>
-<li><code>11</code> <strong>distance-to-nearest-stone</strong> — the BFS distance
+<li><code>11</code> <strong>distance-to-nearest-stone</strong>: the BFS distance
 scaled by <code>1/8</code> (the scale stays pinned to the engine radius even
 when the support radius is 4, so a radius-4 halo cell reads 5/8 = 0.625).</li>
-<li><code>12</code> <strong>opp-last-turn</strong> — the one or two cells of the
+<li><code>12</code> <strong>opp-last-turn</strong>: the one or two cells of the
 opponent's most recent completed turn.</li>
-<li><code>13–14</code> <strong>opp-win-now / own-win-now</strong> — empty cells that
-complete five-in-a-window: a standing win-in-one.</li>
+<li><code>13–14</code> <strong>opp-win-now / own-win-now</strong>: empty cells that
+complete five-in-a-window, a standing win-in-one.</li>
 </ul>
 <p>
 The hot and win planes come from scanning every length-6 single-colour window
-on the three win axes — the same threat definition the search's tactical layer
-uses. That is deliberate: the network's input vocabulary and the game's tactics
-speak the same language. The inspector below computes all 15 values with the
+on the three win axes, the same threat definition the search's tactical layer
+uses. The inspector below computes all 15 values with the
 real formulas, on the <code>quiet_midgame</code> position from the shipped
-net's snapshot data — 15 stones, both sides still staking out territory, no
-window holding more than three stones of one colour. Nothing is forced here,
-so the hot features (9–10) and win-now features (13–14) are honestly zero
-everywhere.
+net's snapshot data (15 stones, no window holding more than three stones of
+one colour). No threat is active in this position, so the hot features (9–10)
+and win-now features (13–14) are zero everywhere.
 </p>
 
 <figure class="fig" id="fig-features">
@@ -265,40 +258,38 @@ everywhere.
 <h2><span class="sec-no">03</span>Hex convolution as message passing</h2>
 
 <p>
-The trunk's local operator, <code>HexNodeConv</code>, is a convolution in
-spirit but a <em>graph message-passing step</em> in mechanics. There is no
-image grid to slide a kernel over; instead, the support construction
-precomputes a neighbour table — for each node, the row indices of its 6 hex
+The trunk's local operator, <code>HexNodeConv</code>, is a
+<em>graph message-passing step</em>. The support construction
+precomputes a neighbour table: for each node, the row indices of its 6 hex
 neighbours in the fixed direction order <code>D</code> (the rotate-60 orbit of
 (1,0)). The forward pass gathers each node's 7 taps (itself + 6 neighbours)
-into a <code>(N, 7·C)</code> matrix and applies <em>one</em> GEMM against a
+into a <code>(N, 7·C)</code> matrix and applies one GEMM against a
 <code>(7, C_in, C_out)</code> weight. The weights are
 <strong>direction-typed</strong>: the neighbour in the Q direction is mixed with
-different learned weights than the neighbour in the R direction — which axis a
-line runs along is the whole point.
+different learned weights than the neighbour in the R direction, because the
+axis a line runs along determines its tactical meaning.
 </p>
 <p>
-<strong>What happens at the support's edge?</strong> A missing neighbour is stored
+At the support's edge, a missing neighbour is stored
 as <code>−1</code> by the featurizer, and the batching layer maps it to index
-<code>Npad</code> — a row of an appended all-zero vector. The gather then reads
-zeros for that tap: exact <strong>zero-padding semantics</strong>, with the output
-re-multiplied by the node mask so padded rows stay inert. The halo exists
-precisely so this never happens where it matters — every legal cell and stone
-has all 6 neighbours inside the support; only halo cells themselves have
-zero-taps facing outward.
+<code>Npad</code>, a row of an appended all-zero vector. The gather then reads
+zeros for that tap, giving exact <strong>zero-padding semantics</strong>, with the
+output re-multiplied by the node mask so padded rows stay inert. The halo
+guarantees that every legal cell and stone has all 6 neighbours inside the
+support; only halo cells themselves have zero-taps facing outward.
 </p>
 <p>
 One trunk <code>C</code> block is two of these convolutions in a
 post-activation residual:
 <code>ReLU(x + γ · LN(conv(ReLU(LN(conv(x))))))</code>, with a per-channel
 <code>LayerScale γ</code> initialised at 10⁻⁴ so residual branches start nearly
-closed. LayerNorm (not BatchNorm) is essential here: it normalises each node
-independently, so statistics never depend on how many nodes a board happens to
-have. But convs are fundamentally local — information moves one ring per conv,
-two rings per block. The stepper below makes the limitation concrete: a
-winning window is 6 cells long, boards run 20+ cells across, and the shipped
-trunk places only two conv blocks (four convs) between attention blocks. Conv
-alone cannot relate two distant threats. That is what attention is for.
+closed. LayerNorm normalises each node independently, so statistics do not
+depend on how many nodes a board has. Convolution is local: information moves
+one ring per conv, two rings per block. A winning window is 6 cells long,
+boards run 20+ cells across, and the shipped trunk places two conv blocks
+(four convs) between attention blocks, so convolution alone cannot relate two
+distant threats. Attention covers that (§04). The stepper below shows the
+conv reach on the support graph.
 </p>
 
 <figure class="fig" id="fig-conv">
@@ -326,56 +317,52 @@ alone cannot relate two distant threats. That is what attention is for.
 <h2><span class="sec-no">04</span>Global attention over an irregular set</h2>
 
 <p>
-The trunk's <code>A</code> block is <strong>full self-attention</strong> — genuinely
-all-pairs, not windowed — over a joint sequence of
+The trunk's <code>A</code> block is <strong>full self-attention</strong> over a
+joint sequence of
 <code>[ 8 summary tokens ; all support cells ]</code>. Every cell attends to
 every other cell in both directions in a single step; the only excluded keys
-are batch padding, masked additively at −3·10⁴. On an unbounded board this is
-the payoff move: a threat forming on the far side is one attention hop away,
-where convolution would need ten layers of relaying. At the shipped width the
-attention runs <strong>3 heads of dimension 64</strong> (192/3 — chosen so the head
-dimension lands where GPU attention kernels are actually fast), inside a
+are batch padding, masked additively at −3·10⁴. A threat forming on the far
+side of the board is one attention step away. At the shipped width the
+attention runs <strong>3 heads of dimension 64</strong> (192/3; d=64 is an
+efficient size for GPU attention kernels), inside a
 standard pre-norm transformer block with a GELU MLP at hidden ratio 2.
 </p>
 <p>
-Position enters through a <strong>learned relative-position bias</strong>, not
-through coordinates in the features. Each attention block owns a
+Position enters through a <strong>learned relative-position bias</strong>; the
+features carry no coordinates. Each attention block has its own
 <code>(237, heads)</code> table, zero-initialised, indexed per query–key pair by
 the axial offset between the two cells (<code>geometry.py
 rel_bias_index</code>):
 </p>
 <ul>
-<li>rows 0–216 — one exact row per offset with hex-distance ≤ 8 (the 217-offset
+<li>rows 0–216: one exact row per offset with hex-distance ≤ 8 (the 217-offset
 disk);</li>
-<li>rows 217–224 vs 225–232 — ring buckets for distance 9–16, split by whether
-the offset is <em>collinear with a win axis</em> — the geometry that decides
-whether two stones can ever share a winning line is baked into the bias
-vocabulary;</li>
-<li>row 233 — everything beyond distance 16;</li>
-<li>rows 234–236 — cell↔token and token↔token pairs.</li>
+<li>rows 217–224 vs 225–232: ring buckets for distance 9–16, split by whether
+the offset is <em>collinear with a win axis</em> (collinear offsets are the
+ones that can share a winning line);</li>
+<li>row 233: everything beyond distance 16;</li>
+<li>rows 234–236: cell↔token and token↔token pairs.</li>
 </ul>
 <p>
-The bias is additive: it never cuts a pair off, it only nudges scores by
-distance and direction, and each of the five attention blocks learns its own
+The bias is additive: it adjusts scores by distance and direction and never
+excludes a pair. Each of the five attention blocks learns its own
 table. The <strong>8 summary tokens</strong> are learned vectors with no board
-position that ride in the same sequence through all five blocks — whole-board
-scratchpads that every cell can write to and read from. They are extra
-participants, not a bottleneck: cells still talk to each other directly. The
+position; they ride in the same sequence through all five blocks and serve as
+whole-board aggregation slots that every cell can attend to and from. Cells
+also attend to each other directly. The
 scalar heads later read specific token pairs (§05).
 </p>
 <p>
 The visualizer below shows <strong>real attention rows from the shipped ep58
 net</strong>, exported for four positions from its own games
-(<code>data/attention.json</code>). A few things the trained heads actually do.
-Head 0 in blocks 0 and 4 is a <em>token sink</em>: for most queries nearly all
-of its mass lands on the summary tokens — token 4 in the first block at
-weights &asymp;1.0, token 6 in the last at &asymp;0.65–0.73 — a parked, "nothing
-geometric to say" state, which is why the token chips matter: without them the
-head would look empty. Block 2's head 1 is razor-sharp tactics: in the
-split-four position, queried from the gap, it puts 0.88 of its mass on the
-stone that completes the four. And in the double-threat position, block 3's
-head 1 queried from a threat-window cell puts 0.90 on (&minus;3,&nbsp;3) — the
-forced blocking gap.
+(<code>data/attention.json</code>). Three observed behaviours:
+head 0 in blocks 0 and 4 is a <em>token sink</em>, placing nearly all
+of its mass on the summary tokens for most queries (token 4 in the first block
+at weights &asymp;1.0, token 6 in the last at &asymp;0.65–0.73). In the
+split-four position, block 2's head 1 queried from the gap puts 0.88 of its
+mass on the stone that completes the four. In the double-threat position,
+block 3's head 1 queried from a threat-window cell puts 0.90 on
+(&minus;3,&nbsp;3), the forced blocking gap.
 <!-- Observed in data/attention.json (hexfield_main_7, ep58):
      block0 head0: token 4 weight 0.994-1.000 on most queries, all positions;
      block4 head0: token 6 weight 0.653 (last_stone) / 0.728 (opening_stone)
@@ -426,33 +413,33 @@ read the result. <strong>Per-cell heads</strong> (each its own
 <code>HexNodeConv</code> + ReLU + <code>Linear(192,·)</code>) score cells;
 <strong>scalar heads</strong> read a dedicated <em>pair of summary tokens</em>
 concatenated with a masked mean-pool of all cell vectors, through a
-<code>Linear(576→192)</code> reduction — value reads tokens {0,1}, the
-short-term heads tokens {2,3}, moves-left tokens {4,5} (tokens 6–7 have no head
-attached; they are free scratch space). The full head roster:
+<code>Linear(576→192)</code> reduction. Value reads tokens {0,1}, the
+short-term heads tokens {2,3}, moves-left tokens {4,5}; tokens 6–7 have no head
+attached. The heads:
 </p>
 <ul>
-<li><strong>Policy</strong> — one logit per cell; the softmax is taken over the
+<li><strong>Policy</strong>: one logit per cell; the softmax is taken over the
 legal prefix only, so illegal moves are unrepresentable. This is the search's
 prior at play time.</li>
-<li><strong>Value</strong> — <em>distributional</em>: 65 logits over bins spanning
-−1…+1; the scalar is the softmax expectation
+<li><strong>Value</strong>: distributional; 65 logits over bins spanning
+−1…+1, with the scalar taken as the softmax expectation
 (<code>decode_binned_value</code>). This is the leaf evaluation the search
 backs up.</li>
-<li><strong>Short-term value</strong> — the same 65-bin form at horizons
-<strong>2, 6 and 16 plies</strong>: "how do things look a few moves out",
-a denser, faster-to-learn signal than the final result alone.</li>
-<li><strong>Moves-left</strong> — 65 bins decoded to 0…209 moves remaining; used to
+<li><strong>Short-term value</strong>: the same 65-bin form at horizons
+<strong>2, 6 and 16 plies</strong>, a denser training signal than the final
+result alone.</li>
+<li><strong>Moves-left</strong>: 65 bins decoded to 0…209 moves remaining; used to
 prefer decisive finishes when already winning, and shown in the showcase
 analysis panel.</li>
 <li><strong>Train-only heads</strong>, computed in the training forward but skipped
 at serve time: <strong>opponent-policy</strong> (predict the opponent's next
 reply), an auxiliary <strong>soft policy</strong>, and a per-cell
 <strong>Q head</strong> (a 65-bin value estimate for every legal move). They exist
-purely to sharpen the trunk's representation.</li>
+to improve the trunk's representation.</li>
 </ul>
 <p>
 The serve-time forward (<code>forward_policy_value</code>) computes only policy
-+ value, plus moves-left on request — the auxiliary heads cost nothing at play
++ value, plus moves-left on request; the auxiliary heads add no cost at play
 time. The schematic below is the whole 8,128,812-parameter network; hover any
 plate for its exact parameter count and share. Counts are computed from the
 layer shapes (a 7-tap conv is <code>7·C_in·C_out + C_out</code>, a Linear
@@ -475,7 +462,7 @@ layer shapes (a 7-tap conv is <code>7·C_in·C_out + C_out</code>, a Linear
   <div class="ns-cell"><div class="ns-n">4 <small>of 8</small></div><div class="ns-l">support radius (engine legality 8)</div></div>
   <div class="ns-cell"><div class="ns-n">192</div><div class="ns-l">trunk channels</div></div>
   <div class="ns-cell"><div class="ns-n">3 × 64</div><div class="ns-l">attention heads × dim</div></div>
-  <div class="ns-cell"><div class="ns-n">CCA ×5</div><div class="ns-l">trunk — 21 convs, 5 attn blocks</div></div>
+  <div class="ns-cell"><div class="ns-n">CCA ×5</div><div class="ns-l">trunk (21 convs, 5 attn blocks)</div></div>
   <div class="ns-cell"><div class="ns-n">8</div><div class="ns-l">summary tokens</div></div>
   <div class="ns-cell"><div class="ns-n">237 × 3</div><div class="ns-l">rel-pos bias rows × heads, per block</div></div>
   <div class="ns-cell"><div class="ns-n">65</div><div class="ns-l">value bins (−1…+1)</div></div>
@@ -484,9 +471,9 @@ layer shapes (a 7-tap conv is <code>7·C_in·C_out + C_out</code>, a Linear
 </div>
 
 <p>
-The network answers "what does this position look like" in a single pass. The
-other half of the system — how a 1024-visit search turns those answers into a
-move stronger than the raw policy — is the next page.
+The network evaluates a position in a single pass. The search page describes
+how a 1024-visit search turns those evaluations into a move stronger than the
+raw policy.
 </p>
 
 </main>
@@ -693,7 +680,7 @@ function paintBoard(svg,sup,opts){
     if(st)el('circle',{cx:cx,cy:cy,r:HR*.52,
       'class':st.owner===0?'nx-stone0':'nx-stone1'},gStones);
     var c={n:n,poly:poly,cx:cx,cy:cy,heat:heat,stone:st||null};
-    poly.setAttribute('aria-label','cell '+n.q+','+n.r+' — '+
+    poly.setAttribute('aria-label','cell '+n.q+','+n.r+' · '+
       (st?(st.owner===CUR?'own stone':'opponent stone'):n.kind));
     cells.push(c);byKey.set(K(n.q,n.r),c);
   });
@@ -766,7 +753,7 @@ function setReadout(id,k,t){
       ' · N = '+total+' nodes',
       'Node order [ legal | stones | halo ]: the '+nl+
       ' legal cells occupy rows 0…'+(nl-1)+
-      ' — the legal prefix the policy head scores. Sequence into attention: S = 8 tokens + '
+      ' (the legal prefix the policy head scores). Sequence into attention: S = 8 tokens + '
       +total+' cells = '+(8+total)+'.');
   }
   slider.addEventListener('input',apply);
@@ -786,9 +773,10 @@ var FEATS=buildFeatures(SUP);
     row.innerHTML='<span class="bi">'+i+'</span><span class="bn">'+m[0]+
       '</span><span class="bt"><span class="bf" style="width:0%"></span></span>'+
       '<span class="bv">0.00</span>';
-    row.title=m[0]+' — '+m[1];
-    row.addEventListener('mouseenter',function(){
-      setReadout('ro2','F'+i+' · '+m[0],m[1]);});
+    row.title=m[0]+': '+m[1];
+    var showRow=function(){setReadout('ro2','F'+i+' · '+m[0],m[1]);};
+    row.addEventListener('mouseenter',showRow);
+    row.addEventListener('click',showRow);
     wrap.appendChild(row);rows.push(row);
   });
   var selected=null;
@@ -806,12 +794,12 @@ var FEATS=buildFeatures(SUP);
             c.n.kind==='stone'?('stone segment, row '+c.n.i):('halo segment, row '+c.n.i);
     $('c2v').textContent='cell ('+c.n.q+', '+c.n.r+') · '+seg;
     var note=c.stone?((c.stone.owner===CUR?'the mover’s stone':'an opponent stone')+
-        ', placement #'+(c.stone.ord+1)+' of 15 — recency 1/(1+'+
+        ', placement #'+(c.stone.ord+1)+' of 15; recency 1/(1+'+
         (N_PLACED-c.stone.ord-1)+') = '+f[c.stone.owner===CUR?7:8].toFixed(3)):
-      c.n.kind==='halo'?'halo: not playable; exists only to complete edge stencils; dist reads '+f[11].toFixed(3):
-      (f[10]||f[9])?('a HOT cell — empty inside a '+(f[10]?'friendly':'hostile')+' ≥4-of-6 window'):
+      c.n.kind==='halo'?'halo: not playable; completes edge stencils; dist reads '+f[11].toFixed(3):
+      (f[10]||f[9])?('a hot cell: empty inside a '+(f[10]?'friendly':'hostile')+' ≥4-of-6 window'):
       'an ordinary legal cell';
-    setReadout('ro2','cell ('+c.n.q+', '+c.n.r+') — '+c.n.kind,note+'.');
+    setReadout('ro2','cell ('+c.n.q+', '+c.n.r+') · '+c.n.kind,note+'.');
   }
   wireNav(board,pick,{halo:true});
   pick(board.byKey.get('4,-1'));  /* start on the newest stone: recency 1.0 */
@@ -866,7 +854,7 @@ var FEATS=buildFeatures(SUP);
       layers+' stacked conv'+(layers>1?'s':'')+' = graph radius '+layers+
       ' → '+reached+' / '+SUP.nodes.length+' cells ('+pct+'%)',
       layers%2===0?('That is '+blocks+' C block'+(blocks>1?'s':'')+
-        ' (2 convs each). The shipped trunk runs only 2 C blocks (4 convs) between attention blocks — a winning window alone spans 6 cells, so conv reach never covers cross-board threats. Attention closes the gap in one hop.'):
+        ' (2 convs each). The shipped trunk runs 2 C blocks (4 convs) between attention blocks. A winning window spans 6 cells, so conv reach does not cover cross-board threats; attention does, in one step.'):
         'Each 7-tap conv extends reach by exactly one ring of the support graph.');
   }
   function pick(c){
@@ -916,13 +904,13 @@ var FEATS=buildFeatures(SUP);
     var cells=[];
     coords.forEach(function(c,i){
       var xy=XY(c[0],c[1]),kind=i<lc?'nx-legal':(i<lc+sc?'nx-stonecell':'nx-halo');
-      el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),'class':'nx-cell '+kind},gC);
+      var poly=el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),'class':'nx-cell '+kind},gC);
       var heat=el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),
         'class':'nx-heat','fill-opacity':'0'},gH);
       var o=own[K(c[0],c[1])];
       if(o!==undefined)el('circle',{cx:xy[0],cy:xy[1],r:HR*.52,
         'class':o===0?'nx-stone0':'nx-stone1'},gS);
-      cells.push({cx:xy[0],cy:xy[1],heat:heat});
+      cells.push({cx:xy[0],cy:xy[1],heat:heat,poly:poly});
     });
     var lab=el('text',{x:tokX+tokW/2,y:vb[1]+10,'text-anchor':'middle',
       'class':'nx-lab on'},gT);lab.textContent='tokens';
@@ -944,8 +932,8 @@ var FEATS=buildFeatures(SUP);
   /* ---------------- real-data mode ---------------- */
   function initReal(data){
     var POS=data.positions;
-    /* open on four_threat · block 2 · head 1 · the gap query — the
-       razor-sharp row: 0.88 on the stone completing the split four */
+    /* open on four_threat · block 2 · head 1 · the gap query:
+       0.88 on the stone completing the split four */
     var pi=1,qi=2,block=2,board=null,qpolys=[];
     setHead(1);
     $('realCtl4').hidden=false;
@@ -967,7 +955,9 @@ var FEATS=buildFeatures(SUP);
     function pos(){return POS[pi];}
     function rebuild(){
       board=paintReal(pos());qpolys=[];
+      var qByNode={};
       pos().queries.forEach(function(q,k){
+        qByNode[q.node]=k;
         var c=board.cells[q.node];
         var poly=el('polygon',{points:hexPts(c.cx,c.cy,HR-.8),'class':'nx-qcell',
           tabindex:'0',role:'button',
@@ -976,6 +966,17 @@ var FEATS=buildFeatures(SUP);
         poly.addEventListener('keydown',function(e){
           if(e.key==='Enter'||e.key===' '){e.preventDefault();pick(k);}});
         qpolys.push(poly);
+      });
+      /* every other cell answers too: no silent clicks */
+      board.cells.forEach(function(c,i){
+        c.poly.addEventListener('click',function(){
+          var k=qByNode[i];
+          if(k!==undefined){pick(k);return;}
+          var co=pos().support.coords[i];
+          setReadout('ro4',
+            pos().id+' · cell ('+co[0]+', '+co[1]+') · no exported row',
+            'No exported row for this cell; query cells are marked with dashed outlines.');
+        });
       });
       pick(Math.min(qi,pos().queries.length-1));
     }
@@ -1025,7 +1026,7 @@ var FEATS=buildFeatures(SUP);
         ' · head '+head+' · real weights (ep58)',
         p.title+'. Tokens hold '+Math.round(100*tokMass)+'% of this row'+
         (entries.length?'; top cells: '+tops.join(', ')+'.':
-          ' — a token-sink row: no cell weight above the 0.001 export floor.'));
+          '. Token-sink row: no cell weight above the 0.001 export floor.'));
     }
     selEl.addEventListener('change',function(){pi=+selEl.value;qi=0;rebuild();});
     hbtns.forEach(function(b2){
@@ -1035,7 +1036,7 @@ var FEATS=buildFeatures(SUP);
 
   /* ---------------- synthetic fallback (offline / file://) ---------------- */
   function initSynthetic(){
-    cap.innerHTML='<b>Figure 4</b> — attention visualizer. Click a query cell; heat and rays show where that cell attends. Patterns are <b>illustrative — real weights are learned</b> (the real ep58 rows load when this page is served over HTTP); the three synthetic heads convey multi-head diversity, and the bias toggle shows how the learned rel-pos table shapes scores by offset.';
+    cap.innerHTML='<b>Figure 4</b> — attention visualizer. Click a query cell; heat and rays show where that cell attends. Patterns are <b>illustrative, not learned weights</b> (the real ep58 rows load when this page is served over HTTP). The three synthetic heads show multi-head diversity, and the bias toggle shows how the rel-pos table shapes scores by offset.';
     $('bias4').hidden=false;
     var labels=['1 · local','2 · axis','3 · stones'];
     hbtns.forEach(function(b2,i){b2.textContent=labels[i];});
@@ -1062,9 +1063,9 @@ var FEATS=buildFeatures(SUP);
     var gRays=el('g',{},svg);
     var biasOn=true,sel=null;
     var HEADNOTE=[
-      'head 1 (synthetic): a LOCAL head — mass decays with hex distance, like a learned bias that favours the exact-offset disk rows.',
-      'head 2 (synthetic): an AXIS head — mass follows the three win axes through the query. The real bias table has dedicated on-win-axis ring rows (217–224), so axis-selective heads are exactly what the parameterization affords.',
-      'head 3 (synthetic): a STONE head — mass concentrates on stones, hotter for recent ones (content, not geometry).'];
+      'head 1 (synthetic): a local head. Mass decays with hex distance, matching a bias that favours the exact-offset disk rows.',
+      'head 2 (synthetic): an axis head. Mass follows the three win axes through the query; the real bias table has dedicated on-win-axis ring rows (217–224).',
+      'head 3 (synthetic): a stone head. Mass concentrates on stones, higher for recent ones (content, not geometry).'];
     function scores(qc){
       var n=SUP.nodes.length,out=new Float64Array(n+8);
       for(var i=0;i<n;i++){
@@ -1116,7 +1117,7 @@ var FEATS=buildFeatures(SUP);
       setReadout('ro4',
         'query ('+sel.n.q+', '+sel.n.r+') · head '+(head+1)+' · rel-pos bias '+
         (biasOn?'on':'off')+' · illustrative',
-        HEADNOTE[head]+(biasOn?'':' Bias off: with no distance/direction term, scores flatten — the learned 237-row table is what gives each head its geometric shape.'));
+        HEADNOTE[head]+(biasOn?'':' Bias off: with no distance/direction term, scores flatten. The learned 237-row table gives each head its geometric shape.'));
     }
     function pick(c){
       if(sel)sel.poly.classList.remove('nx-sel');
@@ -1203,7 +1204,7 @@ var FEATS=buildFeatures(SUP);
     {name:'input features',params:0,
      desc:'(N, 15) per-node features + (N, 6) neighbour table + (N, 2) axial coords. N changes every move.'});
   var stem=plate(92,midY-30,66,60,'plc','stem','15→192',
-    {name:'stem — HexNodeConv(15→192) + LayerNorm + ReLU',params:20736,
+    {name:'stem · HexNodeConv(15→192) + LayerNorm + ReLU',params:20736,
      desc:'7-tap direction-typed hex conv lifting 15 features to the 192-channel trunk width: 7·15·192+192 = 20,352, +384 LN.'});
   wire(inp.x+inp.w,midY,stem.x,midY);
   /* trunk: 5 x [C C A] */
@@ -1212,13 +1213,13 @@ var FEATS=buildFeatures(SUP);
     for(var b=0;b<2;b++){
       var ci=gI*2+b+1;
       var c=plate(x,midY-26,30,52,'plc','C','',
-        {name:'conv block '+ci+' of 10 — 2× HexNodeConv(192→192), post-activation residual',
+        {name:'conv block '+ci+' of 10 · 2× HexNodeConv(192→192), post-activation residual',
          params:517440,
-         desc:'ReLU(x + γ·LN(conv(ReLU(LN(conv(x)))))) — 2×(7·192²+192) + 2 LN + LayerScale = 517,440. All ten C blocks: 5,174,400 (63.7% of the net).'});
+         desc:'ReLU(x + γ·LN(conv(ReLU(LN(conv(x)))))): 2×(7·192²+192) + 2 LN + LayerScale = 517,440. All ten C blocks: 5,174,400 (63.7% of the net).'});
       x+=36;lastX=c.x+c.w;
     }
     var a=plate(x,midY-34,40,68,'pla','A','',
-      {name:'attention block '+(gI+1)+' of 5 — 3 heads × d=64 over [8 tokens ; cells]',
+      {name:'attention block '+(gI+1)+' of 5 · 3 heads × d=64 over [8 tokens ; cells]',
        params:298119,
        desc:'Pre-norm: QKV+out projections (148,224) + GELU MLP 192→384→192 (148,032) + 2 LN + 2 LayerScale = 297,408, plus its own (237×3) rel-pos bias table (711). All five A blocks: 1,490,595 (18.3%).'});
     x+=48;lastX=a.x+a.w;
@@ -1236,26 +1237,26 @@ var FEATS=buildFeatures(SUP);
     return p;
   }
   head(10,'plh','policy','(L,) → softmax over legal prefix',
-    {name:'policy head — HexNodeConv + Linear(192,1)',params:258433,
+    {name:'policy head · HexNodeConv + Linear(192,1)',params:258433,
      desc:'One logit per cell; the softmax runs over the first legal_count rows only (the legal prefix), so illegal moves are structurally unrepresentable. The search’s prior.'});
   head(48,'plh','value','65 bins → E[v] ∈ [−1,1]',
-    {name:'value head — Linear(576→192) on tokens{0,1}+pool, Linear(192→65)',params:123329,
+    {name:'value head · Linear(576→192) on tokens{0,1}+pool, Linear(192→65)',params:123329,
      desc:'Distributional value: softmax expectation over linspace(−1,1,65). Leaf evaluation for the search.'});
   head(86,'plh','short-term value','h = 2, 6, 16 · 65 bins each',
-    {name:'short-term value — shared aux reduction on tokens{2,3}+pool, 3× Linear(192→65)',params:148419,
-     desc:'Value at horizons 2, 6, 16 plies — dense auxiliary signals (train + analysis).'});
+    {name:'short-term value · shared aux reduction on tokens{2,3}+pool, 3× Linear(192→65)',params:148419,
+     desc:'Value at horizons 2, 6, 16 plies: dense auxiliary signals (train + analysis).'});
   head(124,'plh','moves-left','65 bins → [0, 209]',
-    {name:'moves-left head — reduction on tokens{4,5}+pool, Linear(192→65)',params:123329,
+    {name:'moves-left head · reduction on tokens{4,5}+pool, Linear(192→65)',params:123329,
      desc:'Decoded (x+1)/2·209 moves remaining; prefers decisive finishes when winning. Served on request.'});
   head(178,'plt','opp policy','(L,) · train-only',
-    {name:'opponent-policy head — HexNodeConv + Linear(192,1), train-only',params:258433,
+    {name:'opponent-policy head · HexNodeConv + Linear(192,1), train-only',params:258433,
      desc:'Predicts the opponent’s next reply distribution projected onto this position’s legal set. Loss weight 0.25.'});
   head(216,'plt','soft policy','(L,) · train-only',
-    {name:'soft-policy head — HexNodeConv + Linear(192,1), train-only',params:258433,
-     desc:'Auxiliary softened policy target built during collation — a smoother imitation signal beside the sharp search target.'});
+    {name:'soft-policy head · HexNodeConv + Linear(192,1), train-only',params:258433,
+     desc:'Auxiliary softened policy target built during collation, a smoother imitation signal beside the search target.'});
   head(254,'plt','per-cell Q','(N, 65) · train-only',
-    {name:'per-cell Q head — HexNodeConv + Linear(192→65), train-only',params:270785,
-     desc:'A 65-bin value estimate for every cell — “what if I played here” supervision from search statistics. Loss weight 0.1.'});
+    {name:'per-cell Q head · HexNodeConv + Linear(192→65), train-only',params:270785,
+     desc:'A 65-bin value estimate for every cell, supervised from search statistics. Loss weight 0.1.'});
   /* legend */
   var lg=el('g',{},svg);
   el('rect',{x:178,y:290,width:14,height:14,'class':'nx-tok',

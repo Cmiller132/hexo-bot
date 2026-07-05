@@ -601,9 +601,26 @@ def create_app(settings: Settings) -> FastAPI:
         }
 
     if settings.static_dir.is_dir():
-        app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="web")
+        app.mount("/", _RevalidatingStaticFiles(directory=settings.static_dir, html=True), name="web")
 
     return app
+
+
+class _RevalidatingStaticFiles(StaticFiles):
+    """StaticFiles that forces cache revalidation on every asset.
+
+    Without a Cache-Control header, browsers and the CDN cache index.html and
+    app.js on independent heuristic schedules, so successive deploys can serve
+    a mixed pair (fresh markup with stale script or the reverse) and controls
+    silently stop working. `no-cache` keeps caching but requires an ETag
+    revalidation round-trip, so every asset is always from the same deploy.
+    The 304 path keeps repeat loads cheap.
+    """
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 app = create_app(Settings.from_env())

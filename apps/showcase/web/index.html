@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hexo &mdash; instrument</title>
-<link rel="stylesheet" href="./style.css">
+<!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
+     in app.js whenever the bundle changes incompatibly -->
+<link rel="stylesheet" href="./style.css?v=3">
 </head>
 <body>
 
@@ -160,6 +162,6 @@
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js"></script>
+<script type="module" src="./app.js?v=3"></script>
 </body>
 </html>

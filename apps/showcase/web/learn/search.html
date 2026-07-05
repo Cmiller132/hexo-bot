@@ -90,25 +90,23 @@ body{margin:0}
 <main class="learn-main">
   <h1>The search</h1>
 
-  <p>The <a href="network.html">network</a> answers a position in one forward pass: a policy over
-  moves and a value estimate. The search is what turns that guess into a decision. It is a
-  <em>policy-improvement operator</em>: spend a budget of look-aheads, let measured outcomes correct
-  the network's first impressions, and come back with a move choice — and a training target — that
-  is reliably better than the raw policy alone.</p>
+  <p>The <a href="network.html">network</a> evaluates a position in one forward pass: a policy over
+  moves and a value estimate. The search is a
+  <em>policy-improvement operator</em>: it spends a budget of look-aheads, corrects the network's
+  estimates with measured outcomes, and returns a move choice and a training target that improve on
+  the raw policy.</p>
 
   <!-- MCTS substrate + gumbel machinery: tree.rs Divergences::gumbel() builds on production();
        PUCT paths still exist (Fast moves without a gumbel root, interior fallback), but the trained
        config enables gumbel_root / gumbel_sequential_halving / gumbel_nonroot_select / gumbel_target.
        Dirichlet noise / forced playouts: removed; configs/hexfield_main_7.toml:54-57. -->
-  <p>Honestly stated, the engine underneath is a fairly classical Monte-Carlo tree search: a tree of
+  <p>The engine is a Monte-Carlo tree search: a tree of
   positions, edges with visit counts and running values, batched network evaluations at the leaves,
-  PUCT-style selection machinery with first-play urgency and progressive widening. What Hexo trains
-  and serves, though, is the <strong>Gumbel AlphaZero</strong> configuration (Danihelka et&nbsp;al.
-  2022) layered on that substrate: a Gumbel-Top-m sample picks the root candidates, sequential
-  halving splits the visit budget among them, and a deterministic visit-regularized rule replaces
-  PUCT at interior nodes. The classic exploration tricks — Dirichlet noise at the root, forced
-  playouts — were deliberately removed from this codebase; the Gumbel machinery <em>is</em> the
-  exploration story.</p>
+  and PUCT-style selection machinery with first-play urgency and progressive widening. The trained
+  and served configuration is <strong>Gumbel AlphaZero</strong> (Danihelka et&nbsp;al.
+  2022) on that substrate: a Gumbel-Top-m sample picks the root candidates, sequential
+  halving splits the visit budget among them, and a deterministic visit-regularized rule selects at
+  interior nodes.</p>
 
   <h2 id="gumbel">Gumbel-Top-m at the root</h2>
 
@@ -116,26 +114,27 @@ body{margin:0}
        τ = gumbel_draw_temperature = 1.5 divides the LOGIT ONLY in the draw comparator; SH ranking,
        played move, and exported target read raw logits (tree.rs comments at the draw site).
        gumbel_m = 32 (config), budget-calibrated (GUMBEL_MIN_ROUND0_VISITS = 4, floor of 2). -->
-  <p>The root of each search does not consider every legal move — on an unbounded board that would
-  smear a finite budget over hundreds of cells. Instead it samples <strong>m&nbsp;candidates without
+  <p>An unbounded board can have hundreds of legal moves at the root, and a finite budget spread
+  over all of them would give each too few visits to measure. The root instead samples
+  <strong>m&nbsp;candidates without
   replacement</strong> using the Gumbel-max trick: draw independent noise
   <code>g(a)&nbsp;~&nbsp;Gumbel(0,1)</code> for every legal move and keep the top&nbsp;m by
-  <code>logit(a)/&tau;&nbsp;+&nbsp;g(a)</code>. That comparator is exactly equivalent to sampling m
-  moves, one after another without replacement, from <code>softmax(logits/&tau;)</code> — strong
-  moves are picked often, weak moves are picked occasionally, and no move is ever starved of
-  probability. The draw temperature <code>&tau;&nbsp;=&nbsp;1.5</code> widens <em>only this draw</em>:
-  it flattens which candidates get sampled, but the halving scores, the played move, and the exported
-  training target all read the raw logits — &tau; changes who gets auditioned, never how the audition
-  is judged.</p>
+  <code>logit(a)/&tau;&nbsp;+&nbsp;g(a)</code>. This comparator is equivalent to sampling m
+  moves without replacement from <code>softmax(logits/&tau;)</code>: strong
+  moves are picked often, weak moves occasionally, and every move has nonzero
+  probability. The draw temperature <code>&tau;&nbsp;=&nbsp;1.5</code> applies to
+  <em>only this draw</em>:
+  it flattens the candidate sampling, while the halving scores, the played move, and the exported
+  training target all read the raw logits.</p>
 
-  <p>This is why Dirichlet root noise could be deleted. Classic AlphaZero perturbs the prior and
-  then lets PUCT spend most of the budget on the (noisy) favorite anyway; the exploration is smeared
-  and mostly wasted. Here the randomness lives in <em>which m moves enter the tournament</em>, and
-  the entire visit budget is then concentrated on those m — every candidate gets enough visits for
-  its measured value to actually mean something. In the main training run <code>m&nbsp;=&nbsp;32</code>;
+  <p>Root exploration comes from the draw: the randomness is in
+  <em>which m moves enter the tournament</em>, and
+  the entire visit budget is then concentrated on those m, so every candidate receives enough
+  visits for its measured value to be informative. In the main training run
+  <code>m&nbsp;=&nbsp;32</code>;
   when a search runs with a smaller budget (evaluation matches, the live site's smaller bots), m is
-  automatically walked down the halving ladder until every round-0 candidate can afford at least 4
-  visits, and never below a 2-candidate tournament.</p>
+  automatically reduced until every round-0 candidate can receive at least 4
+  visits, with a floor of 2 candidates.</p>
 
   <figure class="fig" id="fig-gumbel">
     <div class="fig-controls" role="group" aria-label="Gumbel draw controls">
@@ -149,12 +148,13 @@ body{margin:0}
     <svg id="g-svg" viewBox="0 0 720 400" role="img" aria-label="Interactive bar chart: 20 candidate moves with network priors, Gumbel noise stacked on scaled logits, and the top 8 candidates highlighted after each draw"></svg>
     <figcaption><strong>Sampling the root candidates.</strong> Top panel: the network prior
     softmax(logits) over 20 illustrative moves; dashes mark softmax(logits/&tau;) and dots the
-    empirical frequency each move wins the <em>first</em> pick across repeated draws — they converge.
+    empirical frequency each move wins the <em>first</em> pick across repeated draws; the two
+    converge.
     Bottom panel: one draw. Solid bars are logit/&tau;; the lighter segment stacked on each is that
     draw's Gumbel noise (drawn downward when negative). The m&nbsp;=&nbsp;8 highest totals (outlined,
-    ticked) become this move's candidates. Raise &tau; and the deterministic bars shrink relative to
-    the noise: the draw flattens, low-prior moves audition more often. Illustrative logits; m is 8
-    here for legibility, 32 in training.</figcaption>
+    ticked) become this move's candidates. Raising &tau; shrinks the deterministic bars relative to
+    the noise: the draw flattens and low-prior moves are sampled more often. Illustrative logits;
+    m is 8 here for legibility, 32 in training.</figcaption>
   </figure>
 
   <h2 id="sh">Sequential halving</h2>
@@ -169,8 +169,8 @@ body{margin:0}
   candidates, in <code>R&nbsp;=&nbsp;&lceil;log&#8322;&nbsp;m&rceil;</code> rounds. Each round, every
   surviving candidate receives an <em>equal</em> quota of
   <code>&lfloor;n&nbsp;/&nbsp;(R&nbsp;&middot;&nbsp;|A&#7523;|)&rfloor;</code> fresh visits (at least
-  one). When all survivors have met their quota — a real barrier: the round cannot advance while any
-  evaluation is still in flight — they are ranked and the worse half is eliminated,
+  one). When all survivors have met their quota (the round cannot advance while any
+  evaluation is still in flight), they are ranked and the worse half is eliminated,
   keeping <code>&lceil;|A&#7523;|/2&rceil;</code>, until one remains. The final survivor absorbs
   whatever budget is left. The ranking score is</p>
 
@@ -178,20 +178,17 @@ body{margin:0}
 
   <p>with <code>c_visit&nbsp;=&nbsp;50</code>, <code>c_scale&nbsp;=&nbsp;1.0</code>, and
   <code>max&#8322;&nbsp;N(b)</code> the largest visit count any root move earned <em>this move</em>
-  (on a reused tree, inherited visits are subtracted out so stale counts can't inflate &sigma;).
-  Here <code>q&#770;</code> is the <em>completed</em> Q: a candidate that has visits reports its
-  measured average; one that doesn't yet gets a principled interpolation of the node's own value
-  estimate and the visit-weighted average of its searched siblings, rather than a lucky default.
-  The shape of &sigma; is the point: at 20-odd visits the multiplier is already &asymp;70&times;, so
-  a fraction of a pawn's worth of measured value difference dwarfs any logit gap. The prior and the
-  noise decide who <em>enters</em>; measured Q rapidly decides who <em>survives</em>.</p>
+  (on a reused tree, inherited visits are subtracted out so stale counts cannot inflate &sigma;).
+  Here <code>q&#770;</code> is the <em>completed</em> Q: a candidate with visits reports its
+  measured average; one without visits gets an interpolation of the node's own value
+  estimate and the visit-weighted average of its searched siblings.
+  At around 20 visits the &sigma; multiplier is already &asymp;70, so
+  a small measured value difference outweighs any logit gap. The prior and the
+  noise decide which candidates <em>enter</em>; measured Q decides which <em>survive</em>.</p>
 
-  <p>Compare that to what PUCT does with the same budget: the prior favorite soaks up the majority
-  of visits, and a low-prior move that happens to be tactically decisive may see single-digit visits
-  — too few for its Q to be trusted, so it is never promoted. Sequential halving spends the budget
-  where the <em>decision</em> needs it: equally at first, then doubling down only on moves that
-  survive scrutiny. A "hidden gem" — low prior, genuinely strong — only has to out-measure half the
-  field for one round to keep earning visits.</p>
+  <p>The schedule spends the budget equally at first, then concentrates on moves that survive
+  ranking. A low-prior move with a strong measured Q only has to out-measure half the
+  field each round to keep earning visits.</p>
 
   <figure class="fig" id="fig-sh">
     <div class="fig-controls" role="group" aria-label="Sequential halving controls">
@@ -209,9 +206,9 @@ body{margin:0}
     running q&#770;. At each barrier the survivors are ranked by g&nbsp;+&nbsp;logit&nbsp;+&nbsp;&sigma;(q&#770;)
     and the bottom half grays out. In <em>lucky prior</em>, the highest-prior move measures mediocre
     and is dropped once &sigma; outweighs its logit head start. In <em>hidden gem</em>, a
-    seventh-ranked prior with a genuinely high Q wins the bracket — the case PUCT's visit
-    concentration systematically misses. Each reset redraws g and the simulated evaluations: who
-    gets eliminated when varies run to run, while a real Q edge keeps winning — which is the point.</figcaption>
+    seventh-ranked prior with a high true Q wins the bracket. Each reset redraws g and the
+    simulated evaluations: the elimination order varies run to run, while a real Q edge keeps
+    winning.</figcaption>
   </figure>
 
   <h2 id="tss">Threat-space search</h2>
@@ -224,20 +221,20 @@ body{margin:0}
        counted against it." Also injected at every node expansion (add_node_from_eval) and used as a
        leaf verdict override + a played-move guard (search.rs select_continuous_leaves,
        tactical_guard_weights). -->
-  <p>A sampled candidate set has one frightening failure mode: what if the one move that blocks a
-  four simply isn't drawn? Hexo closes that hole with a deterministic tactical scanner
-  that runs alongside the search. It watches the board's length-6 windows and flags any
-  <em>active</em> window — all one colour — holding 4 or more stones. From those windows it
-  derives, phase-aware, the
+  <p>A sampled candidate set can fail to include the one move that blocks a four. A deterministic
+  tactical scanner runs alongside the search to close that gap. It scans the board's length-6
+  windows and flags any
+  <em>active</em> window (all one colour) holding 4 or more stones. From those windows it
+  derives the phase-aware
   <strong>tactical set</strong>: the cells that complete an own win this turn, plus every empty cell
-  of every opponent threat window. Defense is a hitting set, not fill-every-gap: one stone in any
-  empty of a threat window kills it, and if no <code>B</code>-stone hitting set covers all opponent
-  windows (B&nbsp;=&nbsp;2 on the turn's first stone, 1 otherwise), the position is scored as a
-  proven loss outright.</p>
+  of every opponent threat window. Defense is computed as a hitting set: one stone in any
+  empty of a threat window neutralizes it, and if no <code>B</code>-stone hitting set covers all
+  opponent windows (B&nbsp;=&nbsp;2 on the turn's first stone, 1 otherwise), the position is scored
+  as a proven loss.</p>
 
-  <p>At the root, every legal tactical cell is <strong>force-included in the candidate set</strong> —
-  appended <em>on top of</em> the m budget, not counted against it, even if its logit+noise score
-  ranked far below the top-m. So the draw can never miss the blocking move. The same scanner also
+  <p>At the root, every legal tactical cell is <strong>force-included in the candidate
+  set</strong>: appended in addition to the m budget, regardless of its logit+noise rank. The draw
+  therefore cannot miss the blocking move. The same scanner also
   injects tactical cells as guaranteed children at every expanded node, overrides leaf values with
   proven win/loss verdicts, and vetoes a proven-losing move at the final pick.</p>
 
@@ -249,15 +246,16 @@ body{margin:0}
       <span class="readout" id="t-stat">block in candidates: &ndash;</span>
     </div>
     <svg id="t-svg" viewBox="0 0 720 330" role="img" aria-label="Hex board with a four-in-a-row threat; drawn candidate cells are outlined, and with injection enabled the blocking cells are always included and marked"></svg>
-    <figcaption><strong>Why the draw needs a safety net.</strong> Red has four in a row in a live
+    <figcaption><strong>Tactical injection at the root.</strong> Red has four in a row in a live
     6-window (one end already blocked); blue, to move, must play one of the two marked empties
     (&#9651;) or lose. Each draw samples m&nbsp;=&nbsp;8 candidates (outlined) from an illustrative
     policy over the empty cells. With injection <em>off</em>, repeated draws sometimes miss both
-    blocking cells — watch the counter. With injection <em>on</em>, the scanner's tactical cells are
-    always appended to the candidate set (solid red outline, "+TSS"), beyond the m budget.</figcaption>
+    blocking cells; the counter tracks this. With injection <em>on</em>, the scanner's tactical
+    cells are always appended to the candidate set (solid red outline, "+TSS"), beyond the m
+    budget.</figcaption>
   </figure>
 
-  <h2 id="scheduler">Serving many games at once</h2>
+  <h2 id="scheduler">The batched scheduler</h2>
 
   <!-- run_continuous (search.rs): one slot per game; select_continuous_pass caps per-slot in-flight
        leaves at virtual_batch_size (48 selfplay / 32 serve via bots.py SearchProfile); leaves queue and
@@ -265,25 +263,26 @@ body{margin:0}
        descents; cache.rs FIFO eval cache 262,144 states keyed by state hash + duplicate merging;
        tree reuse: advance_root promotes the played child, fresh gumbel draw per move (SEED_STREAM_GUMBEL,
        mix_seed(base_seed, game_key, ply)); active_root_limit 192 (config) under hard cap 512. -->
-  <p>None of the above would be affordable if each game ran its search alone: a single tree produces
-  leaf positions one at a time, and a network evaluated one position at a time leaves the device
-  almost idle. Hexo's driver is a <strong>continuous batched scheduler</strong>. Every active game
-  owns a slot with its own tree; each pass, every slot descends its tree and emits leaf positions
+  <p>A single tree produces
+  leaf positions one at a time, and evaluating one position at a time leaves the device
+  mostly idle. Hexo's driver is a <strong>continuous batched scheduler</strong>. Every active game
+  has a slot with its own tree; each pass, every slot descends its tree and emits leaf positions
   until it has up to <code>virtual_batch_size</code> evaluations in flight (48 during training, 32
-  on this site) — a <em>virtual loss</em> temporarily marks each in-flight path down so parallel
-  descents spread instead of piling onto one line. All slots' leaves land in a shared queue, which
+  on this site). A <em>virtual loss</em> temporarily lowers each in-flight path's value so parallel
+  descents spread across different lines. All slots' leaves land in a shared queue, which
   is flushed to the network as one large batch; results fan back, back up their trees, and the slots
   immediately produce more work. Duplicate positions in a batch are evaluated once, and a bounded
   FIFO cache (262,144 entries, keyed by a 64-bit hash of the position) means a re-visited position
   costs a lookup instead of a forward pass.</p>
 
-  <p>Two more economies matter. When a move is played, the tree isn't discarded: the chosen child is
-  promoted to be the new root, keeping its whole subtree of visits — each new move then gets a fresh
-  Gumbel draw over the promoted root, and the halving quotas count only visits earned since, so
-  reuse never distorts the tournament. And because the sequential-halving barrier only fires when a
-  slot has zero evaluations in flight, correctness survives all this asynchrony: rounds never advance
-  on half-backed-up statistics. Training runs 192 games per device this way; the public site uses the
-  same scheduler, which is why several visitors can each play a searched opponent on one box.</p>
+  <p>When a move is played, the chosen child is
+  promoted to be the new root and keeps its whole subtree of visits. Each new move gets a fresh
+  Gumbel draw over the promoted root, and the halving quotas count only visits earned since
+  promotion, so reuse does not distort the tournament. The sequential-halving barrier fires only
+  when a slot has zero evaluations in flight, so rounds never advance
+  on partially backed-up statistics. Training runs 192 games per device this way; the public site
+  uses the same scheduler, so several visitors can each play a searched opponent on one
+  device.</p>
 
   <figure class="fig" id="fig-sched">
     <div class="fig-controls" role="group" aria-label="Scheduler animation controls">
@@ -299,11 +298,11 @@ body{margin:0}
     leaf requests (dots) into the shared queue whenever it has in-flight headroom. The evaluator
     consumes the queue in batches and results fan back to their trees. Drag the slider: with one
     lane the evaluator starves between requests; with more lanes batches fill and evaluator
-    utilization climbs — the whole reason one device can serve many concurrent games. Timings are
-    cartooned for legibility.</figcaption>
+    utilization climbs, which is what lets one device serve many concurrent games. Timings are
+    illustrative.</figcaption>
   </figure>
 
-  <h2 id="played">What comes out of a search</h2>
+  <h2 id="played">Search outputs</h2>
 
   <!-- Played move: search.rs select_action_with_lcb — T==0 with lcb_move_selection: LCB pick
        (Q − z·σ/√n, z = lcb_z = 1.6, eligibility delta >= max(lcb_min_visits=8,
@@ -312,20 +311,21 @@ body{margin:0}
        plies) the delta-visit histogram is sampled with gumbel_play_prune zeroing round-0 quota losers.
        Target: gumbel_target_policy — π'(a) = softmax(logits + σ(completedQ)) with export-only
        c_scale = gumbel_target_c_scale = 0.35. -->
-  <p>Two artifacts leave every finished search. The <strong>played move</strong>: at temperature
-  zero — every serious move on this site — the pick starts from the argmax of this move's visit
-  histogram, but a lower-confidence-bound rule gets the last word: among moves with enough fresh
-  visits (at least 8, and at least 10% of the leader's), it plays the one with the best
-  <code>Q&nbsp;&minus;&nbsp;z&middot;&sigma;/&radic;n</code> at <code>z&nbsp;=&nbsp;1.6</code> —
-  preferring a well-measured good move over a barely-sampled great-looking one — with a
-  decisiveness tie-break among near-equals and the tactical guard vetoing any proven loser. (During
-  training's few opening plies at T&nbsp;&gt;&nbsp;0, the histogram is sampled instead, with
-  candidates that never survived a halving pruned out first — their visits were schedule, not
-  endorsement.) And the <strong>training target</strong>: not the visit counts, but the improved
+  <p>Every finished search produces two artifacts. The first is the <strong>played
+  move</strong>. At temperature zero (how this site plays), the pick starts from the argmax of this
+  move's visit histogram, then a lower-confidence-bound rule refines it: among moves with enough
+  fresh visits (at least 8, and at least 10% of the leader's), it plays the one with the best
+  <code>Q&nbsp;&minus;&nbsp;z&middot;&sigma;/&radic;n</code> at <code>z&nbsp;=&nbsp;1.6</code>.
+  This prefers a well-measured move over a lightly sampled one with a higher point estimate. A
+  decisiveness tie-break applies among near-equals, and the tactical guard vetoes any proven loser.
+  During training's few opening plies at T&nbsp;&gt;&nbsp;0, the histogram is sampled instead;
+  candidates that never survived a halving round are pruned first, since their visits came from
+  round quotas rather than survival. The second artifact is the <strong>training
+  target</strong>: the improved
   policy <code>&pi;&prime;(a)&nbsp;=&nbsp;softmax(logits&nbsp;+&nbsp;&sigma;(completedQ))</code>, a
-  denser, better-calibrated signal than counts alone — softened for export
-  (<code>c_scale&nbsp;=&nbsp;0.35</code>) so the network isn't trained on near-one-hot spikes. Where
-  &pi;&prime; goes next is the subject of <a href="training.html#targets">the training</a>.</p>
+  denser signal than visit counts alone. It is softened for export
+  (<code>c_scale&nbsp;=&nbsp;0.35</code>) so the network does not train on near-one-hot spikes.
+  <a href="training.html#targets">The training</a> describes how &pi;&prime; is used.</p>
 
 </main>
 
@@ -370,7 +370,7 @@ el("line",{x1:X0-14,y1:PA_BASE,x2:X0+N*COLW,y2:PA_BASE,stroke:C.line,"stroke-wid
 el("line",{x1:X0-14,y1:PB_BASE,x2:X0+N*COLW,y2:PB_BASE,stroke:C.line,"stroke-width":1},svg);
 txt(X0-14,26,"priors softmax(logits) / first-pick frequency",{fill:C.muted,"font-size":"11","font-family":MONO},svg);
 txt(X0-14,118,"one draw: logit/τ (solid) + g (light), top-8 outlined",{fill:C.muted,"font-size":"11","font-family":MONO},svg);
-txt(X0+N*COLW-2,396,"candidates sorted by logit — illustrative",{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"end"},svg);
+txt(X0+N*COLW-2,396,"candidates sorted by logit · illustrative",{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"end"},svg);
 var gDyn=el("g",{},svg);
 for(var i=0;i<N;i++)txt(colX(i)+BARW/2,378,String(i+1),{fill:C.dim,"font-size":"9","font-family":MONO,"text-anchor":"middle"},svg);
 var tauSlider=document.getElementById("g-tau"),tauRead=document.getElementById("g-tau-read"),cntRead=document.getElementById("g-count");
@@ -605,7 +605,7 @@ BLOCK.forEach(function(c){
   el("path",{d:"M"+x+","+(y-7)+" L"+(x+7)+","+(y+6)+" L"+(x-7)+","+(y+6)+" Z",fill:"none",stroke:C.p1s,"stroke-width":1.5},board);
 });
 txt(20,24,"red: four in a row · blue to move (1 placement)",{fill:C.muted,"font-size":"11","font-family":MONO},svg);
-txt(20,42,"△ = empties of the live 6-window — the only saving moves",{fill:C.dim,"font-size":"10","font-family":MONO},svg);
+txt(20,42,"△ = empties of the live 6-window (the only saving moves)",{fill:C.dim,"font-size":"10","font-family":MONO},svg);
 txt(20,310,"policy over empty cells is illustrative",{fill:C.dim,"font-size":"10","font-family":MONO},svg);
 var statEl=document.getElementById("t-stat"),toggle=document.getElementById("t-toggle");
 var nDraws=0,nHit=0;

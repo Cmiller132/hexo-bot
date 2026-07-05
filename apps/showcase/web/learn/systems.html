@@ -9,7 +9,7 @@
 <style>
 /* Inline fallback: design tokens + minimal base so this page is readable even
    if learn.css has not been generated yet. learn.css, when present, carries the
-   full scaffold and simply re-declares these tokens identically. */
+   full scaffold and re-declares these tokens identically. */
 :root{
   --bg:#101317;--tile:#161b21;--line:#242c35;--line-soft:#1c232b;
   --text:#d4dbe3;--muted:#79848f;--dim:#4c565f;
@@ -97,11 +97,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 <h1>The systems <span class="h-dim">— the engineering under the model</span></h1>
 
 <p class="lede">
-Everything the other chapters describe runs on a small stack of deliberately
-boring machinery: a Rust rules engine that never rescans the board, a game
+The system described on the other pages runs on four pieces of
+infrastructure: a Rust rules engine that updates win/threat state
+incrementally, a game
 record that costs about four bytes a move, a serving path that keeps each
 game&rsquo;s search tree alive in one process, and a &sim;$100 GPU that serves
-this entire site. This page is the non-ML engineering, read straight from the
+the site. This page covers the non-ML engineering, read from the
 code.
 </p>
 
@@ -121,23 +122,23 @@ ids), <code>packages/hexo_utils/rust/src/records.rs</code> (the
 The engine is a Rust crate behind a PyO3 bridge
 (<code>hexo_engine._rust</code>): Python, the search, and this website all
 hold opaque Rust state handles, and every placement goes through the same
-authority &mdash; an illegal move is a raised error, not a corrupted board.
+authority. An illegal move raises an error.
 Because the board is unbounded, storage is sparse: a hash map of occupied
-cells plus an insertion-ordered list, no grid anywhere.
+cells plus an insertion-ordered list, with no grid.
 <!-- src: hexo_engine/rust/src/board.rs:20-29 (AHashMap + occupied Vec);
      python/hexo_engine/api.py:107-119 (apply_action raises IllegalActionError) -->
 </p>
 
 <p>
-The interesting part is what a placement updates. A stone sits inside exactly
-<b>18 six-cell windows</b> &mdash; the three line axes of the hex grid, times
-the six positions the stone can occupy inside a length-6 window &mdash; and
-those 18 are the <em>only</em> windows whose status that stone can change. The
+A stone sits inside exactly
+<b>18 six-cell windows</b> (the three line axes of the hex grid, times
+the six positions the stone can occupy inside a length-6 window), and
+those 18 are the only windows whose status that stone can change. The
 engine keeps a window store: for every window ever touched, two 6-bit masks
 (one per colour). A placement ORs one bit into 18 masks and reads the result:
 a window with all six bits of one colour is a win; a single-colour window with
-four or more stones is a threat. That is the entire win/threat detector &mdash;
-constant work per move, whether the game has 10 stones or 300, and never a
+four or more stones is a threat. The win/threat detector is
+constant work per move, whether the game has 10 stones or 300, with no
 board rescan.
 <!-- src: hexo_engine/rust/src/tactics.rs:14-17 (WINDOW_LEN=6,
      WINDOWS_PER_PLACEMENT = 3*6 = 18), :422-465 (update loop),
@@ -145,30 +146,30 @@ board rescan.
 </p>
 
 <p>
-Two more stores ride the same incremental discipline. The legal-move store
+Two more stores are updated the same way. The legal-move store
 maintains the radius-8 disk around the stones (every placement opens up to
-217 new cells and closes its own), so &ldquo;list the legal moves&rdquo; is a
-copy, not a computation. And a live-threats index mirrors the window store so
-that <em>&ldquo;does anyone have a threat right now?&rdquo;</em> is an O(1)
-read &mdash; that is the question threat-space search asks before every single
-move, and it is why TSS can afford to ask it. When you see the search
-force-include a double-threat cell, the data it read was these same masks.
+217 new cells and closes its own), so listing the legal moves is a
+copy. A live-threats index mirrors the window store, so
+checking whether any live threat exists is an O(1)
+read. Threat-space search performs that check before every
+move. When the search force-includes a double-threat cell, these masks are
+the data it read.
 <!-- src: hexo_engine/rust/src/legal.rs:18 (LEGAL_RADIUS=8), :115-146;
      tactics.rs:344-354 (live_threats index, "hexgt TSS hot path"),
      :410-412 (has_threats O(1)) -->
-Every mutation also returns an undo delta &mdash; the search rolls positions
-back instead of copying them.
+Every mutation also returns an undo delta; the search rolls positions
+back rather than copying them.
 <!-- src: board.rs:83-117 (place_with_delta / undo_place) -->
 </p>
 
 <p>
-The last piece is the currency the whole system trades in: the
-<b>packed action id</b>. A coordinate <code>(q,&nbsp;r)</code> becomes one
-<code>u32</code> &mdash; each axis offset into an unsigned 16-bit lane, then
-<code>q&nbsp;&lt;&lt;&nbsp;16&nbsp;|&nbsp;r</code> &mdash; chosen so plain
+Moves are exchanged as
+<b>packed action ids</b>. A coordinate <code>(q,&nbsp;r)</code> becomes one
+<code>u32</code>: each axis is offset into an unsigned 16-bit lane, then
+<code>q&nbsp;&lt;&lt;&nbsp;16&nbsp;|&nbsp;r</code>, so plain
 integer order equals deterministic <code>(q,&nbsp;r)</code> order. The same
-encoding is implemented three times, byte-for-byte compatibly &mdash; Rust,
-Python, and the board JS on this site &mdash; because these ids are persisted
+encoding is implemented byte-for-byte compatibly in Rust,
+Python, and the board JS on this site, because these ids are persisted
 in training shards and game records; a cross-language test pins them together.
 <!-- src: legal.rs:20-42 (pack_coord/unpack_coord, COORD_OFFSET = 1<<15),
      :6-12 (canonical; duplicated in python types.py + frontend JS;
@@ -194,15 +195,15 @@ in training shards and game records; a cross-language test pins them together.
   </div>
   <div class="fig-readout" id="syRo" aria-live="polite">
     <span class="ro-k">window store</span>
-    <span class="ro-t">place a stone — the 18 six-cell windows through it flash; threat windows flash in the owner&rsquo;s colour. The store never rescans: only those 18 masks change.</span>
+    <span class="ro-t">place a stone; the 18 six-cell windows through it flash, threat windows in the owner&rsquo;s colour. Only those 18 masks change.</span>
   </div>
 </figure>
 
 <h2 id="records"><span class="sec-no">02</span>the game record</h2>
 
 <p>
-Every finished game &mdash; a self-play game on the training box, an arena
-game in the evaluator, and the game you just played on this site &mdash; is
+Every finished game (a self-play game on the training box, an arena
+game in the evaluator, or a game played on this site) is
 written in one binary format: <code>.hxr</code>. A file starts with the magic
 <code>HEXOREC1</code> and a small header (schema version, engine rules
 version, backend string, the player list), then zero or more length-prefixed
@@ -211,7 +212,7 @@ game payloads. Each payload is self-contained: game id, optional seed
 little-endian packed action ids, then optional winner, placement count, and an
 abort record for games that died mid-run. Writers flush per game, so a crashed
 self-play run leaves a readable prefix rather than a corrupt file; readers
-reject unknown schema versions and trailing bytes loudly.
+reject unknown schema versions and trailing bytes.
 <!-- src: hexo_utils/rust/src/records.rs:7-13 (wire format doc + flush-per-game),
      :32-34 (magic, schema v1), :518-534 (header fields),
      :603-624 (payload encode: game_id, seed, status, u32 LE actions,
@@ -220,14 +221,14 @@ reject unknown schema versions and trailing bytes loudly.
 </p>
 
 <p>
-The move stream is the whole cost: <b>4 bytes per ply</b>, plus roughly 60
-bytes of per-game metadata. A typical ~60-ply game is about 300 bytes &mdash;
-the packed-id encoding means a record stores <em>decisions, not boards</em>,
-and any consumer replays them through the engine to reconstruct every
-position. That is literally how this site works: your game is finalized as a
+The move stream dominates the cost: <b>4 bytes per ply</b>, plus roughly 60
+bytes of per-game metadata. A typical ~60-ply game is about 300 bytes.
+A record stores only the action stream;
+a consumer replays it through the engine to reconstruct every
+position. This site works the same way: a finished game is finalized as a
 one-game <code>.hxr</code> blob into the games database, and the analysis
 view replays those action ids through the same Rust engine before the network
-ever sees the position.
+sees the position.
 <!-- src: apps/showcase/server/showcase/game.py:103-137 (encode_hxr -> blob),
      app.py:232-246 (finalize_game stores record), :440-444 + game.py:139-150
      (analysis decodes the blob's action ids), bots.py:341-349 (_replay) -->
@@ -252,16 +253,16 @@ ever sees the position.
   </div>
 </figure>
 
-<h2 id="serving"><span class="sec-no">03</span>from your click to a move</h2>
+<h2 id="serving"><span class="sec-no">03</span>the serving path</h2>
 
 <p>
-When you play here, your click becomes
-<code>POST /api/game/{id}/move</code> against a FastAPI process that owns no
-model at all &mdash; it checks your session cookie and a token bucket, applies
-your stone through the Rust engine, and enqueues a bot-turn job. Jobs route
+A move on this site is a
+<code>POST /api/game/{id}/move</code> to a FastAPI process that holds no
+model. The process checks the session cookie and a token bucket, applies
+the stone through the Rust engine, and enqueues a bot-turn job. Jobs route
 <b>sticky</b>: <code>game_key&nbsp;%&nbsp;workers</code> pins each game to one
-of two worker processes, because that worker is where your game&rsquo;s state
-lives &mdash; each worker holds the full checkpoint catalogue, one network and
+of two worker processes, the one holding that game&rsquo;s search state.
+Each worker holds the full checkpoint catalogue, with one network and
 one Rust search session per checkpoint, resident for its lifetime.
 <!-- src: app.py:387-407 (move route: cookie auth, move_bucket, lock),
      bots.py:588-589 (_route = game_key % workers), :11-14 (sticky routing
@@ -270,17 +271,17 @@ one Rust search session per checkpoint, resident for its lifetime.
 </p>
 
 <p>
-Inside the worker, the session searches with the run&rsquo;s as-trained knobs
-(Gumbel root, sequential halving, TSS &mdash; only the visit budget you picked
-varies), and two reuse layers do the heavy lifting. The <b>per-game tree</b>:
+Inside the worker, the session searches with the run&rsquo;s as-trained
+settings (Gumbel root, sequential halving, TSS); only the selected visit
+budget varies. Two reuse layers reduce the cost. The <b>per-game tree</b>:
 the session keeps one search tree per <code>game_key</code>; after it plays a
-move it advances the root into the chosen child, so your next move usually
-starts from an already-grown subtree instead of scratch. The <b>eval
+move it advances the root into the chosen child, so the next search usually
+starts from an already-grown subtree. The <b>eval
 cache</b>: every evaluated position is keyed by a state hash and kept in a
 FIFO-bounded map (the crate default holds 262,144 states; this site
 configures 65,536 per checkpoint session), so transpositions and re-searches
-never hit the GPU twice. Leaves that do miss are batched &mdash; the search
-collects up to 32 of them and makes one network forward per batch. The bot
+do not hit the GPU twice. Cache misses are batched: the search
+collects up to 32 leaves and makes one network forward per batch. The bot
 plays its whole turn (one or two stones) in a single job, then the tree for a
 finished game is explicitly discarded on its sticky worker.
 <!-- src: bots.py:24-29 + 167-231 (SearchProfile: as-trained knobs from the
@@ -293,11 +294,11 @@ finished game is explicitly discarded on its sticky worker.
 </p>
 
 <p>
-The rate limits guard exactly one scarce thing: search compute. Moves are
+The rate limits protect search compute. Moves are
 capped at 120/minute and new games at 60/hour per client, at most 16 games
 run concurrently server-wide and 4 per IP, and analysis requests (which can
 trigger small searches, capped at 64 visits) get 40/minute. Identity for all
-of this is the Cloudflare-reported client IP &mdash; the container has no
+of this is the Cloudflare-reported client IP; the container has no
 directly exposed ingress.
 <!-- src: config.py:90-99 (limits + analysis_search_visit_cap 64),
      app.py:108-135 (TokenBucket, CF-Connecting-IP), :305-325 (global +
@@ -326,32 +327,32 @@ directly exposed ingress.
     <text class="elab" x="564" y="102" text-anchor="middle">game_key % 2</text>
 
     <g class="plate" tabindex="0" data-k="browser"
-       data-info="Your click. The board JS packs (q, r) into the same u32 action id the engine uses and POSTs it. Round-trip cost: network only.">
+       data-info="The board JS packs the clicked (q, r) into the same u32 action id the engine uses and POSTs it. Round-trip cost: network only.">
       <rect x="28" y="52" width="120" height="48"/>
       <text class="pt" x="88" y="73" text-anchor="middle">browser</text>
       <text class="ps" x="88" y="89" text-anchor="middle">your click</text>
     </g>
     <g class="plate" tabindex="0" data-k="cloudflare tunnel"
-       data-info="The only ingress. The container publishes no port; Cloudflare's edge terminates TLS and the tunnel delivers requests inward. Contributes the usual edge round-trip — order of tens of ms, dominated by your distance to the edge.">
+       data-info="The only ingress. The container publishes no port; Cloudflare's edge terminates TLS and the tunnel delivers requests inward. Cost: an edge round-trip, tens of ms, dominated by client distance to the edge.">
       <rect x="196" y="52" width="148" height="48"/>
       <text class="pt" x="270" y="73" text-anchor="middle">cf tunnel</text>
       <text class="ps" x="270" y="89" text-anchor="middle">tunnel-only ingress</text>
     </g>
     <g class="plate" tabindex="0" data-k="fastapi web process"
-       data-info="Owns no model. Cookie auth + token buckets, applies your stone through the Rust engine under the game lock (incremental update: microseconds), enqueues the bot turn, returns immediately. Sub-millisecond of real work.">
+       data-info="Holds no model. Cookie auth + token buckets; applies the stone through the Rust engine under the game lock (incremental update: microseconds); enqueues the bot turn and returns. Sub-millisecond of work.">
       <rect x="392" y="52" width="148" height="48"/>
       <text class="pt" x="466" y="73" text-anchor="middle">fastapi</text>
       <text class="ps" x="466" y="89" text-anchor="middle">auth &middot; limits &middot; engine</text>
     </g>
     <g class="plate" tabindex="0" data-k="sticky worker"
-       data-info="One of 2 worker processes, chosen by game_key % 2 — the same worker every move of your game, because your search tree lives here. Queue hop + history replay: low milliseconds.">
+       data-info="One of 2 worker processes, chosen by game_key % 2. The same worker serves every move of a game, because the game's search tree lives there. Queue hop + history replay: low milliseconds.">
       <rect x="588" y="52" width="244" height="48"/>
       <text class="pt" x="710" y="73" text-anchor="middle">worker process</text>
       <text class="ps" x="710" y="89" text-anchor="middle">nets + sessions resident</text>
     </g>
 
     <rect class="inset" x="392" y="128" width="440" height="150"/>
-    <text class="itag" x="406" y="150">inside the worker — the search body (dominant)</text>
+    <text class="itag" x="406" y="150">inside the worker &middot; the search body (dominant)</text>
 
     <path class="edge" d="M540 208 H588" marker-end="url(#syAh)"/>
     <path class="edge" d="M588 236 H540" marker-end="url(#syAh)"/>
@@ -360,7 +361,7 @@ directly exposed ingress.
     <path class="edge" d="M710 100 V128"/>
 
     <g class="plate" tabindex="0" data-k="rust search session"
-       data-info="Gumbel MCTS at your chosen visit budget (16-512) with the as-trained knobs. Reuses your game's tree via advance_root, asks TSS's O(1) threat check every move. This is where nearly all the wall time goes — it scales with the budget you picked.">
+       data-info="Gumbel MCTS at the chosen visit budget (16-512) with the as-trained settings. Reuses the game's tree via advance_root and runs TSS's O(1) threat check every move. Nearly all wall time is spent here, scaling with the visit budget.">
       <rect x="412" y="168" width="128" height="88"/>
       <text class="pt" x="476" y="200" text-anchor="middle">search</text>
       <text class="ps" x="476" y="216" text-anchor="middle">per-game tree</text>
@@ -374,7 +375,7 @@ directly exposed ingress.
       <text class="ps" x="652" y="230" text-anchor="middle">xpu forward</text>
     </g>
     <g class="plate" tabindex="0" data-k="eval cache"
-       data-info="State-hash keyed, FIFO-bounded (65,536 states per checkpoint session on this site; crate default 262,144). Transpositions and re-searched positions never reach the GPU twice — a cache hit costs a hash lookup.">
+       data-info="State-hash keyed, FIFO-bounded (65,536 states per checkpoint session on this site; crate default 262,144). Transpositions and re-searched positions do not reach the GPU twice; a cache hit costs a hash lookup.">
       <rect x="740" y="168" width="76" height="88"/>
       <text class="pt" x="778" y="205" text-anchor="middle">cache</text>
       <text class="ps" x="778" y="221" text-anchor="middle">fifo</text>
@@ -383,7 +384,7 @@ directly exposed ingress.
     <path class="edge" d="M716 208 H740" marker-end="url(#syAh)"/>
 
     <g class="plate" tabindex="0" data-k="sqlite + .hxr"
-       data-info="On game end: the move list is encoded as a one-game .hxr blob and finalized into SQLite with the result row. Off the move path entirely — it costs you nothing mid-game.">
+       data-info="On game end: the move list is encoded as a one-game .hxr blob and finalized into SQLite with the result row. This is off the move path and adds no mid-game cost.">
       <rect x="28" y="168" width="180" height="60"/>
       <text class="pt" x="118" y="194" text-anchor="middle">sqlite</text>
       <text class="ps" x="118" y="212" text-anchor="middle">.hxr blob on finish</text>
@@ -399,40 +400,38 @@ directly exposed ingress.
 <h2 id="hardware"><span class="sec-no">04</span>the gpu it runs on</h2>
 
 <p>
-The whole site is served by one Intel <b>Arc A310</b> &mdash; a roughly $100,
-low-profile card &mdash; through <code>torch&nbsp;2.12.1+xpu</code>, the
+The whole site is served by one Intel <b>Arc A310</b> (a roughly $100
+low-profile card) through <code>torch&nbsp;2.12.1+xpu</code>, the
 PyTorch wheel line where Intel-GPU support is native (<code>torch.xpu</code>,
-no extension package). There is a wrinkle worth being honest about: the
-training run&rsquo;s fast Triton kernels are CUDA-only and gated on
-<code>x.is_cuda</code>, so on this box every forward takes the plain eager
-fp32 paths &mdash; the same math, minus the hand-tuned kernels. Even so, the
+no extension package). The
+training run&rsquo;s Triton kernels are CUDA-only and gated on
+<code>x.is_cuda</code>, so on this device every forward takes the plain eager
+fp32 paths: the same math without the hand-tuned kernels. The
 measured result on this deployment is <b>2.2&times;</b> single-move speed and
 <b>2.8&times;</b> concurrent throughput over the host&rsquo;s 7-core CPU
-baseline &mdash; batching favours the GPU, which is exactly the shape of the
-serving load.
+baseline. Batching favours the GPU, and the serving load is batched.
 <!-- src: Dockerfile.xpu:14-18 + 131-140 (torch==2.12.1+xpu, native torch.xpu,
      no ipex), device.py:19-22 (Triton kernels is_cuda-gated -> eager on XPU);
      A310 + 2.2x/2.8x vs 7-core CPU: measured on this deployment -->
 </p>
 
 <p>
-Correctness is not assumed. Eager-on-XPU is an untested-in-CI combination, so
+Eager-on-XPU is not covered by CI, so
 at startup each worker forwards one fixed position on CPU and on the XPU and
 compares value and policy logits. Tolerance is 10<sup>&minus;2</sup>; the
 measured divergence here is about <b>5&times;10<sup>&minus;6</sup></b>. If the
-check ever failed &mdash; mismatch, non-finite output, or the device forward
-raising &mdash; the worker falls back to CPU and serves slow moves rather
-than wrong ones.
+check fails (mismatch, non-finite output, or the device forward
+raising), the worker falls back to CPU and serves slower moves.
 <!-- src: device.py:41 (SELFCHECK_TOL 1e-2), :172-203 (verify_device: compare,
      finite check, model moved back to CPU on failure), bots.py:301-327
      (fallback wiring); ~5e-6 measured on this deployment -->
 </p>
 
 <p>
-The one operational quirk is the JIT. The first forwards after a worker starts
-compile the SYCL kernels for the network &mdash; about <b>27 seconds</b>,
-once per worker (two workers, compiled independently), absorbed at startup by
-a deliberate warmup so no player&rsquo;s first move eats it. The container
+The first forwards after a worker starts
+compile the SYCL kernels for the network: about <b>27 seconds</b>,
+once per worker (two workers compile independently). A startup warmup absorbs
+this, so no player&rsquo;s first move pays it. The container
 runs a read-only filesystem with tunnel-only ingress, so the kernel cache
 lives on tmpfs: a rebooted container pays the 27 seconds once, then serves
 warm indefinitely.
@@ -455,11 +454,9 @@ warm indefinitely.
 </figure>
 
 <p>
-That is the theme of the whole stack: the model is the only exotic part.
-Around it &mdash; incremental masks instead of rescans, four bytes a move,
-sticky processes, a parity check before trusting a backend &mdash; the
-engineering stays small enough to read in an afternoon, which is exactly what
-this page just did.
+The supporting engineering is small: incremental window masks, four bytes
+per move, sticky worker processes, and a parity check before a backend is
+trusted.
 </p>
 
 </main>
@@ -573,7 +570,7 @@ function readout(id) {
   function place(q, r) {
     var k = key(q, r);
     if (stones[k] !== undefined) {
-      set("occupied", "(" + q + ", " + r + ") already holds a stone — the board authority would reject this (MoveError::Occupied)."); // board.rs:88-90
+      set("occupied", "(" + q + ", " + r + ") already holds a stone; the engine rejects this (MoveError::Occupied)."); // board.rs:88-90
       return;
     }
     var who = owner(order);
@@ -600,9 +597,9 @@ function readout(id) {
     }
     var total = Object.keys(windows).length;
     countEl.textContent = total + " windows tracked";
-    var msg = "p" + who + " at (" + q + ", " + r + ") — updated 18 windows (" +
+    var msg = "p" + who + " at (" + q + ", " + r + "): updated 18 windows (" +
       newWindows + " new to the store, now " + total + " total). " +
-      (wins ? "SIX IN LINE — a window mask hit 0b111111. " :
+      (wins ? "Six in line: a window mask hit 0b111111. " :
        newThreats ? newThreats + " of them are now threats (≥4 one colour, other colour absent). " : "") +
       "A from-scratch rescan would recompute all " + total + "; the engine touched 18.";
     set("incremental update", msg);
@@ -626,7 +623,7 @@ function readout(id) {
     while (gFlash.firstChild) gFlash.removeChild(gFlash.firstChild);
     drawTracked();
     countEl.textContent = "0 windows tracked";
-    set("window store", "place a stone — the 18 six-cell windows through it flash; threat windows flash in the owner’s colour. The store never rescans: only those 18 masks change.");
+    set("window store", "place a stone; the 18 six-cell windows through it flash, threat windows in the owner’s colour. Only those 18 masks change.");
   }
   document.getElementById("syReset").addEventListener("click", reset);
   toggleBtn.addEventListener("click", function () {
@@ -635,7 +632,7 @@ function readout(id) {
     toggleBtn.classList.toggle("on", showTracked);
     drawTracked();
     if (showTracked) {
-      set("tracked windows", "every window any stone has ever touched (dim lines) — this is the set a naive full rescan would recompute after each move. The incremental store only ever writes to the 18 through the new stone.");
+      set("tracked windows", "every window any stone has touched (dim lines). A full rescan would recompute this whole set after each move; the incremental store writes only to the 18 through the new stone.");
     }
   });
   reset();
@@ -665,22 +662,22 @@ function readout(id) {
     var slug = 8; // representative checkpoint id length in bots.toml
     var p1id = 4 + slug; // "bot:" + slug
     var head = [
-      { n: "magic", b: 8, c: "sy-sh", d: "8 B — the literal bytes HEXOREC1. Readers refuse anything else (records.rs:32, :541-543)." },
-      { n: "versions", b: 2, c: "sy-sv", d: "2 B — schema version (v1) + engine rules version, both varints. Unknown schema versions are rejected loudly, never guessed at (records.rs:524-525, :545-552)." },
-      { n: "backend", b: 10, c: "sy-so", d: "10 B — length-prefixed engine backend string, “rust-pyo3” here (pybridge.rs:178; records.rs:526)." },
-      { n: "players", b: 1 + (1 + 5) + (1 + 7) + (2 + 5) + (1 + p1id) + (1 + 7) + (2 + p1id), c: "sy-sm", d: "count + two (id, role, label) entries — here (“human”, “player0”) and (“bot:<checkpoint>”, “player1”), all length-prefixed strings (records.rs:527-533; game.py:114-118)." }
+      { n: "magic", b: 8, c: "sy-sh", d: "8 B: the literal bytes HEXOREC1. Readers refuse anything else (records.rs:32, :541-543)." },
+      { n: "versions", b: 2, c: "sy-sv", d: "2 B: schema version (v1) + engine rules version, both varints. Unknown schema versions are rejected (records.rs:524-525, :545-552)." },
+      { n: "backend", b: 10, c: "sy-so", d: "10 B: length-prefixed engine backend string, “rust-pyo3” here (pybridge.rs:178; records.rs:526)." },
+      { n: "players", b: 1 + (1 + 5) + (1 + 7) + (2 + 5) + (1 + p1id) + (1 + 7) + (2 + p1id), c: "sy-sm", d: "count + two (id, role, label) entries, here (“human”, “player0”) and (“bot:<checkpoint>”, “player1”), all length-prefixed strings (records.rs:527-533; game.py:114-118)." }
     ];
     var payload = 57 + 2 * count + moves; // 37+8+1+count+moves+9+(1+count)+1
     var game = [
-      { n: "G+len", b: 1 + varlen(payload), c: "sy-sh", d: "marker byte 'G' + varint payload length — each game is length-prefixed and self-contained; a crashed run leaves a readable prefix (records.rs:576-582, :11-13)." },
-      { n: "game id", b: 37, c: "sy-so", d: "37 B — length-prefixed UUID string (game.py:193). Self-play runs use shorter ids; this is the showcase's." },
-      { n: "seed", b: 8, c: "sy-sv", d: "8 B — presence flag + zigzag varint of the 48-bit game seed (records.rs:762-770; game.py:174)." },
-      { n: "st", b: 1, c: "sy-sm", d: "1 B — status byte: completed (1) or aborted (2) (records.rs:37-38, :607)." },
-      { n: "n", b: count, c: "sy-sv", d: count + " B — varint move count (records.rs:608)." },
-      { n: "move stream — 4 B × " + plies, b: moves, c: "sy-sh", d: moves + " B — the game itself: one u32 little-endian packed action id per ply, exactly the engine's (q,r) encoding. Decisions, not boards: replay through the engine reconstructs every position (records.rs:609-611; legal.rs:31-35)." },
-      { n: "winner", b: 9, c: "sy-so", d: "9 B — flag + “player0”/“player1” (records.rs:612; game.py:136)." },
-      { n: "pl", b: 1 + varlen(plies), c: "sy-sv", d: (1 + varlen(plies)) + " B — flag + varint placement count (records.rs:613)." },
-      { n: "ab", b: 1, c: "sy-sm", d: "1 B — abort flag, 0 for a completed game; aborted/timed-out games append stage + exception + message strings here (records.rs:614-622; game.py:126-133)." }
+      { n: "G+len", b: 1 + varlen(payload), c: "sy-sh", d: "marker byte 'G' + varint payload length: each game is length-prefixed and self-contained; a crashed run leaves a readable prefix (records.rs:576-582, :11-13)." },
+      { n: "game id", b: 37, c: "sy-so", d: "37 B: length-prefixed UUID string (game.py:193). Self-play runs use shorter ids; this is the showcase's." },
+      { n: "seed", b: 8, c: "sy-sv", d: "8 B: presence flag + zigzag varint of the 48-bit game seed (records.rs:762-770; game.py:174)." },
+      { n: "st", b: 1, c: "sy-sm", d: "1 B: status byte, completed (1) or aborted (2) (records.rs:37-38, :607)." },
+      { n: "n", b: count, c: "sy-sv", d: count + " B: varint move count (records.rs:608)." },
+      { n: "move stream · 4 B × " + plies, b: moves, c: "sy-sh", d: moves + " B: one u32 little-endian packed action id per ply, exactly the engine's (q,r) encoding. Replay through the engine reconstructs every position (records.rs:609-611; legal.rs:31-35)." },
+      { n: "winner", b: 9, c: "sy-so", d: "9 B: flag + “player0”/“player1” (records.rs:612; game.py:136)." },
+      { n: "pl", b: 1 + varlen(plies), c: "sy-sv", d: (1 + varlen(plies)) + " B: flag + varint placement count (records.rs:613)." },
+      { n: "ab", b: 1, c: "sy-sm", d: "1 B: abort flag, 0 for a completed game; aborted/timed-out games append stage + exception + message strings here (records.rs:614-622; game.py:126-133)." }
     ];
     return { head: head, game: game, moves: moves };
   }
@@ -696,7 +693,7 @@ function readout(id) {
 
     function row(y, list, total, label) {
       var t = el("text", { x: BARX, y: y - 7, "class": "sy-bt dim" }, svg);
-      t.textContent = label + " — " + total + " B";
+      t.textContent = label + " · " + total + " B";
       var x = BARX;
       for (var i = 0; i < list.length; i++) {
         var s = list[i];
@@ -714,6 +711,7 @@ function readout(id) {
           }
           rect.addEventListener("mouseenter", show);
           rect.addEventListener("focus", show);
+          rect.addEventListener("click", show);
         })(s, rect);
         if (w > 30) {
           var lab = el("text", { x: x + 4, y: y + BARH - 9, "class": "sy-bt" }, svg);
@@ -749,6 +747,7 @@ function readout(id) {
       n.addEventListener("mouseleave", hide);
       n.addEventListener("focus", show);
       n.addEventListener("blur", hide);
+      n.addEventListener("click", show);
     })(plates[i]);
   }
 })();
@@ -769,6 +768,7 @@ function readout(id) {
     function show() { set(label, info); }
     r.addEventListener("mouseenter", show);
     r.addEventListener("focus", show);
+    r.addEventListener("click", show);
     return r;
   }
   function txt(x, y, cls, s, anchor) {
@@ -787,7 +787,7 @@ function readout(id) {
     "7-core CPU baseline (torch CPU threads split across the 2 workers). Normalized to 1.0×.");
   txt(116, BASE - UNIT - 6, "sy-bt", "1.0×", "middle");
   bar(158, BASE - 2.2 * UNIT, 52, 2.2 * UNIT, "xpu", "xpu 2.2× single-move",
-    "One search at a time finishes 2.2× faster on the A310 — eager fp32 forwards, no Triton (those kernels are CUDA-only). Measured on this deployment.");
+    "One search at a time finishes 2.2× faster on the A310, using eager fp32 forwards (the Triton kernels are CUDA-only). Measured on this deployment.");
   txt(184, BASE - 2.2 * UNIT - 6, "sy-bt", "2.2×", "middle");
 
   // group 2: concurrent throughput
@@ -796,7 +796,7 @@ function readout(id) {
     "7-core CPU baseline under concurrent games. Normalized to 1.0×.");
   txt(386, BASE - UNIT - 6, "sy-bt", "1.0×", "middle");
   bar(428, BASE - 2.8 * UNIT, 52, 2.8 * UNIT, "xpu", "xpu 2.8× concurrent",
-    "With several games in flight the ≤32-leaf batches keep the GPU fed, so the gap widens to 2.8× — the shape the site's rate limits are sized around. Measured on this deployment.");
+    "With several games in flight the ≤32-leaf batches keep the GPU fed, so the gap widens to 2.8×; the site's rate limits are sized around this. Measured on this deployment.");
   txt(454, BASE - 2.8 * UNIT - 6, "sy-bt", "2.8×", "middle");
 
   txt(700, BASE - 8, "sy-bt dim", "vs 7-core cpu, same box", "middle");
@@ -812,17 +812,19 @@ function readout(id) {
   txt(TX + jw, TY + TH + 22, "sy-bt", "~27 s", "middle");
   txt(TX + TW, TY + TH + 22, "sy-bt dim", "60 s", "end");
   txt(TX + jw / 2, TY + 13, "sy-bt", "sycl jit", "middle");
-  txt(TX + jw + (TW - jw) / 2, TY + 13, "sy-bt", "warm — steady-state serving", "middle");
+  txt(TX + jw + (TW - jw) / 2, TY + 13, "sy-bt", "warm · steady-state serving", "middle");
   function jitInfo() {
     set("one-time jit · ~27 s per worker",
-      "the first forwards JIT-compile the net's SYCL kernels. Each of the 2 workers pays it independently, at startup, behind a deliberate warmup — never on a player's move. Read-only container filesystem: the kernel cache lives on tmpfs, so each container boot pays this once.");
+      "the first forwards JIT-compile the net's SYCL kernels. Each of the 2 workers pays it independently, at startup, behind a warmup, never on a player's move. Read-only container filesystem: the kernel cache lives on tmpfs, so each container boot pays this once.");
   }
   function warmInfo() {
     set("warm steady state",
       "after warmup the kernels are cached in-process; forwards run at the benchmarked speed for the container's lifetime.");
   }
   jit.addEventListener("mouseenter", jitInfo); jit.addEventListener("focus", jitInfo);
+  jit.addEventListener("click", jitInfo);
   warm.addEventListener("mouseenter", warmInfo); warm.addEventListener("focus", warmInfo);
+  warm.addEventListener("click", warmInfo);
 })();
 
 })();

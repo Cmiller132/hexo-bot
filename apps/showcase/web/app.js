@@ -2,8 +2,14 @@
  * games feed, hash routing (#game/{id}), toasts and network banner.
  */
 
-import * as api from "./api.js";
-import { createBoard, findWin, key } from "./board.js";
+/* The ?v= pins on these imports (and on the asset links in index.html) exist
+ * so one page version always runs one bundle version: html, js, and css are
+ * cached independently by browsers/CDN, and a skewed pair (new index.html +
+ * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
+ * field bug. Bump ALL of them together whenever any of the five files
+ * changes incompatibly. */
+import * as api from "./api.js?v=3";
+import { createBoard, findWin, key } from "./board.js?v=3";
 
 "use strict";
 
@@ -163,6 +169,7 @@ function ingestMoves(snap) {
  * echoes it in every snapshot; with "random" it is decided at create time) */
 function showYouColor(hc) {
   const el = $("youColor");
+  if (!el) return; // cached pre-play-as index.html: cell has no id yet
   el.textContent = hc === 1 ? "red" : "blue";
   el.className = "n " + (hc === 1 ? "is-p1" : "is-p0");
 }
@@ -412,11 +419,16 @@ $("simSeg").addEventListener("click", e => {
     x.setAttribute("aria-checked", on);
   });
 });
-$("colorSeg").addEventListener("click", e => {
+/* Guarded: users can hold a cached pre-colorSeg index.html against this
+ * app.js (the assets are cached independently). A null here must not abort
+ * module evaluation — everything below (analysis controls, boot()) would
+ * silently die with it. Such users just keep the default color. */
+const colorSegEl = $("colorSeg");
+if (colorSegEl) colorSegEl.addEventListener("click", e => {
   const b = e.target.closest("button");
   if (!b) return;
   sel.color = b.dataset.color === "random" ? "random" : +b.dataset.color;
-  document.querySelectorAll("#colorSeg button").forEach(x => {
+  colorSegEl.querySelectorAll("button").forEach(x => {
     const on = x === b;
     x.classList.toggle("sel", on);
     x.setAttribute("aria-checked", on);
