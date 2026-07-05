@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hexo &mdash; instrument</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<!-- polished-stone shading: low-contrast ~120deg gradient, light top edge,
+     shaded bottom; all stops fully opaque — stones must never read translucent
+     over the policy overlay. Document-level so every board shares them. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gradS0" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#7db4ff"/>
+      <stop offset="0.45" stop-color="#4f93ff"/>
+      <stop offset="1" stop-color="#2f62c4"/>
+    </linearGradient>
+    <linearGradient id="gradS1" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#ff8a80"/>
+      <stop offset="0.45" stop-color="#f0524c"/>
+      <stop offset="1" stop-color="#b93732"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<div class="net-banner" id="netBanner" hidden>connection lost &mdash; retrying&hellip;</div>
+
+<header>
+  <div class="wordmark">hexo</div>
+  <nav role="tablist" aria-label="Views">
+    <button class="tab active" data-view="play" role="tab" aria-selected="true">Play</button>
+    <button class="tab" data-view="analysis" role="tab" aria-selected="false">Analysis</button>
+  </nav>
+</header>
+
+<main>
+
+  <!-- ================= PLAY ================= -->
+  <section class="view active" id="view-play">
+    <div class="board-col">
+      <div class="board-frame">
+        <span class="frame-tag" id="playTag">field &middot; &infin;</span>
+        <span class="frame-read">cursor <b id="cursorPos">&mdash;</b></span>
+        <svg class="board" id="playBoard" role="img" aria-label="Hexo board, game in progress"></svg>
+        <button class="place-chip" id="placeChip">place</button>
+      </div>
+    </div>
+
+    <aside class="panel">
+      <div class="sec">
+        <h2 class="k">Checkpoint</h2>
+        <div id="ckptList" role="radiogroup" aria-label="Checkpoint"></div>
+        <h2 class="k gap">Strength</h2>
+        <div class="seg" id="simSeg" role="radiogroup" aria-label="Simulations"></div>
+      </div>
+
+      <div class="sec">
+        <h2 class="k">Game</h2>
+        <div class="status over" id="playStatus">
+          <span class="dot"></span>
+          <span class="status-text" id="statusText">no game yet</span>
+        </div>
+        <div class="meta-grid">
+          <div class="mg-cell"><div class="n" id="plyCount">&mdash;</div><div class="l">ply</div></div>
+          <div class="mg-cell"><div class="n" id="turnCount">&mdash;</div><div class="l">turn</div></div>
+          <div class="mg-cell"><div class="n is-p0">blue</div><div class="l">you</div></div>
+        </div>
+        <button class="line-btn" id="resignBtn">New game</button>
+        <button class="line-btn" id="analyzeBtn" hidden>Analyze this game</button>
+        <form class="nick-form" id="nickForm" hidden>
+          <label class="nick-lab" for="nickInput">sign this game</label>
+          <div class="nick-row">
+            <input class="nick-input" id="nickInput" maxlength="24" placeholder="nickname"
+                   autocomplete="off" spellcheck="false" aria-label="Nickname for the finished game">
+            <button class="k-btn" type="submit">save</button>
+          </div>
+          <div class="nick-msg" id="nickMsg" role="status"></div>
+        </form>
+      </div>
+    </aside>
+  </section>
+
+  <!-- ================= ANALYSIS ================= -->
+  <section class="view" id="view-analysis">
+    <div class="board-col">
+      <div class="board-frame">
+        <span class="frame-tag" id="anaTag">analysis</span>
+        <span class="frame-read">cursor <b id="anaCursor">&mdash;</b></span>
+        <svg class="board" id="anaBoard" role="img" aria-label="Hexo board with policy overlay"></svg>
+      </div>
+    </div>
+
+    <aside class="panel">
+      <div class="sec">
+        <h2 class="k k-row"><span>Games</span><button class="k-btn" id="copyLink" aria-label="Copy game link" disabled>copy link</button></h2>
+        <div id="gameList"></div>
+        <div class="feed-note" id="feedNote" hidden></div>
+      </div>
+
+      <div class="sec">
+        <h2 class="k">Position</h2>
+        <div class="stepper">
+          <button class="step-btn" data-step="first" aria-label="First ply">&laquo;</button>
+          <button class="step-btn" data-step="prev" aria-label="Previous ply">&lsaquo;</button>
+          <div class="ply-read"><b id="plyNow">&mdash;</b> / <span id="plyMax">&mdash;</span></div>
+          <button class="step-btn" data-step="next" aria-label="Next ply">&rsaquo;</button>
+          <button class="step-btn" data-step="last" aria-label="Last ply">&raquo;</button>
+          <button class="step-btn auto" id="autoBtn" aria-label="Autoplay">&#9654;</button>
+        </div>
+        <div class="scrub">
+          <input type="range" id="plyRange" min="1" max="1" value="1" step="1" aria-label="Scrub through plies">
+        </div>
+        <div class="value-read">
+          <span class="value-big" id="valNow">&mdash;</span>
+          <span class="value-cap" id="valWho"></span>
+        </div>
+        <div class="horizon">
+          <div class="hz"><div class="hz-v" id="stvNow">&mdash;</div><div class="hz-l">stv</div></div>
+          <div class="hz"><div class="hz-v" id="mlNow">&mdash;</div><div class="hz-l">moves left</div></div>
+        </div>
+        <div class="ovl">
+          <label for="ovlRange">overlay</label>
+          <input type="range" id="ovlRange" min="0" max="100" value="85" aria-label="Policy overlay opacity">
+        </div>
+        <p class="fineprint" id="anaFine">policy priors &middot; no search</p>
+      </div>
+
+      <div class="sec">
+        <h2 class="k">Value / ply</h2>
+        <svg class="chart" id="valueChart" viewBox="0 0 280 104" role="img" aria-label="Network value across plies, click to seek"></svg>
+        <div class="chart-note" id="chartNote" hidden></div>
+      </div>
+
+      <div class="sec">
+        <h2 class="k">Moves</h2>
+        <ol class="movelist" id="moveList"></ol>
+      </div>
+    </aside>
+  </section>
+
+</main>
+
+<div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
