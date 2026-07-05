@@ -1,0 +1,5 @@
+# Showcase server dependencies, on top of the repo's model stack
+# (torch CPU + numpy + the maturin-built hexo_engine / hexo_utils / hexfield
+# extensions — see the repo README for building those).
+fastapi>=0.110
+uvicorn[standard]>=0.29
