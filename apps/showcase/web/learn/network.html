@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hexo — how it works — the network</title>
+<title>Shrimp — how it works — the network</title>
 <link rel="stylesheet" href="learn.css">
 <style>
 /* Inline fallback: design tokens + minimal base so this page is readable even
@@ -117,10 +117,10 @@ input has no fixed size. The network is a <em>set network over a graph</em>,
 and its input size changes every move. This page describes the architecture as
 implemented: the support set, the 15 per-cell features, hex convolution as
 message passing, global attention with a learned hex-geometry bias, and the
-output heads. The board figures run on a real position from the shipped
-net&rsquo;s snapshot data (a quiet middlegame, 15 stones, player&nbsp;0 to
+output heads. The board figures run on a real position from the run&rsquo;s
+snapshot data (a quiet middlegame, 15 stones, player&nbsp;0 to
 move) with the formulas from the featurizer. The attention figure shows the
-shipped net&rsquo;s learned weights.
+ep58 checkpoint&rsquo;s learned weights.
 </p>
 
 <div class="note">
@@ -228,8 +228,8 @@ complete five-in-a-window, a standing win-in-one.</li>
 The hot and win planes come from scanning every length-6 single-colour window
 on the three win axes, the same threat definition the search's tactical layer
 uses. The inspector below computes all 15 values with the
-real formulas, on the <code>quiet_midgame</code> position from the shipped
-net's snapshot data (15 stones, no window holding more than three stones of
+real formulas, on the <code>quiet_midgame</code> position from the run's
+snapshot data (15 stones, no window holding more than three stones of
 one colour). No threat is active in this position, so the hot features (9–10)
 and win-now features (13–14) are zero everywhere.
 </p>
@@ -353,8 +353,8 @@ also attend to each other directly. The
 scalar heads later read specific token pairs (§05).
 </p>
 <p>
-The visualizer below shows <strong>real attention rows from the shipped ep58
-net</strong>, exported for four positions from its own games
+The visualizer below shows <strong>real attention rows from the run&rsquo;s
+ep58 checkpoint</strong>, exported for four positions from its own games
 (<code>data/attention.json</code>). Three observed behaviours:
 head 0 in blocks 0 and 4 is a <em>token sink</em>, placing nearly all
 of its mass on the summary tokens for most queries (token 4 in the first block
@@ -375,7 +375,7 @@ block 3's head 1 queried from a threat-window cell puts 0.90 on
 </p>
 
 <figure class="fig fig-wide" id="fig-attn">
-  <figcaption id="cap4"><b>Figure 4</b> — attention visualizer, <b>real weights from the shipped ep58 net</b>. Pick a position, block and head, then click an outlined query cell; heat and rays show where that query attends, and the right-hand chips show its mass on the 8 summary tokens.</figcaption>
+  <figcaption id="cap4"><b>Figure 4</b> — attention visualizer, <b>real weights from the run&rsquo;s ep58 checkpoint</b>. Pick a position, block and head, then click an outlined query cell; heat and rays show where that query attends, and the right-hand chips show its mass on the 8 summary tokens.</figcaption>
   <div class="fig-body nx-boardwrap"><svg id="svg4" role="img" aria-label="Hex board with attention heat from a selected query cell to all cells and 8 summary tokens"></svg></div>
   <div class="fig-controls">
     <span id="realCtl4" hidden>
@@ -425,8 +425,8 @@ prior at play time.</li>
 −1…+1, with the scalar taken as the softmax expectation
 (<code>decode_binned_value</code>). This is the leaf evaluation the search
 backs up.</li>
-<li><strong>Short-term value</strong>: the same 65-bin form at horizons
-<strong>2, 6 and 16 plies</strong>, a denser training signal than the final
+<li><strong>Short-term value</strong>: the same 65-bin form at horizons of
+<strong>2, 6 and 16 turns</strong>, a denser training signal than the final
 result alone.</li>
 <li><strong>Moves-left</strong>: 65 bins decoded to 0…209 moves remaining; used to
 prefer decisive finishes when already winning, and shown in the showcase
@@ -1242,9 +1242,9 @@ var FEATS=buildFeatures(SUP);
   head(48,'plh','value','65 bins → E[v] ∈ [−1,1]',
     {name:'value head · Linear(576→192) on tokens{0,1}+pool, Linear(192→65)',params:123329,
      desc:'Distributional value: softmax expectation over linspace(−1,1,65). Leaf evaluation for the search.'});
-  head(86,'plh','short-term value','h = 2, 6, 16 · 65 bins each',
+  head(86,'plh','short-term value','h = 2, 6, 16 turns · 65 bins each',
     {name:'short-term value · shared aux reduction on tokens{2,3}+pool, 3× Linear(192→65)',params:148419,
-     desc:'Value at horizons 2, 6, 16 plies: dense auxiliary signals (train + analysis).'});
+     desc:'Value at horizons of 2, 6, 16 turns: dense auxiliary signals (train + analysis).'});
   head(124,'plh','moves-left','65 bins → [0, 209]',
     {name:'moves-left head · reduction on tokens{4,5}+pool, Linear(192→65)',params:123329,
      desc:'Decoded (x+1)/2·209 moves remaining; prefers decisive finishes when winning. Served on request.'});

@@ -137,7 +137,7 @@ vectors feed the scalar heads.
   value, not a single scalar), representing who is winning.
 - **Moves-left** — a distribution over how many moves remain until the game
   ends, used to prefer decisive finishes when already winning.
-- **Short-term value** — value at a few short horizons (2, 6, 16 plies ahead).
+- **Short-term value** — value at a few short horizons (2, 6, 16 turns ahead).
 - **Opponent-policy**, **soft-policy**, and a **per-cell Q** head — auxiliary
   training-only heads that sharpen learning. They are computed during training
   but the serve-time forward pass skips them.

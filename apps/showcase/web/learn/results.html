@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hexo — how it works — the results</title>
+<title>Shrimp — how it works — the results</title>
 <meta name="description" content="The rating curve of the shrimp_main_7 run, four positions read by four checkpoints of the same net, and policy-sharpening measurements, all from the run's eval records.">
 <link rel="stylesheet" href="learn.css">
 <style>
@@ -177,7 +177,7 @@ games enter the pool.
 <p>
 The ratings measure overall strength; the positions show where it changed.
 The four boards below are read by four checkpoints of the run with the search
-disabled: the display shows the policy prior, value, 2-ply short-term
+disabled: the display shows the policy prior, value, 2-turn short-term
 value and moves-left directly from the net. At play time these priors decide
 which moves the 1024-visit search considers.
 </p>
@@ -196,7 +196,8 @@ mass on (3,&nbsp;0), which defends nothing, while the save sits at 0.03. ep30
 is the first to rank the gap first (0.30). <b>ep58 puts 0.52
 on (4,&nbsp;1)</b>, assigns the wrong blocks near-zero mass, and reads the
 value at &minus;0.15. The value signal appeared at epoch 14;
-the correct policy took thirty more epochs.
+the policy first ranked the save correctly sixteen epochs later, and a
+majority of its mass took until epoch 58.
 </p>
 
 <p>
@@ -541,7 +542,7 @@ function buildReader(data) {
       statRows[id] = { v: sv, bar: signed ? mid.querySelector(".bf") : null };
     }
     row("value", "value", true);
-    row("stv2", "2-ply value", true);
+    row("stv2", "2-turn value", true);
     row("ml", "moves left", false);
     row("H", "entropy", false);
     row("top1", "top-1 prior", false);

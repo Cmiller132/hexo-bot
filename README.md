@@ -358,7 +358,7 @@ The architecture is taken from `--channels/--heads/--trunk` if given, else from
 the `SHRIMP_*` env vars, else inferred from the checkpoint's own weight shapes.
 `--verify` reloads the export and instantiates `ShrimpNet` to prove it loads
 strict (this needs torch and the Shrimp package importable — build it first, or
-set `PYTHONPATH` as above). The exported file keeps the shrimp-lineage shape,
+set `PYTHONPATH` as above). The exported file keeps the Shrimp-lineage shape,
 so it loads through the same dashboard and eval loaders as the original.
 
 ---
@@ -385,7 +385,8 @@ The learning loop is the classic AlphaZero virtuous cycle: **self-play games**
 (a search picks each move) produce a **replay buffer** of positions labeled with
 the search's visit distribution and the eventual game outcome; the network is
 **trained** to imitate those; the improved network makes the next search sharper;
-repeat. A **gated evaluation** measures real strength against fixed opponents.
+repeat. A standalone **evaluation** measures real strength against fixed
+opponents; its verdict is informational and does not gate a checkpoint.
 
 Where each layer lives, in dependency order:
 

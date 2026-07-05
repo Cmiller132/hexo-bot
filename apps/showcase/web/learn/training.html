@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>hexo — how it works — the training</title>
+<title>Shrimp — how it works — the training</title>
 <link rel="stylesheet" href="learn.css">
 <style>
 /* tiny token fallback so the page renders standalone if learn.css is missing;
@@ -216,8 +216,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     Auxiliary targets regularize the trunk:
     <b>short-term values</b> at horizons of 2, 6 and 16 turns (exponential
     averages of future search values, decay (m−1)/(m+1)), a less noisy,
-    nearer-term signal than z; a <b>moves-left</b> head (turns until the game
-    ends, capped at 209 and binned the same way); the <b>opponent's reply
+    nearer-term signal than z; a <b>moves-left</b> head (placements remaining
+    until the game ends, capped at 209 and binned the same way); the <b>opponent's reply
     policy</b>; a per-move <b>Q head</b>; and a square-root-softened copy of
     π′ for a soft-policy head. In this run they are weighted 1.0 (policy),
     1.0 (value), 0.25 (opponent policy), 0.1 (short-term), 0.2 (moves-left),
@@ -332,15 +332,19 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
        gating: evaluation.py:73-79 "it does not gate, halt, or promote";
        config.py:338-341 eval_gating_enabled=False (not set in toml).
        Zero-point: config.py:184-186, 206-210 — SealBot pinned at 0 Elo when
-       enabled; disabled here, so the pool floats relative to its anchors.
+       enabled. The recorded run had it enabled (sealbot edges in
+       learn/data/eval_history.json, share 0.25 = 32 of 128 games, unpaired);
+       the shipped public config sets sealbot_enabled=false (external build),
+       in which case the pool floats relative to its anchors.
        Resolution ~100-120 Elo/epoch: config.py:189-192. -->
   <p>
     Loss curves do not measure strength directly, because the loss
     target moves every epoch. Every fifth epoch a standalone
-    evaluator plays the fresh checkpoint through <b>128 paired games</b> at
-    512 visits against a small roster of earlier checkpoints: a rung from a
+    evaluator plays the fresh checkpoint through a <b>128-game budget</b> at
+    512 visits against a small roster of frozen opponents: a rung from a
     fixed log-spaced grid of past epochs plus a reference checkpoint lagged
-    five epochs back. Pairs share an opening (temperature-sampled, then
+    five epochs back. Checkpoint matches are <em>paired</em>: both games of a
+    pair share an opening (temperature-sampled, then
     seat-swapped), so both players face the same starts and opening luck
     cancels out of the comparison. Each pair scores
     <b>pentanomially</b> (0, ½, 1, 1½ or 2 points), which accounts
@@ -350,11 +354,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     the pooled fit tightens as evidence accumulates across epochs.
   </p>
   <p>
-    An external minimax bot (SealBot) can be added as a cross-lineage
-    reference pinned at 0 Elo, fixing the scale's zero point. It is disabled
-    in this run, so ratings float relative to the
-    run's own anchor checkpoints: differences between epochs are meaningful;
-    the absolute numbers are not.
+    An external minimax bot (SealBot) serves as a cross-lineage reference
+    pinned at 0 Elo, fixing the scale's zero point; this run took a quarter
+    of each eval budget as unpaired SealBot games, and the ratings on
+    <a href="results.html">the results</a> page are anchored that way. The
+    shipped config disables SealBot by default (it is a separate build), in
+    which case ratings float relative to the run's own anchor checkpoints.
+    Either way the numbers are positions within one pool: differences between
+    epochs are meaningful; the absolute values are not.
   </p>
   <p class="note">
     <b>Informational verdict.</b> The evaluator emits a
@@ -375,7 +382,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     </div>
     <div class="fig-readout" aria-live="polite" id="rcRO">
       <span class="ro-k">rating curve</span>
-      <span class="ro-t">Each point pools that epoch's 128 paired games into the Bradley-Terry fit. Band = ±1 SE of the pooled rating.</span>
+      <span class="ro-t">Each point pools that epoch's 128-game eval into the Bradley-Terry fit. Band = ±1 SE of the pooled rating.</span>
     </div>
   </figure>
 
@@ -437,7 +444,7 @@ function lcg(seed){var s=seed>>>0;return function(){s=(1664525*s+1013904223)>>>0
     {name:'checkpoint',tick:'every epoch',
      desc:'Save epoch_NNNNNN.pt unconditionally. This checkpoint is the self-play engine for the next epoch; no gate or promotion decision applies.'},
     {name:'evaluate',tick:'128 games · every 5th',
-     desc:'Every fifth epoch: 128 paired games at 512 visits vs earlier checkpoints, scored pentanomially, pooled into the Bradley-Terry rating fit. Informational only.'}
+     desc:'Every fifth epoch: a 128-game budget at 512 visits vs frozen opponents (paired checkpoint matches scored pentanomially, plus unpaired SealBot games when enabled), pooled into the Bradley-Terry rating fit. Informational only.'}
   ];
   var N=STAGES.length,GAP=9,SEG=360/N;
   function pol(deg,r){var a=(deg-90)*Math.PI/180;return[CX+r*Math.cos(a),CY+r*Math.sin(a)];}
@@ -809,7 +816,7 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
   [10,20,30,40,50,60,70].forEach(function(e){
     txt(el('text',{class:'tick-t',x:px(e),y:Y1+16,'text-anchor':'middle'},svg),'ep'+e);
   });
-  txt(el('text',{class:'tick-t',x:X0,y:Y1+34},svg),'pooled Bradley-Terry rating, anchors-relative (SealBot off in this run) · band = ±1 SE · synthetic data, real mechanism');
+  txt(el('text',{class:'tick-t',x:X0,y:Y1+34},svg),'pooled Bradley-Terry rating (this run pins SealBot at 0) · band = ±1 SE · synthetic data, real mechanism');
   // band
   var up='',dn='';
   pts.forEach(function(p,i){up+=(i?'L':'M')+px(p.e).toFixed(1)+' '+py(p.r+p.se).toFixed(1);});
@@ -829,7 +836,7 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
     var w=Math.round(pairs*wr*0.72),l=Math.round(pairs*(1-wr)*0.72),dr=pairs-w-l;
     var lagged=Math.max(5,p.e-5);
     var rec='ep '+p.e+' · rating +'+Math.round(p.r)+' ± '+Math.round(p.se)+
-      ' · 128 paired games @512 visits vs ep'+lagged+' + bracket rung'+
+      ' · 128-game eval @512 visits vs ep'+lagged+' + bracket rung'+
       ' · pairs W/D/L '+w+'/'+dr+'/'+l+' · verdict '+verdict+' (informational; nothing gates)';
     // transparent halo under the point: a tap-sized hit target (no visual change)
     var hit=el('circle',{cx:px(p.e),cy:py(p.r),r:14,fill:'transparent',
@@ -841,7 +848,7 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
       var a=document.createElement('span');a.className='ro-k';
       a.textContent='epoch '+p.e+' · +'+Math.round(p.r)+' ± '+Math.round(p.se)+' · '+verdict;
       var b=document.createElement('span');b.className='ro-t';
-      b.textContent='128 paired games at 512 visits (shared openings, seat-swapped) vs the ep'+lagged+
+      b.textContent='a 128-game eval at 512 visits (paired: shared openings, seat-swapped) vs the ep'+lagged+
         ' reference and a log-grid rung · pentanomial pairs W/D/L '+w+'/'+dr+'/'+l+
         ' · pooled into eval_pool.json. Verdict is informational; the checkpoint ships regardless.';
       ro.appendChild(a);ro.appendChild(b);

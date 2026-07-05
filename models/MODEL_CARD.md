@@ -56,10 +56,11 @@ export SHRIMP_SUPPORT_RADIUS=4
    behavioral cloning on the public corpus
    [timmyburn/hexo-bootstrap-corpus](https://huggingface.co/datasets/timmyburn/hexo-bootstrap-corpus)
    (see `scripts/prefit_launch.sh`; wired via `checkpoint.initialize_from` in
-   `configs/shrimp_main_7.toml`). The RL run initialized from prefit epoch 3.
+   `configs/shrimp_main_7.toml`, shipped commented out — point it at your own
+   prefit output). The RL run initialized from prefit epoch 3.
    The warm start is optional — without it, training starts from a random net.
 2. **Self-play RL.** 18 epochs of Gumbel-AlphaZero self-play + supervised updates
-   + gated eval, on a single **RTX 4070 Ti** (12 GB). The repo deliberately ships
+   + informational eval, on a single **RTX 4070 Ti** (12 GB). The repo deliberately ships
    only the Gumbel search path; classic PUCT+Dirichlet exploration knobs were
    stripped.
 
@@ -83,7 +84,7 @@ snapshot (improving over itself), but lost to the stronger prior-run anchors
 **Caveats.** SealBot edges are unpaired "zero-point" measurements over ~32 games
 each and are down-weighted in the run's own difference inference — treat them as
 directional, not precise Elo. No fresh SealBot rematch was run at epoch 18; the
-epoch-18 gated eval that exists is a moves-left-head audit (passed: conv Spearman
+epoch-18 eval that exists is a moves-left-head audit (passed: conv Spearman
 0.58, near-end MAE 4.4). The snapshot is early-training on a single consumer GPU.
 
 ## How to load

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The search &mdash; how Hexo works</title>
-<meta name="description" content="Gumbel-Top-m root sampling, sequential halving, threat-space search, and the batched scheduler behind Hexo's move search.">
+<title>Shrimp &mdash; how it works &mdash; the search</title>
+<meta name="description" content="Gumbel-Top-m root sampling, sequential halving, threat-space search, and the batched scheduler behind Shrimp's move search.">
 <!--
   Accuracy sources (all claims verified against the implementation):
   - packages/shrimp/rust/src/tree.rs        — Divergences (gumbel_* flags/defaults), init_gumbel_root,
@@ -265,7 +265,7 @@ body{margin:0}
        mix_seed(base_seed, game_key, ply)); active_root_limit 192 (config) under hard cap 512. -->
   <p>A single tree produces
   leaf positions one at a time, and evaluating one position at a time leaves the device
-  mostly idle. Hexo's driver is a <strong>continuous batched scheduler</strong>. Every active game
+  mostly idle. Shrimp's driver is a <strong>continuous batched scheduler</strong>. Every active game
   has a slot with its own tree; each pass, every slot descends its tree and emits leaf positions
   until it has up to <code>virtual_batch_size</code> evaluations in flight (48 during training, 32
   on this site). A <em>virtual loss</em> temporarily lowers each in-flight path's value so parallel
