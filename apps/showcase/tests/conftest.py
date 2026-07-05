@@ -62,20 +62,19 @@ def tiny_checkpoint(tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="session")
 def bots_toml(tiny_checkpoint, tmp_path_factory) -> Path:
-    """Two-rung ladder over the tiny checkpoint (visit budgets 8 and 16)."""
+    """One-checkpoint catalogue over the tiny net, allowed sims {8, 16}."""
     path = tmp_path_factory.mktemp("cfg") / "bots.toml"
     path.write_text(
-        "\n".join(
-            f"""[[bot]]
-id = "tiny-{visits}"
+        f"""sims = [8, 16]
+
+[[checkpoint]]
+id = "tiny"
 checkpoint = '{tiny_checkpoint.as_posix()}'
-visits = {visits}
-label = "Tiny ({visits} sims)"
+label = "Tiny test bot"
 run = "showcase_tiny_test"
 epoch = 0
+games_trained = 12345
 """
-            for visits in (8, 16)
-        )
     )
     return path
 

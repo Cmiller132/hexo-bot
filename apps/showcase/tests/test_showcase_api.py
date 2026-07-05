@@ -22,9 +22,13 @@ def fresh_ip() -> dict[str, str]:
     return {"CF-Connecting-IP": f"10.7.{n // 250}.{n % 250}"}
 
 
-def create_game(client, headers, bot_id: str = "tiny-8", human_color: int = 0) -> dict:
+def create_game(
+    client, headers, checkpoint_id: str = "tiny", sims: int = 8, human_color: int = 0,
+) -> dict:
     resp = client.post(
-        "/api/game", json={"bot_id": bot_id, "human_color": human_color}, headers=headers
+        "/api/game",
+        json={"checkpoint_id": checkpoint_id, "sims": sims, "human_color": human_color},
+        headers=headers,
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -52,14 +56,56 @@ def resign(client, game_id: str, headers) -> dict:
 def test_healthz_and_bots(client):
     health = client.get("/healthz").json()
     assert health["ok"] is True
-    assert health["bots"] == 2
+    assert health["checkpoints"] == 1
 
     bots = client.get("/api/bots").json()
-    assert {b["id"] for b in bots} == {"tiny-8", "tiny-16"}
-    for bot in bots:
-        assert bot["run"] == "showcase_tiny_test"
-        assert bot["visits"] in (8, 16)
-        assert bot["label"]
+    assert bots["sims"] == [8, 16]
+    assert len(bots["checkpoints"]) == 1
+    entry = bots["checkpoints"][0]
+    assert entry["id"] == "tiny"
+    assert entry["run"] == "showcase_tiny_test"
+    assert entry["epoch"] == 0
+    assert entry["label"]
+    assert entry["games_trained"] == 12345  # passthrough display metadata
+
+
+def test_catalogue_times_sims_creates_bot_rows_lazily(client, settings):
+    """One bots row per PLAYED (checkpoint, sims) combination, and the stats
+    views keep per-strength granularity."""
+    headers = fresh_ip()
+    for sims in (8, 16):
+        snap = create_game(client, headers, sims=sims)
+        assert snap["bot"] == {
+            "checkpoint_id": "tiny", "label": "Tiny test bot", "epoch": 0, "sims": sims,
+        }
+        resign(client, snap["id"], headers)
+
+    conn = sqlite3.connect(settings.db_path)
+    rows = conn.execute(
+        "SELECT weights_sha, visits, COUNT(*) FROM bots WHERE slug = 'tiny'"
+        " GROUP BY weights_sha, visits"
+    ).fetchall()
+    assert all(count == 1 for _, _, count in rows)  # one row per combination
+    assert {visits for _, visits, _ in rows} >= {8, 16}
+
+    stats = client.get("/api/stats").json()
+    by_visits = {row["visits"]: row for row in stats["bots"] if row["slug"] == "tiny"}
+    assert {8, 16} <= set(by_visits)  # the views split stats per strength
+
+
+def test_invalid_sims_is_422_and_unknown_checkpoint_404(client):
+    headers = fresh_ip()
+    resp = client.post(
+        "/api/game", json={"checkpoint_id": "tiny", "sims": 7, "human_color": 0},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    assert "sims" in resp.json()["detail"]
+    resp = client.post(
+        "/api/game", json={"checkpoint_id": "nope", "sims": 8, "human_color": 0},
+        headers=headers,
+    )
+    assert resp.status_code == 404
 
 
 def test_full_game_to_terminal_or_20_plies(client):
@@ -133,7 +179,10 @@ def test_per_ip_active_game_cap(client):
     headers = fresh_ip()
     first = create_game(client, headers)
     second = create_game(client, headers)
-    resp = client.post("/api/game", json={"bot_id": "tiny-8", "human_color": 0}, headers=headers)
+    resp = client.post(
+        "/api/game", json={"checkpoint_id": "tiny", "sims": 8, "human_color": 0},
+        headers=headers,
+    )
     assert resp.status_code == 429
     resign(client, first["id"], headers)
     third = create_game(client, headers)  # capacity freed by the resignation
@@ -158,12 +207,8 @@ def test_resign_scores_for_the_bot(client):
     assert resp.status_code == 409
 
 
-def test_unknown_game_and_bot_are_404(client):
-    assert client.get("/api/game/no-such-game").status_code == 404
-    resp = client.post(
-        "/api/game", json={"bot_id": "no-such-bot", "human_color": 0}, headers=fresh_ip()
-    )
-    assert resp.status_code == 404
+def test_unknown_game_is_404(client):
+    assert client.get("/api/game/no-such-game", headers=fresh_ip()).status_code == 404
 
 
 def test_nickname_set_and_sanitized(client, settings):
@@ -228,13 +273,97 @@ def test_db_row_and_hxr_record_roundtrip(client, settings):
     assert replayed == {(s["q"], s["r"]) for s in final["stones"]}
 
 
+def test_active_game_gated_finished_game_public(client):
+    """Active game state is owner-only (403 without the cookie); finished
+    games are public — both from the live session and from the DB after the
+    session is evicted."""
+    client.cookies.clear()  # a clean jar so the token below is unambiguous
+    headers = fresh_ip()
+    snap = create_game(client, headers)
+    game_id = snap["id"]
+    token = client.cookies.get(_COOKIE)
+
+    client.cookies.clear()
+    assert client.get(f"/api/game/{game_id}", headers=headers).status_code == 403
+    client.cookies.set(_COOKIE, token)
+    assert client.get(f"/api/game/{game_id}", headers=headers).status_code == 200
+
+    resign(client, game_id, headers)
+    client.cookies.clear()
+    public = client.get(f"/api/game/{game_id}", headers=fresh_ip())
+    assert public.status_code == 200  # finished: no cookie needed
+    from_session = public.json()
+    assert from_session["status"] == "finished"
+
+    # Evict the in-memory session; the DB record now serves the read.
+    client.app.state.sessions.pop(game_id)
+    from_db = client.get(f"/api/game/{game_id}", headers=fresh_ip())
+    assert from_db.status_code == 200
+    from_db = from_db.json()
+    for key in ("id", "status", "bot", "human_color", "ply", "stones", "last_move",
+                "winning_line", "result", "nickname"):
+        assert from_db[key] == from_session[key], key
+    assert from_db["legal"] == []
+    assert from_db["finished_at"]
+    client.cookies.set(_COOKIE, token)
+
+
+def test_recent_games_feed_pagination(client):
+    """/api/games: finished-only, newest first, stable keyset pagination."""
+    headers = fresh_ip()
+    ids = []
+    for _ in range(3):
+        snap = create_game(client, headers)
+        resign(client, snap["id"], headers)
+        ids.append(snap["id"])
+        if len(ids) == 2:  # free a per-IP active slot before the third game
+            headers = fresh_ip()
+    active = create_game(client, fresh_ip())  # must NOT appear in the feed
+
+    client.cookies.clear()  # the feed is public
+    first = client.get("/api/games", params={"limit": 2}, headers=fresh_ip())
+    assert first.status_code == 200
+    page1 = first.json()
+    assert len(page1["games"]) == 2
+    assert page1["next"]
+    feed_ids = [g["id"] for g in page1["games"]]
+
+    item = page1["games"][0]
+    assert set(item) == {"id", "bot", "human_color", "result", "ply_count",
+                         "finished_at", "nickname"}
+    assert set(item["bot"]) == {"checkpoint_id", "label", "epoch", "sims"}
+    assert item["result"]["termination"] in ("six_in_line", "resign")
+    assert item["result"]["human_result"] in (-1, 1)
+
+    seen = set(feed_ids)
+    cursor = page1["next"]
+    stamps = [g["finished_at"] for g in page1["games"]]
+    while cursor:
+        page = client.get(
+            "/api/games", params={"limit": 2, "before": cursor}, headers=fresh_ip()
+        ).json()
+        for game in page["games"]:
+            assert game["id"] not in seen  # no duplicates across pages
+            seen.add(game["id"])
+            stamps.append(game["finished_at"])
+        cursor = page["next"]
+    assert stamps == sorted(stamps, reverse=True)  # newest first throughout
+    assert set(ids) <= seen  # nothing skipped (same-second ties included)
+    assert active["id"] not in seen  # active games are absent
+
+    assert client.get(
+        "/api/games", params={"before": "garbage-no-separator"}, headers=fresh_ip()
+    ).status_code == 422
+
+
 def test_stats_views(client):
     stats = client.get("/api/stats").json()
     assert {"bots", "daily", "hall_of_fame"} <= set(stats)
-    by_slug = {row["slug"]: row for row in stats["bots"]}
-    assert "tiny-8" in by_slug  # finished games exist from earlier tests
-    entry = by_slug["tiny-8"]
-    assert entry["games"] >= 1
-    assert 0.0 <= entry["bot_winrate"] <= 1.0
+    tiny_rows = [row for row in stats["bots"] if row["slug"] == "tiny"]
+    assert tiny_rows  # finished games exist from earlier tests
+    for entry in tiny_rows:
+        assert entry["visits"] in (8, 16)
+        assert entry["games"] >= 1
+        assert 0.0 <= entry["bot_winrate"] <= 1.0
     assert stats["daily"] and stats["daily"][0]["games"] >= 1
     assert isinstance(stats["hall_of_fame"], list)

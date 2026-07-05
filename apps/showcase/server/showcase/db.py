@@ -28,9 +28,13 @@ CREATE TABLE IF NOT EXISTS bots (
   epoch       INTEGER NOT NULL,
   visits      INTEGER NOT NULL,
   weights_sha TEXT NOT NULL,
-  active_from TEXT NOT NULL,
-  UNIQUE (slug, weights_sha)
+  active_from TEXT NOT NULL
 );
+-- A "bot" is a (checkpoint, sims) combination: slug is the catalogue
+-- checkpoint id, visits the per-game search budget. Rows are created lazily
+-- on the first game with that combination, so stats stay per-strength.
+CREATE UNIQUE INDEX IF NOT EXISTS bots_identity
+  ON bots (slug, weights_sha, visits);
 
 CREATE TABLE IF NOT EXISTS games (
   id           TEXT PRIMARY KEY,
@@ -49,6 +53,7 @@ CREATE TABLE IF NOT EXISTS games (
 );
 CREATE INDEX IF NOT EXISTS games_bot_time ON games (bot_id, finished_at);
 CREATE INDEX IF NOT EXISTS games_status   ON games (status);
+CREATE INDEX IF NOT EXISTS games_feed     ON games (status, finished_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS analysis_cache (
   game_id  TEXT NOT NULL REFERENCES games(id),
@@ -121,26 +126,34 @@ class ShowcaseDB:
         self, *, slug: str, label: str, run: str, epoch: int, visits: int,
         weights_sha: str, active_from: str,
     ) -> int:
-        """Insert-or-refresh a ladder row keyed by (slug, weights_sha).
+        """Insert-or-refresh a bot row keyed by (slug, weights_sha, visits) —
+        one row per played (checkpoint, sims) combination.
 
         A checkpoint refresh under the same slug changes the sha and therefore
-        creates a NEW row — old games keep their true bot identity. A label or
-        visits tweak for the same weights updates in place. Returns the row id.
+        creates NEW rows — old games keep their true bot identity. A label
+        tweak for the same weights updates in place. Returns the row id.
         """
         with self._lock:
             self._conn.execute(
                 "INSERT INTO bots (slug, label, run, epoch, visits, weights_sha, active_from)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT (slug, weights_sha) DO UPDATE SET"
-                "   label = excluded.label, visits = excluded.visits",
+                " ON CONFLICT (slug, weights_sha, visits) DO UPDATE SET"
+                "   label = excluded.label",
                 (slug, label, run, epoch, visits, weights_sha, active_from),
             )
             row = self._conn.execute(
-                "SELECT id FROM bots WHERE slug = ? AND weights_sha = ?",
-                (slug, weights_sha),
+                "SELECT id FROM bots WHERE slug = ? AND weights_sha = ? AND visits = ?",
+                (slug, weights_sha, visits),
             ).fetchone()
             self._conn.commit()
             return int(row["id"])
+
+    def get_bot(self, bot_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM bots WHERE id = ?", (bot_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     # -- games ----------------------------------------------------------------
 
@@ -183,6 +196,31 @@ class ShowcaseDB:
                 "SELECT * FROM games WHERE id = ?", (game_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def list_finished(
+        self, *, limit: int, before_finished_at: str | None = None,
+        before_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Recent-games feed page: finished games only, newest first, keyset
+        cursor on (finished_at, id) so pages are stable under same-second
+        finishes. Returns games joined with their bot row."""
+        query = (
+            "SELECT g.id, g.human_color, g.result, g.termination, g.ply_count,"
+            " g.finished_at, g.nickname,"
+            " b.slug AS bot_slug, b.label AS bot_label, b.epoch AS bot_epoch,"
+            " b.visits AS bot_visits"
+            " FROM games g JOIN bots b ON b.id = g.bot_id"
+            " WHERE g.status = 'finished'"
+        )
+        params: list[Any] = []
+        if before_finished_at is not None:
+            query += " AND (g.finished_at < ? OR (g.finished_at = ? AND g.id < ?))"
+            params += [before_finished_at, before_finished_at, before_id or ""]
+        query += " ORDER BY g.finished_at DESC, g.id DESC LIMIT ?"
+        params.append(int(limit))
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
 
     def abandon_stale_active(self, finished_at: str) -> int:
         """Mark leftover 'active' rows abandoned (startup hygiene: sessions are

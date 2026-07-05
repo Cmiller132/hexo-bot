@@ -1,4 +1,5 @@
-"""Position analysis: bare-net policy/value readout and a small searched eval.
+"""Position analysis: bare-net policy/value/stv/moves-left readout, a small
+searched eval, and the batched whole-game summary series.
 
 Runs inside bot worker processes only (imports torch/hexfield at module level;
 the web process never imports this module). The net-only path mirrors the
@@ -23,10 +24,20 @@ from hexfield.batching import collate_rows
 from hexfield.engine_facts import facts_from_state
 from hexfield.features import build_features
 from hexfield.geometry import unpack_action_id
-from hexfield.losses import decode_binned_value
+from hexfield.losses import decode_binned_value, decode_moves_left
 from hexfield.support import build_support
 
 TOP_K = 5
+
+# The "short-term value" head served as `stv`: the shortest trained horizon
+# (`stvalue_2` = expected value 2 plies ahead, i.e. after the next full
+# post-opening turn). Same side-to-move perspective and [-1, 1] range as
+# `value`; the value/stv gap is the model's read on imminent swings.
+STV_HEAD = "stvalue_2"
+
+# Batched-forward chunk for `summary_eval`: bounds peak memory on long games
+# while keeping the whole-game summary a handful of forwards.
+_SUMMARY_CHUNK = 64
 
 
 def _forward_cpu(model: Any, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -41,22 +52,31 @@ def _forward_cpu(model: Any, batch: dict[str, torch.Tensor]) -> dict[str, torch.
     return {k: v.detach() for k, v in out.items()}
 
 
+def featurize(state: Any) -> tuple[Any, Any]:
+    """One engine state -> the (support, features) row `collate_rows` takes."""
+    facts = facts_from_state(state)
+    support = build_support(facts.stones())
+    return support, build_features(facts, support)
+
+
 def net_eval(model: Any, state: Any, *, policy_floor: float) -> dict[str, Any]:
     """Bare-net readout for one decision state (no search).
 
-    Returns value (side-to-move POV, [-1, 1]), the sparse legal-cell policy
-    (cells with probability >= `policy_floor`, descending), and the top-k
-    candidates. The policy is a softmax over the full legal prefix, so the
-    dense distribution sums to 1; the floor only trims the reported tail.
+    Returns value / stv (both side-to-move POV, [-1, 1]; stv is the `STV_HEAD`
+    short-horizon value head), moves_left (expected remaining plies, from the
+    moves-left head), the sparse legal-cell policy (cells with probability >=
+    `policy_floor`, descending), and the top-k candidates. The policy is a
+    softmax over the full legal prefix, so the dense distribution sums to 1;
+    the floor only trims the reported tail.
     """
-    facts = facts_from_state(state)
-    support = build_support(facts.stones())
-    features = build_features(facts, support)
+    support, features = featurize(state)
     batch = collate_rows([(support, features)])
     out = _forward_cpu(model, batch)
 
     legal_count = support.legal_count
     value = float(decode_binned_value(out["value"][0].reshape(1, -1).float()).item())
+    stv = float(decode_binned_value(out[STV_HEAD][0].reshape(1, -1).float()).item())
+    moves_left = float(decode_moves_left(out["moves_left"][0].reshape(1, -1).float()).item())
     rows: list[dict[str, Any]] = []
     if legal_count > 0:
         priors = torch.softmax(out["policy"][0][:legal_count].float(), dim=0)
@@ -68,10 +88,29 @@ def net_eval(model: Any, state: Any, *, policy_floor: float) -> dict[str, Any]:
         rows.sort(key=lambda row: row["p"], reverse=True)
     return {
         "value": value,
+        "stv": round(stv, 6),
+        "moves_left": round(moves_left, 3),
         "legal_count": int(legal_count),
         "policy": [row for row in rows if row["p"] >= policy_floor],
         "top_k": rows[:TOP_K],
     }
+
+
+def summary_eval(model: Any, rows: list[tuple[Any, Any]]) -> dict[str, Any]:
+    """Batched value/stv/moves_left readout over many positions (the whole-game
+    summary): chunked forwards, no policy decode. Row i of the result arrays is
+    the readout for `rows[i]`; values/stv are side-to-move POV at that position,
+    moves_left is expected remaining plies."""
+    values: list[float] = []
+    stvs: list[float] = []
+    moves_left: list[float] = []
+    for start in range(0, len(rows), _SUMMARY_CHUNK):
+        batch = collate_rows(rows[start : start + _SUMMARY_CHUNK])
+        out = _forward_cpu(model, batch)
+        values += [round(v, 6) for v in decode_binned_value(out["value"].float()).tolist()]
+        stvs += [round(v, 6) for v in decode_binned_value(out[STV_HEAD].float()).tolist()]
+        moves_left += [round(v, 3) for v in decode_moves_left(out["moves_left"].float()).tolist()]
+    return {"value": values, "stv": stvs, "moves_left": moves_left}
 
 
 def searched_eval(

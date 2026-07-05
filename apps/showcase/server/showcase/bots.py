@@ -1,14 +1,20 @@
-"""Bot ladder: `bots.toml` config, per-worker checkpoint residency, and the
+"""Bot catalogue: `bots.toml` config, per-worker checkpoint residency, and the
 process pool that executes search and analysis jobs.
 
-Process model: `SHOWCASE_WORKERS` spawned processes each load the FULL ladder
-once (checkpoints are small) plus one `HexfieldMctsSession` per bot, and serve
-jobs from a per-worker queue. Jobs for a game are routed sticky by
-`game_key % workers`, so a game's search trees live in exactly one worker and
-`discard(game_key)` at game end reclaims them there. Results flow back over a
-shared queue drained by a reader thread that resolves asyncio futures; an
-abandoned or timed-out job simply resolves a future nobody awaits, so the pool
-can never deadlock on a dead game.
+`bots.toml` defines a CATALOGUE of checkpoints plus one global set of allowed
+search budgets (`sims`); a playable bot is any (checkpoint, sims) combination,
+chosen per game at `POST /api/game` time. Workers hold one loaded net + one
+search session per CHECKPOINT — the visit budget is a per-job parameter, so
+the catalogue stays small in memory no matter how many strengths are offered.
+
+Process model: `SHOWCASE_WORKERS` spawned processes each load the FULL
+catalogue once (checkpoints are small) plus one `HexfieldMctsSession` per
+checkpoint, and serve jobs from a per-worker queue. Jobs for a game are routed
+sticky by `game_key % workers`, so a game's search trees live in exactly one
+worker and `discard(game_key)` at game end reclaims them there. Results flow
+back over a shared queue drained by a reader thread that resolves asyncio
+futures; an abandoned or timed-out job simply resolves a future nobody awaits,
+so the pool can never deadlock on a dead game.
 
 This module keeps torch/hexfield imports out of module scope: the web process
 imports it for `BotSpec`/`load_bots_toml`/`BotPool` without paying (or
@@ -19,8 +25,8 @@ Search behavior mirrors the training run: the as-trained knobs (Gumbel root /
 sequential-halving profile, widening, FPU, TSS) are parsed from the training
 TOML's `[model.config.selfplay]` section (`SHOWCASE_SEARCH_CONFIG`,
 default `configs/hexfield_main_7.toml`); only the visit budget varies per
-ladder rung. Opening plies are temperature-sampled exactly like the eval
-arena, so games do not all open identically.
+game. Opening plies are temperature-sampled exactly like the eval arena, so
+games do not all open identically.
 """
 
 from __future__ import annotations
@@ -52,21 +58,35 @@ class BotPoolTimeout(TimeoutError):
 
 
 # ---------------------------------------------------------------------------
-# Ladder config (web-process side, no torch)
+# Catalogue config (web-process side, no torch)
 # ---------------------------------------------------------------------------
+
+DEFAULT_SIMS = (16, 64, 256, 512)
+
+# Keys of a [[checkpoint]] table the server itself consumes; anything else is
+# passed through verbatim as display metadata (e.g. games_trained).
+_CHECKPOINT_REQUIRED = {"id", "checkpoint", "label", "run", "epoch"}
 
 
 @dataclass(frozen=True, slots=True)
-class BotSpec:
-    """One ladder rung from bots.toml."""
+class CheckpointSpec:
+    """One catalogue entry from bots.toml (a checkpoint, not a strength)."""
 
     slug: str
     label: str
     run: str
     epoch: int
-    visits: int
     checkpoint: Path
     weights_sha: str
+    meta: dict  # optional display metadata (scalars only), served verbatim
+
+
+@dataclass(frozen=True, slots=True)
+class Catalogue:
+    """The parsed bots.toml: checkpoints x one global allowed-sims set."""
+
+    checkpoints: tuple[CheckpointSpec, ...]
+    sims: tuple[int, ...]
 
 
 def _file_sha256(path: Path) -> str:
@@ -77,49 +97,63 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_bots_toml(path: Path | str) -> list[BotSpec]:
+def load_bots_toml(path: Path | str) -> Catalogue:
     """Parse and validate bots.toml.
 
-    Schema: repeated `[[bot]]` tables with `id`, `checkpoint` (relative paths
-    resolve against the toml's directory), `visits`, `label`, `run`, `epoch`.
-    Checkpoints must exist (the sha is the bots-table identity key).
+    Schema: repeated `[[checkpoint]]` tables with `id`, `checkpoint` (relative
+    paths resolve against the toml's directory), `label`, `run`, `epoch`; any
+    extra scalar keys become display metadata. One optional top-level
+    `sims = [...]` array is the global allowed search-budget set (default
+    `DEFAULT_SIMS`). Checkpoints must exist (the sha is part of the bots-table
+    identity key).
     """
     path = Path(path)
     with open(path, "rb") as fh:
         raw = tomllib.load(fh)
-    entries = raw.get("bot", [])
+    entries = raw.get("checkpoint", [])
     if not entries:
-        raise ValueError(f"no [[bot]] entries in {path}")
-    specs: list[BotSpec] = []
+        raise ValueError(f"no [[checkpoint]] entries in {path}")
+    sims_raw = raw.get("sims", list(DEFAULT_SIMS))
+    if not isinstance(sims_raw, list) or not sims_raw:
+        raise ValueError(f"top-level 'sims' in {path} must be a non-empty array")
+    sims = tuple(sorted({int(s) for s in sims_raw}))
+    if sims[0] < 1:
+        raise ValueError(f"'sims' entries in {path} must be >= 1")
+    specs: list[CheckpointSpec] = []
     seen: set[str] = set()
     for entry in entries:
-        missing = {"id", "checkpoint", "visits", "label", "run", "epoch"} - set(entry)
+        missing = _CHECKPOINT_REQUIRED - set(entry)
         if missing:
-            raise ValueError(f"bot entry {entry.get('id', '?')!r} missing keys: {sorted(missing)}")
+            raise ValueError(
+                f"checkpoint entry {entry.get('id', '?')!r} missing keys: {sorted(missing)}"
+            )
         slug = str(entry["id"])
         if slug in seen:
-            raise ValueError(f"duplicate bot id {slug!r} in {path}")
+            raise ValueError(f"duplicate checkpoint id {slug!r} in {path}")
         seen.add(slug)
         checkpoint = Path(entry["checkpoint"])
         if not checkpoint.is_absolute():
             checkpoint = (path.parent / checkpoint).resolve()
         if not checkpoint.is_file():
-            raise FileNotFoundError(f"bot {slug!r}: checkpoint not found: {checkpoint}")
-        visits = int(entry["visits"])
-        if visits < 1:
-            raise ValueError(f"bot {slug!r}: visits must be >= 1")
+            raise FileNotFoundError(f"checkpoint {slug!r}: file not found: {checkpoint}")
+        meta = {key: value for key, value in entry.items() if key not in _CHECKPOINT_REQUIRED}
+        for key, value in meta.items():
+            if not isinstance(value, (str, int, float, bool)):
+                raise ValueError(
+                    f"checkpoint {slug!r}: metadata key {key!r} must be a scalar"
+                )
         specs.append(
-            BotSpec(
+            CheckpointSpec(
                 slug=slug,
                 label=str(entry["label"]),
                 run=str(entry["run"]),
                 epoch=int(entry["epoch"]),
-                visits=visits,
                 checkpoint=checkpoint,
                 weights_sha=_file_sha256(checkpoint),
+                meta=meta,
             )
         )
-    return specs
+    return Catalogue(checkpoints=tuple(specs), sims=sims)
 
 
 # ---------------------------------------------------------------------------
@@ -218,17 +252,17 @@ def _load_checkpoint(path: Path) -> Any:
 
 @dataclass
 class _LoadedBot:
-    spec: BotSpec
+    spec: CheckpointSpec
     model: Any
     evaluator: Any
     session: Any
 
 
 class _WorkerRuntime:
-    """Everything one worker process holds resident: the ladder, one search
-    session per bot, and the shared search profile."""
+    """Everything one worker process holds resident: the catalogue, one search
+    session per checkpoint, and the shared search profile."""
 
-    def __init__(self, specs: list[BotSpec], settings: Settings) -> None:
+    def __init__(self, specs: list[CheckpointSpec], settings: Settings) -> None:
         import torch
 
         threads = settings.torch_threads or max(
@@ -261,8 +295,11 @@ class _WorkerRuntime:
             engine.apply_action(state, PlacementAction(unpack_coord_id(int(aid))))
         return state
 
-    def bot_turn(self, *, bot_slug: str, game_key: int, actions: list[int], seed: int) -> dict:
-        """Play the bot's whole turn (1-2 stones) from the given move history.
+    def bot_turn(
+        self, *, bot_slug: str, game_key: int, actions: list[int], seed: int, visits: int,
+    ) -> dict:
+        """Play the bot's whole turn (1-2 stones) from the given move history
+        at the given visit budget.
 
         Replays the history into a fresh engine state, then searches and
         applies placements until the turn passes or the game ends. Returns the
@@ -281,7 +318,7 @@ class _WorkerRuntime:
             result = self.profile.search_one(
                 bot.session, bot.evaluator, state,
                 game_key=game_key,
-                visits=bot.spec.visits,
+                visits=int(visits),
                 seed=seed * 5003 + ply,
                 temperature=self.profile.move_temperature(ply),
             )
@@ -330,6 +367,34 @@ class _WorkerRuntime:
             )
         return payload
 
+    def summary(self, *, bot_slug: str, actions: list[int]) -> dict:
+        """Per-ply {value, stv, moves_left} series for a finished game: one
+        chunked batched forward over the positions after ply 0..N (see
+        `analysis.summary_eval`). CPU cost is one forward per position — a
+        full game is a few search-batch equivalents, fine at showcase volume."""
+        import hexo_engine as engine
+        from hexo_engine.types import PlacementAction, unpack_coord_id
+
+        from . import analysis
+
+        bot = self.bots[bot_slug]
+        state = engine.new_game()
+        rows: list[Any] = []
+        to_move: list[int | None] = []
+        for index in range(len(actions) + 1):
+            rows.append(analysis.featurize(state))
+            terminal = engine.terminal(state)
+            to_move.append(
+                None if terminal is not None
+                else (1 if str(engine.current_player(state).value).endswith("1") else 0)
+            )
+            if index < len(actions):
+                engine.apply_action(state, PlacementAction(unpack_coord_id(int(actions[index]))))
+        payload = analysis.summary_eval(bot.model, rows)
+        payload["to_move"] = to_move
+        payload["ply_count"] = len(actions)
+        return payload
+
     def discard(self, *, bot_slug: str, game_key: int) -> None:
         """Drop a finished game's search tree (no-op if never searched here)."""
         bot = self.bots.get(bot_slug)
@@ -338,10 +403,10 @@ class _WorkerRuntime:
 
 
 def _worker_main(
-    worker_index: int, specs: list[BotSpec], settings: Settings,
+    worker_index: int, specs: list[CheckpointSpec], settings: Settings,
     job_queue: Any, result_queue: Any,
 ) -> None:
-    """Worker process entry point: load the ladder, then serve jobs forever.
+    """Worker process entry point: load the catalogue, then serve jobs forever.
 
     Jobs are `(job_id, kind, kwargs)`; replies are `(job_id, payload)` where
     payload is `{"ok": ...}` or `{"error": traceback}`. Discard jobs carry
@@ -363,6 +428,8 @@ def _worker_main(
                 out = runtime.bot_turn(**kwargs)
             elif kind == "analyze":
                 out = runtime.analyze(**kwargs)
+            elif kind == "summary":
+                out = runtime.summary(**kwargs)
             elif kind == "discard":
                 runtime.discard(**kwargs)
                 continue
@@ -382,14 +449,14 @@ def _worker_main(
 class BotPool:
     """Spawned worker pool with sticky per-game routing and asyncio results.
 
-    `start()` blocks until every worker has the ladder loaded (a checkpoint
+    `start()` blocks until every worker has the catalogue loaded (a checkpoint
     that fails to load surfaces at startup, not on the first move). Job
     results resolve futures on the event loop via a reader thread; a job whose
     caller has gone away (client abandoned the game, `wait_for` timed out)
     resolves nothing and is dropped.
     """
 
-    def __init__(self, specs: list[BotSpec], settings: Settings) -> None:
+    def __init__(self, specs: list[CheckpointSpec], settings: Settings) -> None:
         if settings.workers < 1:
             raise ValueError("SHOWCASE_WORKERS must be >= 1")
         self._specs = specs
@@ -483,11 +550,14 @@ class BotPool:
     # -- public jobs ------------------------------------------------------------
 
     async def bot_turn(
-        self, *, game_key: int, bot_slug: str, actions: list[int], seed: int,
+        self, *, game_key: int, bot_slug: str, actions: list[int], seed: int, visits: int,
     ) -> dict:
         return await self._submit(
             self._route(game_key), "move",
-            {"bot_slug": bot_slug, "game_key": game_key, "actions": list(actions), "seed": seed},
+            {
+                "bot_slug": bot_slug, "game_key": game_key, "actions": list(actions),
+                "seed": seed, "visits": int(visits),
+            },
             self._settings.bot_timeout_s,
         )
 
@@ -502,6 +572,13 @@ class BotPool:
                 "want_search": want_search, "search_visits": search_visits,
                 "seed": seed,
             },
+            self._settings.bot_timeout_s,
+        )
+
+    async def summary(self, *, route_key: int, bot_slug: str, actions: list[int]) -> dict:
+        return await self._submit(
+            self._route(route_key), "summary",
+            {"bot_slug": bot_slug, "actions": list(actions)},
             self._settings.bot_timeout_s,
         )
 

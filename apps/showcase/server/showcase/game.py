@@ -38,6 +38,9 @@ TERMINATION_SIX_IN_LINE = "six_in_line"
 TERMINATION_RESIGN = "resign"
 TERMINATION_TIMEOUT = "timeout"
 
+# The three line axes of the board (opposite directions are the same line).
+_LINE_AXES = ((1, 0), (0, 1), (1, -1))
+
 
 def now_iso() -> str:
     """UTC wall-clock timestamp for DB rows."""
@@ -47,6 +50,54 @@ def now_iso() -> str:
 def _player_index(player: object) -> int:
     """Engine Player ('player0'/'player1') -> 0/1."""
     return 1 if str(getattr(player, "value", player)).endswith("1") else 0
+
+
+def stones_in_placement_order(mirror: Any) -> list[dict[str, int]]:
+    """The client's `stones` list, in PLACEMENT ORDER (the engine's
+    `board.stones` is (q, r)-sorted; `placement_history` is chronological, and
+    stones are never removed, so the two hold the same cells). The client
+    derives "last two moves" from the tail of this list."""
+    return [
+        {"q": rec.coord.q, "r": rec.coord.r, "color": _player_index(rec.player)}
+        for rec in mirror.placement_history
+    ]
+
+
+def find_winning_line(stones: list[dict[str, int]], winner: int) -> list[dict[str, int]] | None:
+    """The cells of the completed line in a six_in_line game.
+
+    The engine detects the win (a full six-cell window) but does not export
+    the cells, so this rescans: the game ends on the placement that completed
+    the line, so the winning run passes through the LAST stone of the winner's
+    color; walk the three axes through it and return the longest contiguous
+    run of length >= 6 (a placement that joins two runs can make it longer
+    than six). Cells are ordered along the line. Falls back to a full scan
+    over the winner's stones (defensive; unreachable for engine-produced
+    games), and returns None if no run of six exists.
+    """
+    cells = {(s["q"], s["r"]) for s in stones if s["color"] == winner}
+    winner_stones = [s for s in stones if s["color"] == winner]
+    candidates = [(winner_stones[-1]["q"], winner_stones[-1]["r"])] if winner_stones else []
+
+    def _run_through(q0: int, r0: int) -> list[tuple[int, int]] | None:
+        best: list[tuple[int, int]] | None = None
+        for dq, dr in _LINE_AXES:
+            q, r = q0, r0
+            while (q - dq, r - dr) in cells:
+                q, r = q - dq, r - dr
+            run: list[tuple[int, int]] = []
+            while (q, r) in cells:
+                run.append((q, r))
+                q, r = q + dq, r + dr
+            if len(run) >= 6 and (best is None or len(run) > len(best)):
+                best = run
+        return best
+
+    for q0, r0 in candidates + sorted(cells):
+        run = _run_through(q0, r0)
+        if run is not None:
+            return [{"q": q, "r": r} for q, r in run]
+    return None
 
 
 def encode_hxr(
@@ -114,7 +165,8 @@ class GameSession:
     bot_slug: str
     bot_db_id: int
     bot_label: str
-    bot_visits: int
+    bot_epoch: int
+    sims: int
     human_color: int
     client_hash: str
     game_key: int = field(default_factory=lambda: int.from_bytes(os.urandom(6), "big"))
@@ -130,11 +182,12 @@ class GameSession:
     started_mono: float = field(default_factory=time.monotonic)
     last_activity: float = field(default_factory=time.monotonic)
     nickname: str | None = None
+    winning_line: list[dict[str, int]] | None = None  # set at six_in_line finalize
 
     @classmethod
     def create(
-        cls, *, bot_slug: str, bot_db_id: int, bot_label: str, bot_visits: int,
-        human_color: int, client_hash: str,
+        cls, *, bot_slug: str, bot_db_id: int, bot_label: str, bot_epoch: int,
+        sims: int, human_color: int, client_hash: str,
     ) -> "GameSession":
         return cls(
             game_id=str(uuid.uuid4()),
@@ -142,7 +195,8 @@ class GameSession:
             bot_slug=bot_slug,
             bot_db_id=bot_db_id,
             bot_label=bot_label,
-            bot_visits=bot_visits,
+            bot_epoch=bot_epoch,
+            sims=sims,
             human_color=human_color,
             client_hash=client_hash,
         )
@@ -216,6 +270,11 @@ class GameSession:
             self.result = 0
         else:
             self.result = 1 if winner == self.human_color else -1
+        if termination == TERMINATION_SIX_IN_LINE and winner is not None:
+            mirror = engine.to_python_state(self.state)
+            self.winning_line = find_winning_line(
+                stones_in_placement_order(mirror), winner
+            )
         self.touch()
         return encode_hxr(
             game_id=self.game_id,
@@ -230,10 +289,17 @@ class GameSession:
     def duration_s(self) -> float:
         return time.monotonic() - self.started_mono
 
+    # See also `finished_snapshot` below: the DB-backed twin of `snapshot()`
+    # for games whose in-memory session is gone.
+
     # -- client serialization ------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
-        """The poll payload for GET /api/game/{id} (the Phase-2 client contract)."""
+        """The poll payload for GET /api/game/{id} (the Phase-2 client contract).
+
+        `stones` is in PLACEMENT ORDER (see `stones_in_placement_order`);
+        `winning_line` is non-null only on six_in_line finishes.
+        """
         mirror = engine.to_python_state(self.state)
         finished = not self.active
         if finished:
@@ -242,14 +308,7 @@ class GameSession:
             status = "bot_thinking"
         else:
             status = "your_turn"
-        last_move = None
-        if self.actions:
-            coord = unpack_coord_id(self.actions[-1])
-            last_move = {
-                "q": coord.q,
-                "r": coord.r,
-                "color": _player_index(mirror.placement_history[-1].player),
-            }
+        stones = stones_in_placement_order(mirror)
         result = None
         if finished:
             winner = None
@@ -263,22 +322,75 @@ class GameSession:
         return {
             "id": self.game_id,
             "status": status,
-            "bot": {"id": self.bot_slug, "label": self.bot_label, "visits": self.bot_visits},
+            "bot": {
+                "checkpoint_id": self.bot_slug,
+                "label": self.bot_label,
+                "epoch": self.bot_epoch,
+                "sims": self.sims,
+            },
             "human_color": self.human_color,
             "to_move": self.to_move,
             "phase": str(mirror.phase.value),
             "stones_left_this_turn": PHASE_STONES_LEFT[mirror.phase],
             "ply": len(self.actions),
-            "stones": [
-                {"q": coord.q, "r": coord.r, "color": _player_index(player)}
-                for coord, player in mirror.board.stones
-            ],
+            "stones": stones,
             "legal": (
                 [{"q": coord.q, "r": coord.r} for coord in mirror.board.legal]
                 if status == "your_turn"
                 else []
             ),
-            "last_move": last_move,
+            "last_move": stones[-1] if stones else None,
+            "winning_line": self.winning_line,
             "result": result,
             "nickname": self.nickname,
         }
+
+
+def finished_snapshot(
+    *, game_id: str, actions: list[int], bot: dict[str, Any], human_color: int,
+    result: int | None, termination: str | None, nickname: str | None,
+    finished_at: str | None,
+) -> dict[str, Any]:
+    """GET /api/game/{id} payload for a finished game served FROM THE DB (its
+    in-memory session is gone: evicted after the finished TTL or lost to a
+    restart). Replays the `.hxr` actions through the engine and emits the same
+    shape as `GameSession.snapshot()` plus `finished_at`, so the client renders
+    live and archived games identically. `bot` is the bots-table row dict.
+    """
+    state = engine.new_game()
+    for aid in actions:
+        engine.apply_action(state, PlacementAction(unpack_coord_id(int(aid))))
+    mirror = engine.to_python_state(state)
+    stones = stones_in_placement_order(mirror)
+    winner = None
+    if result:
+        winner = human_color if result == 1 else 1 - human_color
+    winning_line = None
+    if termination == TERMINATION_SIX_IN_LINE and winner is not None:
+        winning_line = find_winning_line(stones, winner)
+    return {
+        "id": game_id,
+        "status": "finished",
+        "bot": {
+            "checkpoint_id": bot["slug"],
+            "label": bot["label"],
+            "epoch": bot["epoch"],
+            "sims": bot["visits"],
+        },
+        "human_color": human_color,
+        "to_move": None,
+        "phase": str(mirror.phase.value),
+        "stones_left_this_turn": PHASE_STONES_LEFT[mirror.phase],
+        "ply": len(actions),
+        "stones": stones,
+        "legal": [],
+        "last_move": stones[-1] if stones else None,
+        "winning_line": winning_line,
+        "result": {
+            "winner": winner,
+            "termination": termination,
+            "human_result": result,
+        },
+        "nickname": nickname,
+        "finished_at": finished_at,
+    }

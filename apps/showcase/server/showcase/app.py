@@ -2,23 +2,32 @@
 
 Complete API (docs/showcase 01):
 
-    POST /api/game                    create game
-    GET  /api/game/{id}               state (poll)
+    POST /api/game                    create game (checkpoint_id x sims)
+    GET  /api/game/{id}               state (owner-only while active; public once finished)
     POST /api/game/{id}/move          human move
     POST /api/game/{id}/resign
     POST /api/game/{id}/nickname      set nickname on the finished game
-    GET  /api/game/{id}/analysis      per-ply model insight (cached)
-    GET  /api/bots                    ladder metadata
+    GET  /api/game/{id}/analysis      per-ply model insight (cached; public, finished only)
+    GET  /api/game/{id}/summary       per-ply value/stv/moves_left series (cached)
+    GET  /api/games                   recent finished games feed (public, paginated)
+    GET  /api/bots                    catalogue metadata (checkpoints + allowed sims)
     GET  /api/stats                   public aggregates
     GET  /healthz                     liveness
 
 No admin endpoints. Identity is a per-client httpOnly cookie token checked on
-mutating routes; abuse control is in-process (global/per-IP active-game caps
-plus token buckets keyed by CF-Connecting-IP or the peer address). Live games
-are in-memory `GameSession`s; the bot plays via the `BotPool` worker
-processes; every finished game lands in SQLite with its `.hxr` record. A
-background sweeper finalizes idle games (race-safe: it takes the same per-game
-lock as the move path and skips games with a search in flight).
+mutating routes and on reads of ACTIVE games; finished games are public by
+default (shareable URLs, the feed) and their public reads ride the analysis
+token bucket. Abuse control is in-process (global/per-IP active-game caps plus
+token buckets keyed by CF-Connecting-IP or the peer address). Live games are
+in-memory `GameSession`s; the bot plays via the `BotPool` worker processes;
+every finished game lands in SQLite with its `.hxr` record. A background
+sweeper finalizes idle games (race-safe: it takes the same per-game lock as
+the move path and skips games with a search in flight).
+
+Bots table mapping: bots.toml is a catalogue of CHECKPOINTS plus one global
+allowed `sims` set; a DB bots row is one played (checkpoint, sims) combination
+(identity (slug, weights_sha, visits)), created lazily on the first game with
+that combination — the stats views keep per-strength granularity for free.
 """
 
 from __future__ import annotations
@@ -38,7 +47,7 @@ from pydantic import BaseModel, Field
 
 from hexo_engine import IllegalActionError
 
-from .bots import BotPool, BotSpec, BotPoolError, BotPoolTimeout, load_bots_toml
+from .bots import BotPool, CheckpointSpec, BotPoolError, BotPoolTimeout, load_bots_toml
 from .config import Settings
 from .db import ShowcaseDB, decode_payload, encode_payload
 from .game import (
@@ -47,6 +56,7 @@ from .game import (
     TERMINATION_TIMEOUT,
     GameSession,
     decode_hxr_actions,
+    finished_snapshot,
     now_iso,
 )
 
@@ -56,9 +66,22 @@ _COOKIE = "showcase_token"
 _NICK_STRIP = re.compile(r"[^A-Za-z0-9 _.\-]")
 _NICK_MAX = 24
 
+# Version stamp ("v") on cached analysis/summary payloads. Bump whenever the
+# payload schema gains fields: cached entries with a different (or missing)
+# stamp are treated as misses and recomputed. v2 added stv + moves_left.
+_ANALYSIS_VERSION = 2
+
+# analysis_cache "ply" slot for the whole-game summary payload (real plies are
+# always >= 0, so -1 can never collide).
+_SUMMARY_PLY = -1
+
+_FEED_LIMIT_MAX = 50
+_FEED_LIMIT_DEFAULT = 20
+
 
 class CreateGameRequest(BaseModel):
-    bot_id: str
+    checkpoint_id: str
+    sims: int
     human_color: Literal[0, 1] = 0
 
 
@@ -109,8 +132,8 @@ def _client_key(request: Request) -> str:
 
 
 def create_app(settings: Settings) -> FastAPI:
-    """Wire the app. All startup work (DB, ladder, worker pool, sweeper) runs
-    in the lifespan so constructing the app object stays side-effect free."""
+    """Wire the app. All startup work (DB, catalogue, worker pool, sweeper)
+    runs in the lifespan so constructing the app object stays side-effect free."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -118,19 +141,14 @@ def create_app(settings: Settings) -> FastAPI:
         swept = app.state.db.abandon_stale_active(now_iso())
         if swept:
             log.info("swept %d stale active games from a previous run", swept)
-        specs = load_bots_toml(settings.bots_toml)
-        ladder: dict[str, tuple[BotSpec, int]] = {}
-        for spec in specs:
-            bot_db_id = app.state.db.upsert_bot(
-                slug=spec.slug, label=spec.label, run=spec.run, epoch=spec.epoch,
-                visits=spec.visits, weights_sha=spec.weights_sha,
-                active_from=now_iso(),
-            )
-            ladder[spec.slug] = (spec, bot_db_id)
-        app.state.ladder = ladder
-        app.state.ladder_by_db_id = {db_id: spec for spec, db_id in ladder.values()}
+        catalogue = load_bots_toml(settings.bots_toml)
+        app.state.catalogue = {spec.slug: spec for spec in catalogue.checkpoints}
+        app.state.sims_allowed = catalogue.sims
+        # (checkpoint slug, sims) -> bots-table row id; rows are created lazily
+        # by _bot_db_id on the first game with that combination.
+        app.state.bot_ids = {}
         app.state.sessions = {}
-        app.state.pool = BotPool(specs, settings)
+        app.state.pool = BotPool(list(catalogue.checkpoints), settings)
         await app.state.pool.start()
         sweeper = asyncio.create_task(_sweeper(app))
         try:
@@ -165,6 +183,48 @@ def create_app(settings: Settings) -> FastAPI:
         if request.cookies.get(_COOKIE) != session.token:
             raise HTTPException(403, "not your game")
 
+    def _bot_db_id(spec: CheckpointSpec, sims: int) -> int:
+        """The bots-table row for a (checkpoint, sims) combination, upserted
+        lazily on first use and memoized."""
+        key = (spec.slug, sims)
+        db_id = app.state.bot_ids.get(key)
+        if db_id is None:
+            db_id = app.state.db.upsert_bot(
+                slug=spec.slug, label=spec.label, run=spec.run, epoch=spec.epoch,
+                visits=sims, weights_sha=spec.weights_sha, active_from=now_iso(),
+            )
+            app.state.bot_ids[key] = db_id
+        return db_id
+
+    def _bot_row_and_spec(bot_id: int) -> tuple[dict[str, Any], CheckpointSpec]:
+        """A finished game's bots row plus its catalogue checkpoint (needed to
+        route worker jobs). 409s when the checkpoint left the catalogue."""
+        bot_row = app.state.db.get_bot(int(bot_id))
+        if bot_row is None:  # pragma: no cover - FK guarantees the row
+            raise HTTPException(409, "this game's bot is no longer known")
+        spec = app.state.catalogue.get(bot_row["slug"])
+        if spec is None:
+            raise HTTPException(409, "this game's checkpoint is no longer in the catalogue")
+        return bot_row, spec
+
+    def _public_read_allowed(request: Request) -> None:
+        """Token-bucket gate for public (cookieless) reads of finished games."""
+        if not app.state.analysis_bucket.allow(_client_key(request)):
+            raise HTTPException(429, "too many requests; slow down")
+
+    def _versioned_cache_get(game_id: str, ply: int, bot_db_id: int) -> dict[str, Any] | None:
+        """analysis_cache read that treats entries from an older payload schema
+        as misses (recomputed and overwritten by the caller)."""
+        blob = app.state.db.analysis_get(game_id, ply, bot_db_id)
+        if blob is None:
+            return None
+        payload = decode_payload(blob)
+        return payload if payload.get("v") == _ANALYSIS_VERSION else None
+
+    def _versioned_cache_put(game_id: str, ply: int, bot_db_id: int, payload: dict[str, Any]) -> None:
+        payload["v"] = _ANALYSIS_VERSION
+        app.state.db.analysis_put(game_id, ply, bot_db_id, encode_payload(payload))
+
     def _finalize(session: GameSession, *, termination: str | None, winner: int | None) -> None:
         """Persist a finished game (record blob + games row) and reclaim the
         worker-side search tree. Callers hold `session.lock`."""
@@ -193,6 +253,7 @@ def create_app(settings: Settings) -> FastAPI:
                 bot_slug=session.bot_slug,
                 actions=session.actions,
                 seed=session.seed,
+                visits=session.sims,
             )
         except Exception:
             log.exception("bot turn failed for game %s", session.game_id)
@@ -242,10 +303,14 @@ def create_app(settings: Settings) -> FastAPI:
         key = _client_key(request)
         if not app.state.game_bucket.allow(key):
             raise HTTPException(429, "too many games created; slow down")
-        entry = app.state.ladder.get(body.bot_id)
-        if entry is None:
-            raise HTTPException(404, f"unknown bot {body.bot_id!r}")
-        spec, bot_db_id = entry
+        spec = app.state.catalogue.get(body.checkpoint_id)
+        if spec is None:
+            raise HTTPException(404, f"unknown checkpoint {body.checkpoint_id!r}")
+        if body.sims not in app.state.sims_allowed:
+            raise HTTPException(
+                422,
+                f"sims must be one of {list(app.state.sims_allowed)}",
+            )
         sessions = app.state.sessions
         active = [s for s in sessions.values() if s.active]
         if len(active) >= settings.max_active_games:
@@ -254,9 +319,10 @@ def create_app(settings: Settings) -> FastAPI:
         if sum(1 for s in active if s.client_hash == client_hash) >= settings.max_games_per_ip:
             raise HTTPException(429, "active-game limit reached; finish or resign first")
 
+        bot_db_id = _bot_db_id(spec, body.sims)
         session = GameSession.create(
             bot_slug=spec.slug, bot_db_id=bot_db_id, bot_label=spec.label,
-            bot_visits=spec.visits, human_color=body.human_color,
+            bot_epoch=spec.epoch, sims=body.sims, human_color=body.human_color,
             client_hash=client_hash,
         )
         # One token per client: reuse the cookie so a client's games all
@@ -279,8 +345,33 @@ def create_app(settings: Settings) -> FastAPI:
         return session.snapshot()
 
     @app.get("/api/game/{game_id}")
-    async def get_game(game_id: str):
-        return _session_or_404(game_id).snapshot()
+    async def get_game(game_id: str, request: Request):
+        """Owner-only while the game is live (session cookie); public once
+        finished — first from the in-memory session, then from the DB record
+        (evicted sessions, restarts). Public reads are rate-limited."""
+        session = app.state.sessions.get(game_id)
+        if session is not None:
+            if session.active:
+                _authorize(session, request)
+            elif request.cookies.get(_COOKIE) != session.token:
+                _public_read_allowed(request)
+            return session.snapshot()
+        row = app.state.db.get_game(game_id)
+        if row is None or row["status"] == "active" or row["record"] is None:
+            # An active row without a session only exists mid-crash; treat as gone.
+            raise HTTPException(404, "unknown or expired game")
+        _public_read_allowed(request)
+        bot_row = app.state.db.get_bot(int(row["bot_id"]))
+        return finished_snapshot(
+            game_id=game_id,
+            actions=list(_record_actions(game_id)),
+            bot=bot_row,
+            human_color=int(row["human_color"]),
+            result=row["result"],
+            termination=row["termination"],
+            nickname=row["nickname"],
+            finished_at=row["finished_at"],
+        )
 
     @app.post("/api/game/{game_id}/move")
     async def move(game_id: str, body: MoveRequest, request: Request):
@@ -353,16 +444,13 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(404, "unknown game")
         if row["status"] == "active":
             raise HTTPException(409, "analysis is available after the game finishes")
-        spec = app.state.ladder_by_db_id.get(row["bot_id"])
-        if spec is None:
-            raise HTTPException(409, "this game's bot is no longer in the ladder")
+        _, spec = _bot_row_and_spec(row["bot_id"])
         actions = _record_actions(game_id)
         if ply > len(actions):
             raise HTTPException(422, f"ply {ply} out of range (game has {len(actions)} plies)")
 
         bot_db_id = int(row["bot_id"])
-        cached_blob = app.state.db.analysis_get(game_id, ply, bot_db_id)
-        payload: dict[str, Any] | None = decode_payload(cached_blob) if cached_blob else None
+        payload = _versioned_cache_get(game_id, ply, bot_db_id)
         cached = payload is not None
         if payload is None or (search and "search" not in payload):
             route_key = int(hashlib.sha256(game_id.encode()).hexdigest()[:12], 16)
@@ -381,21 +469,108 @@ def create_app(settings: Settings) -> FastAPI:
                 payload["search"] = fresh["search"]
             else:
                 payload = fresh
-            app.state.db.analysis_put(game_id, ply, bot_db_id, encode_payload(payload))
+            _versioned_cache_put(game_id, ply, bot_db_id, payload)
             cached = False
-        return {"game_id": game_id, "bot_id": spec.slug, "cached": cached, **payload}
+        return {"game_id": game_id, "checkpoint_id": spec.slug, "cached": cached, **payload}
 
-    # -- metadata / stats -----------------------------------------------------------
+    @app.get("/api/game/{game_id}/summary")
+    async def summary(game_id: str, request: Request):
+        """Whole-game per-ply {value, stv, moves_left, to_move} series for the
+        value/ply chart. Index i is the position AFTER ply i (arrays have
+        ply_count + 1 entries; entry 0 is the empty board). Computed lazily on
+        first request — one chunked batched forward over every position — and
+        cached in analysis_cache under the ply = -1 slot."""
+        if not app.state.analysis_bucket.allow(_client_key(request)):
+            raise HTTPException(429, "too many analysis requests; slow down")
+        row = app.state.db.get_game(game_id)
+        if row is None:
+            raise HTTPException(404, "unknown game")
+        if row["status"] == "active":
+            raise HTTPException(409, "summary is available after the game finishes")
+        _, spec = _bot_row_and_spec(row["bot_id"])
+        actions = _record_actions(game_id)
+
+        bot_db_id = int(row["bot_id"])
+        payload = _versioned_cache_get(game_id, _SUMMARY_PLY, bot_db_id)
+        cached = payload is not None
+        if payload is None:
+            route_key = int(hashlib.sha256(game_id.encode()).hexdigest()[:12], 16)
+            try:
+                payload = await app.state.pool.summary(
+                    route_key=route_key, bot_slug=spec.slug, actions=list(actions),
+                )
+            except (BotPoolError, BotPoolTimeout) as exc:
+                raise HTTPException(503, "analysis backend unavailable") from exc
+            _versioned_cache_put(game_id, _SUMMARY_PLY, bot_db_id, payload)
+        return {"game_id": game_id, "checkpoint_id": spec.slug, "cached": cached, **payload}
+
+    # -- public feed / metadata / stats -----------------------------------------------
+
+    @app.get("/api/games")
+    async def games_feed(
+        request: Request,
+        limit: int = Query(default=_FEED_LIMIT_DEFAULT, ge=1, le=_FEED_LIMIT_MAX),
+        before: str | None = Query(default=None, max_length=128),
+    ):
+        """Public recent-games feed: finished games only, newest first. `before`
+        is the opaque cursor from the previous page's `next` (null when the
+        page is not full)."""
+        if not app.state.analysis_bucket.allow(_client_key(request)):
+            raise HTTPException(429, "too many requests; slow down")
+        before_finished_at = before_id = None
+        if before is not None:
+            before_finished_at, sep, before_id = before.partition("~")
+            if not sep or not before_finished_at:
+                raise HTTPException(422, "malformed 'before' cursor")
+        rows = app.state.db.list_finished(
+            limit=limit, before_finished_at=before_finished_at, before_id=before_id,
+        )
+        items = []
+        for row in rows:
+            winner = None
+            if row["result"]:
+                winner = (
+                    row["human_color"] if row["result"] == 1 else 1 - row["human_color"]
+                )
+            items.append(
+                {
+                    "id": row["id"],
+                    "bot": {
+                        "checkpoint_id": row["bot_slug"],
+                        "label": row["bot_label"],
+                        "epoch": row["bot_epoch"],
+                        "sims": row["bot_visits"],
+                    },
+                    "human_color": row["human_color"],
+                    "result": {
+                        "winner": winner,
+                        "termination": row["termination"],
+                        "human_result": row["result"],
+                    },
+                    "ply_count": row["ply_count"],
+                    "finished_at": row["finished_at"],
+                    "nickname": row["nickname"],
+                }
+            )
+        next_cursor = None
+        if len(items) == limit and items:
+            last = rows[-1]
+            next_cursor = f"{last['finished_at']}~{last['id']}"
+        return {"games": items, "next": next_cursor}
 
     @app.get("/api/bots")
     async def bots():
-        return [
-            {
-                "id": spec.slug, "label": spec.label, "visits": spec.visits,
-                "run": spec.run, "epoch": spec.epoch,
-            }
-            for spec, _ in app.state.ladder.values()
-        ]
+        return {
+            "checkpoints": [
+                {
+                    "id": spec.slug, "label": spec.label,
+                    "run": spec.run, "epoch": spec.epoch,
+                    **spec.meta,
+                }
+                for spec in app.state.catalogue.values()
+            ],
+            "sims": list(app.state.sims_allowed),
+        }
 
     @app.get("/api/stats")
     async def stats():
@@ -410,7 +585,7 @@ def create_app(settings: Settings) -> FastAPI:
     async def healthz():
         return {
             "ok": True,
-            "bots": len(app.state.ladder),
+            "checkpoints": len(app.state.catalogue),
             "active_games": sum(1 for s in app.state.sessions.values() if s.active),
         }
 
