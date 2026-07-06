@@ -102,8 +102,18 @@ GET  /api/game/{id}/summary     per-ply value/stv/moves_left series, cached, pub
 GET  /api/games                 recent finished games feed (public, paginated)
 GET  /api/bots                  catalogue metadata (checkpoints + allowed sims)
 GET  /api/stats                 win rates / daily activity / hall of fame
+POST /api/lab/eval              lab: net eval + optional internals (attention rows
+                                for a query cell, per-block activation norms,
+                                feature planes) on a visitor-built position
+POST /api/lab/search            lab: real search on a legal-sequence position,
+                                sims capped (SHOWCASE_LAB_SEARCH_VISIT_CAP, 256)
 GET  /healthz                   liveness
 ```
+
+Lab endpoints are rate-limited separately (SHOWCASE_LAB_* in config.py) and run
+in the worker pool without game-key stickiness; free-edit positions get a
+synthesized history (the two last-turn features are zeroed) and cannot be
+searched. app.py documents the request/response schemas.
 
 Access model: mutating routes always require the session cookie; reading an
 ACTIVE game requires it too (403 otherwise). FINISHED games are public by
