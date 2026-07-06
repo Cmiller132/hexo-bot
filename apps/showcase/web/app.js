@@ -8,7 +8,8 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=9";
+import * as api from "./api.js?v=10";
+import { buildCkptList, groupCheckpoints, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=10";
 import { createBoard, findWin, key } from "./board.js?v=6";
 
 "use strict";
@@ -368,96 +369,25 @@ let botsNorm = null;
 // old always-first behavior
 const sel = { ckpt: null, ckptLabel: "", sims: 0, color: 0 };
 
-/* Picker grouping by the catalogue's `group` display key: ungrouped entries
- * form the default group and come first; named groups follow in order of
- * first appearance; bots.toml order is preserved within each group. */
-function groupedCheckpoints() {
-  const order = [];
-  const byName = new Map();
-  for (const c of botsNorm.checkpoints) {
-    const g = c.group || "";
-    if (!byName.has(g)) {
-      byName.set(g, []);
-      order.push(g);
-    }
-    byName.get(g).push(c);
-  }
-  const at = order.indexOf("");
-  if (at > 0) {
-    order.splice(at, 1);
-    order.unshift("");
-  }
-  return order.map(name => ({ name, items: byName.get(name) }));
-}
-
-/* The "latest" tag: the last entry of the FIRST group, i.e. the newest rung of
- * the current ladder, not whatever legacy entry happens to close the
- * catalogue. */
-function latestCheckpoint(groups) {
-  const items = groups.length ? groups[0].items : [];
-  return items[items.length - 1] || null;
-}
-
-/* The default pick: the checkpoint flagged `default` in the catalogue, else the
- * first `strongest` one, else the newest ladder rung. */
-function defaultCheckpoint() {
-  return (botsNorm.checkpoints.find(c => c.isDefault)
-    || botsNorm.checkpoints.find(c => c.strongest)
-    || latestCheckpoint(groupedCheckpoints()) || null);
-}
-
-/* When "show all" is off, the picker lists only `featured` checkpoints (plus
- * the current selection, so it is never hidden); the rest wait behind the
- * toggle to keep the default view uncluttered. */
+/* The picker itself (grouping, featured/show-all filter, tags, default pick)
+ * lives in the shared checkpoints.js so play, analysis and the lab never drift.
+ * When "show all" is off, only featured checkpoints (plus the current pick)
+ * show; the rest wait behind the toggle. */
 let showAllCkpts = false;
-
-/* Grouped checkpoint list, shared by the play picker and the analysis
- * selector: group headers, "Strongest" tag on the recommended default,
- * "latest" tag on the newest current-ladder rung, PUCT tag on legacy-search
- * entries. `showAll` reveals the non-featured rungs. */
-function buildCkptList(list, selectedId, showAll) {
-  list.textContent = "";
-  const groups = groupedCheckpoints();
-  const latest = latestCheckpoint(groups);
-  for (const g of groups) {
-    const items = g.items.filter(c => showAll || c.featured || c.id === selectedId);
-    if (!items.length) continue;
-    if (g.name) {
-      const h = document.createElement("div");
-      h.className = "bot-group";
-      h.textContent = g.name;
-      list.appendChild(h);
-    }
-    for (const c of items) {
-      const b = document.createElement("button");
-      b.className = "bot" + (c.id === selectedId ? " sel" : "");
-      b.dataset.ckpt = c.id;
-      b.setAttribute("role", "radio");
-      b.setAttribute("aria-checked", c.id === selectedId);
-      const tags = [];
-      if (c.strongest) tags.push('<span class="tag strong">Strongest</span>');
-      if (latest && c.id === latest.id) tags.push('<span class="tag">latest</span>');
-      if (c.search === "puct") tags.push('<span class="tag puct">PUCT search</span>');
-      const meta = [c.meta, ...tags].filter(Boolean).join(" · ");
-      b.innerHTML = `<span class="bot-row"><span class="bot-name"></span>` +
-        `<span class="bot-meta">${meta}</span></span>`;
-      b.querySelector(".bot-name").textContent = c.label;
-      list.appendChild(b);
-    }
-  }
-}
 
 /* Re-render both checkpoint lists after the shared "show all" toggle flips. */
 function renderCkptLists() {
   const play = $("showAllCkpt"); if (play) play.checked = showAllCkpts;
   const ana = $("showAllAnaCkpt"); if (ana) ana.checked = showAllCkpts;
-  if ($("ckptList") && botsNorm) buildCkptList($("ckptList"), sel.ckpt, showAllCkpts);
+  if ($("ckptList") && botsNorm) {
+    buildCkptList($("ckptList"), botsNorm.checkpoints, { selectedId: sel.ckpt, showAll: showAllCkpts });
+  }
   renderAnaCkpts();
 }
 
 function renderPickers() {
   const chk = $("showAllCkpt"); if (chk) chk.checked = showAllCkpts;
-  buildCkptList($("ckptList"), sel.ckpt, showAllCkpts);
+  buildCkptList($("ckptList"), botsNorm.checkpoints, { selectedId: sel.ckpt, showAll: showAllCkpts });
   const seg = $("simSeg");
   seg.textContent = "";
   for (const s of botsNorm.sims) {
@@ -525,7 +455,7 @@ async function loadBots() {
       await sleep(4000);
     }
   }
-  const def = defaultCheckpoint();
+  const def = defaultCheckpoint(botsNorm.checkpoints);
   sel.ckpt = def ? def.id : null;
   sel.ckptLabel = def ? def.label : "";
   sel.sims = botsNorm.sims[botsNorm.sims.length - 1] || 0;
@@ -810,7 +740,7 @@ function renderAnaCkpts() {
   const list = $("anaCkptList");
   if (!list || !botsNorm) return; // cached pre-selector index.html
   const chk = $("showAllAnaCkpt"); if (chk) chk.checked = showAllCkpts;
-  buildCkptList(list, ana.ckpt, showAllCkpts);
+  buildCkptList(list, botsNorm.checkpoints, { selectedId: ana.ckpt, showAll: showAllCkpts });
 }
 
 /* Switch the analyzing net: drop all per-net state, then refetch the summary
@@ -1033,7 +963,7 @@ function openAnalysis(rec) {
     if (botsNorm.checkpoints.some(c => c.id === rec.ckpt)) {
       ana.ckpt = rec.ckpt;
     } else {
-      const latest = latestCheckpoint(groupedCheckpoints());
+      const latest = latestCheckpoint(groupCheckpoints(botsNorm.checkpoints));
       ana.ckpt = latest ? latest.id : null;
     }
   }

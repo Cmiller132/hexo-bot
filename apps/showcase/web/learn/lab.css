@@ -225,6 +225,15 @@
 .bot-meta{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap}
 .bot-meta .tag{color:var(--accent)}
 .bot-meta .tag.puct{color:var(--muted)}
+.bot-meta .tag.strong{color:var(--accent);font-weight:600}
+/* "show all checkpoints" toggle under the picker */
+.show-all{
+  display:flex;align-items:center;gap:6px;cursor:pointer;
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;color:var(--dim);
+  margin:6px 2px 0;
+}
+.show-all input{accent-color:var(--accent);cursor:pointer}
+.show-all:hover{color:var(--muted)}
 .bot-group{
   font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
   color:var(--dim);

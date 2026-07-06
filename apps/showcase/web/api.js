@@ -7,6 +7,8 @@
  * {checkpoints, sims} shape.
  */
 
+import { normalizeCheckpoints } from "./checkpoints.js?v=10";
+
 export class ApiError extends Error {
   constructor(status, message, network = false) {
     super(message);
@@ -67,46 +69,10 @@ async function request(path, { method = "GET", body, retries = method === "GET" 
 //             POST /api/game {bot_id}; we group rungs by (run, epoch) into
 //             checkpoints and map (checkpoint, sims) back to the closest rung.
 
-// Format a raw parameter count for the picker meta line: 8128812 -> "8.13M
-// params", 1656453 -> "1.66M params", <1M falls back to a "K" suffix.
-function fmtParams(n) {
-  const s = n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : Math.round(n / 1e3) + "K";
-  return s + " params";
-}
-
 export async function getBots() {
   const raw = await request("/api/bots");
   if (raw && !Array.isArray(raw) && Array.isArray(raw.checkpoints)) {
-    const checkpoints = raw.checkpoints.map(c => {
-      // extra scalar keys beyond the fixed and structural ones are display
-      // metadata (e.g. games = "3.4M games"); fall back to the run name.
-      // `group` drives picker grouping and `search` the legacy-search tag,
-      // so both are lifted out rather than joined into the meta line.
-      // `params` is a raw weight count, formatted here (e.g. 8128812 ->
-      // "8.13M params") so main_4 / main_5 / main_7 are comparable in-picker.
-      // `featured` (default-visible in the picker) and `strongest` (the
-      // recommended default pick + "Strongest" tag) are structural flags, not
-      // display text, so they are lifted out like group/search.
-      const reserved = ["id", "label", "run", "epoch", "group", "search",
-                        "params", "featured", "strongest", "default"];
-      const extras = Object.entries(c)
-        .filter(([k, v]) => !reserved.includes(k) &&
-                            (typeof v === "string" || typeof v === "number"))
-        .map(([, v]) => String(v));
-      const parts = [];
-      if (typeof c.params === "number" && c.params > 0) parts.push(fmtParams(c.params));
-      parts.push(...extras);
-      return {
-        id: String(c.id ?? c.checkpoint_id),
-        label: String(c.label ?? c.id ?? c.checkpoint_id),
-        group: typeof c.group === "string" ? c.group : "",
-        search: typeof c.search === "string" ? c.search : "",
-        featured: !!c.featured,
-        strongest: !!c.strongest,
-        isDefault: !!c.default,
-        meta: parts.length ? parts.join(" · ") : (c.run ? String(c.run) : ""),
-      };
-    });
+    const checkpoints = normalizeCheckpoints(raw);
     const sims = (raw.sims || []).map(Number);
     return {
       checkpoints,

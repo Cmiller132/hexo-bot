@@ -14,6 +14,7 @@
  */
 
 import { S, axialX, axialY, createBoard, findWin, hexPts, key } from "../board.js?v=6";
+import { buildCkptList, defaultCheckpoint, normalizeCheckpoints } from "../checkpoints.js?v=10";
 import * as LF from "./lab_features.js?v=1";
 
 "use strict";
@@ -551,60 +552,13 @@ async function importFromGame(id, ply) {
   }
 }
 
-// ---- checkpoints (duplicated minimally from app.js: grouping + latest tag) ---------------
+// ---- checkpoints (the shared picker; see ../checkpoints.js) ------------------------------
 
-function normalizeBots(raw) {
-  const list = raw && Array.isArray(raw.checkpoints) ? raw.checkpoints : [];
-  return list.map(c => ({
-    id: String(c.id),
-    label: String(c.label ?? c.id),
-    group: typeof c.group === "string" ? c.group : "",
-    search: typeof c.search === "string" ? c.search : "",
-    meta: c.run ? String(c.run) : "",
-  }));
-}
-
-function groupedCheckpoints(checkpoints) {
-  const order = [], byName = new Map();
-  for (const c of checkpoints) {
-    const g = c.group || "";
-    if (!byName.has(g)) { byName.set(g, []); order.push(g); }
-    byName.get(g).push(c);
-  }
-  const at = order.indexOf("");
-  if (at > 0) { order.splice(at, 1); order.unshift(""); }
-  return order.map(name => ({ name, items: byName.get(name) }));
-}
+let showAllCkpts = false;
 
 function renderCkpts() {
-  const list = $("ckptList");
-  list.textContent = "";
-  const groups = groupedCheckpoints(state.bots);
-  const first = groups.length ? groups[0].items : [];
-  const latest = first[first.length - 1] || null;
-  for (const g of groups) {
-    if (g.name) {
-      const h = document.createElement("div");
-      h.className = "bot-group";
-      h.textContent = g.name;
-      list.appendChild(h);
-    }
-    for (const c of g.items) {
-      const b = document.createElement("button");
-      b.className = "bot" + (c.id === state.ckpt ? " sel" : "");
-      b.dataset.ckpt = c.id;
-      b.setAttribute("role", "radio");
-      b.setAttribute("aria-checked", c.id === state.ckpt);
-      const tags = [];
-      if (latest && c.id === latest.id) tags.push('<span class="tag">latest</span>');
-      if (c.search === "puct") tags.push('<span class="tag puct">PUCT search</span>');
-      const meta = [c.meta, ...tags].filter(Boolean).join(" · ");
-      b.innerHTML = `<span class="bot-row"><span class="bot-name"></span>` +
-        `<span class="bot-meta">${meta}</span></span>`;
-      b.querySelector(".bot-name").textContent = c.label;
-      list.appendChild(b);
-    }
-  }
+  buildCkptList($("ckptList"), state.bots, { selectedId: state.ckpt, showAll: showAllCkpts });
+  const chk = $("showAllCkpt"); if (chk) chk.checked = showAllCkpts;
 }
 
 $("ckptList").addEventListener("click", e => {
@@ -617,19 +571,22 @@ $("ckptList").addEventListener("click", e => {
   refreshModule();
 });
 
+{
+  const chk = $("showAllCkpt");
+  if (chk) chk.addEventListener("change", e => { showAllCkpts = e.target.checked; renderCkpts(); });
+}
+
 async function loadBots() {
   try {
-    state.bots = normalizeBots(await requestJson("/api/bots"));
+    state.bots = normalizeCheckpoints(await requestJson("/api/bots"));
   } catch (_) {
     state.bots = [];
     setStatus("evalStatus", "server unreachable — live modules unavailable", true);
     return;
   }
-  const groups = groupedCheckpoints(state.bots);
-  const first = groups.length ? groups[0].items : [];
-  const latest = first[first.length - 1] || null;
-  state.ckpt = latest ? latest.id : null;
-  state.ckptLabel = latest ? latest.label : "";
+  const def = defaultCheckpoint(state.bots);
+  state.ckpt = def ? def.id : null;
+  state.ckptLabel = def ? def.label : "";
   renderCkpts();
 }
 
