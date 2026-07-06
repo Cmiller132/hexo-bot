@@ -84,7 +84,11 @@ export async function getBots() {
       // so both are lifted out rather than joined into the meta line.
       // `params` is a raw weight count, formatted here (e.g. 8128812 ->
       // "8.13M params") so main_4 / main_5 / main_7 are comparable in-picker.
-      const reserved = ["id", "label", "run", "epoch", "group", "search", "params"];
+      // `featured` (default-visible in the picker) and `strongest` (the
+      // recommended default pick + "Strongest" tag) are structural flags, not
+      // display text, so they are lifted out like group/search.
+      const reserved = ["id", "label", "run", "epoch", "group", "search",
+                        "params", "featured", "strongest", "default"];
       const extras = Object.entries(c)
         .filter(([k, v]) => !reserved.includes(k) &&
                             (typeof v === "string" || typeof v === "number"))
@@ -97,6 +101,9 @@ export async function getBots() {
         label: String(c.label ?? c.id ?? c.checkpoint_id),
         group: typeof c.group === "string" ? c.group : "",
         search: typeof c.search === "string" ? c.search : "",
+        featured: !!c.featured,
+        strongest: !!c.strongest,
+        isDefault: !!c.default,
         meta: parts.length ? parts.join(" · ") : (c.run ? String(c.run) : ""),
       };
     });

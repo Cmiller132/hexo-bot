@@ -6,7 +6,7 @@
 <title>shrimp &mdash; instrument</title>
 <!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
      in app.js whenever the bundle changes incompatibly -->
-<link rel="stylesheet" href="./style.css?v=7">
+<link rel="stylesheet" href="./style.css?v=8">
 </head>
 <body>
 
@@ -61,6 +61,7 @@
       <div class="sec">
         <h2 class="k">Checkpoint</h2>
         <div id="ckptList" role="radiogroup" aria-label="Checkpoint"></div>
+        <label class="show-all"><input type="checkbox" id="showAllCkpt"> show all checkpoints</label>
         <h2 class="k gap">Strength</h2>
         <div class="seg" id="simSeg" role="radiogroup" aria-label="Simulations"></div>
         <h2 class="k gap">Play as</h2>
@@ -122,6 +123,7 @@
       <div class="sec">
         <h2 class="k">Checkpoint</h2>
         <div id="anaCkptList" role="radiogroup" aria-label="Analysis checkpoint"></div>
+        <label class="show-all"><input type="checkbox" id="showAllAnaCkpt"> show all checkpoints</label>
       </div>
 
       <div class="sec">
@@ -169,6 +171,6 @@
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=7"></script>
+<script type="module" src="./app.js?v=8"></script>
 </body>
 </html>

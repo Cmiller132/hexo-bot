@@ -8,7 +8,7 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=7";
+import * as api from "./api.js?v=8";
 import { createBoard, findWin, key } from "./board.js?v=6";
 
 "use strict";
@@ -390,35 +390,52 @@ function groupedCheckpoints() {
   return order.map(name => ({ name, items: byName.get(name) }));
 }
 
-/* The default pick (and the "latest" tag): the last entry of the FIRST group,
- * i.e. the newest rung of the current ladder, not whatever legacy entry
- * happens to close the catalogue. */
+/* The "latest" tag: the last entry of the FIRST group, i.e. the newest rung of
+ * the current ladder, not whatever legacy entry happens to close the
+ * catalogue. */
 function latestCheckpoint(groups) {
   const items = groups.length ? groups[0].items : [];
   return items[items.length - 1] || null;
 }
 
+/* The default pick: the checkpoint flagged `default` in the catalogue, else the
+ * first `strongest` one, else the newest ladder rung. */
+function defaultCheckpoint() {
+  return (botsNorm.checkpoints.find(c => c.isDefault)
+    || botsNorm.checkpoints.find(c => c.strongest)
+    || latestCheckpoint(groupedCheckpoints()) || null);
+}
+
+/* When "show all" is off, the picker lists only `featured` checkpoints (plus
+ * the current selection, so it is never hidden); the rest wait behind the
+ * toggle to keep the default view uncluttered. */
+let showAllCkpts = false;
+
 /* Grouped checkpoint list, shared by the play picker and the analysis
- * selector: group headers, "latest" tag on the newest current-ladder rung,
- * PUCT tag on legacy-search entries. */
-function buildCkptList(list, selectedId) {
+ * selector: group headers, "Strongest" tag on the recommended default,
+ * "latest" tag on the newest current-ladder rung, PUCT tag on legacy-search
+ * entries. `showAll` reveals the non-featured rungs. */
+function buildCkptList(list, selectedId, showAll) {
   list.textContent = "";
   const groups = groupedCheckpoints();
   const latest = latestCheckpoint(groups);
   for (const g of groups) {
+    const items = g.items.filter(c => showAll || c.featured || c.id === selectedId);
+    if (!items.length) continue;
     if (g.name) {
       const h = document.createElement("div");
       h.className = "bot-group";
       h.textContent = g.name;
       list.appendChild(h);
     }
-    for (const c of g.items) {
+    for (const c of items) {
       const b = document.createElement("button");
       b.className = "bot" + (c.id === selectedId ? " sel" : "");
       b.dataset.ckpt = c.id;
       b.setAttribute("role", "radio");
       b.setAttribute("aria-checked", c.id === selectedId);
       const tags = [];
+      if (c.strongest) tags.push('<span class="tag strong">Strongest</span>');
       if (latest && c.id === latest.id) tags.push('<span class="tag">latest</span>');
       if (c.search === "puct") tags.push('<span class="tag puct">PUCT search</span>');
       const meta = [c.meta, ...tags].filter(Boolean).join(" · ");
@@ -430,8 +447,17 @@ function buildCkptList(list, selectedId) {
   }
 }
 
+/* Re-render both checkpoint lists after the shared "show all" toggle flips. */
+function renderCkptLists() {
+  const play = $("showAllCkpt"); if (play) play.checked = showAllCkpts;
+  const ana = $("showAllAnaCkpt"); if (ana) ana.checked = showAllCkpts;
+  if ($("ckptList") && botsNorm) buildCkptList($("ckptList"), sel.ckpt, showAllCkpts);
+  renderAnaCkpts();
+}
+
 function renderPickers() {
-  buildCkptList($("ckptList"), sel.ckpt);
+  const chk = $("showAllCkpt"); if (chk) chk.checked = showAllCkpts;
+  buildCkptList($("ckptList"), sel.ckpt, showAllCkpts);
   const seg = $("simSeg");
   seg.textContent = "";
   for (const s of botsNorm.sims) {
@@ -457,6 +483,13 @@ $("ckptList").addEventListener("click", e => {
     x.setAttribute("aria-checked", on);
   });
 });
+for (const id of ["showAllCkpt", "showAllAnaCkpt"]) {
+  const el = $(id);
+  if (el) el.addEventListener("change", e => {
+    showAllCkpts = e.target.checked;
+    renderCkptLists();
+  });
+}
 $("simSeg").addEventListener("click", e => {
   const b = e.target.closest("button");
   if (!b) return;
@@ -492,9 +525,9 @@ async function loadBots() {
       await sleep(4000);
     }
   }
-  const last = latestCheckpoint(groupedCheckpoints());
-  sel.ckpt = last ? last.id : null;
-  sel.ckptLabel = last ? last.label : "";
+  const def = defaultCheckpoint();
+  sel.ckpt = def ? def.id : null;
+  sel.ckptLabel = def ? def.label : "";
   sel.sims = botsNorm.sims[botsNorm.sims.length - 1] || 0;
   renderPickers();
   setStatus("pick an opponent · new game", "over");
@@ -776,7 +809,8 @@ function updateAnaFine() {
 function renderAnaCkpts() {
   const list = $("anaCkptList");
   if (!list || !botsNorm) return; // cached pre-selector index.html
-  buildCkptList(list, ana.ckpt);
+  const chk = $("showAllAnaCkpt"); if (chk) chk.checked = showAllCkpts;
+  buildCkptList(list, ana.ckpt, showAllCkpts);
 }
 
 /* Switch the analyzing net: drop all per-net state, then refetch the summary
