@@ -19,6 +19,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .jsonsafe import sanitize_json
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS bots (
   id          INTEGER PRIMARY KEY,
@@ -90,8 +92,16 @@ ORDER BY b.visits DESC, g.ply_count ASC;
 
 
 def encode_payload(payload: dict[str, Any]) -> bytes:
-    """Analysis payload dict -> gzip(JSON) blob for `analysis_cache.payload`."""
-    return gzip.compress(json.dumps(payload, separators=(",", ":")).encode())
+    """Analysis payload dict -> gzip(JSON) blob for `analysis_cache.payload`.
+
+    Non-finite floats are scrubbed to null before serialization (the payload
+    builders already do this; belt-and-suspenders here), and `allow_nan=False`
+    makes any future leak loud at write time — a bare `NaN` literal persisted
+    into this blob would otherwise 500 every subsequent read of the row.
+    """
+    return gzip.compress(
+        json.dumps(sanitize_json(payload), separators=(",", ":"), allow_nan=False).encode()
+    )
 
 
 def decode_payload(blob: bytes) -> dict[str, Any]:

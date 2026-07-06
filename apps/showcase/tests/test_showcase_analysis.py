@@ -4,6 +4,9 @@ the per-checkpoint analysis selector (?checkpoint_id=)."""
 
 from __future__ import annotations
 
+import gzip
+import json
+
 import pytest
 
 from showcase.db import encode_payload
@@ -356,3 +359,130 @@ def test_selector_covers_games_vs_retired_checkpoints(client):
     )
     assert summary.status_code == 200, summary.text
     assert summary.json()["checkpoint_id"] == "tiny"
+
+
+# ---------------------------------------------------------------------------
+# non-finite float hygiene (NaN in a payload used to 500, permanently once
+# a NaN literal landed in analysis_cache)
+# ---------------------------------------------------------------------------
+
+
+def _pre_fix_blob(payload: dict) -> bytes:
+    """A cache blob as the pre-fix encoder wrote it: json.dumps(allow_nan=True)
+    persisted bare `NaN` literals into the gzip payload."""
+    return gzip.compress(json.dumps(payload, separators=(",", ":")).encode())
+
+
+def test_version_bump_purges_nan_poisoned_summary_row(client, archived_six_game):
+    """The production incident: a v2 summary row with NaN in the value series
+    made every /summary read 500 (Starlette encodes with allow_nan=False).
+    The v3 stamp treats that row as a miss, recomputes, and overwrites it."""
+    game_id = archived_six_game["id"]
+    ply_count = archived_six_game["ply_count"]
+    db = client.app.state.db
+    bot_db_id = db.get_game(game_id)["bot_id"]
+    db.analysis_put(game_id, -1, bot_db_id, _pre_fix_blob({
+        "v": 2,
+        "value": [float("nan")] + [0.0] * ply_count,
+        "stv": [0.0] * (ply_count + 1),
+        "moves_left": [1.0] * (ply_count + 1),
+        "to_move": [0] * ply_count + [None],
+        "ply_count": ply_count,
+    }))
+    resp = client.get(f"/api/game/{game_id}/summary", headers=fresh_ip())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["cached"] is False  # the poisoned v2 row was a version miss
+    assert all(v is None or -1.0 <= v <= 1.0 for v in body["value"])
+    # The recomputed row serves cleanly from then on.
+    again = client.get(f"/api/game/{game_id}/summary", headers=fresh_ip())
+    assert again.status_code == 200
+    assert again.json()["cached"] is True
+
+
+def test_fresh_non_finite_summary_serves_and_caches_as_null(client, archived_six_game, monkeypatch):
+    """A worker payload carrying NaN/Inf must reach the client as JSON null
+    (200), and the cache row must be written clean. Workers are spawned
+    processes, so the forgery happens at the web-side pool boundary."""
+    game_id = archived_six_game["id"]
+    ply_count = archived_six_game["ply_count"]
+    db = client.app.state.db
+    bot_db_id = db.get_game(game_id)["bot_id"]
+    # Force a miss: stamp the existing summary row with a stale version.
+    db.analysis_put(game_id, -1, bot_db_id, encode_payload({"v": 0}))
+
+    async def forged_summary(**kwargs):
+        return {
+            "value": [float("nan")] + [0.5] * ply_count,
+            "stv": [float("inf")] + [0.0] * ply_count,
+            "moves_left": [float("-inf")] + [1.0] * ply_count,
+            "to_move": [0] * ply_count + [None],
+            "ply_count": ply_count,
+        }
+
+    monkeypatch.setattr(client.app.state.pool, "summary", forged_summary)
+    resp = client.get(f"/api/game/{game_id}/summary", headers=fresh_ip())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["cached"] is False
+    assert body["value"][0] is None and body["value"][1] == 0.5
+    assert body["stv"][0] is None
+    assert body["moves_left"][0] is None
+    # The cached artifact is the sanitized payload (no pool call: monkeypatch
+    # is still active, a recompute would return non-finite floats again).
+    again = client.get(f"/api/game/{game_id}/summary", headers=fresh_ip())
+    assert again.status_code == 200
+    body = again.json()
+    assert body["cached"] is True
+    assert body["value"][0] is None and body["stv"][0] is None
+
+
+def test_net_eval_scrubs_non_finite_readouts(monkeypatch):
+    """Forged non-finite value/stv/moves_left decodes come out as None and the
+    payload survives a strict (allow_nan=False) encode — the response contract."""
+    import torch
+
+    import hexo_engine as engine
+    from hexo_engine.types import AxialCoord, PlacementAction
+    from shrimp.model import ShrimpNet
+
+    from showcase import analysis
+
+    monkeypatch.setattr(
+        analysis, "decode_binned_value",
+        lambda logits: torch.full((logits.shape[0],), float("nan")),
+    )
+    monkeypatch.setattr(
+        analysis, "decode_moves_left",
+        lambda logits: torch.full((logits.shape[0],), float("inf")),
+    )
+    model = ShrimpNet().eval()
+    state = engine.new_game()
+    engine.apply_action(state, PlacementAction(AxialCoord(q=0, r=0)))
+    payload = analysis.net_eval(model, state, policy_floor=1e-4)
+    assert payload["value"] is None
+    assert payload["stv"] is None
+    assert payload["moves_left"] is None
+    assert payload["policy"]  # the (real) policy softmax is untouched
+    json.dumps(payload, allow_nan=False)  # must not raise
+
+
+def test_summary_eval_scrubs_non_finite_series(monkeypatch):
+    import torch
+
+    import hexo_engine as engine
+    from shrimp.model import ShrimpNet
+
+    from showcase import analysis
+
+    monkeypatch.setattr(
+        analysis, "decode_binned_value",
+        lambda logits: torch.full((logits.shape[0],), float("-inf")),
+    )
+    monkeypatch.setattr(
+        analysis, "decode_moves_left",
+        lambda logits: torch.full((logits.shape[0],), float("nan")),
+    )
+    model = ShrimpNet().eval()
+    out = analysis.summary_eval(model, [analysis.featurize(engine.new_game())])
+    assert out == {"value": [None], "stv": [None], "moves_left": [None]}

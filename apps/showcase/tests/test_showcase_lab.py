@@ -461,3 +461,30 @@ def test_lab_disabled_flag(client, settings):
     finally:
         object.__setattr__(settings, "lab_enabled", True)
     lab_eval(client, {"checkpoint_id": "tiny", "actions": []})
+
+
+def test_lab_eval_payload_scrubs_non_finite(monkeypatch):
+    """Forged non-finite decodes become None in the lab payload, which then
+    survives a strict (allow_nan=False) encode — lab responses ride the same
+    NaN-intolerant response path as analysis."""
+    import json
+
+    import torch
+    from shrimp.model import ShrimpNet
+
+    from showcase import lab
+
+    monkeypatch.setattr(
+        lab, "decode_binned_value",
+        lambda logits: torch.full((logits.shape[0],), float("nan")),
+    )
+    facts, support, feats = lab.build_sequence_position([(0, 0)])
+    payload = lab.eval_payload(
+        ShrimpNet().eval(), facts, support, feats,
+        policy_floor=1e-4, attention_cell=None,
+        want_activations=True, want_features=False,
+    )
+    assert payload["value"] is None
+    assert all(v is None for v in payload["stv"].values())
+    assert payload["moves_left"] is not None  # untouched head still decodes
+    json.dumps(payload, allow_nan=False)  # must not raise

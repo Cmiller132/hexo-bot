@@ -52,6 +52,8 @@ from shrimp.losses import decode_binned_value, decode_moves_left
 from shrimp.model import STV_HORIZONS
 from shrimp.support import build_support
 
+from .jsonsafe import sanitize_json
+
 # Sparse-attention floor: cells attended below this weight are dropped from
 # the payload (the token row is always dense — 8 floats).
 ATTN_FLOOR = 1e-3
@@ -364,7 +366,9 @@ def eval_payload(
                 for f in range(NUM_FEATURES)
             ],
         }
-    return payload
+    # Non-finite floats (readouts, value_dist, norms, attention weights) ->
+    # JSON null; a raw NaN would 500 at the response encoder.
+    return sanitize_json(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -406,9 +410,10 @@ def search_payload(
     ]
     visit_policy.sort(key=lambda row: (-row["p"], row["q"], row["r"]))
     best_q, best_r = unpack_action_id(int(result["action_id"]))
-    return {
+    # NaN/Inf -> null, per the eval_payload contract note.
+    return sanitize_json({
         "visits": int(result["visits"]),
         "root_value": round(float(result["root_value"]), ROUND_P),
         "best": {"q": best_q, "r": best_r},
         "visit_policy": visit_policy,
-    }
+    })

@@ -507,6 +507,7 @@ const ana = {
   termination: null, winner: null, winLine: null,
   cache: new Map(), pending: new Map(), rlUntil: 0,
   summary: null, summaryState: "idle", // idle | loading | done | missing
+  summaryTimer: null, summaryTries: 0,
   opa: 0.85, autoTimer: null,
   // ckpt: catalogue checkpoint analyzing this game; defaultCkpt: the game's
   // own bot. Equal (or null ckpt) means the server default — the param is
@@ -634,7 +635,7 @@ function normalizeSummary(raw, n) {
   const off = values.length === n + 1 ? 0 : -1;
   const at = (arr, p) => {
     const v = arr ? arr[p + off] : undefined;
-    return typeof v === "number" && !Number.isNaN(v) ? v : null;
+    return Number.isFinite(v) ? v : null; // null/NaN/±Inf -> "no data"
   };
   return {
     value: p => at(values, p),
@@ -644,8 +645,22 @@ function normalizeSummary(raw, n) {
   };
 }
 
+/* Bounded summary retry: transient failures (5xx / network / 429, after
+ * api.js's own short GET retries) reschedule loadSummary with exponential
+ * backoff, then give up. Permanent answers (404: endpoint missing; 409: the
+ * game's own net left the catalogue) never retry. */
+const SUMMARY_RETRY_MAX = 4;
+const summaryRetryDelay = tries => 3000 * 2 ** tries; // 3s, 6s, 12s, 24s
+
+function cancelSummaryRetry() {
+  if (ana.summaryTimer) clearTimeout(ana.summaryTimer);
+  ana.summaryTimer = null;
+  ana.summaryTries = 0;
+}
+
 async function loadSummary() {
   if (!ana.id || ana.summaryState === "loading" || ana.summaryState === "done") return;
+  if (ana.summaryTimer) { clearTimeout(ana.summaryTimer); ana.summaryTimer = null; }
   ana.summaryState = "loading";
   chartNote.hidden = false;
   chartNote.textContent = "loading value trace…";
@@ -653,6 +668,7 @@ async function loadSummary() {
   try {
     const raw = await api.getSummary(id, anaCkptParam());
     if (ana.id !== id || ana.ckpt !== ck) return;
+    ana.summaryTries = 0;
     ana.summary = normalizeSummary(raw, ana.n);
     ana.summaryState = ana.summary ? "done" : "missing";
     if (ana.summary) {
@@ -676,11 +692,27 @@ async function loadSummary() {
     }
   } catch (e) {
     if (ana.id !== id || ana.ckpt !== ck) return;
-    ana.summaryState = e.status === 404 ? "missing" : "idle"; // idle: retry later
     chartNote.hidden = false;
-    chartNote.textContent = e.status === 404
-      ? "per-ply summary not available on this server build"
-      : "value trace unavailable — will retry";
+    if (e.status === 404) {
+      ana.summaryState = "missing";
+      chartNote.textContent = "per-ply summary not available on this server build";
+    } else if (e.status === 409) {
+      // this game's own net can't analyze it (left the catalogue) — only a
+      // different checkpoint pick can change the answer, so don't retry
+      ana.summaryState = "missing";
+      chartNote.textContent = "no value trace under this game's own net — pick a checkpoint above";
+    } else if (ana.summaryTries < SUMMARY_RETRY_MAX) {
+      ana.summaryState = "idle";
+      chartNote.textContent = "value trace unavailable — retrying…";
+      const delay = summaryRetryDelay(ana.summaryTries++);
+      ana.summaryTimer = setTimeout(() => {
+        ana.summaryTimer = null;
+        if (ana.id === id && ana.ckpt === ck && ana.summaryState === "idle") loadSummary();
+      }, delay);
+    } else {
+      ana.summaryState = "idle"; // a net switch or reopen retries afresh
+      chartNote.textContent = "value trace unavailable";
+    }
   }
 }
 
@@ -703,6 +735,10 @@ function ensureAnalysis(p) {
       if (e.status === 429) {
         ana.rlUntil = Date.now() + 15000;
         toast("analysis rate-limited — overlay paused briefly");
+      } else if (e.status === 503) {
+        // bot pool busy/timed out: brief pause so scrub/autoplay doesn't hammer
+        ana.rlUntil = Date.now() + 5000;
+        toast("analysis backend busy — retrying shortly");
       }
       return null;
     });
@@ -758,6 +794,7 @@ function setAnalysisCkpt(id) {
   ana.pending = new Map();
   ana.rlUntil = 0;
   ana.summary = null;
+  cancelSummaryRetry();
   ana.summaryState = "idle";
   chart.setData(null);
   updateAnaFine();
@@ -949,13 +986,23 @@ function openAnalysis(rec) {
   ana.pending = new Map();
   ana.rlUntil = 0;
   ana.summary = null;
+  cancelSummaryRetry();
   ana.summaryState = "idle";
   ana.botLabel = rec.label || "";
-  // selector default = the game's own bot; a game against a checkpoint no
-  // longer in the catalogue starts with nothing selected (server default)
+  // selector default = the game's own bot. When that checkpoint has left the
+  // catalogue the server default 409s, so start on the newest catalogue net
+  // instead (the server lets any current checkpoint analyze a retired-bot
+  // game). Without bot info or a loaded catalogue, leave the server default.
   ana.defaultCkpt = rec.ckpt || null;
-  ana.ckpt = rec.ckpt && botsNorm &&
-    botsNorm.checkpoints.some(c => c.id === rec.ckpt) ? rec.ckpt : null;
+  ana.ckpt = null;
+  if (rec.ckpt && botsNorm) {
+    if (botsNorm.checkpoints.some(c => c.id === rec.ckpt)) {
+      ana.ckpt = rec.ckpt;
+    } else {
+      const latest = latestCheckpoint(groupedCheckpoints());
+      ana.ckpt = latest ? latest.id : null;
+    }
+  }
   renderAnaCkpts();
   plyRange.max = Math.max(1, ana.n);
   plyMax.textContent = ana.n;

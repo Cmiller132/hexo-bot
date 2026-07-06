@@ -27,6 +27,8 @@ from shrimp.geometry import unpack_action_id
 from shrimp.losses import decode_binned_value, decode_moves_left
 from shrimp.support import build_support
 
+from .jsonsafe import sanitize_json
+
 TOP_K = 5
 
 # The "short-term value" head served as `stv`: the shortest trained horizon
@@ -99,14 +101,17 @@ def net_eval(model: Any, state: Any, *, policy_floor: float) -> dict[str, Any]:
             for (q, r), p in zip(coords.tolist(), priors.tolist())
         ]
         rows.sort(key=lambda row: row["p"], reverse=True)
-    return {
+    # sanitize_json: non-finite readouts (a degenerate position or checkpoint)
+    # become JSON null — the client's "no data" contract. A raw NaN would 500
+    # at the response encoder and permanently poison the analysis cache.
+    return sanitize_json({
         "value": value,
         "stv": round(stv, 6),
         "moves_left": round(moves_left, 3),
         "legal_count": int(legal_count),
         "policy": [row for row in rows if row["p"] >= policy_floor],
         "top_k": rows[:TOP_K],
-    }
+    })
 
 
 def summary_eval(model: Any, rows: list[tuple[Any, Any]]) -> dict[str, Any]:
@@ -123,7 +128,8 @@ def summary_eval(model: Any, rows: list[tuple[Any, Any]]) -> dict[str, Any]:
         values += [round(v, 6) for v in decode_binned_value(out["value"].float()).tolist()]
         stvs += [round(v, 6) for v in decode_binned_value(out[STV_HEAD].float()).tolist()]
         moves_left += [round(v, 3) for v in decode_moves_left(out["moves_left"].float()).tolist()]
-    return {"value": values, "stv": stvs, "moves_left": moves_left}
+    # NaN/Inf entries -> null, per the net_eval contract note.
+    return sanitize_json({"value": values, "stv": stvs, "moves_left": moves_left})
 
 
 def searched_eval(
@@ -152,9 +158,10 @@ def searched_eval(
     ]
     visit_policy.sort(key=lambda row: row["p"], reverse=True)
     best_q, best_r = unpack_action_id(int(result["action_id"]))
-    return {
+    # NaN/Inf -> null, per the net_eval contract note.
+    return sanitize_json({
         "visits": int(result["visits"]),
         "root_value": round(float(result["root_value"]), 6),
         "best": {"q": best_q, "r": best_r},
         "visit_policy": visit_policy,
-    }
+    })

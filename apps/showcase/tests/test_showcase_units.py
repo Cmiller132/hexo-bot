@@ -3,6 +3,8 @@ payload codec, and the `.hxr` encode/decode helpers."""
 
 from __future__ import annotations
 
+import gzip
+
 import pytest
 
 import hexo_engine as engine
@@ -10,6 +12,7 @@ from hexo_engine.types import AxialCoord, PlacementAction, pack_coord_id, unpack
 
 from showcase.app import TokenBucket, sanitize_nickname
 from showcase.db import ShowcaseDB, decode_payload, encode_payload
+from showcase.jsonsafe import finite_or_none, sanitize_json
 from showcase.game import (
     GameSession,
     decode_hxr_actions,
@@ -69,6 +72,42 @@ def test_token_bucket_burst_then_deny():
 def test_payload_codec_roundtrip():
     payload = {"value": -0.25, "policy": [{"q": 0, "r": 0, "p": 1.0}], "ply": 3}
     assert decode_payload(encode_payload(payload)) == payload
+
+
+def test_finite_or_none():
+    assert finite_or_none(0.5) == 0.5
+    assert finite_or_none(float("nan")) is None
+    assert finite_or_none(float("inf")) is None
+    assert finite_or_none(float("-inf")) is None
+
+
+def test_sanitize_json_deep():
+    nan, inf = float("nan"), float("inf")
+    out = sanitize_json({
+        "v": nan,
+        "series": [1.0, inf, -inf, None],
+        "rows": [{"p": nan, "q": 3, "ok": True}],
+        "t": (nan, 2.5),
+        "n": 7,
+        "s": "x",
+    })
+    assert out == {
+        "v": None,
+        "series": [1.0, None, None, None],
+        "rows": [{"p": None, "q": 3, "ok": True}],
+        "t": [None, 2.5],
+        "n": 7,
+        "s": "x",
+    }
+
+
+def test_payload_codec_scrubs_non_finite():
+    """A NaN handed to the cache encoder must be persisted as null — a bare
+    `NaN` literal in the blob would 500 every subsequent read of that row
+    (Starlette encodes responses with allow_nan=False)."""
+    blob = encode_payload({"value": float("nan"), "stv": [0.1, float("inf")]})
+    assert b"NaN" not in gzip.decompress(blob)
+    assert decode_payload(blob) == {"value": None, "stv": [0.1, None]}
 
 
 def test_db_bot_upsert_identity(tmp_path):

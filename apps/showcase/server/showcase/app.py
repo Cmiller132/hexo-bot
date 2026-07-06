@@ -70,6 +70,7 @@ from .lab_rules import (
     validate_free_stones,
 )
 from .db import ShowcaseDB, decode_payload, encode_payload
+from .jsonsafe import sanitize_json
 from .game import (
     TERMINATION_RESIGN,
     TERMINATION_SIX_IN_LINE,
@@ -87,9 +88,11 @@ _NICK_STRIP = re.compile(r"[^A-Za-z0-9 _.\-]")
 _NICK_MAX = 24
 
 # Version stamp ("v") on cached analysis/summary payloads. Bump whenever the
-# payload schema gains fields: cached entries with a different (or missing)
-# stamp are treated as misses and recomputed. v2 added stv + moves_left.
-_ANALYSIS_VERSION = 2
+# payload schema changes: cached entries with a different (or missing) stamp
+# are treated as misses and recomputed. v2 added stv + moves_left; v3
+# scrubs non-finite floats to null (and thereby retires rows poisoned with
+# bare NaN literals, which 500 on every read).
+_ANALYSIS_VERSION = 3
 
 # analysis_cache "ply" slot for the whole-game summary payload (real plies are
 # always >= 0, so -1 can never collide).
@@ -572,6 +575,9 @@ def create_app(settings: Settings) -> FastAPI:
                 )
             except (BotPoolError, BotPoolTimeout) as exc:
                 raise HTTPException(503, "analysis backend unavailable") from exc
+            # Web-boundary scrub: whatever the worker sent, the fresh response
+            # and the cache row stay strictly JSON-encodable (NaN/Inf -> null).
+            fresh = sanitize_json(fresh)
             if payload is not None and "search" in fresh:
                 payload["search"] = fresh["search"]
             else:
@@ -612,6 +618,7 @@ def create_app(settings: Settings) -> FastAPI:
                 )
             except (BotPoolError, BotPoolTimeout) as exc:
                 raise HTTPException(503, "analysis backend unavailable") from exc
+            payload = sanitize_json(payload)  # web-boundary scrub (see analysis)
             _versioned_cache_put(game_id, _SUMMARY_PLY, bot_db_id, payload)
         return {"game_id": game_id, "checkpoint_id": spec.slug, "cached": cached, **payload}
 
