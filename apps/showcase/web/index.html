@@ -6,7 +6,7 @@
 <title>shrimp &mdash; instrument</title>
 <!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
      in app.js whenever the bundle changes incompatibly -->
-<link rel="stylesheet" href="./style.css?v=9">
+<link rel="stylesheet" href="./style.css?v=10">
 </head>
 <body>
 
@@ -80,6 +80,14 @@
         <div class="status over" id="playStatus">
           <span class="dot"></span>
           <span class="status-text" id="statusText">no game yet</span>
+        </div>
+        <!-- calm second line while a slow/cold bot turn runs long; app.js
+             fills it past the warm-up threshold and clears it on the move -->
+        <div class="think-note" id="thinkNote" role="status" hidden></div>
+        <!-- recoverable bot-backend failure notice + a way forward; app.js
+             unhides it on a fail-fast timeout / abandoned finish -->
+        <div class="play-alert" id="playAlert" hidden>
+          <div class="play-alert-msg" id="playAlertMsg" role="alert"></div>
         </div>
         <div class="meta-grid">
           <div class="mg-cell"><div class="n" id="plyCount">&mdash;</div><div class="l">ply</div></div>
@@ -172,6 +180,6 @@
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=10"></script>
+<script type="module" src="./app.js?v=11"></script>
 </body>
 </html>

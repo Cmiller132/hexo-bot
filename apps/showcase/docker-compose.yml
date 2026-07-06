@@ -18,6 +18,12 @@ services:
       context: ../..
       dockerfile: apps/showcase/Dockerfile
     restart: unless-stopped
+    # PID-1 reaper: Compose injects tini as PID 1 so a model worker that dies
+    # via a device-side abort (torch-xpu indexing fault) is always reaped
+    # instead of lingering as a zombie. Unreapable zombies were what wedged
+    # dockerd and cascaded to a host outage during crash reproduction; tini
+    # makes that failure mode structurally impossible. See docs/ROBUSTNESS_OPS.md.
+    init: true
     environment:
       # --- storage / catalogue (names from server/showcase/config.py) ------
       SHOWCASE_DB_PATH: /data/showcase.db
@@ -54,6 +60,12 @@ services:
       - no-new-privileges:true
     cpus: 7
     mem_limit: 6g
+    # Opt this container in to the autoheal sidecar below. Plain Docker never
+    # restarts an "unhealthy" container on its own — the HEALTHCHECK in the
+    # Dockerfile only flips the status. This label tells autoheal to restart
+    # the app if /healthz stops answering (uvicorn web process dead/hung).
+    labels:
+      autoheal: "true"
     # GPU (Intel XPU) deployment: do NOT uncomment here — layer the override
     # file instead, which swaps in Dockerfile.xpu and adds the device
     # passthrough + render-group gid (kept out of this file so the CPU
@@ -73,6 +85,26 @@ services:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:?put TUNNEL_TOKEN in apps/showcase/.env}
     depends_on:
       - app
+
+  # Auto-recovery: watches Docker healthchecks and restarts any container
+  # labelled `autoheal=true` when it goes "unhealthy". Standard, single-purpose
+  # image (~a few MB, no torch/GPU). It needs the Docker socket to issue the
+  # restart — mounted read-only; it only calls the restart endpoint. This is a
+  # separate safety net from the app-level worker recycle: the worker recycle
+  # heals a wedged *inference worker* while uvicorn stays up; autoheal heals the
+  # case where the *web process itself* dies or stops answering /healthz.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    restart: unless-stopped
+    environment:
+      # Only touch containers we explicitly opted in (the app), never the whole
+      # host. AUTOHEAL_START_PERIOD gives a fresh container time to boot (XPU
+      # startup does a CPU-vs-XPU parity self-check) before it's eligible.
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "15"
+      AUTOHEAL_START_PERIOD: "120"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
 volumes:
   showcase-db:

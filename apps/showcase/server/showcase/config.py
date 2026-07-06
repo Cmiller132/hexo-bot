@@ -86,6 +86,22 @@ class Settings:
     # Startup CPU-vs-device parity self-check (None -> on when the resolved
     # device is not cpu). See showcase.device.verify_device.
     device_selfcheck: bool | None = None
+    # GPU->CPU runtime failover (see BotPool._recycle_worker). When an
+    # accelerator shard faults with a device-wedge signature (or hangs) this
+    # many times inside `recycle_window_s`, the pool respawns that shard forced
+    # onto CPU instead of the accelerator: slower but reliable moves beat a
+    # dead shard. A CPU shard is never downgraded further (the XPU kernel bug
+    # cannot fire there). Default 2 means "one retry on the GPU, then fail over".
+    gpu_fault_threshold: int = 2
+    # Optional re-promotion: after a shard has been forced to CPU, the pool may
+    # periodically re-probe the accelerator in a short-lived throwaway
+    # subprocess (so a probe can never wedge a serving worker) and, once the GPU
+    # looks healthy again, recycle the shard back onto it. `gpu_reprobe_s` is the
+    # min seconds between probes (0 disables re-promotion) and
+    # `gpu_reprobe_healthy_streak` is how many consecutive healthy probes are
+    # required before promoting, to guard against a flapping backend.
+    gpu_reprobe_s: float = 120.0
+    gpu_reprobe_healthy_streak: int = 2
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -120,6 +136,11 @@ class Settings:
             move_timeout_s=_env_float("SHOWCASE_MOVE_TIMEOUT", 60.0),
             max_recycles_per_window=_env_int("SHOWCASE_MAX_RECYCLES_PER_WINDOW", 3),
             recycle_window_s=_env_float("SHOWCASE_RECYCLE_WINDOW_S", 300.0),
+            gpu_fault_threshold=_env_int("SHOWCASE_GPU_FAULT_THRESHOLD", 2),
+            gpu_reprobe_s=_env_float("SHOWCASE_GPU_REPROBE_S", 120.0),
+            gpu_reprobe_healthy_streak=_env_int(
+                "SHOWCASE_GPU_REPROBE_HEALTHY_STREAK", 2
+            ),
             finished_ttl_s=_env_float("SHOWCASE_FINISHED_TTL_S", 6 * 3600.0),
             sweep_interval_s=_env_float("SHOWCASE_SWEEP_INTERVAL_S", 15.0),
             analysis_search_visit_cap=_env_int("SHOWCASE_ANALYSIS_VISIT_CAP", 64),

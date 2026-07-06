@@ -243,7 +243,33 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 .status-text{font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase}
 .status.think .status-text{color:var(--p1-soft)}
 .status.over .status-text{color:var(--muted)}
+/* bot-backend hiccup (abandoned finish): warmer than plain "over" so a
+   not-your-fault failure reads as a notice, not a dead end */
+.status.warn .dot{background:var(--p1)}
+.status.warn .status-text{color:var(--p1-soft)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
+
+/* "warming up" note: a calm second line under the status while a slow/cold
+   bot turn runs long. Shown only past the threshold; removed as the move
+   lands. Muted so it reads as reassurance, not an error. */
+.think-note{
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;
+  color:var(--dim);
+  margin-top:8px;min-height:14px;
+}
+.think-note[hidden]{display:none}
+
+/* recoverable bot-failure notice: an inline line + action, styled off the
+   toast palette so a fail-fast timeout reads as a friendly heads-up with a
+   way forward rather than a raw error. */
+.play-alert{
+  margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft);
+}
+.play-alert[hidden]{display:none}
+.play-alert-msg{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;line-height:1.5;
+  color:var(--p1-soft);
+}
 .meta-grid{
   display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;
   margin-top:14px;padding-top:12px;border-top:1px solid var(--line-soft);
@@ -457,6 +483,15 @@ main{max-width:1120px;margin:0 auto;padding:28px}
   border-bottom:1px solid #5c2f2c;
   padding:5px 0;
   z-index:50;
+}
+
+/* ---------- reduced motion ---------- */
+/* honor the OS setting: the thinking-dot pulse and toast slide are decorative.
+   Stilling them (rather than removing feedback) keeps the status legible for
+   users who ask for less motion. */
+@media (prefers-reduced-motion:reduce){
+  .status.think .dot{animation:none}
+  .toast{animation:none}
 }
 
 /* ---------- responsive ---------- */

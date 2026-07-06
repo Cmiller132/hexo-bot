@@ -354,7 +354,10 @@ class _WorkerRuntime:
     evaluator for every batch).
     """
 
-    def __init__(self, specs: list[CheckpointSpec], settings: Settings) -> None:
+    def __init__(
+        self, specs: list[CheckpointSpec], settings: Settings,
+        *, device_override: str | None = None,
+    ) -> None:
         import torch
 
         threads = settings.torch_threads or max(
@@ -367,10 +370,23 @@ class _WorkerRuntime:
 
         from . import device as devmod
 
-        resolved = devmod.resolve_device(settings.device)
-        device = resolved.device
-        for note in resolved.notes:
-            log.warning("%s", note)
+        # `device_override` is set when the pool forces a specific serving device
+        # on a (re)spawn — the GPU->CPU failover path passes "cpu" after this
+        # shard's accelerator wedged. An override of "cpu" skips accelerator
+        # resolution and the parity self-check entirely (there is nothing to
+        # verify and no fallback to take); a `None` override is the happy path
+        # that resolves SHOWCASE_DEVICE as before.
+        if device_override:
+            device = device_override
+            log.warning(
+                "worker device forced to %r by pool (accelerator failover)",
+                device_override,
+            )
+        else:
+            resolved = devmod.resolve_device(settings.device)
+            device = resolved.device
+            for note in resolved.notes:
+                log.warning("%s", note)
 
         self.policy_floor = settings.policy_floor
         # One parse per unique profile toml; the settings.search_config
@@ -601,13 +617,17 @@ class _WorkerRuntime:
 
 def _worker_main(
     worker_index: int, specs: list[CheckpointSpec], settings: Settings,
-    job_queue: Any, result_queue: Any,
+    job_queue: Any, result_queue: Any, device_override: str | None = None,
 ) -> None:
     """Worker process entry point: load the catalogue, then serve jobs forever.
 
     Jobs are `(job_id, kind, kwargs)`; replies are `(job_id, payload)` where
     payload is `{"ok": ...}` or `{"error": traceback}`. Discard jobs carry
     `job_id=None` and get no reply. `None` on the job queue shuts down.
+
+    `device_override` forces the serving device (the pool passes "cpu" when
+    respawning a shard whose accelerator wedged); `None` resolves
+    SHOWCASE_DEVICE normally.
     """
     # Fresh spawned process: give it a stderr log handler so the one-time
     # device-resolution/self-check lines land in `docker compose logs`.
@@ -616,7 +636,7 @@ def _worker_main(
         format=f"%(asctime)s worker-{worker_index} %(name)s %(levelname)s %(message)s",
     )
     try:
-        runtime = _WorkerRuntime(specs, settings)
+        runtime = _WorkerRuntime(specs, settings, device_override=device_override)
     except Exception:
         result_queue.put((_READY, worker_index, traceback.format_exc()))
         return
@@ -646,6 +666,40 @@ def _worker_main(
             result_queue.put((job_id, {"error": traceback.format_exc()}))
         else:
             result_queue.put((job_id, {"ok": out}))
+
+
+def _gpu_probe_main(
+    spec: CheckpointSpec, settings: Settings, requested_device: str, out_queue: Any,
+) -> None:
+    """Throwaway GPU health probe: resolve the requested accelerator, load ONE
+    checkpoint, run the CPU-vs-device parity self-check, and report the result.
+
+    Runs in its own short-lived subprocess so that if the probe itself wedges
+    the corrupted SYCL/CUDA queue dies with this process — it can never poison a
+    serving worker. Posts ``(True, note)`` when the accelerator resolved and the
+    parity self-check passed, else ``(False, reason)``. Any exception is caught
+    and reported as unhealthy; a hard hang is handled by the parent timing the
+    process out and killing it.
+    """
+    try:
+        from . import device as devmod
+
+        resolved = devmod.resolve_device(requested_device)
+        if resolved.device == "cpu":
+            # The accelerator the shard failed over from is no longer even
+            # resolvable (driver gone, etc.) — definitively not healthy.
+            out_queue.put((False, f"accelerator unavailable: {resolved.notes}"))
+            return
+        model = _load_checkpoint(spec.checkpoint)
+        check = devmod.verify_device(model, resolved.device)
+        if check.ok:
+            out_queue.put((True, f"parity ok on {resolved.device}"))
+        else:
+            out_queue.put(
+                (False, f"parity failed on {resolved.device}: {check.error or 'mismatch'}")
+            )
+    except Exception:  # pragma: no cover - reported as unhealthy
+        out_queue.put((False, traceback.format_exc()))
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +741,27 @@ class BotPool:
         # genuinely poisonous game (see _note_recycle).
         self._recycle_times: list[list[float]] = []
         self._poisoned: list[bool] = []
+        # Per-shard runtime serving device. `None` means "use the resolved
+        # SHOWCASE_DEVICE" (the happy path — the worker resolves it itself);
+        # a string (e.g. "cpu") is a forced override threaded into the next
+        # (re)spawn. On the GPU->CPU failover this flips to "cpu" for the shard.
+        self._worker_devices: list[str | None] = []
+        # Rolling-window accelerator-fault timestamps per shard, used to decide
+        # when a wedging accelerator shard should fail over to CPU instead of
+        # respawning on the accelerator again (see _note_gpu_fault).
+        self._gpu_fault_times: list[list[float]] = []
+        # Re-promotion (GPU health) state, only touched on the loop thread. The
+        # probe tests the shared accelerator, so the healthy-probe streak is
+        # pool-wide, not per-shard. A background reprobe task promotes a
+        # CPU-downgraded shard back once the streak clears the configured
+        # threshold.
+        self._reprobe_streak = 0
+        self._reprobe_task: asyncio.Task | None = None
+        # The accelerator device the pool would serve on absent any failover,
+        # resolved once web-side so the reprobe subprocess and downgrade logic
+        # know what "the GPU" is. `None` == "cpu was requested / resolved", so
+        # there is no accelerator to fail over from or re-promote to.
+        self._accel_device: str | None = None
         # worker index -> future awaiting that worker's READY sentinel. The
         # reader thread delivers READY messages here so both startup and recycle
         # can wait for a (re)spawned worker to finish loading the catalogue. A
@@ -697,14 +772,33 @@ class BotPool:
         self._stopping = False
 
     def _spawn_proc(self, index: int, queue: Any) -> Any:
+        # Thread the shard's current device override (None == resolve
+        # SHOWCASE_DEVICE) so a failover respawn comes up forced on CPU.
+        override = self._worker_devices[index] if self._worker_devices else None
         proc = self._ctx.Process(
             target=_worker_main,
-            args=(index, self._specs, self._settings, queue, self._result_queue),
+            args=(
+                index, self._specs, self._settings, queue, self._result_queue,
+                override,
+            ),
             daemon=True,
             name=f"showcase-bot-{index}",
         )
         proc.start()
         return proc
+
+    def _resolve_accel_device(self) -> str | None:
+        """The accelerator this deploy would serve on, or None when cpu.
+
+        Derived from the SHOWCASE_DEVICE *request string* only (no torch import
+        web-side, preserving the module's no-model-stack guarantee): "cpu" ->
+        None; "auto"/"xpu"/"cuda" -> that request, which the worker/probe
+        subprocess resolves for real (an accelerator request that no hardware
+        can satisfy simply falls back to cpu inside the worker, and the reprobe
+        subprocess reports unhealthy, so no shard is ever wrongly promoted).
+        """
+        req = (self._settings.device or "auto").strip().lower()
+        return None if req == "cpu" else req
 
     async def _await_ready(self, index: int) -> None:
         """Block until worker `index` posts its READY sentinel (delivered by the
@@ -731,18 +825,39 @@ class BotPool:
             target=self._reader_loop, name="showcase-pool-reader", daemon=True
         )
         self._reader.start()
+        # Resolve what "the accelerator" is for this deploy (web-side, cheap —
+        # no torch model is touched). When SHOWCASE_DEVICE resolves to cpu there
+        # is no accelerator to fail over from, so failover/re-promotion are inert.
+        self._accel_device = self._resolve_accel_device()
         for index in range(self._settings.workers):
             queue = self._ctx.Queue()
             self._job_queues.append(queue)
-            self._procs.append(self._spawn_proc(index, queue))
             self._recycle_locks.append(asyncio.Lock())
             self._recycle_times.append([])
             self._poisoned.append(False)
+            # Start every shard on the resolved device (override None) — a
+            # forced "cpu" is only set later, on failover.
+            self._worker_devices.append(None)
+            self._gpu_fault_times.append([])
+            # _spawn_proc reads _worker_devices[index], so append it first.
+            self._procs.append(self._spawn_proc(index, queue))
         for index in range(self._settings.workers):
             await self._await_ready(index)
+        # Background GPU re-promotion loop (no-op unless an accelerator is in
+        # use and re-promotion is enabled). Started after workers are ready so
+        # it never races startup.
+        if self._accel_device is not None and self._settings.gpu_reprobe_s > 0:
+            self._reprobe_task = asyncio.ensure_future(self._reprobe_loop())
 
     async def stop(self) -> None:
         self._stopping = True
+        if self._reprobe_task is not None:
+            self._reprobe_task.cancel()
+            try:
+                await self._reprobe_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._reprobe_task = None
         for queue in self._job_queues:
             queue.put(None)
         self._result_queue.put(None)
@@ -792,6 +907,17 @@ class BotPool:
     def _route(self, key: int) -> int:
         return int(key) % len(self._job_queues)
 
+    def _note_gpu_fault(self, worker: int) -> int:
+        """Record an accelerator fault for `worker` and return the count within
+        the rolling window. Used to decide when to fail the shard over to CPU
+        (loop thread only)."""
+        now = time.monotonic()
+        window = self._settings.recycle_window_s
+        recent = [t for t in self._gpu_fault_times[worker] if now - t < window]
+        recent.append(now)
+        self._gpu_fault_times[worker] = recent
+        return len(recent)
+
     def _note_recycle(self, worker: int) -> bool:
         """Record a recycle for `worker`; return True if it is still under the
         rolling-window cap (safe to respawn), False if the shard has recycled
@@ -803,7 +929,9 @@ class BotPool:
         self._recycle_times[worker] = recent
         return len(recent) <= self._settings.max_recycles_per_window
 
-    async def _recycle_worker(self, worker: int, reason: str) -> None:
+    async def _recycle_worker(
+        self, worker: int, reason: str, *, device_fault: bool = False,
+    ) -> None:
         """Kill and respawn the subprocess backing shard `worker`.
 
         Every future currently routed to that worker is failed with a
@@ -812,11 +940,49 @@ class BotPool:
         cap — a fresh process is spawned in its place with a brand-new job queue.
         Subsequent jobs routed to `worker` reach the fresh process. Serialized
         by a per-worker lock so racing timeouts recycle once.
+
+        `device_fault` marks a recycle triggered by an accelerator-wedge
+        signature (a wedge-marker traceback or a move/search hang on an
+        accelerator shard). Once such faults cross `gpu_fault_threshold` inside
+        the rolling window, the shard is failed over to CPU (respawned with a
+        forced "cpu" device) instead of being poisoned: a slower CPU shard that
+        keeps serving beats a dead one. A shard already on CPU is never
+        downgraded further — the XPU kernel bug cannot fire there — so a CPU
+        fault falls through to the ordinary poison cap.
         """
         assert self._loop is not None
         async with self._recycle_locks[worker]:
             if self._stopping or self._poisoned[worker]:
                 return
+
+            # GPU->CPU failover decision (loop thread; inside the recycle lock so
+            # it can't race a concurrent recycle of the same shard). Only applies
+            # when this recycle was an accelerator fault AND the shard is still
+            # running on the accelerator (override None while an accel device is
+            # configured). Crossing the threshold flips the shard's override to
+            # "cpu" so the respawn below comes up on CPU and stays there until a
+            # health re-probe promotes it back.
+            on_accelerator = (
+                self._accel_device is not None
+                and self._worker_devices[worker] is None
+            )
+            just_failed_over = False
+            if device_fault and on_accelerator:
+                faults = self._note_gpu_fault(worker)
+                if faults >= self._settings.gpu_fault_threshold:
+                    just_failed_over = True
+                    self._worker_devices[worker] = "cpu"
+                    # A fresh downgrade invalidates any in-progress healthy
+                    # streak: the accelerator just proved unhealthy.
+                    self._reprobe_streak = 0
+                    log.error(
+                        "shard %d hit %d accelerator faults in %.0fs — failing "
+                        "over to CPU (slower but reliable); will re-probe the "
+                        "%s backend before promoting back (reason: %s)",
+                        worker, faults, self._settings.recycle_window_s,
+                        self._accel_device, reason,
+                    )
+
             old_proc = self._procs[worker]
             # Reject in-flight futures pinned to this worker: their process is
             # about to die and no reply will ever arrive for them.
@@ -841,7 +1007,13 @@ class BotPool:
 
             await self._loop.run_in_executor(None, _kill, old_proc)
 
-            if not self._note_recycle(worker):
+            # The poison cap breaks a respawn loop on a genuinely poisonous
+            # accelerator shard. A failover respawn (to CPU) is exempt: CPU
+            # cannot re-wedge, so it cannot loop, and poisoning it would defeat
+            # the whole point of the fail-over (a dead shard instead of a slow
+            # one). We still record the recycle so the window reflects reality.
+            under_cap = self._note_recycle(worker)
+            if not under_cap and not just_failed_over:
                 self._poisoned[worker] = True
                 log.error(
                     "shard %d exceeded %d recycles in %.0fs — leaving it dead; "
@@ -870,6 +1042,97 @@ class BotPool:
                 return
             log.warning("shard %d back online", worker)
 
+    def _downgraded_shards(self) -> list[int]:
+        """Shards currently forced onto CPU by failover (loop thread only)."""
+        return [
+            w for w in range(len(self._worker_devices))
+            if self._worker_devices[w] == "cpu" and not self._poisoned[w]
+        ]
+
+    async def _probe_gpu_health(self) -> tuple[bool, str]:
+        """Run the device self-check in a short-lived throwaway subprocess and
+        return (healthy, note). Bounded by a timeout so a hard GPU hang inside
+        the probe is treated as unhealthy (the probe process is then killed),
+        never wedging the pool. Never touches a serving worker."""
+        assert self._loop is not None and self._accel_device is not None
+        probe_queue = self._ctx.Queue()
+        proc = self._ctx.Process(
+            target=_gpu_probe_main,
+            args=(self._specs[0], self._settings, self._accel_device, probe_queue),
+            daemon=True,
+            name="showcase-gpu-probe",
+        )
+        proc.start()
+
+        # Read the (blocking) queue and join the probe off the event loop; cap
+        # the wait so a wedged probe can't stall re-promotion forever.
+        deadline = max(10.0, self._settings.move_timeout_s)
+
+        def _collect() -> tuple[bool, str]:
+            try:
+                healthy, note = probe_queue.get(timeout=deadline)
+            except Exception:
+                healthy, note = False, f"probe produced no result in {deadline:g}s"
+            try:
+                proc.join(timeout=5)
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join(timeout=5)
+                    if proc.is_alive():
+                        proc.kill()
+            except Exception:  # pragma: no cover - best-effort teardown
+                pass
+            return healthy, note
+
+        return await self._loop.run_in_executor(None, _collect)
+
+    async def _reprobe_loop(self) -> None:
+        """Background GPU re-promotion loop. While any shard is failed over to
+        CPU, periodically probe the accelerator; require
+        `gpu_reprobe_healthy_streak` consecutive healthy probes (anti-flap),
+        then recycle one downgraded shard back onto the accelerator. Runs only
+        when an accelerator is configured and re-promotion is enabled."""
+        interval = self._settings.gpu_reprobe_s
+        need = max(1, self._settings.gpu_reprobe_healthy_streak)
+        try:
+            while not self._stopping:
+                await asyncio.sleep(interval)
+                if self._stopping:
+                    return
+                downgraded = self._downgraded_shards()
+                if not downgraded:
+                    # Nothing to promote — reset the streak so a promotion later
+                    # requires a fresh run of healthy probes.
+                    self._reprobe_streak = 0
+                    continue
+                healthy, note = await self._probe_gpu_health()
+                if not healthy:
+                    self._reprobe_streak = 0
+                    log.info("GPU re-probe unhealthy, staying on CPU: %s", note)
+                    continue
+                self._reprobe_streak += 1
+                log.info(
+                    "GPU re-probe healthy (%d/%d): %s",
+                    self._reprobe_streak, need, note,
+                )
+                if self._reprobe_streak < need:
+                    continue
+                self._reprobe_streak = 0
+                # Promote the lowest-indexed downgraded shard back to the
+                # accelerator. Clearing the override before recycle makes the
+                # respawn come up on the resolved SHOWCASE_DEVICE; its own
+                # startup self-check is the final gate before it serves.
+                worker = downgraded[0]
+                self._worker_devices[worker] = None
+                self._gpu_fault_times[worker] = []
+                log.warning(
+                    "promoting shard %d back to %s after %d healthy probe(s)",
+                    worker, self._accel_device, need,
+                )
+                await self._recycle_worker(worker, "GPU healthy again — re-promote")
+        except asyncio.CancelledError:  # pragma: no cover - shutdown
+            raise
+
     async def _submit(
         self, worker: int, kind: str, kwargs: dict, timeout: float,
         *, recycle_on_hang: bool = False,
@@ -895,7 +1158,12 @@ class BotPool:
             if recycle_on_hang:
                 # A hung move/search means the worker's device queue is wedged;
                 # respawn it so the next job for this shard runs on clean state.
-                await self._recycle_worker(worker, f"{kind} job hung >{timeout:g}s")
+                # A hang on an accelerator shard is a device fault (drives the
+                # GPU->CPU failover); on a CPU shard `device_fault` is inert
+                # because there is no accelerator to downgrade from.
+                await self._recycle_worker(
+                    worker, f"{kind} job hung >{timeout:g}s", device_fault=True,
+                )
             raise BotPoolTimeout(f"{kind} job exceeded {timeout:.0f}s") from None
         except asyncio.CancelledError:
             self._futures.pop(job_id, None)
@@ -905,8 +1173,12 @@ class BotPool:
             if recycle_on_hang and _error_indicates_wedge(payload["error"]):
                 # The job raised with a device-fault signature (e.g. an XPU
                 # out-of-bounds kernel assert): the SYCL queue is corrupted and
-                # every later job on this process would hang. Recycle now.
-                await self._recycle_worker(worker, "worker reported device fault")
+                # every later job on this process would hang. Recycle now, and
+                # mark it a device fault so repeated accelerator wedges fail the
+                # shard over to CPU rather than poison it.
+                await self._recycle_worker(
+                    worker, "worker reported device fault", device_fault=True,
+                )
             raise BotPoolError(payload["error"])
         return payload["ok"]
 

@@ -52,6 +52,21 @@ from .geometry import rel_bias_index
 # Additive pad-key mask value; finite in fp16.
 PAD_KEY_MASK_VALUE = -3.0e4
 
+# No-grad bias-gather chunking (deep/spread board XPU workaround). At large S the
+# full-tensor advanced-index gather bias_t[:, pair] in build_attn_bias
+# materializes a (heads, B, S, S) tensor; on torch-xpu the Indexing.h kernel
+# aborts on this large in-bounds gather (backend size defect, not a bounds bug —
+# CPU never raises, a clamp does not help). We dodge it by gathering in slices
+# over the query axis so no single gather is huge, then concatenating. The
+# chunked result is bit-identical to the stock gather (a plain index of disjoint
+# query rows). Only chunk when S exceeds the threshold so small S keeps the exact
+# stock single-gather path. Env-overridable for on-XPU tuning; a threshold of 0
+# forces chunking always, a very large threshold disables it.
+_BIAS_GATHER_CHUNK = int(os.environ.get("SHRIMP_BIAS_GATHER_CHUNK", "512"))
+_BIAS_GATHER_CHUNK_THRESHOLD = int(
+    os.environ.get("SHRIMP_BIAS_GATHER_CHUNK_THRESHOLD", "1024")
+)
+
 STV_HORIZONS = (2, 6, 16)
 
 # FlexAttention serve path, enabled when SHRIMP_SERVE_FLEX=1 (default off). The
@@ -724,7 +739,22 @@ class ShrimpNet(nn.Module):
         # (heads, B, Sq, Sk); permute(1,0,2,3) is a stride(-1)==1 view, and the
         # pad-mask add is the single full-tensor materialization.
         bias_t = table.to(torch.float16).t().contiguous()  # (heads, ROWS)
-        bias = bias_t[:, pair]                       # (heads, B, Sq, Sk) contiguous
+        s = pair.shape[1]  # Sq (== Sk)
+        if s > _BIAS_GATHER_CHUNK_THRESHOLD and _BIAS_GATHER_CHUNK > 0:
+            # Deep/spread-board XPU workaround: the full gather bias_t[:, pair]
+            # materializes (heads, B, Sq, Sk) in one Indexing.h kernel launch,
+            # which torch-xpu aborts at large S even though all rows are in
+            # bounds. Gather the query axis (pair dim 1) in slices so each launch
+            # touches only CHUNK query rows, then cat back over that axis. This is
+            # bit-identical to the stock gather: pair[:, i:i+CHUNK, :] indexes a
+            # disjoint block of query rows, and cat reassembles them in order.
+            chunks = [
+                bias_t[:, pair[:, i : i + _BIAS_GATHER_CHUNK, :]]
+                for i in range(0, s, _BIAS_GATHER_CHUNK)
+            ]
+            bias = torch.cat(chunks, dim=2)          # (heads, B, Sq, Sk) contiguous
+        else:
+            bias = bias_t[:, pair]                    # (heads, B, Sq, Sk) contiguous
         bias = bias.permute(1, 0, 2, 3)              # (B, heads, Sq, Sk) view, stride(-1)=1
         fill = torch.where(key_pad, 0.0, PAD_KEY_MASK_VALUE).to(bias.dtype)
         return bias + fill[:, None, None, :]         # broadcast over key axis (dim 3)

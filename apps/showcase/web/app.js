@@ -98,12 +98,21 @@ document.querySelectorAll(".tab").forEach(t => {
 const play = {
   id: null, snap: null, moves: [], staged: null,
   label: "", sims: 0, polling: false, lastPlaceT: 0, creating: false,
+  // bot-turn elapsed ticker: thinkSince is when the current bot_thinking spell
+  // began (ms epoch), thinkTimer the 1s interval that repaints the elapsed read
+  thinkSince: 0, thinkTimer: null,
 };
 
 const statusEl = $("playStatus"), statusText = $("statusText");
 const resignBtn = $("resignBtn"), analyzeBtn = $("analyzeBtn");
 const nickForm = $("nickForm"), nickInput = $("nickInput"), nickMsg = $("nickMsg");
 const placeChip = $("placeChip"), playTag = $("playTag"), cursorPos = $("cursorPos");
+const thinkNote = $("thinkNote");
+const playAlert = $("playAlert"), playAlertMsg = $("playAlertMsg");
+
+/* Past this many seconds of one bot turn, add a calm "warming up" note — a
+ * cold first move JITs for ~30s, so a long wait is expected, not broken. */
+const WARMUP_NOTE_AFTER_S = 8;
 
 const playBoard = createBoard($("playBoard"), {
   onCellClick: onPlayCell,
@@ -122,6 +131,53 @@ const playBoard = createBoard($("playBoard"), {
 function setStatus(txt, cls) {
   statusEl.className = "status " + cls;
   statusText.textContent = txt;
+}
+
+// ---- bot-turn feedback: elapsed timer + warm-up note ------------------------
+
+/* Repaint the "thinking" status with elapsed seconds, and past the threshold
+ * show a reassuring warm-up note. Called every second while bot_thinking. */
+function paintThinking() {
+  const s = Math.max(0, Math.round((Date.now() - play.thinkSince) / 1000));
+  // keep the status class ("think") the caller set; only refresh the text
+  statusText.textContent = `${play.label} thinking… ${s}s`;
+  if (s >= WARMUP_NOTE_AFTER_S) {
+    thinkNote.textContent = "taking a little longer than usual (warming up)";
+    thinkNote.hidden = false;
+  }
+}
+
+/* Enter the thinking spell: start (or keep) the once-per-second ticker. Idempotent
+ * across repeated bot_thinking snapshots so the elapsed clock is continuous. */
+function startThinking() {
+  if (!play.thinkSince) play.thinkSince = Date.now();
+  paintThinking();
+  if (play.thinkTimer) return;
+  play.thinkTimer = setInterval(paintThinking, 1000);
+}
+
+/* Leave the thinking spell: stop the ticker and clear the warm-up note. Safe to
+ * call when not thinking (move landed, game over, new game, view switch). */
+function stopThinking() {
+  if (play.thinkTimer) { clearInterval(play.thinkTimer); play.thinkTimer = null; }
+  play.thinkSince = 0;
+  thinkNote.hidden = true;
+  thinkNote.textContent = "";
+}
+
+// ---- recoverable bot-failure notice -----------------------------------------
+
+/* Show a friendly, honest heads-up for a bot-backend hiccup with a way forward.
+ * The button label already reads "New game" in the abandoned/finished state, so
+ * the notice just explains what happened and points at it. Cleared on any fresh
+ * snapshot ingest so a recovered game never carries a stale alert. */
+function showPlayAlert(msg) {
+  playAlertMsg.textContent = msg;
+  playAlert.hidden = false;
+}
+function clearPlayAlert() {
+  playAlert.hidden = true;
+  playAlertMsg.textContent = "";
 }
 
 function clearStage() {
@@ -193,13 +249,20 @@ function ingestPlay(snap) {
   if (play.staged && play.moves.some(m => m.q === play.staged.q && m.r === play.staged.r)) {
     clearStage(); // the bot took the staged cell
   }
+  // a fresh snapshot means the last request landed — drop any recoverable
+  // failure notice; the branches below re-raise it if this snapshot is itself
+  // a failure state.
+  clearPlayAlert();
   if (snap.status === "your_turn") {
+    stopThinking();
     const left = snap.stones_left_this_turn;
     setStatus(`your move · ${left} stone${left === 1 ? "" : "s"}`, "you");
   } else if (snap.status === "bot_thinking") {
     setStatus(`${play.label} thinking…`, "think");
+    startThinking(); // owns the status text from here: elapsed + warm-up note
     clearStage();
   } else if (finished) {
+    stopThinking();
     clearStage();
     const winner = snap.result ? snap.result.winner : null;
     if (term === "six_in_line") {
@@ -208,8 +271,15 @@ function ingestPlay(snap) {
         : `${play.label} wins · six-in-a-row`, "over");
     } else if (term === "resign") {
       setStatus(`resigned · ${play.label} wins`, "over");
+    } else if (term === "timeout") {
+      // idle sweep: the game sat untouched too long. Not a bot fault.
+      setStatus("game timed out · idle too long", "over");
     } else {
-      setStatus("game abandoned", "over");
+      // termination null == the bot turn couldn't complete (backend hiccup /
+      // fail-fast timeout). Say so honestly and point at the New game button,
+      // which `resignBtn` already shows in this finished state.
+      setStatus("game couldn't finish", "warn");
+      showPlayAlert("the bot backend hiccuped and couldn't finish its move — no fault of yours. Start a new game to keep playing.");
     }
   }
   resignBtn.textContent = finished || !play.id ? "New game" : "Resign";
@@ -236,7 +306,7 @@ function startPoll() {
         ingestPlay(await api.getGame(id));
         delay = Math.min(delay * 1.25, 3000);
       } catch (e) {
-        if (e.status === 404) { setStatus("game expired on the server", "over"); break; }
+        if (e.status === 404) { stopThinking(); setStatus("game expired on the server", "over"); break; }
         delay = Math.min(delay * 2, 8000); // 5xx/network: keep polling, slower
       }
     }
@@ -262,6 +332,14 @@ async function tryPlace(q, r) {
       try { ingestPlay(await api.getGame(play.id)); } catch (_) {}
     } else if (e.status === 422) {
       toast(e.message || "illegal move", true);
+    } else if (e.status === 503) {
+      // bot backend busy / fail-fast timeout: the move didn't take, so the
+      // position is unchanged and the same move can simply be retried. Resync
+      // from the server (authoritative) and surface a calm, recoverable notice.
+      try { ingestPlay(await api.getGame(play.id)); } catch (_) {}
+      if (play.snap && play.snap.status === "your_turn") {
+        showPlayAlert("the bot backend is busy right now — your move didn't take. Try that move again in a moment.");
+      }
     } else apiFail(e, "move failed — try again");
   }
 }
@@ -297,6 +375,8 @@ async function newGame() {
   if (!botsNorm || play.creating) return;
   play.creating = true;
   resignBtn.disabled = true;
+  stopThinking(); // reset the elapsed clock so the new game's first turn is fresh
+  clearPlayAlert();
   try {
     const snap = await api.createGame({
       ...botsNorm.payloadFor(sel.ckpt, sel.sims),
