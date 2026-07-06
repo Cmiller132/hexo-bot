@@ -93,6 +93,24 @@ body{margin:0}
 </head>
 <body>
 
+<!-- Stone gradients (same defs as the play board's index.html). Document-level
+     holder: gradients inside a display:none SVG do not resolve, and url() refs
+     do not cross documents — every figure SVG on this page shares these. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gradS0" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#7db4ff"/>
+      <stop offset="0.45" stop-color="#4f93ff"/>
+      <stop offset="1" stop-color="#2f62c4"/>
+    </linearGradient>
+    <linearGradient id="gradS1" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#ff8a80"/>
+      <stop offset="0.45" stop-color="#f0524c"/>
+      <stop offset="1" stop-color="#b93732"/>
+    </linearGradient>
+  </defs>
+</svg>
+
 <header class="learn-header">
   <a class="wordmark" href="../">shrimp</a>
   <nav class="learn-nav" aria-label="How it works">
@@ -653,9 +671,9 @@ var svg=document.getElementById("t-svg");if(!svg)return;
 var SIZE=26,CX=360,CY=158,M=8,TAU=1.5;
 function hx(q,r){return CX+SIZE*(Math.sqrt(3)*q+Math.sqrt(3)/2*r);}
 function hy(q,r){return CY+SIZE*1.5*r;}
-function hexPts(q,r){
-  var cx=hx(q,r),cy=hy(q,r),pts=[];
-  for(var k=0;k<6;k++){var a=Math.PI/180*(60*k-30);pts.push((cx+SIZE*0.94*Math.cos(a)).toFixed(1)+","+(cy+SIZE*0.94*Math.sin(a)).toFixed(1));}
+function hexPts(q,r,rad){
+  var cx=hx(q,r),cy=hy(q,r),s=rad||SIZE*0.94,pts=[];
+  for(var k=0;k<6;k++){var a=Math.PI/180*(60*k-30);pts.push((cx+s*Math.cos(a)).toFixed(1)+","+(cy+s*Math.sin(a)).toFixed(1));}
   return pts.join(" ");
 }
 /* radius-3 disc */
@@ -687,8 +705,8 @@ var board=el("g",{},svg),marks=el("g",{},svg);
 cells.forEach(function(c){
   el("polygon",{points:hexPts(c[0],c[1]),fill:C.bg,stroke:C.lineSoft,"stroke-width":1},board);
 });
-RED.forEach(function(c){el("circle",{cx:hx(c[0],c[1]),cy:hy(c[0],c[1]),r:SIZE*0.52,fill:C.p1},board);});
-BLUE.forEach(function(c){el("circle",{cx:hx(c[0],c[1]),cy:hy(c[0],c[1]),r:SIZE*0.52,fill:C.p0},board);});
+RED.forEach(function(c){el("polygon",{points:hexPts(c[0],c[1],SIZE*0.77),fill:"url(#gradS1)",stroke:"#9c3733","stroke-width":1},board);});
+BLUE.forEach(function(c){el("polygon",{points:hexPts(c[0],c[1],SIZE*0.77),fill:"url(#gradS0)",stroke:"#2b5cad","stroke-width":1},board);});
 /* threat-window empties marker (always visible) */
 BLOCK.forEach(function(c){
   var x=hx(c[0],c[1]),y=hy(c[0],c[1]);
@@ -986,10 +1004,10 @@ function initCompare(data,gum,puct){
     var SZ=12;
     function hx(q,r){return SZ*(Math.sqrt(3)*q+Math.sqrt(3)/2*r);}
     function hy(q,r){return SZ*1.5*r;}
-    function pts(q,r){
-      var cx=hx(q,r),cy=hy(q,r),p="";
+    function pts(q,r,rad){
+      var cx=hx(q,r),cy=hy(q,r),s=rad||SZ-0.8,p="";
       for(var k=0;k<6;k++){var a=Math.PI/180*(60*k-30);
-        p+=(cx+(SZ-0.8)*Math.cos(a)).toFixed(1)+","+(cy+(SZ-0.8)*Math.sin(a)).toFixed(1)+" ";}
+        p+=(cx+s*Math.cos(a)).toFixed(1)+","+(cy+s*Math.sin(a)).toFixed(1)+" ";}
       return p.trim();
     }
     var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
@@ -1033,8 +1051,10 @@ function initCompare(data,gum,puct){
       if(m)el("polygon",{points:pts(q,r),fill:C.accent,"pointer-events":"none",
         "fill-opacity":(0.88*m.n/maxN).toFixed(3)},gH);
       var o=own[q+","+r];
-      if(o!==undefined)el("circle",{cx:hx(q,r),cy:hy(q,r),r:SZ*0.5,
-        fill:o===0?C.p0:C.p1,"pointer-events":"none"},gS);
+      if(o!==undefined)el("polygon",{points:pts(q,r,SZ*0.77),
+        fill:o===0?"url(#gradS0)":"url(#gradS1)",
+        stroke:o===0?"#2b5cad":"#9c3733","stroke-width":1,
+        "pointer-events":"none"},gS);
     });
     el("polygon",{points:pts(side.chosen[0],side.chosen[1]),fill:"none",
       stroke:C.accent,"stroke-width":2,"pointer-events":"none"},gO);

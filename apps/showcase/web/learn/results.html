@@ -43,7 +43,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 .rs-cell.foc:hover{stroke:var(--muted)}
 .rs-cell.foc:focus-visible{stroke:var(--accent);stroke-width:1.6}
 .rs-stonecell{fill:#12161c;stroke:var(--line-soft);stroke-width:1}
-.rs-stone0{fill:var(--p0)}.rs-stone1{fill:var(--p1)}
+.rs-stone0{fill:url(#gradS0);stroke:#2b5cad;stroke-width:1}
+.rs-stone1{fill:url(#gradS1);stroke:#9c3733;stroke-width:1}
 .rs-stone0,.rs-stone1{pointer-events:none}
 .rs-pol{fill:var(--p0-soft);pointer-events:none;transition:fill-opacity .18s ease}
 .rs-hot{fill:none;stroke:var(--p1-soft);stroke-width:1.3;stroke-dasharray:3 2;
@@ -78,6 +79,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 </style>
 </head>
 <body>
+
+<!-- Stone gradients (same defs as the play board's index.html). Document-level
+     holder: gradients inside a display:none SVG do not resolve, and url() refs
+     do not cross documents — every figure SVG on this page shares these. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gradS0" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#7db4ff"/>
+      <stop offset="0.45" stop-color="#4f93ff"/>
+      <stop offset="1" stop-color="#2f62c4"/>
+    </linearGradient>
+    <linearGradient id="gradS1" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#ff8a80"/>
+      <stop offset="0.45" stop-color="#f0524c"/>
+      <stop offset="1" stop-color="#b93732"/>
+    </linearGradient>
+  </defs>
+</svg>
 
 <header class="learn-header">
   <a class="wordmark" href="../">shrimp</a>
@@ -622,7 +641,7 @@ function buildReader(data) {
       if (!isStone) heat = el("polygon", {
         points: hexPts(xy[0], xy[1], HR - .8), "class": "rs-pol", "fill-opacity": "0"
       }, gHeat);
-      if (isStone) el("circle", { cx: xy[0], cy: xy[1], r: HR * .53,
+      if (isStone) el("polygon", { points: hexPts(xy[0], xy[1], HR * .77),
         "class": owner === 0 ? "rs-stone0" : "rs-stone1" }, gStones);
       if (focusable) {
         poly.setAttribute("tabindex", "0");
@@ -653,7 +672,7 @@ function buildReader(data) {
     });
     if (pos.first_stone) {
       var xy = XY(pos.first_stone[0], pos.first_stone[1]);
-      el("circle", { cx: xy[0], cy: xy[1], r: HR * .72, "class": "rs-first" }, gStones);
+      el("polygon", { points: hexPts(xy[0], xy[1], HR * .86), "class": "rs-first" }, gStones);
     }
     $("pbMove").innerHTML = "<b>P0 (blue) to move</b> · " +
       (pos.phase === "SecondStone"
