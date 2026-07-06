@@ -6,7 +6,7 @@
 <title>shrimp &mdash; instrument</title>
 <!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
      in app.js whenever the bundle changes incompatibly -->
-<link rel="stylesheet" href="./style.css?v=8">
+<link rel="stylesheet" href="./style.css?v=9">
 </head>
 <body>
 
@@ -152,6 +152,7 @@
           <input type="range" id="ovlRange" min="0" max="100" value="85" aria-label="Policy overlay opacity">
         </div>
         <p class="fineprint" id="anaFine">policy priors &middot; no search</p>
+        <button class="line-btn" id="openLabBtn" disabled>Open this position in the lab</button>
       </div>
 
       <div class="sec">
@@ -171,6 +172,6 @@
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=8"></script>
+<script type="module" src="./app.js?v=9"></script>
 </body>
 </html>

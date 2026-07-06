@@ -8,7 +8,7 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=8";
+import * as api from "./api.js?v=9";
 import { createBoard, findWin, key } from "./board.js?v=6";
 
 "use strict";
@@ -1047,6 +1047,8 @@ function openAnalysis(rec) {
   chart.setData(null);
   const copyBtn = $("copyLink");
   copyBtn.disabled = false;
+  const labBtn = $("openLabBtn");
+  if (labBtn) labBtn.disabled = false;
   activateView("analysis");
   history.replaceState(null, "", "#game/" + rec.id);
   markFeedSelection();
@@ -1216,6 +1218,16 @@ copyBtn.addEventListener("click", () => {
     copyBtn.textContent = "copy link";
     copyBtn.classList.remove("done");
   }, 1200);
+});
+
+// Open the current analysis game, at the ply on screen, in the lab sandbox.
+// The lab imports it via ?game=<id>&ply=<n> (see lab.js importFromGame).
+const openLabBtn = $("openLabBtn");
+if (openLabBtn) openLabBtn.addEventListener("click", () => {
+  if (!ana.id) return;
+  const url = new URL("learn/lab.html", location.href);
+  url.search = "?game=" + encodeURIComponent(ana.id) + "&ply=" + ana.ply;
+  window.open(url.href, "_blank", "noopener");
 });
 
 // ---- routing + boot ----------------------------------------------------------------
