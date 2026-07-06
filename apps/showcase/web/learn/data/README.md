@@ -92,3 +92,54 @@ Parsed from the run's real multistage-eval diagnostics.
 Plot the compounding strength curve from the LATEST epoch's `ratings` (labels
 `ep5`, `ep10`, ...); the per-epoch `candidate_elo` values are fresh-label
 single-epoch estimates with wide CIs (see `notes.candidates`).
+
+## features.json (~11 KB)
+
+Featurizer ground truth for the network page's feature inspector: four
+positions (`quiet_midgame`, `four_threat`, `double_threat`, plus the
+inspector-only `win_now`, a constructed mid-turn position with a standing win
+on both sides). Each entry is a position block plus:
+
+| field | type | meaning |
+|---|---|---|
+| `support` | | `coords` + segment counts, same shape as attention.json |
+| `digest["0".."14"]` | `{n, sum, max}` | per-feature-plane nonzero count, total and max over the whole (N, 15) matrix from `shrimp.features.build_features` |
+
+The page recomputes all 15 planes with its JS mirror of `features.py` and
+asserts every digest; a mismatch is flagged in the figure and logged.
+
+## bias_kernels.json (~23 KB)
+
+The ep70 net's learned relative-position bias tables (raw additive score
+units, pre-softmax). `tables[block][head]` is the full 237-row column:
+rows 0–216 the hex-dist ≤ 8 offset disk in ascending `(dq, dr)` order
+(`shrimp.geometry.disk_offsets`), 217–224 / 225–232 the on-/off-axis
+distance 9–16 ring buckets, 233 the far bucket, 234–236 the
+cell↔token / token↔token rows (`row_layout` spells this out). The two
+observations the network page's caption cites (block 4 head 1 local
+suppression + distance-6 on-axis bump; block 4 head 2 near on-axis bump) are
+re-asserted by the generator on every run.
+
+## search_compare.json (~4 KB)
+
+One real 512-visit search per era on `quiet_midgame` (threat-free by
+assertion, so TSS injects nothing), fixed seed, CPU, via the showcase
+`SearchProfile.search_one` invocation: `sides[0]` the shrimp_main_7 profile
+(Gumbel root + SH) with the ep70 net, `sides[1]` the shrimp_main_5 profile
+(PUCT) with that run's ep105 net. Per side: `chosen`, `root_value`,
+`visits`/`budget`, `early_stopped`, and `moves[]` = every visited root move
+`{q, r, n, qhat, prior}` (+ `logit` on the gumbel side, from the exported raw
+root logits). The gumbel side carries `sh`, the budget-calibrated sequential
+halving schedule (m, rounds, per-round quotas, cumulative caps); the
+generator asserts the measured visit histogram equals the schedule's implied
+multiset, which is what lets the search page replay the rounds from final
+counts. Per-round q̂ trajectories and the Gumbel noise g are not recorded.
+
+## symmetry.json (~3 KB)
+
+The ep70 net's readout on `four_threat`, base orientation only: `value`,
+floored `policy` (`policy_floor` 1e-3), `argmax`/`argmax_p`, plus the
+position + support blocks. The training page's D6 figure
+coordinate-transforms this single evaluation for the 11 non-identity
+symmetries (`geometry.apply_d6` semantics in the `d6` note); it never
+re-evaluates the net per orientation.

@@ -91,6 +91,21 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 .nx-qcell:hover{stroke:var(--accent)}
 .nx-qcell:focus-visible{stroke:var(--accent);stroke-width:1.8}
 .nx-qcell.nx-sel{stroke:var(--accent);stroke-width:1.8;stroke-dasharray:none}
+/* fig 2 feature rows double as the heatmap selector */
+.nx-bar.sel{background:#1a2027;color:var(--text);
+  box-shadow:inset 0 0 0 1px var(--accent-dim)}
+.nx-bar:focus-visible{outline:1px solid var(--accent);outline-offset:-1px}
+/* fig 4 bias kernels */
+.nxb-cell{stroke:var(--line-soft);stroke-width:1;fill:#12161c;cursor:pointer;
+  outline:none}
+.nxb-cell:hover{stroke:var(--muted)}
+.nxb-cell:focus-visible{stroke:var(--accent);stroke-width:1.5}
+.nxb-cell.nx-sel{stroke:var(--accent);stroke-width:1.6}
+.nxb-pos{fill:var(--p0);pointer-events:none}
+.nxb-neg{fill:var(--p1);pointer-events:none}
+.nxb-axis{stroke:var(--dim);stroke-width:.7;stroke-dasharray:3 3;
+  pointer-events:none}
+.nxb-btns{display:inline-flex;gap:4px}
 @media (max-width:640px){.nx-bar{grid-template-columns:16px 96px 1fr 38px}}
 </style>
 </head>
@@ -117,10 +132,12 @@ input has no fixed size. The network is a <em>set network over a graph</em>,
 and its input size changes every move. This page describes the architecture as
 implemented: the support set, the 15 per-cell features, hex convolution as
 message passing, global attention with a learned hex-geometry bias, and the
-output heads. The board figures run on a real position from the run&rsquo;s
-snapshot data (a quiet middlegame, 15 stones, player&nbsp;0 to
-move) with the formulas from the featurizer. The attention figure shows the
-ep58 checkpoint&rsquo;s learned weights.
+output heads. The board figures run on real positions from the run&rsquo;s
+snapshot data (the support and convolution figures use a quiet middlegame,
+15 stones, player&nbsp;0 to move; the feature inspector adds three tactical
+positions) with the formulas from the featurizer. The attention visualizer
+shows the ep58 checkpoint&rsquo;s learned weights; the bias-kernel figure
+shows the ep70 tables.
 </p>
 
 <div class="note">
@@ -227,22 +244,28 @@ complete five-in-a-window, a standing win-in-one.</li>
 <p>
 The hot and win planes come from scanning every length-6 single-colour window
 on the three win axes, the same threat definition the search's tactical layer
-uses. The inspector below computes all 15 values with the
-real formulas, on the <code>quiet_midgame</code> position from the run's
-snapshot data (15 stones, no window holding more than three stones of
-one colour). No threat is active in this position, so the hot features (9–10)
-and win-now features (13–14) are zero everywhere.
+uses. The inspector below computes all 15 values with the real formulas, on
+four positions from the run's snapshot data (<code>data/features.json</code>):
+a quiet middlegame where every threat plane is zero, a single split four
+(three opponent-hot cells), a double threat (six), and a mid-turn position
+where both sides hold a standing win-in-1, which also sets the phase-second
+and first-stone planes. Each plane the page claims non-zero is verified: the
+in-page mirror of <code>features.py</code> recomputes the full feature matrix
+and checks it against a per-plane digest exported from the Python featurizer.
 </p>
 
 <figure class="fig" id="fig-features">
-  <figcaption><b>Figure 2</b> — feature inspector, on the real quiet_midgame position from data/attention.json. Click (or tab + arrow keys to) any cell; the 15 input values are computed live with the formulas from features.py.</figcaption>
+  <figcaption><b>Figure 2</b> — feature inspector on four real positions (data/features.json). Click a cell for its 15 input values; click a feature row to paint that plane over the whole support. Values are computed live with the formulas from features.py and checked against the exported featurizer digest.</figcaption>
   <div class="fig-body nx-flex">
-    <div class="nx-boardwrap"><svg id="svg2" role="img" aria-label="Hex board; select a cell to inspect its features"></svg></div>
+    <div class="nx-boardwrap"><svg id="svg2" role="img" aria-label="Hex board; select a cell to inspect its features, or select a feature to paint it"></svg></div>
     <div class="nx-side"><div class="nx-bars" id="bars2"></div></div>
   </div>
   <div class="fig-controls">
-    <span class="nx-kbd">click a cell · or Tab into the board and use ←→↑↓, Enter</span>
+    <label for="pos2">position</label>
+    <select id="pos2" aria-label="feature inspector position"></select>
+    <span class="nx-kbd">cell → readout · feature row → heatmap</span>
     <span class="spacer"></span>
+    <span class="nx-badge" id="chk2">digest: …</span>
     <span class="val" id="c2v"></span>
   </div>
   <div class="fig-readout" id="ro2" aria-live="polite"></div>
@@ -312,7 +335,9 @@ conv reach on the support graph.
      additive per-block bias, pad-KEY additive mask -3e4), AttnBlock (pre-norm,
      GELU MLP ratio 2), ShrimpNet.tokens (NUM_TOKENS=8), bias_tables
      (one (237, heads) table per A block); geometry.py rel_bias_index;
-     constants.py BIAS_* rows, ATTENTION_HEADS=3 (main_7), HEAD_DIM=64 -->
+     constants.py BIAS_* rows, ATTENTION_HEADS=3 (main_7), HEAD_DIM=64;
+     data/bias_kernels.json = the ep70 tables (learn_snapshots.py
+     bias_kernels_doc, which re-asserts the two caption claims on regen) -->
 <section id="attention">
 <h2><span class="sec-no">04</span>Global attention over an irregular set</h2>
 
@@ -345,8 +370,38 @@ ones that can share a winning line);</li>
 </ul>
 <p>
 The bias is additive: it adjusts scores by distance and direction and never
-excludes a pair. Each of the five attention blocks learns its own
-table. The <strong>8 summary tokens</strong> are learned vectors with no board
+excludes a pair. Each of the five attention blocks learns its own table, and
+after 70 epochs the tables encode definite geometric priors. The figure below
+paints one block/head's table over the offset disk: the number shown for an
+offset is added to the attention score of every key cell at that offset from
+the query. Two observed patterns in the ep70 tables: <strong>block 4
+head 1</strong> suppresses the query's own cell and its entire first ring
+(rows &minus;4.0 and &asymp;&minus;2.6 mean) while giving its largest positive
+bias to offsets exactly <em>six steps away along a win axis</em> (mean +2.0,
+against +0.5 for off-axis offsets at the same distance) &mdash; a winning
+window is six cells long. <strong>Block 4 head 2</strong> is close to the
+complement: positive on near on-axis offsets (distance-4 on-axis mean +0.8 vs
++0.2 off-axis) and negative in the far rings.
+<!-- Observed in data/bias_kernels.json (shrimp_main_7, ep70) and re-asserted
+     by learn_snapshots.py bias_kernels_doc on every regeneration:
+     b4h1 center -3.95, ring-1 mean -2.58, d6 on-axis mean +1.97 vs off-axis
+     +0.47; b4h2 d4 on-axis mean +0.83 vs off-axis +0.23. -->
+</p>
+
+<figure class="fig" id="fig-bias">
+  <figcaption><b>Figure 4</b> — learned rel-pos bias kernels, <b>real ep70 tables</b> (data/bias_kernels.json). Pick a block and head; every cell of the distance-8 disk is painted with the bias added at that offset from the centre query cell (blue positive, red negative). The strips show the distance 9–16 ring buckets (split by win-axis collinearity), the far row, and the token rows. Thin guides mark the three win axes.</figcaption>
+  <div class="fig-body nx-boardwrap"><svg id="svgB" role="img" aria-label="Hex disk painted with the learned relative-position bias for the selected block and head"></svg></div>
+  <div class="fig-controls">
+    <label>block</label><span id="blkB" class="nxb-btns"></span>
+    <label>head</label><span id="headB" class="nxb-btns"></span>
+    <span class="spacer"></span>
+    <span class="val" id="bBv"></span>
+  </div>
+  <div class="fig-readout" id="roB" aria-live="polite"></div>
+</figure>
+
+<p>
+The <strong>8 summary tokens</strong> are learned vectors with no board
 position; they ride in the same sequence through all five blocks and serve as
 whole-board aggregation slots that every cell can attend to and from. Cells
 also attend to each other directly. The
@@ -375,7 +430,7 @@ block 3's head 1 queried from a threat-window cell puts 0.90 on
 </p>
 
 <figure class="fig fig-wide" id="fig-attn">
-  <figcaption id="cap4"><b>Figure 4</b> — attention visualizer, <b>real weights from the run&rsquo;s ep58 checkpoint</b>. Pick a position, block and head, then click an outlined query cell; heat and rays show where that query attends, and the right-hand chips show its mass on the 8 summary tokens.</figcaption>
+  <figcaption id="cap4"><b>Figure 5</b> — attention visualizer, <b>real weights from the run&rsquo;s ep58 checkpoint</b>. Pick a position, block and head, then click an outlined query cell; heat and rays show where that query attends, and the right-hand chips show its mass on the 8 summary tokens.</figcaption>
   <div class="fig-body nx-boardwrap"><svg id="svg4" role="img" aria-label="Hex board with attention heat from a selected query cell to all cells and 8 summary tokens"></svg></div>
   <div class="fig-controls">
     <span id="realCtl4" hidden>
@@ -448,7 +503,7 @@ layer shapes (a 7-tap conv is <code>7·C_in·C_out + C_out</code>, a Linear
 </p>
 
 <figure class="fig fig-wide" id="fig-heads">
-  <figcaption><b>Figure 5</b> — ShrimpNet at the shipped configuration. Hover or focus a plate for its parameter count. C = conv residual block, A = attention block; dashed heads are train-only.</figcaption>
+  <figcaption><b>Figure 6</b> — ShrimpNet at the shipped configuration. Hover or focus a plate for its parameter count. C = conv residual block, A = attention block; dashed heads are train-only.</figcaption>
   <div class="fig-body"><svg id="svg5" class="nx-schem" role="img" aria-label="Architecture schematic: input, stem, CCA times five trunk, LN final, head fan-out"></svg></div>
   <div class="fig-readout" id="ro5" aria-live="polite"></div>
 </figure>
@@ -511,27 +566,38 @@ function hexPts(cx,cy,s){var p='';for(var i=0;i<6;i++){
   p+=(cx+s*Math.cos(a)).toFixed(2)+','+(cy+s*Math.sin(a)).toFixed(2)+' ';}
   return p.trim();}
 
-/* Real position: the quiet_midgame snapshot from data/attention.json
-   (shrimp_main_7, ep58 export) — 15 chronological placements [q,r,owner],
-   owners derived from the fixed turn structure. ordinal = array index;
-   placement_index = ordinal+1. Turn structure 1-then-2-2-2 => next mover
-   (ordinal 15) is player 0, phase FirstStone. Inlined so figs 1-3 need no
-   fetch; matches the JSON's moves/stones lists exactly. */
+/* Game context from a chronological placement list [[q,r,owner],...]
+   (the position blocks' `stones` arrays; owners follow the fixed turn
+   structure). ordinal = array index; placement_index = ordinal+1. The mover /
+   phase of the NEXT placement are recordPlayer(n) / recordPhase(n). The
+   quiet_midgame position is inlined so figs 1 and 3 need no fetch; it matches
+   the snapshot JSONs' moves/stones lists exactly. */
 var RECORDS=[[0,0,0],[1,1,1],[0,2,1],[2,-1,0],[1,-2,0],[-1,2,1],[3,0,1],
              [-1,1,0],[-2,0,0],[2,2,1],[-2,3,1],[0,-1,0],[3,-2,0],[1,3,1],[4,-1,1]];
-var CUR=0, N_PLACED=RECORDS.length;
-var STONES=new Map();
-RECORDS.forEach(function(rec,i){STONES.set(K(rec[0],rec[1]),{q:rec[0],r:rec[1],owner:rec[2],ord:i});});
 
 function recordPlayer(o){return o===0?0:((((o-1)>>1)%2===0)?1:0);}
 function recordPhase(o){return o===0?'Opening':(((o-1)%2===0)?'First':'Second');}
 
+function makeGame(records){
+  var stones=new Map();
+  records.forEach(function(rec,i){
+    stones.set(K(rec[0],rec[1]),{q:rec[0],r:rec[1],owner:rec[2],ord:i});});
+  var n=records.length;
+  var g={records:records,n:n,stones:stones,
+         cur:recordPlayer(n),phase:recordPhase(n),
+         firstStone:null};
+  if(g.phase==='Second')g.firstStone=[records[n-1][0],records[n-1][1]];
+  g.scan=windowScan(g);
+  g.oppLast=new Set(oppLastTurn(g));
+  return g;
+}
+
 /* window_scan — features.py: length-6 single-colour windows on the 3 axes;
    hot: count>=4 (and >=7 placements); standing win: count==5. */
-function windowScan(){
+function windowScan(g){
   var ownHot=new Set(),oppHot=new Set(),ownWin=new Set(),oppWin=new Set();
   var seen=new Set();
-  STONES.forEach(function(st){
+  g.stones.forEach(function(st){
     for(var a=0;a<3;a++){
       var dq=AXES[a][0],dr=AXES[a][1];
       for(var back=0;back<6;back++){
@@ -539,38 +605,36 @@ function windowScan(){
         if(seen.has(key))continue; seen.add(key);
         var c0=0,c1=0,empt=[];
         for(var i=0;i<6;i++){
-          var s=STONES.get(K(sq+i*dq,sr+i*dr));
+          var s=g.stones.get(K(sq+i*dq,sr+i*dr));
           if(!s)empt.push(K(sq+i*dq,sr+i*dr));
           else if(s.owner===0)c0++;else c1++;
         }
         if(c0>0&&c1>0)continue;               // two-coloured: skipped
         var cnt=c0+c1,owner=c0>0?0:1,j;
-        if(cnt===5)for(j=0;j<empt.length;j++)(owner===CUR?ownWin:oppWin).add(empt[j]);
-        if(cnt>=4&&N_PLACED>=7)for(j=0;j<empt.length;j++)(owner===CUR?ownHot:oppHot).add(empt[j]);
+        if(cnt===5)for(j=0;j<empt.length;j++)(owner===g.cur?ownWin:oppWin).add(empt[j]);
+        if(cnt>=4&&g.n>=7)for(j=0;j<empt.length;j++)(owner===g.cur?ownHot:oppHot).add(empt[j]);
       }
     }
   });
   return {ownHot:ownHot,oppHot:oppHot,ownWin:ownWin,oppWin:oppWin};
 }
-var SCAN=windowScan();
 
 /* _opp_last_turn_cells — features.py */
-function oppLastTurn(){
-  var opp=1-CUR;
-  for(var o=RECORDS.length-1;o>=0;o--){
+function oppLastTurn(g){
+  var opp=1-g.cur;
+  for(var o=g.records.length-1;o>=0;o--){
     if(recordPlayer(o)!==opp)continue;
-    var ph=recordPhase(o),q=RECORDS[o][0],r=RECORDS[o][1];
-    if(ph==='Second'){var p=RECORDS[o-1];return [K(p[0],p[1]),K(q,r)];}
+    var ph=recordPhase(o),q=g.records[o][0],r=g.records[o][1];
+    if(ph==='Second'){var p=g.records[o-1];return [K(p[0],p[1]),K(q,r)];}
     if(ph==='Opening')return [K(q,r)];
   }
   return [];
 }
-var OPP_LAST=new Set(oppLastTurn());
 
 /* multi-source BFS from stones to given depth — support.py */
-function bfsDist(depth){
+function bfsDist(g,depth){
   var dist=new Map(),queue=[];
-  STONES.forEach(function(_,k){dist.set(k,0);queue.push(k);});
+  g.stones.forEach(function(_,k){dist.set(k,0);queue.push(k);});
   var head=0;
   while(head<queue.length){
     var k=queue[head++],d=dist.get(k);
@@ -585,11 +649,11 @@ function bfsDist(depth){
 }
 
 /* Support in node order [legal | stones | halo] — support.py _build_support */
-function buildSupport(radius){
-  var dist=bfsDist(radius+1),legal=[],stones=[],halo=[];
+function buildSupport(g,radius){
+  var dist=bfsDist(g,radius+1),legal=[],stones=[],halo=[];
   dist.forEach(function(d,k){
     var parts=k.split(','),q=+parts[0],r=+parts[1];
-    if(STONES.has(k))stones.push([q,r,d]);
+    if(g.stones.has(k))stones.push([q,r,d]);
     else if(d<=radius)legal.push([q,r,d]);
     else if(d===radius+1)halo.push([q,r,d]);
   });
@@ -613,47 +677,52 @@ var FEAT_META=[
  ['opp_stone','1 if the opponent’s stone sits here'],
  ['empty','1 − own − opp'],
  ['legal','1 on the legal prefix (playable this move)'],
- ['phase_second','1 everywhere while placing the turn’s 2nd stone (0 here: 1st-stone phase)'],
- ['first_stone','marks this turn’s first stone (only in 2nd-stone phase)'],
- ['player_colour','1 everywhere when player 0 is to move (true here)'],
+ ['phase_second','1 everywhere while placing the turn’s 2nd stone'],
+ ['first_stone','marks this turn’s first stone (2nd-stone phase only)'],
+ ['player_colour','1 everywhere when player 0 is to move'],
  ['own_recency','max over own stones here of 1/(1+age)'],
  ['opp_recency','max over opp stones here of 1/(1+age)'],
  ['opp_hot','empty cell of an opp ≥4-of-6 window (threat)'],
  ['own_hot','empty cell of an own ≥4-of-6 window (threat)'],
  ['dist_to_stone','BFS distance to nearest stone / 8'],
  ['opp_last_turn','cells of the opponent’s last completed turn'],
- ['opp_win_now','empty cell completing an opp 5-of-6 window (none in this position)'],
- ['own_win_now','empty cell completing an own 5-of-6 window (none in this position)']
+ ['opp_win_now','empty cell completing an opp 5-of-6 window (win-in-1 against the mover)'],
+ ['own_win_now','empty cell completing an own 5-of-6 window (the mover can win now)']
 ];
-function buildFeatures(sup){
+function buildFeatures(g,sup){
   var F=sup.nodes.map(function(){return new Float32Array(15);});
-  RECORDS.forEach(function(rec,ord){
+  var fsKey=g.firstStone?K(g.firstStone[0],g.firstStone[1]):null;
+  g.records.forEach(function(rec,ord){
     var row=sup.idx.get(K(rec[0],rec[1]));
     if(row===undefined)return;
-    var own=(rec[2]===CUR);
+    var own=(rec[2]===g.cur);
     F[row][own?0:1]=1;
-    var age=N_PLACED-(ord+1),w=1/(1+age),rp=own?7:8;
+    var age=g.n-(ord+1),w=1/(1+age),rp=own?7:8;
     F[row][rp]=Math.max(F[row][rp],w);
   });
   sup.nodes.forEach(function(n,i){
     F[i][2]=1-F[i][0]-F[i][1];
     if(i<sup.legalCount)F[i][3]=1;
-    /* phase FirstStone: F4 = 0 and F5 unset (matches features.py) */
-    if(CUR===0)F[i][6]=1;
     var k=K(n.q,n.r);
-    if(SCAN.oppHot.has(k))F[i][9]=1;
-    if(SCAN.ownHot.has(k))F[i][10]=1;
-    if(SCAN.oppWin.has(k))F[i][13]=1;
-    if(SCAN.ownWin.has(k))F[i][14]=1;
+    if(g.phase==='Second'){
+      F[i][4]=1;
+      if(fsKey&&k===fsKey)F[i][5]=1;
+    }
+    if(g.cur===0)F[i][6]=1;
+    if(g.scan.oppHot.has(k))F[i][9]=1;
+    if(g.scan.ownHot.has(k))F[i][10]=1;
+    if(g.scan.oppWin.has(k))F[i][13]=1;
+    if(g.scan.ownWin.has(k))F[i][14]=1;
     F[i][11]=n.d/8;                      /* DIST_SCALE stays 8 at radius 4 */
-    if(OPP_LAST.has(k))F[i][12]=1;
+    if(g.oppLast.has(k))F[i][12]=1;
   });
   return F;
 }
 
 /* board painter: draws cells (+stones), returns handles */
-function paintBoard(svg,sup,opts){
+function paintBoard(svg,g,sup,opts){
   opts=opts||{};
+  svg.innerHTML='';
   var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
   sup.nodes.forEach(function(n){
     var xy=XY(n.q,n.r);
@@ -674,14 +743,14 @@ function paintBoard(svg,sup,opts){
       poly.setAttribute('tabindex','0');
       poly.setAttribute('role','button');
     }
-    var st=STONES.get(K(n.q,n.r)),heat=null;
+    var st=g.stones.get(K(n.q,n.r)),heat=null;
     if(opts.heat)heat=el('polygon',{points:hexPts(cx,cy,HR-.8),
       'class':'nx-heat','fill-opacity':'0'},gHeat);
     if(st)el('circle',{cx:cx,cy:cy,r:HR*.52,
       'class':st.owner===0?'nx-stone0':'nx-stone1'},gStones);
     var c={n:n,poly:poly,cx:cx,cy:cy,heat:heat,stone:st||null};
     poly.setAttribute('aria-label','cell '+n.q+','+n.r+' · '+
-      (st?(st.owner===CUR?'own stone':'opponent stone'):n.kind));
+      (st?(st.owner===g.cur?'own stone':'opponent stone'):n.kind));
     cells.push(c);byKey.set(K(n.q,n.r),c);
   });
   return {cells:cells,byKey:byKey,gOver:gOver,svg:svg};
@@ -714,11 +783,14 @@ function setReadout(id,k,t){
   e.appendChild(a);e.appendChild(b);
 }
 
+/* the shared quiet_midgame game context (figs 1 and 3; fig 2's default) */
+var QG=makeGame(RECORDS);
+
 /* ================= FIG 1 — support radius ================= */
 (function(){
   var svg=$('svg1'),slider=$('r1');
   /* one lattice to depth 9 (max halo at R=8); slider only toggles classes */
-  var dist=bfsDist(9);
+  var dist=bfsDist(QG,9);
   var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
   dist.forEach(function(d,k){
     var p=k.split(','),xy=XY(+p[0],+p[1]);
@@ -732,7 +804,7 @@ function setReadout(id,k,t){
   dist.forEach(function(d,k){
     var p=k.split(','),q=+p[0],r=+p[1],xy=XY(q,r);
     var poly=el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),'class':'nx-cell'},gC);
-    var st=STONES.get(k);
+    var st=QG.stones.get(k);
     if(st)el('circle',{cx:xy[0],cy:xy[1],r:HR*.52,
       'class':st.owner===0?'nx-stone0':'nx-stone1'},gS);
     items.push({d:d,stone:!!st,poly:poly});
@@ -760,54 +832,150 @@ function setReadout(id,k,t){
   apply();
 })();
 
-/* ================= shared radius-4 support for figs 2/3/4 ================= */
-var SUP=buildSupport(4);
-var FEATS=buildFeatures(SUP);
+/* ================= shared radius-4 quiet support (figs 3/4) ================= */
+var SUP=buildSupport(QG,4);
+var FEATS=buildFeatures(QG,SUP);
 
-/* ================= FIG 2 — feature inspector ================= */
+/* ================= FIG 2 — feature inspector =================
+   Four positions from data/features.json (quiet / four_threat /
+   double_threat / win_now). Features are computed by the buildFeatures
+   mirror above and VERIFIED against the exported per-plane digest
+   {n, sum, max} from the Python featurizer; a mismatch flags the badge and
+   logs to the console. Offline fallback: the inlined quiet position only.
+   Interactions: click a cell -> per-cell readout (bars); click a feature
+   row -> paint that plane over the whole support. */
 (function(){
-  var board=paintBoard($('svg2'),SUP,{focusable:'all'});
-  var wrap=$('bars2'),rows=[];
+  var svg=$('svg2'),wrap=$('bars2'),selEl=$('pos2'),chk=$('chk2');
+  var rows=[],board=null,G=null,SUPP=null,FE=null,POS=null,pi=0;
+  var selected=null,featSel=-1;
   FEAT_META.forEach(function(m,i){
     var row=document.createElement('div');row.className='nx-bar';
     row.innerHTML='<span class="bi">'+i+'</span><span class="bn">'+m[0]+
       '</span><span class="bt"><span class="bf" style="width:0%"></span></span>'+
       '<span class="bv">0.00</span>';
-    row.title=m[0]+': '+m[1];
-    var showRow=function(){setReadout('ro2','F'+i+' · '+m[0],m[1]);};
-    row.addEventListener('mouseenter',showRow);
-    row.addEventListener('click',showRow);
+    row.title=m[0]+': '+m[1]+' (click to paint)';
+    row.setAttribute('tabindex','0');
+    row.setAttribute('role','button');
+    row.style.cursor='pointer';
+    row.addEventListener('mouseenter',function(){
+      if(featSel!==i)setReadout('ro2','F'+i+' · '+m[0],m[1]+'. Click to paint this plane.');});
+    var act=function(){paintFeat(i);};
+    row.addEventListener('click',act);
+    row.addEventListener('keydown',function(e){
+      if(e.key==='Enter'||e.key===' '){e.preventDefault();act();}});
     wrap.appendChild(row);rows.push(row);
   });
-  var selected=null;
+  function planeStats(i){
+    var n=0,sum=0,mx=0;
+    for(var k=0;k<FE.length;k++){var v=FE[k][i];if(v!==0){n++;sum+=v;}if(v>mx)mx=v;}
+    return {n:n,sum:sum,max:mx};
+  }
+  function verifyDigest(pos){
+    if(!pos.digest){chk.textContent='digest: n/a (offline)';return;}
+    var bad=[];
+    for(var i=0;i<15;i++){
+      var d=pos.digest[String(i)],s=planeStats(i);
+      if(!d||s.n!==d.n||Math.abs(s.sum-d.sum)>5e-3||Math.abs(s.max-d.max)>1e-3)
+        bad.push(i);
+    }
+    if(bad.length){
+      chk.textContent='digest MISMATCH F'+bad.join(',F');
+      console.error('feature mirror out of sync with features.json for '+
+        pos.id+': planes '+bad.join(', '));
+    }else{
+      chk.textContent='digest ✓ 15/15 planes';
+    }
+  }
+  function paintFeat(i){
+    featSel=i;
+    rows.forEach(function(r2,j){r2.classList.toggle('sel',j===i);});
+    var mx=0,k;
+    for(k=0;k<FE.length;k++)if(FE[k][i]>mx)mx=FE[k][i];
+    board.cells.forEach(function(c){
+      var v=FE[c.n.i][i];
+      c.heat.setAttribute('fill-opacity',mx>0?(0.85*Math.min(v/mx,1)).toFixed(3):'0');
+    });
+    var s=planeStats(i);
+    setReadout('ro2','F'+i+' · '+FEAT_META[i][0]+' · painted over '+FE.length+' nodes',
+      FEAT_META[i][1]+'. Non-zero on '+s.n+' of '+FE.length+' cells'+
+      (s.n?' (max '+s.max.toFixed(s.max<0.01?3:2)+')':'')+
+      (s.n===0?' — zero everywhere in this position':'')+'.');
+  }
   function pick(c){
     if(selected)selected.poly.classList.remove('nx-sel');
     selected=c;c.poly.classList.add('nx-sel');
-    var f=FEATS[c.n.i];
+    var f=FE[c.n.i];
     for(var i=0;i<15;i++){
       var v=f[i];
       rows[i].querySelector('.bf').style.width=(Math.min(v,1)*100).toFixed(1)+'%';
       rows[i].querySelector('.bv').textContent=v.toFixed(v>0&&v<0.01?3:2);
       rows[i].classList.toggle('nzero',v>0);
     }
-    var seg=c.n.kind==='legal'?('legal prefix, row '+c.n.i+' of '+SUP.legalCount):
+    var seg=c.n.kind==='legal'?('legal prefix, row '+c.n.i+' of '+SUPP.legalCount):
             c.n.kind==='stone'?('stone segment, row '+c.n.i):('halo segment, row '+c.n.i);
     $('c2v').textContent='cell ('+c.n.q+', '+c.n.r+') · '+seg;
-    var note=c.stone?((c.stone.owner===CUR?'the mover’s stone':'an opponent stone')+
-        ', placement #'+(c.stone.ord+1)+' of 15; recency 1/(1+'+
-        (N_PLACED-c.stone.ord-1)+') = '+f[c.stone.owner===CUR?7:8].toFixed(3)):
+    var note=c.stone?((c.stone.owner===G.cur?'the mover’s stone':'an opponent stone')+
+        ', placement #'+(c.stone.ord+1)+' of '+G.n+'; recency 1/(1+'+
+        (G.n-c.stone.ord-1)+') = '+f[c.stone.owner===G.cur?7:8].toFixed(3)):
       c.n.kind==='halo'?'halo: not playable; completes edge stencils; dist reads '+f[11].toFixed(3):
+      f[14]?'the mover’s standing win: completes an own five-of-six window':
+      f[13]?'the opponent’s standing win cell: completes a hostile five-of-six window':
       (f[10]||f[9])?('a hot cell: empty inside a '+(f[10]?'friendly':'hostile')+' ≥4-of-6 window'):
+      f[5]?'this turn’s first stone (feature 5); the second placement is pending':
       'an ordinary legal cell';
     setReadout('ro2','cell ('+c.n.q+', '+c.n.r+') · '+c.n.kind,note+'.');
   }
-  wireNav(board,pick,{halo:true});
-  pick(board.byKey.get('4,-1'));  /* start on the newest stone: recency 1.0 */
+  function defaultCell(pos){
+    var t=pos.threats||{};
+    if(t.own_win&&t.own_win.length)return K(t.own_win[0][0],t.own_win[0][1]);
+    if(t.opp_hot&&t.opp_hot.length){
+      var c=t.opp_hot[Math.floor(t.opp_hot.length/2)];return K(c[0],c[1]);}
+    var last=G.records[G.n-1];return K(last[0],last[1]);
+  }
+  function loadPos(k){
+    pi=k;
+    var pos=POS[pi];
+    G=pos.id==='quiet_midgame'?QG:makeGame(pos.stones);
+    SUPP=buildSupport(G,4);FE=buildFeatures(G,SUPP);
+    board=paintBoard(svg,G,SUPP,{focusable:'all',heat:true});
+    wireNav(board,pick,{halo:true});
+    verifyDigest(pos);
+    selected=null;
+    pick(board.byKey.get(defaultCell(pos)));
+    if(featSel>=0)paintFeat(featSel);
+    setReadout('ro2',pos.title||pos.id,pos.description||'');
+  }
+  function init(positions){
+    POS=positions;
+    positions.forEach(function(p,i){
+      var o=document.createElement('option');
+      o.value=String(i);o.textContent=p.id;selEl.appendChild(o);
+    });
+    /* open on the split four with the opp-hot plane painted: the tactical
+       planes the quiet position leaves dead are immediately visible */
+    var start=0;
+    positions.forEach(function(p,i){if(p.id==='four_threat')start=i;});
+    selEl.value=String(start);
+    featSel=positions[start].id==='four_threat'?9:-1;
+    loadPos(start);
+    selEl.addEventListener('change',function(){loadPos(+selEl.value);});
+  }
+  var FALLBACK=[{id:'quiet_midgame',title:'Quiet middlegame (offline)',
+    description:'features.json not reachable; showing the inlined quiet position only.',
+    stones:RECORDS,threats:{}}];
+  if(window.fetch){
+    fetch('data/features.json')
+      .then(function(r){if(!r.ok)throw new Error('http '+r.status);return r.json();})
+      .then(function(data){init(data.positions);})
+      .catch(function(){init(FALLBACK);});
+  }else{
+    init(FALLBACK);
+  }
 })();
 
 /* ================= FIG 3 — conv stencil + receptive field ================= */
 (function(){
-  var board=paintBoard($('svg3'),SUP,{focusable:'all'});
+  var board=paintBoard($('svg3'),QG,SUP,{focusable:'all'});
   var layers=4,sel=null,g=board.gOver;
   function bfsFrom(i0){
     var lev=new Int16Array(SUP.nodes.length);lev.fill(-1);
@@ -867,7 +1035,7 @@ var FEATS=buildFeatures(SUP);
   pick(board.byKey.get('-2,1'));  /* a central legal cell */
 })();
 
-/* ================= FIG 4 — attention visualizer =================
+/* ================= FIG 5 — attention visualizer =================
    Real mode: rows from data/attention.json (shrimp_main_7, ep58) — four
    curated positions, 5 blocks × 3 heads, ~6 query cells each; sparse cell
    weights (floor 1e-3) plus all 8 summary-token weights per row. Cited
@@ -1036,12 +1204,12 @@ var FEATS=buildFeatures(SUP);
 
   /* ---------------- synthetic fallback (offline / file://) ---------------- */
   function initSynthetic(){
-    cap.innerHTML='<b>Figure 4</b> — attention visualizer. Click a query cell; heat and rays show where that cell attends. Patterns are <b>illustrative, not learned weights</b> (the real ep58 rows load when this page is served over HTTP). The three synthetic heads show multi-head diversity, and the bias toggle shows how the rel-pos table shapes scores by offset.';
+    cap.innerHTML='<b>Figure 5</b> — attention visualizer. Click a query cell; heat and rays show where that cell attends. Patterns are <b>illustrative, not learned weights</b> (the real ep58 rows load when this page is served over HTTP). The three synthetic heads show multi-head diversity, and the bias toggle shows how the rel-pos table shapes scores by offset.';
     $('bias4').hidden=false;
     var labels=['1 · local','2 · axis','3 · stones'];
     hbtns.forEach(function(b2,i){b2.textContent=labels[i];});
     setHead(0);
-    var board=paintBoard(svg,SUP,{focusable:'all',heat:true});
+    var board=paintBoard(svg,QG,SUP,{focusable:'all',heat:true});
     /* extend viewBox rightward for the 8 token chips */
     var vb=svg.getAttribute('viewBox').split(' ').map(Number);
     var tokX=vb[0]+vb[2]+18,tokW=30,tokH=(vb[3]-24)/8;
@@ -1149,7 +1317,195 @@ var FEATS=buildFeatures(SUP);
   }
 })();
 
-/* ================= FIG 5 — architecture schematic =================
+/* ================= FIG 4 — rel-pos bias kernels =================
+   Real ep70 tables from data/bias_kernels.json: tables[block][head] = 237
+   floats. Rows 0-216 are the hex-dist<=8 offsets ascending (dq, dr) — the
+   OFFS loop below reproduces geometry.disk_offsets' order exactly; rows
+   217-224 / 225-232 the on-/off-axis distance 9-16 ring buckets; 233 far;
+   234-236 the cell/token rows. Blue = positive bias, red = negative,
+   opacity = |value| / max |value| of the selected table. */
+(function(){
+  var svg=$('svgB');if(!svg)return;
+  function offline(){setReadout('roB','bias tables unavailable',
+    'This figure paints the real ep70 tables from data/bias_kernels.json, '+
+    'which needs the page served over HTTP. No synthetic fallback is shown.');}
+  function init(data){
+    var block=4,head=1,selKey=null;
+    var OFFS=[],rowOf=new Map();
+    for(var dq=-8;dq<=8;dq++)for(var dr=-8;dr<=8;dr++)
+      if(hexDist(dq,dr)<=8){rowOf.set(K(dq,dr),OFFS.length);OFFS.push([dq,dr]);}
+    /* disk bbox */
+    var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+    OFFS.forEach(function(o){var xy=XY(o[0],o[1]);
+      minX=Math.min(minX,xy[0]);maxX=Math.max(maxX,xy[0]);
+      minY=Math.min(minY,xy[1]);maxY=Math.max(maxY,xy[1]);});
+    var pad=HR+6,stripH=112;
+    svg.setAttribute('viewBox',(minX-pad).toFixed(1)+' '+(minY-pad).toFixed(1)+' '+
+      (maxX-minX+2*pad).toFixed(1)+' '+(maxY-minY+2*pad+stripH).toFixed(1));
+    var gAxis=el('g',{},svg),gCells=el('g',{},svg),gHeat=el('g',{},svg),
+        gStrip=el('g',{},svg),gSel=el('g',{},svg);
+    /* win-axis guides through the centre */
+    AXES.forEach(function(a){
+      var p1=XY(-8*a[0],-8*a[1]),p2=XY(8*a[0],8*a[1]);
+      el('line',{x1:p1[0],y1:p1[1],x2:p2[0],y2:p2[1],'class':'nxb-axis'},gAxis);
+    });
+    var items=[],byKey=new Map();
+    function describeRow(row){
+      if(row<217){
+        var o=OFFS[row],d=hexDist(o[0],o[1]);
+        return 'offset ('+o[0]+', '+o[1]+') · distance '+d+
+          (d>0?(onWinAxis(o[0],o[1])?' · on a win axis':' · off-axis'):' · the query cell itself')+
+          ' · row '+row;
+      }
+      if(row<225)return 'ring bucket, distance '+(9+row-217)+', on-axis · row '+row;
+      if(row<233)return 'ring bucket, distance '+(9+row-225)+', off-axis · row '+row;
+      if(row===233)return 'far bucket, distance ≥ 17 · row 233';
+      return ['cell→token row 234','token→cell row 235','token→token row 236'][row-234];
+    }
+    function showRow(row){
+      var v=data.tables[block][head][row];
+      setReadout('roB',describeRow(row),
+        'bias '+(v>=0?'+':'')+v.toFixed(3)+' added to every attention score '+
+        'with this query–key relation in block '+block+', head '+head+
+        ' (raw score units, pre-softmax).');
+    }
+    function wireItem(node,row,key){
+      node.setAttribute('tabindex','0');
+      node.setAttribute('role','button');
+      node.setAttribute('aria-label',describeRow(row));
+      var act=function(){
+        selKey=key;
+        gSel.innerHTML='';
+        var ring=node.cloneNode(false);
+        ring.setAttribute('class','nx-stencil');
+        ring.removeAttribute('tabindex');ring.removeAttribute('role');
+        gSel.appendChild(ring);
+        showRow(row);
+      };
+      node.addEventListener('click',act);
+      node.addEventListener('keydown',function(e){
+        if(e.key==='Enter'||e.key===' '){e.preventDefault();act();return;}
+        if(row<217){
+          var KEYMAP={ArrowRight:[[1,0],[1,-1]],ArrowLeft:[[-1,0],[-1,1]],
+                      ArrowUp:[[0,-1],[1,-1]],ArrowDown:[[0,1],[-1,1]]};
+          var cand=KEYMAP[e.key];if(!cand)return;
+          var o=OFFS[row];
+          for(var i=0;i<cand.length;i++){
+            var t=byKey.get(K(o[0]+cand[i][0],o[1]+cand[i][1]));
+            if(t){e.preventDefault();t.base.focus();return;}
+          }
+          e.preventDefault();
+        }
+      });
+    }
+    OFFS.forEach(function(o,row){
+      var xy=XY(o[0],o[1]);
+      var base=el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),'class':'nxb-cell'},gCells);
+      var heat=el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),'class':'nxb-pos',
+        'fill-opacity':'0'},gHeat);
+      wireItem(base,row,K(o[0],o[1]));
+      var it={row:row,base:base,heat:heat};
+      items.push(it);byKey.set(K(o[0],o[1]),it);
+    });
+    /* centre marker: the query cell */
+    var c0=XY(0,0);
+    el('polygon',{points:hexPts(c0[0],c0[1],HR*.36),'class':'nx-stencil'},gAxis);
+    /* strips: ring buckets + far + token rows */
+    var sy=maxY+pad+14,sx=minX,cw=22,ch=16;
+    function stripLabel(x,y,t,on){
+      var lab=el('text',{x:x,y:y,'class':'nx-lab'+(on?' on':'')},gStrip);
+      lab.textContent=t;return lab;
+    }
+    stripLabel(sx,sy-3,'rings d9–16 · on-axis / off-axis',true);
+    var stripItems=[];
+    for(var s=0;s<16;s++){
+      var row=217+s,x=sx+(s%8)*(cw+3),y=sy+4+Math.floor(s/8)*(ch+4);
+      var r2=el('rect',{x:x,y:y,width:cw,height:ch,'class':'nxb-cell'},gStrip);
+      var h2=el('rect',{x:x,y:y,width:cw,height:ch,'class':'nxb-pos',
+        'fill-opacity':'0'},gStrip);
+      var tl=el('text',{x:x+cw/2,y:y+ch-4,'text-anchor':'middle','class':'nx-lab'},gStrip);
+      tl.textContent='d'+(9+s%8);
+      wireItem(r2,row,'s'+row);
+      stripItems.push({row:row,base:r2,heat:h2});
+    }
+    var chipX=sx+8*(cw+3)+26;
+    stripLabel(chipX,sy-3,'far · token rows',true);
+    [['≥17',233],['c→t',234],['t→c',235],['t→t',236]].forEach(function(spec,i){
+      var x=chipX+i*(cw+16),y=sy+4;
+      var r3=el('rect',{x:x,y:y,width:cw+10,height:ch,'class':'nxb-cell'},gStrip);
+      var h3=el('rect',{x:x,y:y,width:cw+10,height:ch,'class':'nxb-pos',
+        'fill-opacity':'0'},gStrip);
+      var tl2=el('text',{x:x+(cw+10)/2,y:y+ch+11,'text-anchor':'middle',
+        'class':'nx-lab'},gStrip);
+      tl2.textContent=spec[0];
+      wireItem(r3,spec[1],'s'+spec[1]);
+      stripItems.push({row:spec[1],base:r3,heat:h3});
+    });
+    /* controls */
+    var bbtns=[],hbtnsB=[];
+    function mkBtn(wrap,label,list,onPick){
+      var bt=document.createElement('button');bt.type='button';
+      bt.textContent=String(label);
+      bt.addEventListener('click',function(){
+        onPick(label);
+        list.forEach(function(x,j){x.classList.toggle('sel',j===label);});
+        apply();
+      });
+      wrap.appendChild(bt);list.push(bt);
+    }
+    for(var b=0;b<data.blocks;b++)
+      mkBtn($('blkB'),b,bbtns,function(v){block=v;});
+    for(var h=0;h<data.heads;h++)
+      mkBtn($('headB'),h,hbtnsB,function(v){head=v;});
+    bbtns[block].classList.add('sel');hbtnsB[head].classList.add('sel');
+    function tableStats(col){
+      var ctr=0,r1=[],d6on=[],d6off=[];
+      OFFS.forEach(function(o,i){
+        var d=hexDist(o[0],o[1]);
+        if(d===0)ctr=col[i];
+        else if(d===1)r1.push(col[i]);
+        else if(d===6)(onWinAxis(o[0],o[1])?d6on:d6off).push(col[i]);
+      });
+      var mean=function(a){return a.reduce(function(x,y){return x+y;},0)/a.length;};
+      return {ctr:ctr,r1:mean(r1),d6on:mean(d6on),d6off:mean(d6off)};
+    }
+    function apply(){
+      var col=data.tables[block][head],vmax=1e-9,i;
+      for(i=0;i<col.length;i++)vmax=Math.max(vmax,Math.abs(col[i]));
+      items.concat(stripItems).forEach(function(it){
+        var v=col[it.row];
+        it.heat.setAttribute('class',v>=0?'nxb-pos':'nxb-neg');
+        it.heat.setAttribute('fill-opacity',(0.9*Math.abs(v)/vmax).toFixed(3));
+      });
+      $('bBv').textContent='block '+block+' · head '+head+
+        ' · max |bias| '+vmax.toFixed(2);
+      if(selKey!==null){
+        var it2=byKey.get(selKey);
+        var row=it2?it2.row:+selKey.slice(1);
+        showRow(row);
+      }else{
+        var st=tableStats(col);
+        setReadout('roB','block '+block+' · head '+head+' · real ep70 table',
+          'query cell '+(st.ctr>=0?'+':'')+st.ctr.toFixed(2)+
+          ' · ring-1 mean '+(st.r1>=0?'+':'')+st.r1.toFixed(2)+
+          ' · distance-6 mean on-axis '+(st.d6on>=0?'+':'')+st.d6on.toFixed(2)+
+          ' vs off-axis '+(st.d6off>=0?'+':'')+st.d6off.toFixed(2)+
+          '. Click any cell for its exact row and value.');
+      }
+    }
+    apply();
+  }
+  if(window.fetch){
+    fetch('data/bias_kernels.json')
+      .then(function(r){if(!r.ok)throw new Error('http '+r.status);return r.json();})
+      .then(init)
+      .catch(function(){offline();});
+  }else{
+    offline();
+  }
+})();
+
+/* ================= FIG 6 — architecture schematic =================
    Param counts derived from the layer shapes at c=192, heads=3, F=15,
    BIAS_ROWS=237, NUM_TOKENS=8, MLP_RATIO=2, VALUE_BINS=65:
      HexNodeConv(cin,cout) = 7*cin*cout + cout ; Linear = in*out + out

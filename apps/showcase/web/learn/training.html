@@ -47,13 +47,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 .wn-bar{fill:#1a2027;stroke:var(--line-soft);stroke-width:.5}
 .wn-in{fill:var(--accent-dim)}
 .wn-part{fill:var(--accent-dim);opacity:.45}
-.d6-btnrow{display:flex;gap:8px;align-items:center;margin-top:8px}
-.fig3-flex{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
-.fig3-flex .f3-main{flex:1 1 520px;min-width:300px}
-.fig3-flex .f3-inset{flex:0 0 220px}
-.f3-inset-tag{font-family:var(--mono);font-size:10px;letter-spacing:.16em;
-  text-transform:uppercase;color:var(--dim);margin-bottom:6px}
-/* fig 4 — rating curve */
+/* fig 4 — D6 symmetry demo */
+.d6-heat{fill:var(--p0);pointer-events:none}
+.d6-arg{fill:none;stroke:var(--accent);stroke-width:1.8;pointer-events:none}
+.d6-btns{display:inline-flex;gap:4px;flex-wrap:wrap}
+/* fig 5 — rating curve */
 .rc-band{fill:var(--p0);opacity:.10}
 .rc-line{fill:none;stroke:var(--p0);stroke-width:1.5}
 .rc-pt{fill:var(--bg);stroke:var(--p0-soft);stroke-width:1.5;cursor:pointer;outline:none}
@@ -295,25 +293,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
     group D6). The symmetry is
     drawn deterministically per row per epoch, so a row that survives in the
     window for 20 epochs is seen in up to 12 different orientations, a 12×
-    data multiplier with no storage cost.
+    data multiplier with no storage cost. The transform applies to every
+    stored coordinate at once — stones, policy target, threat cells — so a
+    re-expressed row is the <em>same</em> training example: the policy target
+    rides the coordinate change. Fig 4 shows exactly that on a real position
+    and a real policy.
   </p>
 
   <figure class="fig fig-wide" id="fig-window">
-    <figcaption>Fig 3 — <b>the window over epoch shards</b> · drag the epoch slider; shading = rows inside the window (real formula) · plus: one position, 12 symmetries</figcaption>
+    <figcaption>Fig 3 — <b>the window over epoch shards</b> · drag the epoch slider; shading = rows inside the window (real formula)</figcaption>
     <div class="fig-body">
-      <div class="fig3-flex">
-        <div class="f3-main">
-          <svg id="wnSvg" viewBox="0 0 660 250" role="img" aria-label="Epoch shards as bars with the training window shaded"></svg>
-        </div>
-        <div class="f3-inset">
-          <div class="f3-inset-tag">D6 · click to cycle 12 variants</div>
-          <svg id="d6Svg" viewBox="0 0 220 190" role="button" tabindex="0" aria-label="Cycle through the 12 symmetric variants of a position" style="cursor:pointer"></svg>
-          <div class="d6-btnrow">
-            <button id="d6Next">next variant</button>
-            <span class="val" id="d6Val">1 / 12 · identity</span>
-          </div>
-        </div>
-      </div>
+      <svg id="wnSvg" viewBox="0 0 660 250" role="img" aria-label="Epoch shards as bars with the training window shaded"></svg>
     </div>
     <div class="fig-controls">
       <label for="wnSlider">epoch</label>
@@ -321,6 +311,27 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
       <span class="val" id="wnVal"></span>
     </div>
     <div class="fig-readout" aria-live="polite" id="wnRO"></div>
+  </figure>
+
+  <!-- Data: data/symmetry.json (learn_snapshots.py) — the ep70 net's policy
+       and value on the four_threat position, base orientation only, floored
+       at 1e-3. The 11 non-identity views are coordinate-transformed here in
+       the page (geometry.py apply_d6 mirrored below), matching how training
+       re-expresses sampled rows. Verified at export: argmax (4,1) p=.603,
+       the forced blocking gap. -->
+  <figure class="fig fig-wide" id="fig-d6">
+    <figcaption>Fig 4 — <b>one real evaluation, 12 orientations</b> · the ep70 policy on the split-four position (data/symmetry.json); the 11 non-identity views are coordinate-transformed from the single measured evaluation, exactly the re-expression training applies · outlined cell = policy argmax</figcaption>
+    <div class="fig-body">
+      <svg id="d6Svg" viewBox="0 0 900 340" role="img" aria-label="The split-four position under a selected board symmetry with the network policy painted; the argmax cell tracks the transform"></svg>
+    </div>
+    <div class="fig-controls">
+      <button id="d6Prev" aria-label="previous variant">‹</button>
+      <span class="d6-btns" id="d6Btns"></span>
+      <button id="d6Next" aria-label="next variant">›</button>
+      <span class="spacer"></span>
+      <span class="val" id="d6Val"></span>
+    </div>
+    <div class="fig-readout" aria-live="polite" id="d6RO"></div>
   </figure>
 
   <h2 id="eval"><span class="sec-no">04</span>Evaluation</h2>
@@ -376,7 +387,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
   </p>
 
   <figure class="fig fig-wide" id="fig-rating">
-    <figcaption>Fig 4 — <b>pooled rating over a run</b> · synthetic-but-plausible data, real mechanism · hover or focus a point</figcaption>
+    <figcaption>Fig 5 — <b>pooled rating over a run</b> · synthetic-but-plausible data, real mechanism · hover or focus a point (the real curve is on the results page)</figcaption>
     <div class="fig-body">
       <svg id="rcSvg" viewBox="0 0 900 300" role="img" aria-label="Rating versus epoch with an uncertainty band; each point is one evaluation epoch"></svg>
     </div>
@@ -746,47 +757,113 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
   }
   slider.addEventListener('input',function(){render(+slider.value);});
   render(+slider.value);
-
-  /* ---- D6 inset: one position, 12 symmetric variants ---- */
-  var d6svg=document.getElementById('d6Svg');
-  var d6val=document.getElementById('d6Val');
-  var d6btn=document.getElementById('d6Next');
-  var RAD=3,SZ=14,CX=110,CY=88;
-  var baseCells=hexCells(RAD);
-  // asymmetric little pattern (owner 0/1), chosen to look mid-game
-  var pat=[[0,0,0],[1,0,1],[2,-1,0],[0,1,1],[-1,2,0],[1,1,1],[-2,1,0],[0,-2,1],[3,-2,0]];
-  var vi=0;
-  function rot60(q,r){return[-r,q+r];}
-  function refl(q,r){return[r,q];}
-  function apply(v,q,r){
-    var p=[q,r];
-    if(v>=6)p=refl(p[0],p[1]);
-    for(var k=0;k<v%6;k++)p=rot60(p[0],p[1]);
-    return p;
-  }
-  function d6render(){
-    d6svg.innerHTML='';
-    baseCells.forEach(function(c){
-      var xy=hexXY(c[0],c[1],SZ);
-      el('path',{class:'hx-cell',d:hexPath(CX+xy[0],CY+xy[1],SZ-1)},d6svg);
-    });
-    pat.forEach(function(s){
-      var p=apply(vi,s[0],s[1]);
-      var xy=hexXY(p[0],p[1],SZ);
-      el('circle',{class:s[2]?'hx-p1':'hx-p0',cx:CX+xy[0],cy:CY+xy[1],r:SZ*0.5},d6svg);
-    });
-    txt(el('text',{class:'tick-t',x:CX,y:182,'text-anchor':'middle'},d6svg),'same position to the loss; 12 views to the net');
-    var rot=(vi%6)*60;
-    d6val.textContent=(vi+1)+' / 12 · '+(vi===0?'identity':(vi===6?'reflect':('rot '+rot+'°'+(vi>=6?' + reflect':''))));
-  }
-  function next(){vi=(vi+1)%12;d6render();}
-  d6btn.addEventListener('click',next);
-  d6svg.addEventListener('click',next);
-  d6svg.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();next();}});
-  d6render();
 })();
 
-/* ================= FIG 4 — rating curve ================= */
+/* ================= FIG 4 — D6 symmetry demo (real ep70 policy) =================
+   data/symmetry.json: the ep70 net's policy/value on four_threat, evaluated
+   ONCE in the base orientation. Variants 1-11 transform every coordinate
+   (support cells, stones, policy cells, argmax) client-side with the exact
+   apply_d6 from geometry.py: indices 0-5 = rot60^i, 6-11 = reflect
+   (q,r)->(q,-q-r) then rotate. This mirrors how training re-expresses a
+   sampled row; the policy is never re-evaluated per orientation. */
+(function(){
+  var svg=document.getElementById('d6Svg');
+  if(!svg)return;
+  var ro=document.getElementById('d6RO');
+  var val=document.getElementById('d6Val');
+  function offline(){
+    val.textContent='offline';
+    ro.innerHTML='';
+    var a=document.createElement('span');a.className='ro-k';
+    a.textContent='data unavailable';
+    var b=document.createElement('span');b.className='ro-t';
+    b.textContent='This figure paints the real ep70 policy from data/symmetry.json, which needs the page served over HTTP.';
+    ro.appendChild(a);ro.appendChild(b);
+  }
+  function rot60(q,r){return [-r,q+r];}
+  function reflect(q,r){return [q,-q-r];}
+  function applyD6(v,q,r){
+    var p=[q,r];
+    if(v>=6){p=reflect(p[0],p[1]);v-=6;}
+    for(var k=0;k<v;k++)p=rot60(p[0],p[1]);
+    return p;
+  }
+  var NAMES=['identity','rot 60°','rot 120°','rot 180°','rot 240°','rot 300°',
+             'reflect','reflect + 60°','reflect + 120°','reflect + 180°',
+             'reflect + 240°','reflect + 300°'];
+  function init(data){
+    var pos=data.position,sup=pos.support;
+    var polByKey={};
+    data.policy.forEach(function(p){polByKey[p.q+','+p.r]=p.p;});
+    var maxP=data.argmax_p;
+    var SZ=13,vi=0;
+    var btns=[],wrap=document.getElementById('d6Btns');
+    for(var v=0;v<12;v++)(function(v){
+      var bt=document.createElement('button');
+      bt.type='button';bt.textContent=String(v);
+      bt.setAttribute('aria-label','symmetry '+v+' · '+NAMES[v]);
+      bt.addEventListener('click',function(){vi=v;render();});
+      wrap.appendChild(bt);btns.push(bt);
+    })(v);
+    function render(){
+      svg.innerHTML='';
+      btns.forEach(function(b,j){b.classList.toggle('on',j===vi);});
+      var cells=sup.coords.map(function(c){return applyD6(vi,c[0],c[1]);});
+      var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+      cells.forEach(function(c){
+        var xy=hexXY(c[0],c[1],SZ);
+        minX=Math.min(minX,xy[0]);maxX=Math.max(maxX,xy[0]);
+        minY=Math.min(minY,xy[1]);maxY=Math.max(maxY,xy[1]);
+      });
+      var pad=SZ+6;
+      svg.setAttribute('viewBox',(minX-pad).toFixed(1)+' '+(minY-pad).toFixed(1)+' '+
+        (maxX-minX+2*pad).toFixed(1)+' '+(maxY-minY+2*pad).toFixed(1));
+      var own={};
+      pos.stones.forEach(function(s){own[s[0]+','+s[1]]=s[2];});
+      var lc=sup.legal_count,sc=sup.stone_count;
+      var argT=applyD6(vi,data.argmax[0],data.argmax[1]);
+      sup.coords.forEach(function(c0,i){
+        var c=cells[i],xy=hexXY(c[0],c[1],SZ);
+        if(i>=lc+sc)return; /* halo left undrawn: the support edge is fig-1 material */
+        el('path',{class:'hx-cell',d:hexPath(xy[0],xy[1],SZ-0.8)},svg);
+        var p=polByKey[c0[0]+','+c0[1]];
+        if(p!==undefined)
+          el('path',{class:'d6-heat',d:hexPath(xy[0],xy[1],SZ-0.8),
+            'fill-opacity':(0.9*p/maxP).toFixed(3)},svg);
+        var o=own[c0[0]+','+c0[1]];
+        if(o!==undefined)
+          el('circle',{class:o?'hx-p1':'hx-p0',cx:xy[0],cy:xy[1],r:SZ*0.52},svg);
+      });
+      var axy=hexXY(argT[0],argT[1],SZ);
+      el('path',{class:'d6-arg',d:hexPath(axy[0],axy[1],SZ-0.8)},svg);
+      val.textContent=(vi+1)+' / 12 · '+NAMES[vi];
+      ro.innerHTML='';
+      var a=document.createElement('span');a.className='ro-k';
+      a.textContent=NAMES[vi]+' · argmax ('+data.argmax[0]+', '+data.argmax[1]+') → ('+
+        argT[0]+', '+argT[1]+') · p = '+maxP.toFixed(3)+' · value '+data.value.toFixed(3);
+      var b=document.createElement('span');b.className='ro-t';
+      b.textContent=(vi===0?
+        'The measured orientation: the '+data.run+' '+data.checkpoint+
+        ' policy puts '+Math.round(100*maxP)+'% of its mass on the forced blocking gap.':
+        'Coordinate-transformed view of the same evaluation: every stone, policy cell and the argmax move together. To the loss this is the identical training example.');
+      ro.appendChild(a);ro.appendChild(b);
+    }
+    document.getElementById('d6Prev').addEventListener('click',function(){vi=(vi+11)%12;render();});
+    document.getElementById('d6Next').addEventListener('click',function(){vi=(vi+1)%12;render();});
+    svg.addEventListener('click',function(){vi=(vi+1)%12;render();});
+    render();
+  }
+  if(window.fetch){
+    fetch('data/symmetry.json')
+      .then(function(r){if(!r.ok)throw new Error('http '+r.status);return r.json();})
+      .then(init)
+      .catch(offline);
+  }else{
+    offline();
+  }
+})();
+
+/* ================= FIG 5 — rating curve ================= */
 (function(){
   var svg=document.getElementById('rcSvg');
   var ro=document.getElementById('rcRO');

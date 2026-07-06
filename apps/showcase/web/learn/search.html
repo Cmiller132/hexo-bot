@@ -27,6 +27,13 @@
       eval_virtual_batch_size=32
   - apps/showcase/server/showcase/bots.py     — SearchProfile: as-trained divergence overrides,
       serve-side virtual batch = eval_virtual_batch_size (32), per-bot visit budgets from the catalogue
+  - data/search_compare.json — real 512-visit searches (quiet_midgame, seed 20260705, CPU, one
+      search per side via SearchProfile.search_one): shrimp_main_7 profile + ep70 net (Gumbel) vs
+      shrimp_main_5 profile + ep105 net (PUCT). learn_snapshots.py asserts the measured gumbel visit
+      histogram equals the SH schedule (m 32→16 calibrated, R=4, cum caps 8/24/56/120) at export.
+      Measured facts cited below: gumbel 16 moves visited, finalists 120/120, played (2,-2) q̂ .92;
+      puct 7 moves visited, leader (-1,0) 229 of 327 used, early-stopped (early_stop_ready:
+      remaining budget could not overtake the leader AND the LCB pick equalled the visit pick).
 -->
 <style>
 /* Token fallback + minimal structural fallback. learn.css (shared, loaded after
@@ -70,6 +77,17 @@ body{margin:0}
 .fig figcaption{color:var(--muted);font-size:.85rem;margin-top:10px;line-height:1.5}
 .fig .note{color:var(--dim);font-size:.75rem;font-family:var(--mono)}
 .eq{font-family:var(--mono);font-size:.9em;color:var(--accent);background:var(--tile);border:1px solid var(--line-soft);border-radius:4px;padding:8px 14px;margin:1em 0;overflow-x:auto;white-space:nowrap}
+/* gumbel-vs-puct compare figure */
+.cmp-flex{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.cmp-side{flex:1 1 280px;min-width:250px}
+.cmp-tag{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+.cmp-table{margin-top:12px;overflow-x:auto}
+.cmp-table table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.cmp-table th,.cmp-table td{border-top:1px solid var(--line-soft);padding:5px 10px;text-align:left;white-space:nowrap}
+.cmp-table th{color:var(--dim);font-weight:400;text-transform:uppercase;letter-spacing:.1em;font-size:9.5px}
+.cmp-table td.v{color:var(--accent)}
+.cmp-cell{cursor:pointer;outline:none}
+.cmp-cell:focus-visible{stroke:var(--accent);stroke-width:1.5}
 </style>
 <link rel="stylesheet" href="learn.css">
 </head>
@@ -209,6 +227,77 @@ body{margin:0}
     seventh-ranked prior with a high true Q wins the bracket. Each reset redraws g and the
     simulated evaluations: the elimination order varies run to run, while a real Q edge keeps
     winning.</figcaption>
+  </figure>
+
+  <p>The bracket above is a simulation for legibility. Below is the <strong>measured</strong>
+  ladder: a real 512-visit search with the served shrimp_main_7 profile (ep70 net) on a quiet
+  middlegame position, replayed round by round. At this budget the configured m&nbsp;=&nbsp;32 is
+  calibrated down to <strong>16 candidates</strong> (32 would leave round 0 only 3 visits per
+  candidate, under the 4-visit floor), giving R&nbsp;=&nbsp;4 rounds with per-survivor quotas
+  8&nbsp;&rarr;&nbsp;16&nbsp;&rarr;&nbsp;32&nbsp;&rarr;&nbsp;64, cumulative caps
+  8&nbsp;/&nbsp;24&nbsp;/&nbsp;56&nbsp;/&nbsp;120. The measured final visit counts land exactly on
+  those tiers.</p>
+
+  <figure class="fig" id="fig-ladder">
+    <div class="fig-controls" role="group" aria-label="Measured ladder controls">
+      <button id="L-play" type="button">Play</button>
+      <button id="L-step" type="button">Step round</button>
+      <button id="L-reset" type="button">Reset</button>
+      <span class="readout" id="L-status">loading&hellip;</span>
+    </div>
+    <svg id="L-svg" viewBox="0 0 720 372" role="img" aria-label="The measured sequential-halving ladder: sixteen real candidate moves accumulate visits round by round; half are eliminated at each barrier until the played move remains"></svg>
+    <figcaption><strong>The measured ladder</strong> (data/search_compare.json, shrimp_main_7 profile,
+    ep70 net, 512 visits, seed fixed). Candidates, logits, priors, final visit counts and q&#770;
+    are <em>measured</em>; the round boundaries and quotas are the SH schedule recomputed from the
+    algorithm at this budget, and the snapshot generator asserts the measured histogram matches it
+    exactly, which is what lets the rounds be replayed from final counts. Eliminations are read off
+    the final counts (a candidate eliminated after round r holds exactly that round's cumulative
+    cap). The q&#770; shown is the final measured value (the per-round trajectory is not recorded),
+    and the Gumbel noise g is internal to the engine and not exported. Columns are sorted by
+    logit; the played move is the LCB pick over the finalists.</figcaption>
+  </figure>
+
+  <h2 id="compare">One budget, two searches</h2>
+
+  <!-- All numbers here are measured values from data/search_compare.json (seed 20260705):
+       gumbel: 16 moves visited, counts {120x2, 56x2, 24x4, 8x8}, played (2,-2) q .9218, value .6858;
+       puct: 327 of 512 visits, 7 moves visited, leader (-1,0) n=229 q .733, early_stopped=true.
+       Early-stop semantics: search.rs early_stop_ready (see source note at the top of this file). -->
+  <p>The two eras structure the same budget differently, and the difference is visible on one
+  position. The figure below runs the real thing once per side, through the same
+  <code>SearchProfile</code> invocation the site serves bots with: the <strong>shrimp_main_7</strong>
+  profile (Gumbel root + sequential halving, ep70 net) and the <strong>shrimp_main_5</strong>
+  profile (PUCT root, that run's ep105 net), same quiet middlegame, 512 visits each. The Gumbel
+  side spreads its budget over the calibrated 16-candidate set in the schedule's tiers &mdash;
+  every candidate gets at least 8 measured visits, the two finalists 120 each &mdash; then picks
+  between well-measured finalists. The PUCT side grows one tree greedily from the prior: the leader
+  absorbs 229 visits, only 7 moves receive any at all, and the search stopped itself 185 visits
+  short of the budget once the remaining budget could not overtake the visit leader (and the LCB
+  pick agreed). Neither shape is free: SH buys a calibrated comparison across a candidate set,
+  PUCT buys depth on the line it already believes. The two sides also disagree on the move here;
+  note they are different networks as well as different searches, so this is a portrait of two
+  served bots, not a controlled search-only ablation.</p>
+
+  <figure class="fig" id="fig-compare">
+    <div class="fig-controls">
+      <span class="readout" id="cmp-read">tap a shaded cell for its visit count, q&#770; and prior</span>
+    </div>
+    <div class="cmp-flex">
+      <div class="cmp-side">
+        <div class="cmp-tag" id="cmp-tag-g">gumbel + SH &middot; ep70</div>
+        <svg id="cmp-g" role="img" aria-label="Board with visit-count heat for the Gumbel search"></svg>
+      </div>
+      <div class="cmp-side">
+        <div class="cmp-tag" id="cmp-tag-p">puct &middot; main_5 ep105</div>
+        <svg id="cmp-p" role="img" aria-label="Board with visit-count heat for the PUCT search"></svg>
+      </div>
+    </div>
+    <div class="cmp-table" id="cmp-table"></div>
+    <figcaption><strong>Gumbel vs PUCT, 512 visits each, measured.</strong> Heat = fraction of that
+    side's visits on the cell; the ring marks the played move. The Gumbel heat is a 16-cell tier
+    pattern (the SH schedule); the PUCT heat is one dominant cell plus a handful of probes. Both
+    searches ran on CPU with the site's serve settings (virtual batch 32, temperature 0);
+    data/search_compare.json.</figcaption>
   </figure>
 
   <h2 id="tss">Threat-space search</h2>
@@ -763,6 +852,211 @@ lanesSlider.addEventListener("input",function(){
 buildLanes();
 if(playing){playBtn.textContent="Pause";requestAnimationFrame(loop);}
 else{playBtn.textContent="Play";for(var w=0;w<400;w++)step();render();}
+})();
+
+/* ============ FIGS: measured ladder + gumbel-vs-puct (real data) ============
+   Both figures read data/search_compare.json (learn_snapshots.py): one real
+   512-visit search per side on quiet_midgame via the served SearchProfile.
+   The ladder replays the SH schedule against the MEASURED final visit counts
+   (the generator asserts they match); logits/priors/q are measured, the
+   per-round q trajectory is not recorded, g is not exported. */
+(function(){
+var Lsvg=document.getElementById("L-svg"),Gsvg=document.getElementById("cmp-g");
+if(!Lsvg&&!Gsvg)return;
+function offline(){
+  var s=document.getElementById("L-status");
+  if(s)s.textContent="data/search_compare.json unavailable (serve over HTTP)";
+  var r=document.getElementById("cmp-read");
+  if(r)r.textContent="data/search_compare.json unavailable (serve over HTTP)";
+}
+if(!window.fetch){offline();return;}
+fetch("data/search_compare.json")
+  .then(function(res){if(!res.ok)throw new Error("http "+res.status);return res.json();})
+  .then(function(data){
+    var gum=null,puct=null;
+    data.sides.forEach(function(s){if(s.id==="gumbel")gum=s;else puct=s;});
+    if(!gum||!puct)throw new Error("bad sides");
+    initLadder(gum);
+    initCompare(data,gum,puct);
+  })
+  .catch(offline);
+
+/* ---------------- the measured ladder ---------------- */
+function initLadder(gum){
+  var svg=Lsvg;if(!svg)return;
+  var sh=gum.sh,R=sh.rounds,CUM=sh.cum_cap,QUOTA=sh.round_quota;
+  var cands=gum.moves.slice().sort(function(a,b){return b.logit-a.logit;});
+  var M=cands.length;
+  var X0=30,COLW=(720-2*X0)/M,BARW=Math.min(28,COLW-8),BASE=268;
+  var VSCALE=(BASE-64)/CUM[R-1];
+  var statusEl=document.getElementById("L-status");
+  var playBtn=document.getElementById("L-play");
+  var round=0,prog=0,finished=false,playing=false,rafId=null,pauseLeft=0,lastTs=null;
+  function capBefore(r){return r>0?CUM[r-1]:0;}
+  function render(){
+    svg.textContent="";
+    el("line",{x1:16,y1:BASE,x2:704,y2:BASE,stroke:C.line},svg);
+    txt(20,20,"m = "+M+" measured candidates (config 32, calibrated for 512 visits) · R = "+R+" rounds",
+      {fill:C.muted,"font-size":"11","font-family":MONO},svg);
+    txt(20,38,"quotas +"+QUOTA.join(" / +")+" per survivor · cumulative caps "+CUM.join(" / "),
+      {fill:C.dim,"font-size":"10","font-family":MONO},svg);
+    var i;
+    /* current-round cap line */
+    if(!finished){
+      var cy=BASE-CUM[round]*VSCALE;
+      el("line",{x1:16,y1:cy,x2:704,y2:cy,stroke:C.p0s,"stroke-width":1,"stroke-dasharray":"2 4",opacity:.6},svg);
+      txt(704,cy-4,"cap "+CUM[round],{fill:C.p0s,"font-size":"9","font-family":MONO,"text-anchor":"end"},svg);
+    }
+    for(i=0;i<M;i++){
+      var c=cands[i],x=X0+i*COLW+(COLW-BARW)/2;
+      var lo=capBefore(round);
+      var v=finished?c.n:Math.min(c.n,lo+prog*(CUM[round]-lo));
+      var out=finished?(c.n<CUM[R-1]):(c.n<=lo&&round>0);
+      var g=el("g",{opacity:out?0.35:1},svg);
+      var h=v*VSCALE;
+      el("rect",{x:x,y:BASE-h,width:BARW,height:Math.max(h,1),fill:out?C.dim:C.p0,opacity:out?1:0.85},g);
+      txt(x+BARW/2,BASE-h-6,"q̂ "+c.qhat.toFixed(2),{fill:out?C.dim:C.accent,"font-size":"8.5","font-family":MONO,"text-anchor":"middle"},g);
+      txt(x+BARW/2,BASE+13,"("+c.q+","+c.r+")",{fill:out?C.dim:C.text,"font-size":"8.5","font-family":MONO,"text-anchor":"middle"},g);
+      txt(x+BARW/2,BASE+26,"lg "+c.logit.toFixed(1),{fill:C.dim,"font-size":"8","font-family":MONO,"text-anchor":"middle"},g);
+      txt(x+BARW/2,BASE+39,"N "+Math.round(v),{fill:out?C.dim:C.muted,"font-size":"8.5","font-family":MONO,"text-anchor":"middle"},g);
+      if(out)txt(x+BARW/2,BASE-h-18,"×",{fill:C.p1,"font-size":"11","font-family":MONO,"text-anchor":"middle"},svg);
+      if(finished&&c.q===gum.chosen[0]&&c.r===gum.chosen[1]){
+        var cy2=BASE-h-34;
+        el("path",{d:"M"+(x+BARW/2-9)+","+(cy2+8)+" l4,-9 l5,6 l5,-6 l4,9 z",fill:C.accent},svg);
+        txt(x+BARW/2,cy2+21,"played",{fill:C.accent,"font-size":"9","font-family":MONO,"text-anchor":"middle"},svg);
+      }
+    }
+    if(finished){
+      statusEl.textContent="done · "+gum.visits+" visits · played ("+gum.chosen[0]+","+gum.chosen[1]+") · finalists measured to "+CUM[R-1]+" visits each";
+    }else{
+      statusEl.textContent="round "+(round+1)+"/"+R+" · quota +"+QUOTA[round]+" per survivor · σ multiplier ≈ "+(50+CUM[round])+" at this barrier";
+    }
+  }
+  function stopPlay(){playing=false;playBtn.textContent="Play";
+    if(rafId){cancelAnimationFrame(rafId);rafId=null;}lastTs=null;}
+  function stepRound(){
+    if(finished)return;
+    if(round>=R-1){prog=1;finished=true;}
+    else{round++;prog=0;}
+    render();
+  }
+  function loop(ts){
+    if(!playing)return;
+    if(lastTs===null)lastTs=ts;
+    var dt=ts-lastTs;lastTs=ts;
+    if(pauseLeft>0){pauseLeft-=dt;}
+    else{
+      prog+=dt/1400;
+      if(prog>=1){
+        prog=1;render();
+        if(round>=R-1){finished=true;render();stopPlay();return;}
+        round++;prog=0;pauseLeft=450;
+      }
+    }
+    render();
+    rafId=requestAnimationFrame(loop);
+  }
+  playBtn.addEventListener("click",function(){
+    if(REDUCED){stepRound();return;}
+    if(playing){stopPlay();return;}
+    if(finished){round=0;prog=0;finished=false;}
+    playing=true;playBtn.textContent="Pause";
+    rafId=requestAnimationFrame(loop);
+  });
+  document.getElementById("L-step").addEventListener("click",function(){stopPlay();stepRound();});
+  document.getElementById("L-reset").addEventListener("click",function(){
+    stopPlay();round=0;prog=0;finished=false;render();});
+  render();
+  statusEl.textContent="press play · round 1/"+R+" fills every candidate to "+CUM[0]+" visits";
+}
+
+/* ---------------- gumbel vs puct boards + table ---------------- */
+function initCompare(data,gum,puct){
+  if(!Gsvg)return;
+  var pos=data.position;
+  var readEl=document.getElementById("cmp-read");
+  document.getElementById("cmp-tag-g").textContent=
+    "gumbel root + SH · "+gum.run+" "+gum.checkpoint;
+  document.getElementById("cmp-tag-p").textContent=
+    "puct · "+puct.run+" "+puct.checkpoint;
+  function paint(svg,side){
+    var coords=pos.support.coords,lc=pos.support.legal_count,sc=pos.support.stone_count;
+    var own={};pos.stones.forEach(function(s){own[s[0]+","+s[1]]=s[2];});
+    var SZ=12;
+    function hx(q,r){return SZ*(Math.sqrt(3)*q+Math.sqrt(3)/2*r);}
+    function hy(q,r){return SZ*1.5*r;}
+    function pts(q,r){
+      var cx=hx(q,r),cy=hy(q,r),p="";
+      for(var k=0;k<6;k++){var a=Math.PI/180*(60*k-30);
+        p+=(cx+(SZ-0.8)*Math.cos(a)).toFixed(1)+","+(cy+(SZ-0.8)*Math.sin(a)).toFixed(1)+" ";}
+      return p.trim();
+    }
+    var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+    coords.forEach(function(c){
+      var x=hx(c[0],c[1]),y=hy(c[0],c[1]);
+      minX=Math.min(minX,x);maxX=Math.max(maxX,x);
+      minY=Math.min(minY,y);maxY=Math.max(maxY,y);
+    });
+    var pad=SZ+4;
+    svg.setAttribute("viewBox",(minX-pad).toFixed(1)+" "+(minY-pad).toFixed(1)+" "+
+      (maxX-minX+2*pad).toFixed(1)+" "+(maxY-minY+2*pad).toFixed(1));
+    var byKey={};side.moves.forEach(function(m){byKey[m.q+","+m.r]=m;});
+    var maxN=1;side.moves.forEach(function(m){if(m.n>maxN)maxN=m.n;});
+    var gC=el("g",{},svg),gH=el("g",{},svg),gS=el("g",{},svg),gO=el("g",{},svg);
+    function show(q,r){
+      var m=byKey[q+","+r];
+      var who=side.id==="gumbel"?"gumbel":"puct";
+      if(m){
+        readEl.textContent=who+" · ("+q+","+r+"): "+m.n+" visits ("+
+          Math.round(100*m.n/side.visits)+"%) · q̂ "+m.qhat.toFixed(2)+
+          " · prior "+m.prior.toFixed(3)+
+          (m.logit!==undefined?" · logit "+m.logit.toFixed(2):"");
+      }else{
+        readEl.textContent=who+" · ("+q+","+r+"): no visits";
+      }
+    }
+    coords.forEach(function(c,i){
+      var q=c[0],r=c[1],kind=i<lc?"legal":(i<lc+sc?"stone":"halo");
+      var poly=el("polygon",{points:pts(q,r),
+        fill:kind==="halo"?"none":(kind==="stone"?"#12161c":"#1b222b"),
+        stroke:kind==="halo"?C.dim:C.lineSoft,"stroke-width":1},gC);
+      if(kind==="halo"){poly.setAttribute("stroke-dasharray","2.5 2.5");return;}
+      poly.setAttribute("class","cmp-cell");
+      poly.setAttribute("tabindex","0");
+      poly.setAttribute("role","button");
+      var m=byKey[q+","+r];
+      poly.setAttribute("aria-label","cell "+q+","+r+(m?": "+m.n+" visits":": no visits"));
+      poly.addEventListener("click",function(){show(q,r);});
+      poly.addEventListener("keydown",function(e){
+        if(e.key==="Enter"||e.key===" "){e.preventDefault();show(q,r);}});
+      if(m)el("polygon",{points:pts(q,r),fill:C.accent,"pointer-events":"none",
+        "fill-opacity":(0.88*m.n/maxN).toFixed(3)},gH);
+      var o=own[q+","+r];
+      if(o!==undefined)el("circle",{cx:hx(q,r),cy:hy(q,r),r:SZ*0.5,
+        fill:o===0?C.p0:C.p1,"pointer-events":"none"},gS);
+    });
+    el("polygon",{points:pts(side.chosen[0],side.chosen[1]),fill:"none",
+      stroke:C.accent,"stroke-width":2,"pointer-events":"none"},gO);
+  }
+  paint(Gsvg,gum);
+  paint(document.getElementById("cmp-p"),puct);
+  var top=function(side){var m=side.moves[0];
+    return "("+m.q+","+m.r+") · "+m.n+" of "+side.visits+" ("+Math.round(100*m.n/side.visits)+"%)";};
+  var rows=[
+    ["profile / net",gum.profile+" · "+gum.checkpoint,puct.profile+" · "+puct.checkpoint],
+    ["played move","("+gum.chosen[0]+","+gum.chosen[1]+")","("+puct.chosen[0]+","+puct.chosen[1]+")"],
+    ["searched value",gum.root_value.toFixed(3),puct.root_value.toFixed(3)],
+    ["visits used",gum.visits+" / "+gum.budget+(gum.early_stopped?" (early stop)":""),
+                   puct.visits+" / "+puct.budget+(puct.early_stopped?" (early stop)":"")],
+    ["moves visited",String(gum.moves_visited),String(puct.moves_visited)],
+    ["max-visit move",top(gum),top(puct)]
+  ];
+  var html="<table><tr><th></th><th>gumbel + SH</th><th>puct</th></tr>";
+  rows.forEach(function(rw){
+    html+="<tr><th>"+rw[0]+"</th><td class=\"v\">"+rw[1]+"</td><td class=\"v\">"+rw[2]+"</td></tr>";
+  });
+  document.getElementById("cmp-table").innerHTML=html+"</table>";
+}
 })();
 
 })();
