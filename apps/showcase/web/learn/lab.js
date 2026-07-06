@@ -77,7 +77,7 @@ const state = {
   moves: [],                     // sequence history, [[q, r], ...]
   free: { p0: [], p1: [], toMove: 0 },
   freeDirty: false,              // free stones diverged from `moves`
-  brush: 0,                      // 0 | 1 | "erase"
+  brush: 0,                      // 0 | 1 (free-edit color; add-only, no erase)
   undo: [],                      // free-mode snapshots
   staged: null,                  // touch two-tap staging
   module: "features",
@@ -150,7 +150,7 @@ function paintRing(q, r, color, cls = "ov-ring") {
 }
 
 /* Direct clicks on ANY grid polygon (board.js's onCellClick filters occupied
- * cells): attention query picking and free-edit erase/recolor need them. The
+ * cells): attention query picking and free-edit recolor need them. The
  * board's capture-phase drag suppressor stops propagation before this fires
  * on a drag's trailing click. */
 board.svg.addEventListener("click", e => {
@@ -232,7 +232,6 @@ function pushFreeUndo() {
 function freeCounts() { return [state.free.p0.length, state.free.p1.length]; }
 
 function freePlace(q, r) {
-  if (state.brush === "erase") return; // nothing to erase on an empty cell
   const [c0, c1] = freeCounts();
   const n0 = c0 + (state.brush === 0 ? 1 : 0), n1 = c1 + (state.brush === 1 ? 1 : 0);
   if (Math.abs(n0 - n1) > 2) {
@@ -247,15 +246,13 @@ function freePlace(q, r) {
 }
 
 function freeTouchOccupied(q, r) {
+  // free edit is add-only: an occupied stone can be recolored to the other
+  // side, but never removed (use clear to reset the board).
   const inP0 = state.free.p0.findIndex(([a, b]) => a === q && b === r);
   const inP1 = state.free.p1.findIndex(([a, b]) => a === q && b === r);
   if (inP0 < 0 && inP1 < 0) return;
-  if (state.brush === "erase") {
-    pushFreeUndo();
-    if (inP0 >= 0) state.free.p0.splice(inP0, 1);
-    else state.free.p1.splice(inP1, 1);
-  } else if ((state.brush === 0 && inP1 >= 0) || (state.brush === 1 && inP0 >= 0)) {
-    // recolor to the brush color (parity check applies)
+  if ((state.brush === 0 && inP1 >= 0) || (state.brush === 1 && inP0 >= 0)) {
+    // recolor to the brush color (delta stays within the envelope)
     const n0 = state.free.p0.length + (state.brush === 0 ? 1 : -1);
     const n1 = state.free.p1.length + (state.brush === 1 ? 1 : -1);
     if (Math.abs(n0 - n1) > 2) {
@@ -352,7 +349,7 @@ function setMode(mode) {
 $("brushSeg").addEventListener("click", e => {
   const b = e.target.closest("button");
   if (!b) return;
-  state.brush = b.dataset.brush === "erase" ? "erase" : +b.dataset.brush;
+  state.brush = +b.dataset.brush; // free edit is add-only: brush is a color, 0 | 1
   segSelect($("brushSeg"), x => x === b);
 });
 

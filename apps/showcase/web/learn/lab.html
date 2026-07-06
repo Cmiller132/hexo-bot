@@ -71,7 +71,6 @@ left. Positions from the analysis tab open here via their
       <div class="seg" id="brushSeg" role="radiogroup" aria-label="Free-edit brush" hidden>
         <button data-brush="0" class="sel" role="radio" aria-checked="true">blue</button>
         <button data-brush="1" role="radio" aria-checked="false">red</button>
-        <button data-brush="erase" role="radio" aria-checked="false">erase</button>
       </div>
       <div class="seg" id="tmSeg" role="radiogroup" aria-label="Side to move (free edit)" hidden>
         <button data-tm="0" class="sel" role="radio" aria-checked="true"
@@ -84,9 +83,11 @@ left. Positions from the analysis tab open here via their
       <button class="k-btn" id="copyLab">copy lab link</button>
     </div>
     <div class="ed-note" id="freeNote" hidden>
-      free edit has no move history: the <b>own/opp recency</b> and
-      <b>opponent-last-turn</b> input features are zeroed, and the search
-      module is unavailable (the engine cannot replay an unreachable position).
+      free edit is add-only (use <b>clear</b> to start over) and keeps the two
+      colors within 2 stones of each other. it has no move history: the
+      <b>own/opp recency</b> and <b>opponent-last-turn</b> input features are
+      zeroed, and the search module is unavailable (the engine cannot replay an
+      unreachable position).
     </div>
 
     <div class="lab-readout" id="labReadout" aria-live="polite">
@@ -230,6 +231,6 @@ left. Positions from the analysis tab open here via their
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./lab.js?v=1"></script>
+<script type="module" src="./lab.js?v=2"></script>
 </body>
 </html>

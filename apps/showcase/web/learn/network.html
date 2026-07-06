@@ -87,11 +87,15 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
   letter-spacing:.06em;color:var(--text);background:var(--bg);
   border:1px solid var(--line);padding:4px 8px;cursor:pointer}
 .fig-controls select:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
-.nx-qcell{fill:none;stroke:var(--accent-dim);stroke-width:1.4;
-  stroke-dasharray:3 2;cursor:pointer;outline:none;pointer-events:all}
-.nx-qcell:hover{stroke:var(--accent)}
-.nx-qcell:focus-visible{stroke:var(--accent);stroke-width:1.8}
-.nx-qcell.nx-sel{stroke:var(--accent);stroke-width:1.8;stroke-dasharray:none}
+.nx-qcell{fill:none;stroke:var(--accent);stroke-width:1.6;
+  stroke-dasharray:3 2;cursor:pointer;outline:none;pointer-events:all;
+  animation:nx-qpulse 2s ease-in-out infinite}
+.nx-qcell:hover{stroke:var(--accent);stroke-width:2}
+.nx-qcell:focus-visible{stroke:var(--accent);stroke-width:2}
+.nx-qcell.nx-sel{stroke:var(--accent);stroke-width:2;stroke-dasharray:none;
+  animation:none}
+@keyframes nx-qpulse{0%,100%{stroke-opacity:.45}50%{stroke-opacity:1}}
+@media (prefers-reduced-motion:reduce){.nx-qcell{animation:none;stroke-opacity:.9}}
 /* fig 2 feature rows double as the heatmap selector */
 .nx-bar.sel{background:#1a2027;color:var(--text);
   box-shadow:inset 0 0 0 1px var(--accent-dim)}
@@ -452,7 +456,7 @@ block 3's head 1 queried from a threat-window cell puts 0.89 on
 </p>
 
 <figure class="fig fig-wide" id="fig-attn">
-  <figcaption id="cap4"><b>Figure 5</b> — attention visualizer, <b>real weights from the run&rsquo;s ep70 checkpoint</b>. Pick a position, block and head, then click an outlined query cell; heat and rays show where that query attends, and the right-hand chips show its mass on the 8 summary tokens.</figcaption>
+  <figcaption id="cap4"><b>Figure 5</b> — attention visualizer, <b>real weights from the run&rsquo;s ep70 checkpoint</b>. Pick a position, block and head, then click one of the <b>highlighted query cells</b> — the pulsing dashed outlines mark the cells with exported attention rows. Heat and rays show where that query attends, and the right-hand chips show its mass on the 8 summary tokens.</figcaption>
   <div class="fig-body nx-boardwrap"><svg id="svg4" role="img" aria-label="Hex board with attention heat from a selected query cell to all cells and 8 summary tokens"></svg></div>
   <div class="fig-controls">
     <span id="realCtl4" hidden>
@@ -973,12 +977,13 @@ var FEATS=buildFeatures(QG,SUP);
       var o=document.createElement('option');
       o.value=String(i);o.textContent=p.id;selEl.appendChild(o);
     });
-    /* open on the split four with the opp-hot plane painted: the tactical
-       planes the quiet position leaves dead are immediately visible */
+    /* open on the split four with a clean board (no plane painted): a default
+       cell is selected so its 15 values show, but the tactical planes stay off
+       until the reader clicks a feature row to paint one. */
     var start=0;
     positions.forEach(function(p,i){if(p.id==='four_threat')start=i;});
     selEl.value=String(start);
-    featSel=positions[start].id==='four_threat'?9:-1;
+    featSel=-1;
     loadPos(start);
     selEl.addEventListener('change',function(){loadPos(+selEl.value);});
   }
