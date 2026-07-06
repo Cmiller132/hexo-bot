@@ -42,6 +42,7 @@ import logging
 import multiprocessing as mp
 import os
 import threading
+import time
 import tomllib
 import traceback
 from dataclasses import dataclass
@@ -62,6 +63,27 @@ class BotPoolError(RuntimeError):
 
 class BotPoolTimeout(TimeoutError):
     """A worker job did not finish inside the configured deadline."""
+
+
+# Substrings in a worker-side traceback that mean the worker's inference device
+# (SYCL/CUDA queue, etc.) is corrupted, not just that one position was bad. Such
+# a worker keeps accepting jobs but every later search hangs, so we recycle the
+# process even though the job "merely" raised. Matched case-insensitively.
+_WEDGE_ERROR_MARKERS = (
+    "index out of bounds",
+    "device-side assert",
+    "sycl",
+    "xpu",
+    "cuda error",
+    "cudnn",
+    "illegal memory access",
+    "corrupt",
+)
+
+
+def _error_indicates_wedge(error: str) -> bool:
+    low = error.lower()
+    return any(marker in low for marker in _WEDGE_ERROR_MARKERS)
 
 
 # ---------------------------------------------------------------------------
@@ -651,37 +673,76 @@ class BotPool:
         self._procs: list[Any] = []
         self._result_queue = self._ctx.Queue()
         self._futures: dict[int, asyncio.Future] = {}
+        # job_id -> worker index it was routed to, so a recycle can reject every
+        # in-flight future stuck on the process it is about to kill.
+        self._job_worker: dict[int, int] = {}
         self._job_ids = itertools.count(1)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reader: threading.Thread | None = None
+        # Serializes recycles so two concurrent timeouts on the same shard don't
+        # both spawn a replacement; per-worker locks keep independent shards free
+        # to recycle in parallel. Created in start() (needs the running loop).
+        self._recycle_locks: list[asyncio.Lock] = []
+        # Rolling-window recycle counts per worker, to break a respawn loop on a
+        # genuinely poisonous game (see _note_recycle).
+        self._recycle_times: list[list[float]] = []
+        self._poisoned: list[bool] = []
+        # worker index -> future awaiting that worker's READY sentinel. The
+        # reader thread delivers READY messages here so both startup and recycle
+        # can wait for a (re)spawned worker to finish loading the catalogue. A
+        # READY that arrives before its waiter is registered is stashed in
+        # `_ready_pending` so the waiter picks it up (no lost wakeups).
+        self._ready_waiters: dict[int, asyncio.Future] = {}
+        self._ready_pending: dict[int, Any] = {}
+        self._stopping = False
+
+    def _spawn_proc(self, index: int, queue: Any) -> Any:
+        proc = self._ctx.Process(
+            target=_worker_main,
+            args=(index, self._specs, self._settings, queue, self._result_queue),
+            daemon=True,
+            name=f"showcase-bot-{index}",
+        )
+        proc.start()
+        return proc
+
+    async def _await_ready(self, index: int) -> None:
+        """Block until worker `index` posts its READY sentinel (delivered by the
+        reader thread into `_ready_waiters`)."""
+        assert self._loop is not None
+        if index in self._ready_pending:  # READY already arrived
+            error = self._ready_pending.pop(index)
+        else:
+            waiter: asyncio.Future = self._loop.create_future()
+            self._ready_waiters[index] = waiter
+            try:
+                error = await asyncio.wait_for(waiter, 300.0)
+            except asyncio.TimeoutError:
+                self._ready_waiters.pop(index, None)
+                raise RuntimeError(f"bot worker {index} did not report ready in time")
+        if error is not None:
+            raise RuntimeError(f"bot worker {index} failed to start:\n{error}")
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
-        for index in range(self._settings.workers):
-            queue = self._ctx.Queue()
-            proc = self._ctx.Process(
-                target=_worker_main,
-                args=(index, self._specs, self._settings, queue, self._result_queue),
-                daemon=True,
-                name=f"showcase-bot-{index}",
-            )
-            proc.start()
-            self._job_queues.append(queue)
-            self._procs.append(proc)
-        for _ in self._procs:
-            tag, index, error = await self._loop.run_in_executor(
-                None, self._result_queue.get, True, 300.0
-            )
-            if tag != _READY:  # pragma: no cover - protocol guard
-                raise RuntimeError(f"unexpected pre-ready pool message: {tag!r}")
-            if error is not None:
-                raise RuntimeError(f"bot worker {index} failed to start:\n{error}")
+        # Reader thread runs first so it can route the workers' READY sentinels
+        # (and, later, recycled workers' READY) to `_ready_waiters`.
         self._reader = threading.Thread(
             target=self._reader_loop, name="showcase-pool-reader", daemon=True
         )
         self._reader.start()
+        for index in range(self._settings.workers):
+            queue = self._ctx.Queue()
+            self._job_queues.append(queue)
+            self._procs.append(self._spawn_proc(index, queue))
+            self._recycle_locks.append(asyncio.Lock())
+            self._recycle_times.append([])
+            self._poisoned.append(False)
+        for index in range(self._settings.workers):
+            await self._await_ready(index)
 
     async def stop(self) -> None:
+        self._stopping = True
         for queue in self._job_queues:
             queue.put(None)
         self._result_queue.put(None)
@@ -695,40 +756,157 @@ class BotPool:
             if not fut.done():
                 fut.cancel()
         self._futures.clear()
+        self._job_worker.clear()
 
     def _reader_loop(self) -> None:
         while True:
             item = self._result_queue.get()
             if item is None:
                 return
+            # READY sentinels are 3-tuples (_READY, worker_index, error); job
+            # replies are 2-tuples (job_id, payload). Route the former to the
+            # pending ready-waiter, the latter to the job's future.
+            if len(item) == 3 and item[0] is _READY:
+                _, index, error = item
+                self._loop.call_soon_threadsafe(self._deliver_ready, index, error)
+                continue
             job_id, payload = item
-            future = self._futures.pop(job_id, None)
-            if future is not None:
-                self._loop.call_soon_threadsafe(self._resolve, future, payload)
+            # All _futures / _job_worker mutation happens on the loop thread so a
+            # recycle (which scans _job_worker) never races the reader's pop.
+            self._loop.call_soon_threadsafe(self._resolve, job_id, payload)
 
-    @staticmethod
-    def _resolve(future: asyncio.Future, payload: dict) -> None:
-        if not future.done():
+    def _deliver_ready(self, index: int, error: Any) -> None:
+        waiter = self._ready_waiters.pop(index, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(error)
+        else:  # waiter not yet registered — stash for _await_ready to pick up
+            self._ready_pending[index] = error
+
+    def _resolve(self, job_id: int, payload: dict) -> None:
+        """Deliver a worker reply to its future (loop thread only)."""
+        self._job_worker.pop(job_id, None)
+        future = self._futures.pop(job_id, None)
+        if future is not None and not future.done():
             future.set_result(payload)
 
     def _route(self, key: int) -> int:
         return int(key) % len(self._job_queues)
 
-    async def _submit(self, worker: int, kind: str, kwargs: dict, timeout: float) -> Any:
+    def _note_recycle(self, worker: int) -> bool:
+        """Record a recycle for `worker`; return True if it is still under the
+        rolling-window cap (safe to respawn), False if the shard has recycled
+        too often and should be left dead so a poisonous game cannot loop."""
+        now = time.monotonic()
+        window = self._settings.recycle_window_s
+        recent = [t for t in self._recycle_times[worker] if now - t < window]
+        recent.append(now)
+        self._recycle_times[worker] = recent
+        return len(recent) <= self._settings.max_recycles_per_window
+
+    async def _recycle_worker(self, worker: int, reason: str) -> None:
+        """Kill and respawn the subprocess backing shard `worker`.
+
+        Every future currently routed to that worker is failed with a
+        BotPoolError (its process is gone, so its reply will never come), the
+        old process is terminated, and — unless the shard has hit its recycle
+        cap — a fresh process is spawned in its place with a brand-new job queue.
+        Subsequent jobs routed to `worker` reach the fresh process. Serialized
+        by a per-worker lock so racing timeouts recycle once.
+        """
+        assert self._loop is not None
+        async with self._recycle_locks[worker]:
+            if self._stopping or self._poisoned[worker]:
+                return
+            old_proc = self._procs[worker]
+            # Reject in-flight futures pinned to this worker: their process is
+            # about to die and no reply will ever arrive for them.
+            stranded = [jid for jid, w in self._job_worker.items() if w == worker]
+            for jid in stranded:
+                self._job_worker.pop(jid, None)
+                fut = self._futures.pop(jid, None)
+                if fut is not None and not fut.done():
+                    fut.set_exception(
+                        BotPoolError(f"worker {worker} recycled: {reason}")
+                    )
+            # Terminate the wedged process off the event loop (join can block).
+            def _kill(proc: Any) -> None:
+                try:
+                    proc.terminate()
+                    proc.join(timeout=10)
+                    if proc.is_alive():
+                        proc.kill()
+                        proc.join(timeout=5)
+                except Exception:  # pragma: no cover - best-effort teardown
+                    pass
+
+            await self._loop.run_in_executor(None, _kill, old_proc)
+
+            if not self._note_recycle(worker):
+                self._poisoned[worker] = True
+                log.error(
+                    "shard %d exceeded %d recycles in %.0fs — leaving it dead; "
+                    "jobs for this shard will fail fast until restart (reason: %s)",
+                    worker, self._settings.max_recycles_per_window,
+                    self._settings.recycle_window_s, reason,
+                )
+                return
+
+            # Fresh queue so any job the dead process never consumed is dropped
+            # rather than inherited by the replacement.
+            queue = self._ctx.Queue()
+            self._job_queues[worker] = queue
+            self._procs[worker] = self._spawn_proc(worker, queue)
+            log.warning(
+                "recycled shard %d (reason: %s); awaiting fresh worker ready",
+                worker, reason,
+            )
+            try:
+                await self._await_ready(worker)
+            except Exception:
+                self._poisoned[worker] = True
+                log.exception(
+                    "fresh worker for shard %d failed to load; leaving it dead", worker
+                )
+                return
+            log.warning("shard %d back online", worker)
+
+    async def _submit(
+        self, worker: int, kind: str, kwargs: dict, timeout: float,
+        *, recycle_on_hang: bool = False,
+    ) -> Any:
         assert self._loop is not None, "BotPool.start() was not awaited"
+        if self._poisoned[worker]:
+            raise BotPoolError(f"shard {worker} is out of service")
+        if self._recycle_locks[worker].locked():
+            # Shard is mid-recycle: its process is being replaced, so a job put
+            # on the (soon-dead) queue would just hang. Fail fast; the caller
+            # already handles BotPoolError as a backend-unavailable outcome.
+            raise BotPoolError(f"shard {worker} is recycling")
         job_id = next(self._job_ids)
         future: asyncio.Future = self._loop.create_future()
         self._futures[job_id] = future
+        self._job_worker[job_id] = worker
         self._job_queues[worker].put((job_id, kind, kwargs))
         try:
             payload = await asyncio.wait_for(future, timeout)
         except asyncio.TimeoutError:
             self._futures.pop(job_id, None)
+            self._job_worker.pop(job_id, None)
+            if recycle_on_hang:
+                # A hung move/search means the worker's device queue is wedged;
+                # respawn it so the next job for this shard runs on clean state.
+                await self._recycle_worker(worker, f"{kind} job hung >{timeout:g}s")
             raise BotPoolTimeout(f"{kind} job exceeded {timeout:.0f}s") from None
         except asyncio.CancelledError:
             self._futures.pop(job_id, None)
+            self._job_worker.pop(job_id, None)
             raise
         if "error" in payload:
+            if recycle_on_hang and _error_indicates_wedge(payload["error"]):
+                # The job raised with a device-fault signature (e.g. an XPU
+                # out-of-bounds kernel assert): the SYCL queue is corrupted and
+                # every later job on this process would hang. Recycle now.
+                await self._recycle_worker(worker, "worker reported device fault")
             raise BotPoolError(payload["error"])
         return payload["ok"]
 
@@ -743,7 +921,8 @@ class BotPool:
                 "bot_slug": bot_slug, "game_key": game_key, "actions": list(actions),
                 "seed": seed, "visits": int(visits),
             },
-            self._settings.bot_timeout_s,
+            self._settings.move_timeout_s,
+            recycle_on_hang=True,
         )
 
     async def analyze(
@@ -758,6 +937,7 @@ class BotPool:
                 "seed": seed,
             },
             self._settings.bot_timeout_s,
+            recycle_on_hang=True,
         )
 
     async def summary(self, *, route_key: int, bot_slug: str, actions: list[int]) -> dict:
@@ -765,6 +945,7 @@ class BotPool:
             self._route(route_key), "summary",
             {"bot_slug": bot_slug, "actions": list(actions)},
             self._settings.bot_timeout_s,
+            recycle_on_hang=True,
         )
 
     async def lab_eval(
@@ -785,6 +966,7 @@ class BotPool:
                 "want_activations": want_activations, "want_features": want_features,
             },
             self._settings.bot_timeout_s,
+            recycle_on_hang=True,
         )
 
     async def lab_search(
@@ -797,6 +979,7 @@ class BotPool:
             self._route(route_key), "lab_search",
             {"bot_slug": bot_slug, "actions": actions, "visits": visits, "seed": seed},
             self._settings.bot_timeout_s,
+            recycle_on_hang=True,
         )
 
     def discard(self, *, game_key: int, bot_slug: str) -> None:

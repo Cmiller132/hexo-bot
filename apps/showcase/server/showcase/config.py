@@ -49,6 +49,21 @@ class Settings:
     games_per_hour: int
     idle_timeout_s: float
     bot_timeout_s: float
+    # Per-move/search deadline (SHOWCASE_MOVE_TIMEOUT). A wedged worker (e.g. a
+    # corrupted accelerator queue after an out-of-bounds kernel) hangs a search
+    # forever, so move/search jobs use this shorter deadline to detect the hang
+    # and trigger a worker recycle; the longer `bot_timeout_s` still covers
+    # analysis/summary/lab jobs that legitimately run longer. Must stay ABOVE the
+    # worst-case cold-start (a freshly (re)spawned worker JIT-compiles the XPU
+    # kernels on its first ~512-sim turn, ~30s) or a legitimate cold move would
+    # be mistaken for a wedge and recycle-loop; 60s leaves headroom while still
+    # cutting a genuine hang to ~half the old 120s.
+    move_timeout_s: float
+    # Cap on worker recycles inside a rolling window before the pool stops
+    # respawning that shard (a genuinely poisonous game must not respawn-loop
+    # forever). See BotPool._note_recycle.
+    max_recycles_per_window: int
+    recycle_window_s: float
     finished_ttl_s: float
     sweep_interval_s: float
     analysis_search_visit_cap: int
@@ -102,6 +117,9 @@ class Settings:
             games_per_hour=_env_int("SHOWCASE_GAMES_PER_HOUR", 60),
             idle_timeout_s=_env_float("SHOWCASE_IDLE_TIMEOUT_S", 600.0),
             bot_timeout_s=_env_float("SHOWCASE_BOT_TIMEOUT_S", 120.0),
+            move_timeout_s=_env_float("SHOWCASE_MOVE_TIMEOUT", 60.0),
+            max_recycles_per_window=_env_int("SHOWCASE_MAX_RECYCLES_PER_WINDOW", 3),
+            recycle_window_s=_env_float("SHOWCASE_RECYCLE_WINDOW_S", 300.0),
             finished_ttl_s=_env_float("SHOWCASE_FINISHED_TTL_S", 6 * 3600.0),
             sweep_interval_s=_env_float("SHOWCASE_SWEEP_INTERVAL_S", 15.0),
             analysis_search_visit_cap=_env_int("SHOWCASE_ANALYSIS_VISIT_CAP", 64),
