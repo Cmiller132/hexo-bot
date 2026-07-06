@@ -5,11 +5,11 @@ Bakes real shrimp_main_7 model data into static JSON consumed by the learn
 pages (apps/showcase/web/learn/):
 
   data/attention.json    — real attention rows (softmax(QK^T/sqrt(d) + bias))
-                           from the ep58 net, for 4 curated positions x
+                           from the ep70 net, for 4 curated positions x
                            5 attention blocks x 3 heads x ~6 query cells.
   data/checkpoints.json  — net-only policy / value / stv(2) / moves_left for
                            the same positions across 4 training checkpoints
-                           (ep2/ep14/ep30/ep58), plus a policy-entropy
+                           (ep2/ep14/ep30/ep70), plus a policy-entropy
                            "sharpening" summary.
   data/eval_history.json — the run's real multistage-eval history: pooled
                            Bradley–Terry ratings (SealBot-anchored), per-epoch
@@ -30,9 +30,6 @@ pages (apps/showcase/web/learn/):
                            gumbel side's candidate logits + priors, and the
                            budget-calibrated SH schedule (verified against
                            the measured visit histogram).
-  data/symmetry.json     — the ep70 net's policy + value on the four_threat
-                           position (base orientation only; the D6 figure
-                           coordinate-transforms it client-side).
 
 Reproducible CLI (run from the repo root, inside the public WSL venv):
 
@@ -111,15 +108,15 @@ sys.path.insert(
 from showcase.bots import SearchProfile  # noqa: E402  (needs the path insert)
 
 RUN_LABEL = "shrimp_main_7"
-CHECKPOINT_EPOCHS = (2, 14, 30, 58)
-ATTENTION_EPOCH = 58
-LATEST_EPOCH = 70     # bias kernels / search compare / symmetry checkpoint
+CHECKPOINT_EPOCHS = (2, 14, 30, 70)
+ATTENTION_EPOCH = 70
+LATEST_EPOCH = 70     # bias kernels / search compare checkpoint
 PUCT_RUN = "shrimp_main_5"
 PUCT_EPOCH = 105
 SEARCH_BUDGET = 512   # per-side visit budget for search_compare.json
 SEARCH_SEED = 20260705
 GUMBEL_MIN_ROUND0_VISITS = 4  # tree.rs GUMBEL_MIN_ROUND0_VISITS (SH calibration)
-POLICY_FLOOR = 1e-3   # sparse-policy floor (checkpoints.json, symmetry.json)
+POLICY_FLOOR = 1e-3   # sparse-policy floor (checkpoints.json)
 ATTN_FLOOR = 1e-3     # sparse-attention floor (attention.json)
 ROUND = 4             # decimal places for attention weights
 BIAS_DP = 3           # decimal places for bias-table entries
@@ -464,6 +461,63 @@ def pick_queries(support, facts, policy_row: dict) -> list[dict]:
     return queries[:6]
 
 
+def attention_caption_checks(attn_doc: dict) -> None:
+    """Re-verify the observations the network page's attention prose cites
+    (fails the run if a future checkpoint no longer shows them).
+
+    Claims (network.html, attention section, ep70): block 0 head 0 is a token
+    sink on token 4 (>= 0.95 for every four_threat query); block 4 head 0
+    sends all captured mass to the tokens (no cell survives the floor) with
+    token 6 heaviest from the four_threat last-stone query (> 0.5); block 2
+    head 1 queried from the four_threat gap puts > 0.85 on the stone that
+    completes the four, (5, 1); block 3 head 1 queried from the double_threat
+    threat cell puts > 0.85 on the forced blocking gap (-3, 3)."""
+
+    by_id = {p["id"]: p for p in attn_doc["positions"]}
+
+    def query_index(pos: dict, role: str) -> int:
+        return next(i for i, q in enumerate(pos["queries"]) if q["role"] == role)
+
+    def cell_weight(pos: dict, row: dict, cell: tuple[int, int]) -> float:
+        node = pos["support"]["coords"].index(list(cell))
+        return row["cells"].get(str(node), 0.0)
+
+    ft = by_id["four_threat"]
+    for qi, q in enumerate(ft["queries"]):
+        w = ft["attention"][0][0][qi]["tokens"][4]
+        if w < 0.95:
+            raise AssertionError(
+                f"caption claim broke: b0h0 token-4 sink, query {q['role']} "
+                f"weight {w}"
+            )
+    for qi, q in enumerate(ft["queries"]):
+        row = ft["attention"][4][0][qi]
+        if row["cells"]:
+            raise AssertionError(
+                f"caption claim broke: b4h0 has cell mass from {q['role']}"
+            )
+    last_row = ft["attention"][4][0][query_index(ft, "last_stone")]
+    if not (max(last_row["tokens"]) == last_row["tokens"][6] > 0.5):
+        raise AssertionError(
+            f"caption claim broke: b4h0 token-6 from last_stone {last_row['tokens']}"
+        )
+    gap_row = ft["attention"][2][1][query_index(ft, "top_policy")]
+    w_stone = cell_weight(ft, gap_row, (5, 1))
+    if w_stone < 0.85:
+        raise AssertionError(f"caption claim broke: b2h1 gap->(5,1) weight {w_stone}")
+
+    dt = by_id["double_threat"]
+    threat_row = dt["attention"][3][1][query_index(dt, "threat_cell")]
+    w_gap = cell_weight(dt, threat_row, (-3, 3))
+    if w_gap < 0.85:
+        raise AssertionError(f"caption claim broke: b3h1 threat->(-3,3) weight {w_gap}")
+    print(
+        "attention caption checks: b0h0 token4 sink ok · b4h0 tokens-only, "
+        "t6 %.3f · b2h1 gap->(5,1) %.3f · b3h1 threat->(-3,3) %.3f"
+        % (last_row["tokens"][6], w_stone, w_gap)
+    )
+
+
 def sparse_attention_row(row: np.ndarray) -> dict:
     """One (S,) softmax row -> {'tokens': [8 floats], 'cells': {node: w}}.
 
@@ -791,45 +845,6 @@ def search_compare_doc(
 
 
 # ==============================================================================
-# D6 symmetry demo (symmetry.json)
-# ==============================================================================
-
-
-def symmetry_doc(
-    spec: dict, facts, support, readout: dict, position_block, generated: str
-) -> dict:
-    """Base-orientation policy/value for the D6 figure. Only orientation 0 is
-    evaluated; the training page transforms coordinates client-side for the
-    other 11 (the same re-expression training applies to sampled rows)."""
-
-    if not readout["policy"]:
-        raise AssertionError("symmetry position has an empty floored policy")
-    top = readout["policy"][0]
-    pos = position_block(spec, facts, support)
-    pos["support"] = {
-        "coords": support.coords.tolist(),
-        "legal_count": int(support.legal_count),
-        "stone_count": int(support.stone_count),
-        "halo_count": int(support.halo_count),
-    }
-    return {
-        "run": RUN_LABEL,
-        "checkpoint": f"ep{LATEST_EPOCH}",
-        "generated": generated,
-        "policy_floor": POLICY_FLOOR,
-        "d6": (
-            "indices 0-5 rotate by 60*i degrees; 6-11 reflect (q,r)->(q,-q-r) "
-            "then rotate — geometry.py apply_d6"
-        ),
-        "position": pos,
-        "value": readout["value"],
-        "argmax": [top["q"], top["r"]],
-        "argmax_p": top["p"],
-        "policy": readout["policy"],
-    }
-
-
-# ==============================================================================
 # Eval history (real run diagnostics)
 # ==============================================================================
 
@@ -954,7 +969,7 @@ def dump(path: str, doc: dict) -> int:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--models-dir", required=True,
-                    help="directory holding main7_ep{2,14,30,58}.pt inference exports")
+                    help="directory holding main7_ep{2,14,30,70}.pt inference exports")
     ap.add_argument("--diagnostics-dir", required=True,
                     help="shrimp_main_7 run diagnostics dir (read-only)")
     ap.add_argument("--out", default=os.path.join(
@@ -1090,6 +1105,7 @@ def main() -> None:
         ]
         attn_doc["positions"].append(pos)
         print(f"attention {spec['id']}: S={s_total + 0} rows={len(queries)*15}")
+    attention_caption_checks(attn_doc)
     n = dump(os.path.join(out_dir, "attention.json"), attn_doc)
     print(f"attention.json: {n/1024:.1f} KB")
     if n >= 900 * 1024:
@@ -1138,8 +1154,11 @@ def main() -> None:
     print(f"features.json: {n/1024:.1f} KB")
 
     # --- bias_kernels.json ----------------------------------------------------------
-    latest_net = load_net(os.path.join(args.models_dir, f"main7_ep{LATEST_EPOCH}.pt"))
-    print(f"loaded ep{LATEST_EPOCH} from main7_ep{LATEST_EPOCH}.pt")
+    if LATEST_EPOCH in nets:
+        latest_net = nets[LATEST_EPOCH]
+    else:
+        latest_net = load_net(os.path.join(args.models_dir, f"main7_ep{LATEST_EPOCH}.pt"))
+        print(f"loaded ep{LATEST_EPOCH} from main7_ep{LATEST_EPOCH}.pt")
     n = dump(os.path.join(out_dir, "bias_kernels.json"),
              bias_kernels_doc(latest_net, args.date))
     print(f"bias_kernels.json: {n/1024:.1f} KB")
@@ -1163,21 +1182,6 @@ def main() -> None:
     n = dump(os.path.join(out_dir, "search_compare.json"), compare)
     print(f"search_compare.json: {n/1024:.1f} KB")
 
-    # --- symmetry.json ----------------------------------------------------------------
-    four_spec, four_facts, four_support = by_id["four_threat"]
-    four_batch = next(b for s, _, _, b in prepared if s["id"] == "four_threat")
-    out, _, _ = forward_with_attention(latest_net, four_batch, capture=False)
-    ro70 = net_readout(out, four_support.legal_count, four_support.legal_coords())
-    sym_doc = symmetry_doc(
-        four_spec, four_facts, four_support, ro70, position_block, args.date
-    )
-    print(
-        f"symmetry four_threat ep{LATEST_EPOCH}: value {sym_doc['value']} "
-        f"argmax {tuple(sym_doc['argmax'])} p {sym_doc['argmax_p']}"
-    )
-    n = dump(os.path.join(out_dir, "symmetry.json"), sym_doc)
-    print(f"symmetry.json: {n/1024:.1f} KB")
-
     # --- eval_history.json --------------------------------------------------------
     hist = parse_eval_history(args.diagnostics_dir, args.date)
     n = dump(os.path.join(out_dir, "eval_history.json"), hist)
@@ -1188,7 +1192,6 @@ def main() -> None:
         for f in (
             "attention.json", "checkpoints.json", "eval_history.json",
             "features.json", "bias_kernels.json", "search_compare.json",
-            "symmetry.json",
         )
     )
     print(f"total data size: {total/1024:.1f} KB")

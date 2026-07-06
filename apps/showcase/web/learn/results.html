@@ -109,7 +109,7 @@ with the search disabled, showing the raw priors.
 run. The figures fetch two snapshots baked from its records:
 <code>data/eval_history.json</code> (every multistage eval since epoch 5,
 parsed from the run&rsquo;s eval diagnostics) and
-<code>data/checkpoints.json</code> (the ep2 / ep14 / ep30 / ep58 nets reading
+<code>data/checkpoints.json</code> (the ep2 / ep14 / ep30 / ep70 nets reading
 four fixed positions). Nothing on this page is illustrative or synthetic.
 </div>
 
@@ -123,8 +123,8 @@ run&rsquo;s own frozen checkpoints, the final nets of two earlier runs
 tactical opponent. Checkpoint matches are <em>paired</em>: each opening is
 played twice with sides swapped and scored as a pair. The pentanomial
 records in the readout below are those LL&hellip;WW pair histograms. Every
-match edge accumulates into one pooled Bradley&ndash;Terry fit (70 edges over
-27 players by the latest eval), and the curve is the latest fit&rsquo;s rating
+match edge accumulates into one pooled Bradley&ndash;Terry fit (77 edges over
+29 players by the latest eval), and the curve is the latest fit&rsquo;s rating
 for each frozen checkpoint label.
 </p>
 
@@ -133,39 +133,40 @@ SealBot is pinned at 0 to give the pool a zero
 point, and every number is a position within this pool of
 frozen opponents; the numbers are not absolute Elo and are not comparable
 outside the run. The verdicts are informational: the next epoch trains from
-the newest weights regardless of the verdict. Ten of twelve verdicts were
+the newest weights regardless of the verdict. Eleven of thirteen verdicts were
 INCONCLUSIVE, the expected outcome at
-a 128-game budget with confidence intervals routinely &plusmn;100 points.
+a 128-game budget with confidence intervals routinely &plusmn;130 points or
+wider.
 </p>
 
 <p>
-The curve climbs overall with local dips. From &minus;21 at ep5 to +231 at
-ep60 is about 250 points of pool-relative strength, but the middle sags: the
-pooled table puts ep20 at &minus;97 and ep25 at &minus;177, below ep5&rsquo;s
+The curve climbs overall with local dips. From &minus;42 at ep5 to +238 at
+ep65 is about 280 points of pool-relative strength, but the middle sags: the
+pooled table puts ep20 at &minus;108 and ep25 at &minus;189, below ep5&rsquo;s
 point estimate. Part of that is thin evidence: those labels later serve
 mainly as opponents (by the epoch-40 eval, ep40 beat ep20 eight
-pairs to none), and ep25&rsquo;s interval spans [&minus;447,&nbsp;+93].
+pairs to none), and ep25&rsquo;s interval spans [&minus;458,&nbsp;+80].
 Part may be a genuine mid-run trough; the intervals overlap too much
 to distinguish the two. Thin labels are noisy: the epoch-25 weights sit
-in the pool under <em>two</em> labels, and rate +84 as
-<code>cand_ep25</code> but &minus;177 as the frozen <code>ep25</code>, the
-same network rated on different games. The dip from ep45 (+150) to ep50 (+56)
+in the pool under <em>two</em> labels, and rate +73 as
+<code>cand_ep25</code> but &minus;189 as the frozen <code>ep25</code>, the
+same network rated on different games. The dip from ep45 (+139) to ep50 (+45)
 has the same character. The curve is accumulated evidence and moves as new
 games enter the pool.
 </p>
 
 <div class="numstrip">
-  <div class="ns-cell"><div class="ns-n">12</div><div class="ns-l">evals &middot; ep5&ndash;ep65</div></div>
+  <div class="ns-cell"><div class="ns-n">13</div><div class="ns-l">evals &middot; ep5&ndash;ep70</div></div>
   <div class="ns-cell"><div class="ns-n">128 <small>@ 512 visits</small></div><div class="ns-l">game budget per eval</div></div>
-  <div class="ns-cell"><div class="ns-n">&minus;21 &rarr; +231</div><div class="ns-l">pooled rating, ep5 &rarr; ep60</div></div>
-  <div class="ns-cell"><div class="ns-n">2 <small>of 12</small></div><div class="ns-l">promote verdicts (informational)</div></div>
+  <div class="ns-cell"><div class="ns-n">&minus;42 &rarr; +238</div><div class="ns-l">pooled rating, ep5 &rarr; ep65</div></div>
+  <div class="ns-cell"><div class="ns-n">2 <small>of 13</small></div><div class="ns-l">promote verdicts (informational)</div></div>
 </div>
 
 <figure class="fig fig-wide">
   <figcaption>fig 1 &middot; <b>pooled bradley&ndash;terry ratings, latest fit</b> &middot; band = 95% ci per label &middot; filled point = that epoch&rsquo;s eval said promote &middot; hollow = the newest candidate label &middot; hover or tab through the points</figcaption>
   <div class="fig-body" id="rcBody">
     <svg id="rcChart" viewBox="0 0 860 330" role="group"
-         aria-label="Line chart of pooled checkpoint ratings by epoch, with 95 percent confidence band. The curve climbs from about minus 21 at epoch 5 to plus 231 at epoch 60, with a dip below zero around epochs 20 to 25."></svg>
+         aria-label="Line chart of pooled checkpoint ratings by epoch, with 95 percent confidence band. The curve climbs from about minus 42 at epoch 5 to plus 238 at epoch 65, with a dip below zero around epochs 20 to 25."></svg>
   </div>
   <div class="fig-readout" id="rcRo" aria-live="polite">
     <span class="ro-k">rating curve</span>
@@ -194,11 +195,11 @@ goes to (0,&nbsp;1), the outside extension, after which (4,&nbsp;1) and
 0.06. ep14&rsquo;s value drops
 to &minus;0.90, but it still puts 0.37 on (0,&nbsp;1) and a fifth of its
 mass on (3,&nbsp;0), which defends nothing, while the save sits at 0.03. ep30
-is the first to rank the gap first (0.30). <b>ep58 puts 0.52
-on (4,&nbsp;1)</b>, assigns the wrong blocks near-zero mass, and reads the
-value at &minus;0.15. The value signal appeared at epoch 14;
-the policy first ranked the save correctly sixteen epochs later, and a
-majority of its mass took until epoch 58.
+is the first to rank the gap first (0.30). <b>ep70 puts 0.60
+on (4,&nbsp;1)</b>, drops the outside extension (0,&nbsp;1) to 0.003, and
+reads the value at +0.13. The value signal appeared at epoch 14;
+the policy first ranked the save correctly sixteen epochs later, and by
+epoch 70 the save holds a majority of the mass.
 </p>
 
 <p>
@@ -207,13 +208,13 @@ r&nbsp;=&nbsp;1 row and the q&nbsp;=&nbsp;&minus;3 column, with gaps at
 (4,&nbsp;1)
 and (&minus;3,&nbsp;3); the mover&rsquo;s two placements this turn must cover
 both. ep2 gives that pair a combined 0.39 (its top move is
-again (0,&nbsp;1)), ep14 0.71, ep30 0.85, and ep58 puts
-<b>0.99 on exactly those two cells</b>, from the prior alone.
+again (0,&nbsp;1)), ep14 0.71, ep30 0.85, and ep70 puts
+<b>0.96 on exactly those two cells</b>, from the prior alone.
 On the 40-stone board, with one live four left (empties
 (&minus;1,&nbsp;2) and (1,&nbsp;2)), even ep2 finds the block at 0.79;
 simple tactics are learned early. Training adds
-certainty (ep58: 0.990 on the block) and a value head that reads
-the position as winning (0.35&nbsp;&rarr;&nbsp;0.97). The quiet
+certainty (ep70: 0.997 on the block) and a value head that reads
+the position as winning (0.35&nbsp;&rarr;&nbsp;0.99). The quiet
 middlegame stays diffuse at every checkpoint; section 03 covers this.
 </p>
 
@@ -246,10 +247,10 @@ middlegame stays diffuse at every checkpoint; section 03 covers this.
 <p>
 The entropy of the policy over the legal set summarises the change. The
 tactical boards move toward certainty as the run ages:
-the live four from 2.22 to 1.46 nats, the double threat
-1.87&nbsp;&rarr;&nbsp;1.43&nbsp;&rarr;&nbsp;1.16&nbsp;&rarr;&nbsp;0.75, the
-late-game block from 0.65 to 0.06, nearly a point mass. The quiet
-middlegame does not: 2.08, 2.02, 2.30, 1.82. It stays diffuse,
+the live four from 2.22 to 1.23 nats, the double threat
+1.87&nbsp;&rarr;&nbsp;1.43&nbsp;&rarr;&nbsp;1.16&nbsp;&rarr;&nbsp;0.87, the
+late-game block from 0.65 to 0.02, nearly a point mass. The quiet
+middlegame does not: 2.08, 2.02, 2.30, 1.78. It stays diffuse,
 and <b>ep30 is less sharp there than ep14</b>. The
 non-monotone value shows that training does not apply a global sharpening.
 The policy sharpens where the search kept finding forced
@@ -274,8 +275,8 @@ miscalibrated.
 The cause is the training target: the policy trains toward the
 <a href="training.html#targets">search&rsquo;s improved distribution</a>,
 which is sharp where sequential halving found a
-forced line and flat where it did not. Sixty epochs of that target produce
-the change from 0.41 on the wrong block to 0.52 on the correct one. The
+forced line and flat where it did not. Seventy epochs of that target produce
+the change from 0.41 on the wrong block to 0.60 on the correct one. The
 <a href="../">play tab</a> serves this same ladder of checkpoints, so the
 difference can be played against directly.
 </p>

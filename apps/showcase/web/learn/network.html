@@ -137,8 +137,8 @@ output heads. The board figures run on real positions from the run&rsquo;s
 snapshot data (the support and convolution figures use a quiet middlegame,
 15 stones, player&nbsp;0 to move; the feature inspector adds three tactical
 positions) with the formulas from the featurizer. The attention visualizer
-shows the ep58 checkpoint&rsquo;s learned weights; the bias-kernel figure
-shows the ep70 tables.
+shows the ep70 checkpoint&rsquo;s learned weights; the bias-kernel figure
+shows the same checkpoint&rsquo;s tables.
 </p>
 
 <div class="note">
@@ -410,28 +410,30 @@ scalar heads later read specific token pairs (§05).
 </p>
 <p>
 The visualizer below shows <strong>real attention rows from the run&rsquo;s
-ep58 checkpoint</strong>, exported for four positions from its own games
+ep70 checkpoint</strong>, exported for four positions from its own games
 (<code>data/attention.json</code>). Three observed behaviours:
 head 0 in blocks 0 and 4 is a <em>token sink</em>, placing nearly all
 of its mass on the summary tokens for most queries (token 4 in the first block
-at weights &asymp;1.0, token 6 in the last at &asymp;0.65–0.73). In the
-split-four position, block 2's head 1 queried from the gap puts 0.88 of its
+at weights &asymp;1.0; the last block spreads its token mass, with token 6
+heaviest at 0.57 from the split-four position's last-stone query). In the
+split-four position, block 2's head 1 queried from the gap puts 0.89 of its
 mass on the stone that completes the four. In the double-threat position,
-block 3's head 1 queried from a threat-window cell puts 0.90 on
+block 3's head 1 queried from a threat-window cell puts 0.89 on
 (&minus;3,&nbsp;3), the forced blocking gap.
-<!-- Observed in data/attention.json (shrimp_main_7, ep58):
-     block0 head0: token 4 weight 0.994-1.000 on most queries, all positions;
-     block4 head0: token 6 weight 0.653 (last_stone) / 0.728 (opening_stone)
+<!-- Observed in data/attention.json (shrimp_main_7, ep70) and re-asserted
+     by learn_snapshots.py attention_caption_checks on every regeneration:
+     block0 head0: token 4 weight 0.972-1.000 on every four_threat query
+       (argmax token on 22 of 24 exported rows across all positions);
+     block4 head0: all mass on tokens for every four_threat query (no cell
+       above the 1e-3 floor); token 6 max at 0.574 from last_stone;
+     block2 head1: cell (5,1) [stone] weight 0.887 from query (4,1) top_policy
        in four_threat;
-     block2 head1: cell (5,1) [stone] weight 0.880 from query (4,1) top_policy
-       in four_threat;
-     block3 head1: cell (-3,3) weight 0.904 from query (-3,-1) threat_cell
-       in double_threat.
-     Verified by script against the JSON on 2026-07-05. -->
+     block3 head1: cell (-3,3) weight 0.890 from query (-3,-1) threat_cell
+       in double_threat. -->
 </p>
 
 <figure class="fig fig-wide" id="fig-attn">
-  <figcaption id="cap4"><b>Figure 5</b> — attention visualizer, <b>real weights from the run&rsquo;s ep58 checkpoint</b>. Pick a position, block and head, then click an outlined query cell; heat and rays show where that query attends, and the right-hand chips show its mass on the 8 summary tokens.</figcaption>
+  <figcaption id="cap4"><b>Figure 5</b> — attention visualizer, <b>real weights from the run&rsquo;s ep70 checkpoint</b>. Pick a position, block and head, then click an outlined query cell; heat and rays show where that query attends, and the right-hand chips show its mass on the 8 summary tokens.</figcaption>
   <div class="fig-body nx-boardwrap"><svg id="svg4" role="img" aria-label="Hex board with attention heat from a selected query cell to all cells and 8 summary tokens"></svg></div>
   <div class="fig-controls">
     <span id="realCtl4" hidden>
@@ -1037,13 +1039,14 @@ var FEATS=buildFeatures(QG,SUP);
 })();
 
 /* ================= FIG 5 — attention visualizer =================
-   Real mode: rows from data/attention.json (shrimp_main_7, ep58) — four
+   Real mode: rows from data/attention.json (shrimp_main_7, ep70) — four
    curated positions, 5 blocks × 3 heads, ~6 query cells each; sparse cell
    weights (floor 1e-3) plus all 8 summary-token weights per row. Cited
-   observations verified against the JSON: block0 head0 token4 ≈ 1.0
-   (token sink); block4 head0 token6 0.653–0.728 in four_threat; block2
-   head1 → 0.880 on stone (5,1) from query (4,1) in four_threat; block3
-   head1 → 0.904 on (-3,3) from query (-3,-1) in double_threat.
+   observations verified against the JSON (and re-asserted by
+   learn_snapshots.py attention_caption_checks): block0 head0 token4 ≈ 1.0
+   (token sink); block4 head0 tokens-only in four_threat, token6 max 0.574;
+   block2 head1 → 0.887 on stone (5,1) from query (4,1) in four_threat;
+   block3 head1 → 0.890 on (-3,3) from query (-3,-1) in double_threat.
    Fallback (fetch unavailable, e.g. file://): the previous synthetic
    generator over the shared quiet_midgame board, labelled illustrative. */
 (function(){
@@ -1192,7 +1195,7 @@ var FEATS=buildFeatures(QG,SUP);
         });
       setReadout('ro4',
         p.id+' · query ('+q.cell[0]+', '+q.cell[1]+') '+q.role+' · block '+block+
-        ' · head '+head+' · real weights (ep58)',
+        ' · head '+head+' · real weights (ep70)',
         p.title+'. Tokens hold '+Math.round(100*tokMass)+'% of this row'+
         (entries.length?'; top cells: '+tops.join(', ')+'.':
           '. Token-sink row: no cell weight above the 0.001 export floor.'));
@@ -1205,7 +1208,7 @@ var FEATS=buildFeatures(QG,SUP);
 
   /* ---------------- synthetic fallback (offline / file://) ---------------- */
   function initSynthetic(){
-    cap.innerHTML='<b>Figure 5</b> — attention visualizer. Click a query cell; heat and rays show where that cell attends. Patterns are <b>illustrative, not learned weights</b> (the real ep58 rows load when this page is served over HTTP). The three synthetic heads show multi-head diversity, and the bias toggle shows how the rel-pos table shapes scores by offset.';
+    cap.innerHTML='<b>Figure 5</b> — attention visualizer. Click a query cell; heat and rays show where that cell attends. Patterns are <b>illustrative, not learned weights</b> (the real ep70 rows load when this page is served over HTTP). The three synthetic heads show multi-head diversity, and the bias toggle shows how the rel-pos table shapes scores by offset.';
     $('bias4').hidden=false;
     var labels=['1 · local','2 · axis','3 · stones'];
     hbtns.forEach(function(b2,i){b2.textContent=labels[i];});

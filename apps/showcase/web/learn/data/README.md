@@ -30,13 +30,13 @@ Each entry of `positions[]` carries:
 | `first_stone` | `[q,r]` or null | the pending turn's first stone when `phase == "SecondStone"` |
 | `threats.opp_hot` etc. | `[[q,r],...]` | empty cells of live 4+-stone windows, relative to `to_move` (`opp_*` = threat against the mover; `*_win` = win-in-1 cells) |
 
-## attention.json (~216 KB)
+## attention.json (~223 KB)
 
-Real attention rows from the `ep58` net.
+Real attention rows from the `ep70` net.
 
 | field | type | meaning |
 |---|---|---|
-| `run`, `checkpoint`, `generated` | str | provenance stamps (`ep58`, ISO date) |
+| `run`, `checkpoint`, `generated` | str | provenance stamps (`ep70`, ISO date) |
 | `num_tokens` | int | 8 learned summary tokens prefixed to the cell sequence |
 | `blocks`, `heads` | int | 5 attention blocks (depth order), 3 heads each |
 | `floor` | float | cell weights below this (1e-3) were pruned |
@@ -57,7 +57,7 @@ The same four positions read by four checkpoints of the same run.
 
 | field | type | meaning |
 |---|---|---|
-| `checkpoints[]` | | `{id: "ep2", epoch, label}` for ep2/ep14/ep30/ep58 |
+| `checkpoints[]` | | `{id: "ep2", epoch, label}` for ep2/ep14/ep30/ep70 |
 | `stv_head` | str | which short-term head `stv2` is (`stvalue_2` = value 2 plies ahead) |
 | `policy_floor` | float | sparse-policy floor (1e-3) |
 | `positions[]` | | position block plus `legal_count` and `per_checkpoint` |
@@ -69,7 +69,7 @@ The same four positions read by four checkpoints of the same run.
 | `.policy` | `[{q,r,p},...]` | legal-cell softmax, descending, floored at `policy_floor` (the dense distribution sums to 1; only the tail is trimmed) |
 | `sharpening.rows[]` | | per position: `{position, legal_count, max_entropy_nats, entropy: {epN: H}, top1_p: {epN: p}}` — the policy-sharpening summary |
 
-## eval_history.json (~39 KB)
+## eval_history.json (~43 KB)
 
 Parsed from the run's real multistage-eval diagnostics.
 
@@ -134,12 +134,3 @@ halving schedule (m, rounds, per-round quotas, cumulative caps); the
 generator asserts the measured visit histogram equals the schedule's implied
 multiset, which is what lets the search page replay the rounds from final
 counts. Per-round q̂ trajectories and the Gumbel noise g are not recorded.
-
-## symmetry.json (~3 KB)
-
-The ep70 net's readout on `four_threat`, base orientation only: `value`,
-floored `policy` (`policy_floor` 1e-3), `argmax`/`argmax_p`, plus the
-position + support blocks. The training page's D6 figure
-coordinate-transforms this single evaluation for the 11 non-identity
-symmetries (`geometry.apply_d6` semantics in the `d6` note); it never
-re-evaluates the net per orientation.
