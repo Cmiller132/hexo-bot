@@ -8,7 +8,7 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=6";
+import * as api from "./api.js?v=7";
 import { createBoard, findWin, key } from "./board.js?v=6";
 
 "use strict";
@@ -1066,6 +1066,17 @@ function normFeedItem(g) {
   else if (Number.isInteger(g.winner)) winner = g.winner;
   else if (g.result === 1 || g.human_result === 1) winner = humanColor;
   else if (g.result === -1 || g.human_result === -1) winner = 1 - humanColor;
+  // Result from the human's perspective: +1 human beat the bot, -1 the bot won,
+  // 0/null a draw or no decision. Prefer the server's explicit human_result;
+  // fall back to comparing the winner against the human's color.
+  let humanResult = null;
+  if (g.result && typeof g.result === "object" && Number.isInteger(g.result.human_result)) {
+    humanResult = g.result.human_result;
+  } else if (Number.isInteger(g.human_result)) {
+    humanResult = g.human_result;
+  } else if (winner !== null && Number.isInteger(humanColor)) {
+    humanResult = winner === humanColor ? 1 : -1;
+  }
   return {
     id: g.id ?? g.game_id,
     label: (g.bot && g.bot.label) || g.bot_label || g.label || "?",
@@ -1074,6 +1085,7 @@ function normFeedItem(g) {
     plies: g.ply_count ?? g.plies ?? g.ply ?? null,
     finished: g.finished_at ?? g.finished ?? null,
     winner,
+    humanResult,
   };
 }
 
@@ -1085,11 +1097,18 @@ function renderFeed(items) {
     b.className = "grow" + (g.id === ana.id ? " sel" : "");
     b.dataset.id = g.id;
     const cls = g.winner === 0 ? "gh0" : g.winner === 1 ? "gh1" : "ghx";
+    const oc = g.humanResult === 1 ? { t: "human won", c: "win" }
+      : g.humanResult === -1 ? { t: "bot won", c: "loss" }
+      : g.winner === null ? null : { t: "draw", c: "draw" };
     b.innerHTML =
       `<svg class="g-glyph" width="10" height="11" viewBox="-5.5 -5.5 11 11" aria-hidden="true">` +
       `<polygon class="${cls}" points="4.33,-2.5 4.33,2.5 0,5 -4.33,2.5 -4.33,-2.5 0,-5"/></svg>` +
-      `<span class="g-vs"></span><span class="g-nick"></span><span class="g-meta"></span>`;
+      `<span class="g-vs"></span><span class="g-outcome"></span>` +
+      `<span class="g-nick"></span><span class="g-meta"></span>`;
     b.querySelector(".g-vs").textContent = `vs ${g.label}·${g.sims}`;
+    const ocEl = b.querySelector(".g-outcome");
+    if (oc) { ocEl.textContent = oc.t; ocEl.classList.add(oc.c); }
+    else ocEl.remove();
     b.querySelector(".g-nick").textContent = g.nickname || "";
     b.querySelector(".g-meta").textContent =
       [g.plies !== null ? g.plies + " ply" : "", fmtAgo(g.finished)].filter(Boolean).join(" · ");

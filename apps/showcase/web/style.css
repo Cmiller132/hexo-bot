@@ -301,6 +301,11 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 .gh1{fill:var(--p1)}
 .ghx{fill:var(--dim)}
 .g-vs{color:var(--text);white-space:nowrap}
+/* result from the human's perspective: bright when the human beat the bot,
+   dim when the bot won or the game drew. */
+.g-outcome{flex:none;white-space:nowrap;font-size:9.5px;letter-spacing:.04em}
+.g-outcome.win{color:var(--accent)}
+.g-outcome.loss,.g-outcome.draw{color:var(--dim)}
 .g-nick{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .g-meta{margin-left:auto;color:var(--dim);white-space:nowrap}
 .feed-note{
