@@ -332,10 +332,8 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 .grow.sel{border-color:var(--accent-dim);background:#1a2027}
 .grow.sel .g-vs{color:var(--accent)}
 .g-glyph{flex:none;display:block}
-/* glyph fill by HUMAN outcome, not winning player color: bright = human beat
-   the bot, muted red = bot won, dim = draw/undecided */
-.gh-human{fill:var(--accent)}
-.gh-bot{fill:var(--p1-soft)}
+.gh0{fill:var(--p0)}
+.gh1{fill:var(--p1)}
 .ghx{fill:var(--dim)}
 .g-vs{color:var(--text);white-space:nowrap}
 /* result from the human's perspective: bright when the human beat the bot,

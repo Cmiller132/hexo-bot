@@ -1142,10 +1142,7 @@ function renderFeed(items) {
     const b = document.createElement("button");
     b.className = "grow" + (g.id === ana.id ? " sel" : "");
     b.dataset.id = g.id;
-    // Outcome from the HUMAN's perspective (not the winning player color): the
-    // human can play either color, so a P1-human win must read "human won", not
-    // "red won". humanResult already accounts for human_color server-side.
-    const cls = g.humanResult === 1 ? "gh-human" : g.humanResult === -1 ? "gh-bot" : "ghx";
+    const cls = g.winner === 0 ? "gh0" : g.winner === 1 ? "gh1" : "ghx";
     const oc = g.humanResult === 1 ? { t: "human won", c: "win" }
       : g.humanResult === -1 ? { t: "bot won", c: "loss" }
       : g.winner === null ? null : { t: "draw", c: "draw" };
