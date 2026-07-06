@@ -122,10 +122,12 @@ def test_full_game_to_terminal_or_20_plies(client):
     headers = fresh_ip()
     snap = create_game(client, headers)
     game_id = snap["id"]
-    assert snap["status"] == "your_turn"
-    assert snap["phase"] == "Opening"
-    assert snap["stones_left_this_turn"] == 1
-    assert snap["legal"] == [{"q": 0, "r": 0}]  # opening placement is forced
+    # The forced opening single is pre-placed at creation; the bot (player1)
+    # owns the first real turn when the human is player0.
+    assert snap["status"] == "bot_thinking"
+    assert snap["phase"] == "FirstStone"
+    assert snap["ply"] == 1
+    assert snap["stones"] == [{"q": 0, "r": 0, "color": 0}]
 
     while snap["status"] != "finished" and snap["ply"] < 20:
         if snap["status"] == "your_turn":
@@ -148,16 +150,16 @@ def test_full_game_to_terminal_or_20_plies(client):
     assert len(snap["stones"]) == snap["ply"]
 
 
-def test_bot_moves_first_when_human_is_player1(client):
+def test_no_bot_opening_search_when_human_is_player1(client):
+    """The pre-placed origin single is player0's whole turn, so a human
+    playing player1 gets the move immediately — the bot never searches the
+    forced opening."""
     headers = fresh_ip()
     snap = create_game(client, headers, human_color=1)
     assert snap["human_color"] == 1
-    assert snap["status"] == "bot_thinking"  # bot owns the opening ply
-    snap = poll_until(client, snap["id"])
-    assert snap["status"] == "your_turn"
-    assert snap["ply"] == 1  # the bot's opening turn is a single stone
+    assert snap["status"] == "your_turn"  # no bot turn was enqueued
+    assert snap["ply"] == 1  # the pre-placed opening single
     assert snap["stones"] == [{"q": 0, "r": 0, "color": 0}]
-    # ... and the human now has a real turn to play
     assert snap["to_move"] == 1
     assert snap["legal"]
     resign(client, snap["id"], headers)
@@ -191,14 +193,15 @@ def test_random_human_color_resolves_and_echoes(client, settings):
 
 
 def test_full_game_as_player2_to_terminal_or_10_plies(client):
-    """A whole game with the human as player 1 (second to act): the bot opens,
-    turn alternation stays consistent, and the game reaches a terminal state
-    or a clean resignation after ~10 plies."""
+    """A whole game with the human as player 1 (second to act): the opening
+    is pre-placed, the human moves first, turn alternation stays consistent,
+    and the game reaches a terminal state or a clean resignation after ~10
+    plies."""
     headers = fresh_ip()
     snap = create_game(client, headers, human_color=1)
     game_id = snap["id"]
-    assert snap["status"] == "bot_thinking"
-    snap = poll_until(client, game_id)
+    assert snap["status"] == "your_turn"
+    assert snap["ply"] == 1
 
     while snap["status"] != "finished" and snap["ply"] < 10:
         if snap["status"] == "your_turn":
@@ -222,7 +225,9 @@ def test_full_game_as_player2_to_terminal_or_10_plies(client):
 def test_illegal_move_rejected(client):
     headers = fresh_ip()
     snap = create_game(client, headers)
-    resp = client.post(f"/api/game/{snap['id']}/move", json={"q": 3, "r": 3}, headers=headers)
+    snap = poll_until(client, snap["id"])  # the bot's player1 turn lands first
+    # The origin is occupied by the pre-placed opening stone.
+    resp = client.post(f"/api/game/{snap['id']}/move", json={"q": 0, "r": 0}, headers=headers)
     assert resp.status_code == 422
     assert "illegal move" in resp.json()["detail"]
     resign(client, snap["id"], headers)
@@ -263,8 +268,7 @@ def test_per_ip_active_game_cap(client):
 def test_resign_scores_for_the_bot(client):
     headers = fresh_ip()
     snap = create_game(client, headers)
-    client.post(f"/api/game/{snap['id']}/move", json={"q": 0, "r": 0}, headers=headers)
-    poll_until(client, snap["id"])
+    poll_until(client, snap["id"])  # let the bot's opening-reply turn land
     snap = resign(client, snap["id"], headers)
     assert snap["status"] == "finished"
     assert snap["result"] == {
@@ -312,12 +316,10 @@ def test_db_row_and_hxr_record_roundtrip(client, settings):
     headers = fresh_ip()
     snap = create_game(client, headers)
     game_id = snap["id"]
-    client.post(f"/api/game/{game_id}/move", json={"q": 0, "r": 0}, headers=headers)
-    snap = poll_until(client, game_id)
+    snap = poll_until(client, game_id)  # the bot's player1 turn
     if snap["status"] == "your_turn":
         cell = snap["legal"][0]
         client.post(f"/api/game/{game_id}/move", json=cell, headers=headers)
-        snap = poll_until(client, game_id)
     final = resign(client, game_id, headers)
 
     conn = sqlite3.connect(settings.db_path)
