@@ -880,8 +880,10 @@ class BotPool:
                 return
             # READY sentinels are 3-tuples (_READY, worker_index, error); job
             # replies are 2-tuples (job_id, payload). Route the former to the
-            # pending ready-waiter, the latter to the job's future.
-            if len(item) == 3 and item[0] is _READY:
+            # pending ready-waiter, the latter to the job's future. Compare with
+            # == not `is`: _READY is a str pickled across the mp.Queue, so it is a
+            # different object in this process and `is` would never match.
+            if len(item) == 3 and item[0] == _READY:
                 _, index, error = item
                 self._loop.call_soon_threadsafe(self._deliver_ready, index, error)
                 continue
