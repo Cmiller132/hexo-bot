@@ -7,8 +7,9 @@ The `.hxr` codec (`hexo_utils.records`) is file-based, so blobs round-trip
 through a temp file; a full game is well under a kilobyte.
 
 Colors are 0/1 (player0 moves first). Turn shape: an Opening turn places one
-stone (forced to the origin), every later turn places two — the engine owns
-the phase, this module only maps it to a stones-left count for the client.
+stone (forced to the origin — auto-applied at session creation, so live games
+start at ply 1), every later turn places two — the engine owns the phase, this
+module only maps it to a stones-left count for the client.
 """
 
 from __future__ import annotations
@@ -189,7 +190,7 @@ class GameSession:
         cls, *, bot_slug: str, bot_db_id: int, bot_label: str, bot_epoch: int,
         sims: int, human_color: int, client_hash: str,
     ) -> "GameSession":
-        return cls(
+        session = cls(
             game_id=str(uuid.uuid4()),
             token=uuid.uuid4().hex,
             bot_slug=bot_slug,
@@ -200,6 +201,13 @@ class GameSession:
             human_color=human_color,
             client_hash=client_hash,
         )
+        # The opening single is forced to the origin, so place it at creation
+        # rather than searching it (a 1-legal-move search is degenerate) or
+        # making the human click it. Every game therefore starts at ply 1 with
+        # player1 to move.
+        engine.apply_action(session.state, PlacementAction(AxialCoord(q=0, r=0)))
+        session.actions.append(pack_coord_id(AxialCoord(q=0, r=0)))
+        return session
 
     # -- state queries ---------------------------------------------------------
 

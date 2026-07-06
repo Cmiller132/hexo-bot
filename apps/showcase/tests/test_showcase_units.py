@@ -37,7 +37,8 @@ def drive_six_in_line_session() -> GameSession:
         bot_slug="tiny", bot_db_id=1, bot_label="Tiny", bot_epoch=0, sims=8,
         human_color=0, client_hash="h",
     )
-    for q, r in SIX_IN_LINE_MOVES:
+    # create() already applied the forced opening single at (0, 0).
+    for q, r in SIX_IN_LINE_MOVES[1:]:
         session.apply_human_move(q, r)
     assert session.engine_winner() == 0
     session.finalize(termination="six_in_line", winner=0)
@@ -161,13 +162,38 @@ def test_six_in_line_session_snapshot():
     assert session.result == 1
 
 
+def test_create_auto_places_the_forced_opening_stone():
+    """create() applies the forced origin single itself — nobody searches a
+    1-legal-move position or clicks a forced cell. Both seats: human_color=1
+    means the human owns the next (player1) turn and the bot never touches
+    the opening; human_color=0 means the bot owns the next turn."""
+    for human_color, bot_owns_next in ((1, False), (0, True)):
+        session = GameSession.create(
+            bot_slug="tiny", bot_db_id=1, bot_label="Tiny", bot_epoch=0, sims=8,
+            human_color=human_color, client_hash="h",
+        )
+        assert session.actions == [pack_coord_id(AxialCoord(0, 0))]
+        assert session.to_move == 1
+        assert session.bot_to_move is bot_owns_next
+
+        snap = session.snapshot()
+        assert snap["ply"] == 1
+        assert snap["phase"] == "FirstStone"
+        assert snap["stones_left_this_turn"] == 2
+        assert snap["stones"] == [{"q": 0, "r": 0, "color": 0}]
+        assert snap["last_move"] == {"q": 0, "r": 0, "color": 0}
+        assert snap["status"] == ("bot_thinking" if bot_owns_next else "your_turn")
+        if human_color == 1:
+            assert snap["legal"]  # the human moves right away
+            assert {"q": 0, "r": 0} not in snap["legal"]
+
+
 def test_session_finalize_result_convention():
     session = GameSession.create(
         bot_slug="tiny", bot_db_id=1, bot_label="Tiny", bot_epoch=0, sims=8,
         human_color=0, client_hash="h",
     )
-    session.apply_human_move(0, 0)
-    assert session.actions == [pack_coord_id(AxialCoord(0, 0))]
+    assert session.actions == [pack_coord_id(AxialCoord(0, 0))]  # pre-placed opening
 
     session.finalize(termination="resign", winner=1)
     assert session.db_status == "finished"

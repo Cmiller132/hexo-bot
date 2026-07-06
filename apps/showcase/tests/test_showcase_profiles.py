@@ -189,7 +189,8 @@ def test_legacy_puct_bot_plays_and_analyzes(client, settings):
     snap = create_game(client, headers, checkpoint_id="tiny-puct", sims=8)
     game_id = snap["id"]
     assert snap["bot"]["checkpoint_id"] == "tiny-puct"
-    client.post(f"/api/game/{game_id}/move", json={"q": 0, "r": 0}, headers=headers)
+    # The opening is pre-placed at creation; the bot's player1 turn is already
+    # enqueued (human_color=0).
     snap = poll_until(client, game_id)  # the PUCT-profile search produced a turn
     assert snap["ply"] >= 3 or snap["status"] == "finished"
     resign(client, game_id, headers)
