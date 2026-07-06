@@ -32,7 +32,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 .nx-cell.nx-halo{fill:none;stroke:var(--dim);stroke-dasharray:2.5 2.5}
 .nx-cell.nx-out{fill:none;stroke:#1a2027;pointer-events:none}
 .nx-cell.nx-sel{stroke:var(--accent);stroke-width:1.6}
-.nx-stone0{fill:var(--p0)}.nx-stone1{fill:var(--p1)}
+.nx-stone0{fill:url(#gradS0);stroke:#2b5cad;stroke-width:1}
+.nx-stone1{fill:url(#gradS1);stroke:#9c3733;stroke-width:1}
 .nx-stone0,.nx-stone1{pointer-events:none}
 .nx-lab{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
   text-transform:uppercase;fill:var(--dim)}
@@ -110,6 +111,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 </style>
 </head>
 <body>
+
+<!-- Stone gradients (same defs as the play board's index.html). Document-level
+     holder: gradients inside a display:none SVG do not resolve, and url() refs
+     do not cross documents — every figure SVG on this page shares these. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gradS0" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#7db4ff"/>
+      <stop offset="0.45" stop-color="#4f93ff"/>
+      <stop offset="1" stop-color="#2f62c4"/>
+    </linearGradient>
+    <linearGradient id="gradS1" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#ff8a80"/>
+      <stop offset="0.45" stop-color="#f0524c"/>
+      <stop offset="1" stop-color="#b93732"/>
+    </linearGradient>
+  </defs>
+</svg>
 
 <header class="learn-header">
   <a class="wordmark" href="../index.html">shrimp</a>
@@ -749,7 +768,7 @@ function paintBoard(svg,g,sup,opts){
     var st=g.stones.get(K(n.q,n.r)),heat=null;
     if(opts.heat)heat=el('polygon',{points:hexPts(cx,cy,HR-.8),
       'class':'nx-heat','fill-opacity':'0'},gHeat);
-    if(st)el('circle',{cx:cx,cy:cy,r:HR*.52,
+    if(st)el('polygon',{points:hexPts(cx,cy,HR*.77),
       'class':st.owner===0?'nx-stone0':'nx-stone1'},gStones);
     var c={n:n,poly:poly,cx:cx,cy:cy,heat:heat,stone:st||null};
     poly.setAttribute('aria-label','cell '+n.q+','+n.r+' · '+
@@ -808,7 +827,7 @@ var QG=makeGame(RECORDS);
     var p=k.split(','),q=+p[0],r=+p[1],xy=XY(q,r);
     var poly=el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),'class':'nx-cell'},gC);
     var st=QG.stones.get(k);
-    if(st)el('circle',{cx:xy[0],cy:xy[1],r:HR*.52,
+    if(st)el('polygon',{points:hexPts(xy[0],xy[1],HR*.77),
       'class':st.owner===0?'nx-stone0':'nx-stone1'},gS);
     items.push({d:d,stone:!!st,poly:poly});
   });
@@ -1080,7 +1099,7 @@ var FEATS=buildFeatures(QG,SUP);
       var heat=el('polygon',{points:hexPts(xy[0],xy[1],HR-.8),
         'class':'nx-heat','fill-opacity':'0'},gH);
       var o=own[K(c[0],c[1])];
-      if(o!==undefined)el('circle',{cx:xy[0],cy:xy[1],r:HR*.52,
+      if(o!==undefined)el('polygon',{points:hexPts(xy[0],xy[1],HR*.77),
         'class':o===0?'nx-stone0':'nx-stone1'},gS);
       cells.push({cx:xy[0],cy:xy[1],heat:heat,poly:poly});
     });

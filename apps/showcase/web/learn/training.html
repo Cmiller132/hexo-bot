@@ -36,7 +36,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 .wh-dot{fill:var(--accent)}
 /* fig 2 — targets */
 .hx-cell{fill:#12171d;stroke:var(--line-soft);stroke-width:1}
-.hx-p0{fill:var(--p0)}.hx-p1{fill:var(--p1)}
+.hx-p0{fill:url(#gradS0);stroke:#2b5cad;stroke-width:1}
+.hx-p1{fill:url(#gradS1);stroke:#9c3733;stroke-width:1}
 .hx-cand{fill:none;stroke:var(--accent);stroke-width:1.4}
 .hx-cl{font-size:9px;fill:var(--accent)}
 .bar-prior{fill:var(--dim)}
@@ -57,6 +58,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans)}
 </style>
 </head>
 <body>
+
+<!-- Stone gradients (same defs as the play board's index.html). Document-level
+     holder: gradients inside a display:none SVG do not resolve, and url() refs
+     do not cross documents — every figure SVG on this page shares these. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gradS0" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#7db4ff"/>
+      <stop offset="0.45" stop-color="#4f93ff"/>
+      <stop offset="1" stop-color="#2f62c4"/>
+    </linearGradient>
+    <linearGradient id="gradS1" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#ff8a80"/>
+      <stop offset="0.45" stop-color="#f0524c"/>
+      <stop offset="1" stop-color="#b93732"/>
+    </linearGradient>
+  </defs>
+</svg>
 
 <header class="learn-header">
   <a class="wordmark" href="../index.html">shrimp</a>
@@ -593,7 +612,7 @@ function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
       var o=stones[c[0]+','+c[1]];
       if(o===undefined)return;
       var xy=hexXY(c[0],c[1],SZ);
-      el('circle',{class:o?'hx-p1':'hx-p0',cx:BCX+xy[0],cy:BCY+xy[1],r:SZ*0.52},boardG);
+      el('path',{class:o?'hx-p1':'hx-p0',d:hexPath(BCX+xy[0],BCY+xy[1],SZ*0.77)},boardG);
     });
     cand.forEach(function(c,i){
       var xy=hexXY(c[0],c[1],SZ);
