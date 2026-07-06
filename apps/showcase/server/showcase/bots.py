@@ -521,6 +521,61 @@ class _WorkerRuntime:
         if bot is not None:
             bot.session.discard(int(game_key))
 
+    def lab_eval(
+        self, *, bot_slug: str, actions: list[tuple[int, int]] | None,
+        stones: tuple[list[tuple[int, int]], list[tuple[int, int]]] | None,
+        to_move: int | None, attention_cell: tuple[int, int] | None,
+        want_activations: bool, want_features: bool,
+    ) -> dict:
+        """One hooked lab forward (net readout + requested internals) for a
+        sequence or free-edit position. Positions were validated web-side
+        (lab_rules); the one remaining user error — an attention query outside
+        the support — comes back as a ``reject`` payload so the endpoint can
+        422 instead of treating it as a worker failure."""
+        from . import lab
+
+        bot = self.bots[bot_slug]
+        if actions is not None:
+            facts, support, feats = lab.build_sequence_position(actions)
+            mode = "sequence"
+        else:
+            p0, p1 = stones or ([], [])
+            mover = to_move if to_move is not None else 0
+            facts, support, feats = lab.build_free_position(p0, p1, mover)
+            mode = "free"
+        try:
+            payload = lab.eval_payload(
+                bot.model, facts, support, feats,
+                policy_floor=self.policy_floor,
+                attention_cell=attention_cell,
+                want_activations=want_activations,
+                want_features=want_features,
+            )
+        except ValueError as exc:
+            return {"reject": str(exc)}
+        payload["mode"] = mode
+        if mode == "free":
+            payload["synthesized_history"] = True
+            payload["zeroed_features"] = list(lab.FREE_ZEROED)
+        return payload
+
+    def lab_search(
+        self, *, bot_slug: str, actions: list[tuple[int, int]], visits: int, seed: int,
+    ) -> dict:
+        """One capped lab search from a validated placement sequence, under
+        the checkpoint's own as-trained profile. Throwaway tree key (high bit
+        set, like analysis) — the tree is discarded inside search_payload."""
+        from . import lab
+
+        bot = self.bots[bot_slug]
+        state = lab.replay_state(actions)
+        return lab.search_payload(
+            bot.session, bot.evaluator, bot.profile, state,
+            game_key=(1 << 63) | (seed & ((1 << 48) - 1)),
+            visits=int(visits),
+            seed=seed,
+        )
+
 
 def _worker_main(
     worker_index: int, specs: list[CheckpointSpec], settings: Settings,
@@ -556,6 +611,10 @@ def _worker_main(
                 out = runtime.analyze(**kwargs)
             elif kind == "summary":
                 out = runtime.summary(**kwargs)
+            elif kind == "lab_eval":
+                out = runtime.lab_eval(**kwargs)
+            elif kind == "lab_search":
+                out = runtime.lab_search(**kwargs)
             elif kind == "discard":
                 runtime.discard(**kwargs)
                 continue
@@ -705,6 +764,38 @@ class BotPool:
         return await self._submit(
             self._route(route_key), "summary",
             {"bot_slug": bot_slug, "actions": list(actions)},
+            self._settings.bot_timeout_s,
+        )
+
+    async def lab_eval(
+        self, *, route_key: int, bot_slug: str,
+        actions: list[tuple[int, int]] | None,
+        stones: tuple[list[tuple[int, int]], list[tuple[int, int]]] | None,
+        to_move: int | None, attention_cell: tuple[int, int] | None,
+        want_activations: bool, want_features: bool,
+    ) -> dict:
+        """Lab hooked forward. `route_key` is a per-request spreader — lab
+        trees do not exist (eval never searches), so there is no stickiness to
+        preserve and jobs balance across workers."""
+        return await self._submit(
+            self._route(route_key), "lab_eval",
+            {
+                "bot_slug": bot_slug, "actions": actions, "stones": stones,
+                "to_move": to_move, "attention_cell": attention_cell,
+                "want_activations": want_activations, "want_features": want_features,
+            },
+            self._settings.bot_timeout_s,
+        )
+
+    async def lab_search(
+        self, *, route_key: int, bot_slug: str, actions: list[tuple[int, int]],
+        visits: int, seed: int,
+    ) -> dict:
+        """Lab capped search; the tree key is throwaway, so route_key only
+        spreads load."""
+        return await self._submit(
+            self._route(route_key), "lab_search",
+            {"bot_slug": bot_slug, "actions": actions, "visits": visits, "seed": seed},
             self._settings.bot_timeout_s,
         )
 

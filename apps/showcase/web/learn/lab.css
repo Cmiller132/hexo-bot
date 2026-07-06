@@ -1,0 +1,373 @@
+/* hexo showcase — lab page (learn/lab.html). Same honed-stone language as
+ * ../style.css (design v4). Board + panel styles are duplicated from
+ * ../style.css rather than imported: the lab page scaffolds on learn.css and
+ * style.css's element-level header rules would collide with .learn-header.
+ * Keep tokens in sync with both files. */
+
+/* ---------- page layout: full-width working area under the learn header ---------- */
+.lab-main{
+  max-width:1120px;margin:0 auto;
+  padding:24px 28px 40px;
+}
+.lab-main h1{
+  font-family:var(--mono);
+  font-size:22px;font-weight:600;letter-spacing:.01em;
+  margin:0 0 4px;
+}
+.lab-main h1 .h-dim{color:var(--muted);font-weight:400}
+.lab-lede{
+  font-size:14px;color:var(--muted);
+  margin:0 0 20px;max-width:78ch;
+}
+.lab-grid{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 340px;
+  gap:24px;
+  align-items:start;
+}
+.board-col{min-width:0}
+
+/* ---------- board frame (from ../style.css) ---------- */
+.board-frame{
+  border:1px solid var(--line);
+  background:radial-gradient(130% 95% at 50% -5%, #10151b 0%, var(--seam) 68%);
+  position:relative;
+}
+.frame-tag{
+  position:absolute;top:0;left:0;
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  color:var(--dim);
+  padding:6px 10px;
+  text-transform:uppercase;
+}
+.frame-read{
+  position:absolute;top:0;right:0;
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  color:var(--muted);
+  padding:6px 10px;
+}
+.frame-read b{color:var(--accent);font-weight:400}
+.board{width:100%;height:auto;display:block;touch-action:none}
+.board.panning{cursor:grabbing}
+.reset-view{
+  position:absolute;bottom:8px;right:8px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);
+  background:rgba(12,15,19,.78);
+  border:1px solid var(--line);
+  padding:5px 10px;
+  display:none;
+  transition:color .15s ease,border-color .15s ease;
+}
+.reset-view.show{display:block}
+.reset-view:hover{color:var(--accent);border-color:var(--accent-dim)}
+.place-chip{
+  position:absolute;bottom:8px;left:50%;transform:translateX(-50%);
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--accent);
+  background:rgba(12,15,19,.85);
+  border:1px solid var(--accent-dim);
+  padding:7px 20px;
+  display:none;
+}
+.place-chip.show{display:block}
+.place-chip:hover{border-color:var(--accent)}
+
+/* ---------- board internals (from ../style.css) ---------- */
+.cell{
+  fill:var(--tile);
+  stroke:var(--accent);
+  stroke-width:1;
+  stroke-opacity:0;
+  vector-effect:non-scaling-stroke;
+  transition:fill .15s ease,stroke-opacity .15s ease;
+}
+.cell:not(.occ):hover{fill:var(--tile-hover);stroke-opacity:.32}
+.tengen{fill:#333c46;pointer-events:none}
+.stone{pointer-events:none}
+.s0{fill:url(#gradS0);stroke:#2b5cad;stroke-width:1}
+.s1{fill:url(#gradS1);stroke:#9c3733;stroke-width:1}
+.lastdot{pointer-events:none;fill:var(--accent)}
+.lastdot.prev{opacity:.38}
+.winoutline{
+  pointer-events:none;fill:none;
+  stroke:var(--accent);stroke-width:2.5;
+  stroke-linecap:round;stroke-linejoin:round;
+  opacity:.95;
+}
+.ghost{
+  pointer-events:none;
+  fill:var(--p0);fill-opacity:.13;
+  stroke:var(--p0);stroke-opacity:.55;stroke-width:1;stroke-dasharray:4 3;
+}
+.ghost.p1brush{fill:var(--p1);stroke:var(--p1)}
+.ghost.staged{fill-opacity:.24;stroke-opacity:.9;stroke-dasharray:none}
+.heatcell{pointer-events:none}
+.heattop{fill:none;stroke-width:1.5;pointer-events:none}
+
+/* ---------- lab overlay layers (module visuals, above the stones) ---------- */
+.lab-ov polygon{pointer-events:none}
+.lab-ov .ov-fill{stroke:none}
+.lab-ov .ov-halo{fill:none;stroke:var(--dim);stroke-width:1;stroke-dasharray:3 3}
+.lab-ov .ov-ring{fill:none;stroke-width:1.5}
+.lab-ov .ov-query{fill:none;stroke:var(--accent);stroke-width:2}
+.lab-ov text{
+  font-family:var(--mono);font-size:9px;fill:var(--text);
+  text-anchor:middle;pointer-events:none;
+  paint-order:stroke;stroke:rgba(12,15,19,.75);stroke-width:2px;
+}
+
+/* ---------- editor strip under the board ---------- */
+.ed-strip{
+  border:1px solid var(--line);border-top:none;
+  background:linear-gradient(180deg,#171c23 0%,#141a20 100%);
+  padding:10px 12px;
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+}
+.ed-strip .seg{margin:0}
+.ed-note{
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+  color:var(--dim);
+  border-top:1px solid var(--line-soft);
+  padding:8px 12px;
+  background:linear-gradient(180deg,#171c23 0%,#141a20 100%);
+  border-left:1px solid var(--line);border-right:1px solid var(--line);
+  border-bottom:1px solid var(--line);
+}
+.ed-note b{color:var(--muted);font-weight:400}
+.ed-note[hidden]{display:none}
+
+/* module readout under the board (fixed strip, not a tooltip) */
+.lab-readout{
+  font-family:var(--mono);font-size:11.5px;line-height:1.55;
+  color:var(--muted);
+  min-height:52px;
+  border:1px solid var(--line);border-top:none;
+  background:linear-gradient(180deg,#171c23 0%,#141a20 100%);
+  padding:9px 12px;
+  display:flex;flex-direction:column;justify-content:center;gap:2px;
+}
+.lab-readout .ro-k{
+  font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--accent);
+}
+.lab-readout .ro-t{color:var(--muted)}
+
+/* ---------- right panel (plates from ../style.css) ---------- */
+.panel{display:flex;flex-direction:column;gap:14px}
+.sec{
+  border:1px solid var(--line);
+  background:linear-gradient(180deg,#171c23 0%,#141a20 100%);
+  padding:14px 16px;
+}
+.k{
+  font-family:var(--mono);
+  font-size:10px;font-weight:400;
+  letter-spacing:.2em;text-transform:uppercase;
+  color:var(--muted);
+  margin-bottom:10px;
+}
+.k.gap{margin-top:14px}
+.k-row{display:flex;align-items:center;justify-content:space-between}
+.k-btn{
+  font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);
+  border:1px solid var(--line);
+  padding:2px 8px;
+  transition:color .15s ease,border-color .15s ease;
+}
+.k-btn:hover:not(:disabled){color:var(--accent);border-color:var(--accent-dim)}
+.k-btn.done{color:var(--accent);border-color:var(--accent-dim)}
+.k-btn:disabled{opacity:.35;cursor:default}
+.seg{display:flex;flex-wrap:wrap;border:1px solid var(--line)}
+.seg[hidden]{display:none}
+.seg button{
+  flex:1;
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;
+  color:var(--muted);
+  padding:6px 4px;text-align:center;white-space:nowrap;
+  border-right:1px solid var(--line);
+  transition:color .15s ease,background .15s ease,box-shadow .15s ease;
+}
+.seg button:last-child{border-right:none}
+.seg button:hover{color:var(--text)}
+.seg button.sel{
+  color:var(--accent);background:#1a2027;
+  box-shadow:inset 0 0 0 1px var(--accent-dim);
+}
+.seg button:disabled{opacity:.35;cursor:default}
+.line-btn{
+  margin-top:10px;width:100%;
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--muted);
+  border:1px solid var(--line);
+  padding:8px 0;
+  transition:color .15s ease,border-color .15s ease;
+}
+.line-btn:hover:not(:disabled){color:var(--accent);border-color:var(--accent-dim)}
+.line-btn:disabled{opacity:.4;cursor:default}
+
+/* checkpoint list (same idiom as ../style.css #ckptList) */
+#ckptList{max-height:180px;overflow-y:auto}
+#ckptList::-webkit-scrollbar{width:6px}
+#ckptList::-webkit-scrollbar-thumb{background:var(--line)}
+.bot{
+  display:block;width:100%;text-align:left;
+  padding:7px 10px;
+  border:1px solid transparent;
+  transition:border-color .15s ease,background .15s ease;
+}
+.bot:hover{background:#1a2028}
+.bot.sel{border-color:var(--accent-dim);background:#1a2027}
+.bot-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.bot-name{font-size:13px;font-weight:600;letter-spacing:.01em}
+.bot.sel .bot-name{color:var(--accent)}
+.bot-meta{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap}
+.bot-meta .tag{color:var(--accent)}
+.bot-meta .tag.puct{color:var(--muted)}
+.bot-group{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);
+  margin:8px 0 3px;padding:0 10px;
+}
+.bot-group:first-child{margin-top:0}
+
+/* select (presets) */
+.lab-select{
+  width:100%;
+  font-family:var(--mono);font-size:11px;
+  color:var(--text);
+  background:var(--seam);
+  border:1px solid var(--line);
+  padding:6px 8px;
+  outline:none;
+}
+.lab-select:focus{border-color:var(--accent-dim)}
+
+/* position meta row */
+.meta-grid{
+  display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;
+  margin-top:12px;padding-top:10px;border-top:1px solid var(--line-soft);
+}
+.mg-cell .n{font-family:var(--mono);font-size:15px;color:var(--text)}
+.mg-cell .n.is-p0{color:var(--p0-soft)}
+.mg-cell .n.is-p1{color:var(--p1-soft)}
+.mg-cell .l{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+
+/* ---------- module bodies ---------- */
+.mod{display:none}
+.mod.active{display:block}
+.fineprint{
+  margin-top:10px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--dim);
+}
+.mod-note{
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;line-height:1.6;
+  color:var(--dim);
+  margin-top:10px;padding-top:8px;border-top:1px solid var(--line-soft);
+}
+
+/* feature plane list */
+.feat-list{display:grid;grid-template-columns:1fr 1fr;gap:2px}
+.feat-list button{
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;
+  color:var(--muted);text-align:left;
+  padding:4px 8px;
+  border:1px solid transparent;
+  transition:color .15s ease,background .15s ease;
+}
+.feat-list button:hover{color:var(--text);background:#1a2028}
+.feat-list button.sel{color:var(--accent);background:#1a2027;border-color:var(--accent-dim)}
+.feat-list button .fz{color:var(--p1-soft)}
+
+/* value readout */
+.value-read{margin-top:12px;display:flex;align-items:baseline;gap:10px}
+.value-big{font-family:var(--mono);font-size:26px;color:var(--text)}
+.value-big.pos{color:var(--p0-soft)}
+.value-big.neg{color:var(--p1-soft)}
+.value-cap{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.horizon{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:8px;
+  margin-top:12px;padding-top:10px;border-top:1px solid var(--line-soft);
+}
+.hz-v{font-family:var(--mono);font-size:14px;color:var(--text)}
+.hz-v.pos{color:var(--p0-soft)}
+.hz-v.neg{color:var(--p1-soft)}
+.hz-l{font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+
+/* value distribution + token bars */
+.dist-chart,.tok-chart{width:100%;height:auto;display:block;margin-top:10px}
+.dist-chart .db{fill:#93a0ac}
+.dist-chart .db.cur{fill:var(--accent)}
+.dist-chart .ax{stroke:var(--line);stroke-width:1}
+.dist-chart text,.tok-chart text{font-family:var(--mono);font-size:7.5px;fill:var(--dim)}
+.tok-chart .tb{fill:#93a0ac}
+.tok-chart .ax{stroke:var(--line);stroke-width:1}
+
+/* small ranked list (top-k, attended cells, visit counts) */
+.rank-list{list-style:none;font-family:var(--mono);font-size:11px;margin-top:10px}
+.rank-list li{
+  display:flex;justify-content:space-between;gap:10px;
+  padding:2px 4px;
+  border-bottom:1px solid var(--line-soft);
+  color:var(--muted);
+}
+.rank-list li:last-child{border-bottom:none}
+.rank-list .rk-c{color:var(--text)}
+.rank-list .rk-v{color:var(--accent)}
+
+/* scrub sliders */
+.scrub{margin-top:10px;display:flex;align-items:center;gap:10px}
+.scrub label{
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--dim);flex:none;
+}
+.scrub input[type=range]{
+  flex:1;
+  -webkit-appearance:none;appearance:none;
+  height:3px;background:var(--line);outline:none;cursor:pointer;
+}
+.scrub input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;
+  width:10px;height:10px;border-radius:0;border:none;background:var(--accent);
+}
+.scrub input[type=range]::-moz-range-thumb{
+  width:10px;height:10px;border-radius:0;border:none;background:var(--accent);
+}
+.scrub .val{font-family:var(--mono);font-size:11px;color:var(--accent);white-space:nowrap}
+
+/* status line for async module state */
+.mod-status{
+  font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+  color:var(--dim);min-height:14px;margin-top:8px;
+}
+.mod-status.err{color:var(--p1-soft)}
+
+/* ---------- toasts (from ../style.css) ---------- */
+.toast-wrap{
+  position:fixed;bottom:22px;left:50%;transform:translateX(-50%);
+  display:flex;flex-direction:column;gap:6px;align-items:center;
+  z-index:40;pointer-events:none;
+}
+.toast{
+  font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+  color:var(--text);
+  background:rgba(12,15,19,.92);
+  border:1px solid var(--line);
+  padding:8px 16px;
+  animation:toast-in .18s ease;
+}
+.toast.err{border-color:#5c2f2c;color:var(--p1-soft)}
+@keyframes toast-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ---------- responsive ---------- */
+@media (max-width:900px){
+  .lab-grid{grid-template-columns:1fr;gap:18px}
+}
+@media (max-width:780px){
+  .lab-main{padding:18px}
+}
+@media (max-width:420px){
+  .lab-main{padding:12px}
+  .feat-list{grid-template-columns:1fr}
+}

@@ -55,6 +55,14 @@ class Settings:
     policy_floor: float
     torch_threads: int
     ip_salt: str
+    # Lab (live model-internals sandbox, /api/lab/*). `lab_enabled` gates the
+    # endpoints (404 when off). Eval jobs are one hooked forward (cheap, so the
+    # limiter is generous); search jobs share the worker pool with live games,
+    # so their limiter is tighter and the visit budget is capped server-side.
+    lab_enabled: bool = True
+    lab_eval_per_minute: int = 60
+    lab_search_per_minute: int = 10
+    lab_search_visit_cap: int = 256
     # Inference device request (auto | cpu | xpu | cuda) — resolved per worker
     # process at init by showcase.device.resolve_device; `auto` prefers xpu,
     # then cuda, then cpu. Defaults keep existing constructors (tests) on the
@@ -102,4 +110,10 @@ class Settings:
             ip_salt=os.environ.get("SHOWCASE_IP_SALT", "") or secrets.token_hex(16),
             device=os.environ.get("SHOWCASE_DEVICE", "").strip().lower() or "auto",
             device_selfcheck=_env_opt_bool("SHOWCASE_DEVICE_SELFCHECK"),
+            lab_enabled=(
+                True if (flag := _env_opt_bool("SHOWCASE_LAB_ENABLED")) is None else flag
+            ),
+            lab_eval_per_minute=_env_int("SHOWCASE_LAB_EVAL_PER_MINUTE", 60),
+            lab_search_per_minute=_env_int("SHOWCASE_LAB_SEARCH_PER_MINUTE", 10),
+            lab_search_visit_cap=_env_int("SHOWCASE_LAB_SEARCH_VISIT_CAP", 256),
         )

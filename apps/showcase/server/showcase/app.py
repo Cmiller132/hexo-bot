@@ -15,6 +15,13 @@ Complete API (docs/showcase 01):
     GET  /api/games                   recent finished games feed (public, paginated)
     GET  /api/bots                    catalogue metadata (checkpoints + allowed sims)
     GET  /api/stats                   public aggregates
+    POST /api/lab/eval                lab sandbox: net readout + requested
+                                      internals (attention row for one query
+                                      cell, per-block activation norms, input
+                                      feature planes) for a visitor-built
+                                      position (legal sequence or free-edit)
+    POST /api/lab/search              lab sandbox: one capped real search on a
+                                      legal-sequence position
     GET  /healthz                     liveness
 
 No admin endpoints. Identity is a per-client httpOnly cookie token checked on
@@ -53,6 +60,15 @@ from hexo_engine import IllegalActionError
 
 from .bots import BotPool, CheckpointSpec, BotPoolError, BotPoolTimeout, load_bots_toml
 from .config import Settings
+from .lab_rules import (
+    MAX_ACTIONS,
+    MAX_COORD,
+    MAX_FREE_STONES,
+    LabPositionError,
+    default_free_to_move,
+    validate_actions,
+    validate_free_stones,
+)
 from .db import ShowcaseDB, decode_payload, encode_payload
 from .game import (
     TERMINATION_RESIGN,
@@ -108,6 +124,44 @@ class MoveRequest(BaseModel):
 
 class NicknameRequest(BaseModel):
     nickname: str = Field(min_length=1, max_length=200)
+
+
+class LabCell(BaseModel):
+    q: int = Field(ge=-MAX_COORD, le=MAX_COORD)
+    r: int = Field(ge=-MAX_COORD, le=MAX_COORD)
+
+
+class LabStones(BaseModel):
+    p0: list[LabCell] = Field(default_factory=list, max_length=MAX_FREE_STONES)
+    p1: list[LabCell] = Field(default_factory=list, max_length=MAX_FREE_STONES)
+
+
+class LabWants(BaseModel):
+    """Which internals ride the eval response beyond the net readout."""
+
+    # Attention rows (per block x head) for this one support cell as the query.
+    attention_query: LabCell | None = None
+    # Per-block per-cell activation norms over the whole trunk.
+    activations: bool = False
+    # The (15, N) input feature planes as the server featurizer built them.
+    features: bool = False
+
+
+class LabEvalRequest(BaseModel):
+    checkpoint_id: str = Field(max_length=128)
+    # Exactly one of `actions` (chronological legal placements) or `stones`
+    # (free-edit position) must be present.
+    actions: list[LabCell] | None = Field(default=None, max_length=MAX_ACTIONS)
+    stones: LabStones | None = None
+    # Free-edit only: side to move (defaults from the stone counts).
+    to_move: Literal[0, 1] | None = None
+    wants: LabWants = Field(default_factory=LabWants)
+
+
+class LabSearchRequest(BaseModel):
+    checkpoint_id: str = Field(max_length=128)
+    actions: list[LabCell] = Field(max_length=MAX_ACTIONS)
+    sims: int = Field(ge=1)
 
 
 def sanitize_nickname(raw: str) -> str | None:
@@ -183,6 +237,10 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.move_bucket = TokenBucket(settings.moves_per_minute)
     app.state.analysis_bucket = TokenBucket(settings.analysis_per_minute)
     app.state.game_bucket = TokenBucket(settings.games_per_hour / 60.0, burst=settings.games_per_hour)
+    # Lab limiters: eval is one cheap forward (generous); search shares the
+    # worker pool with live game moves (tight). Both per client IP.
+    app.state.lab_eval_bucket = TokenBucket(settings.lab_eval_per_minute)
+    app.state.lab_search_bucket = TokenBucket(settings.lab_search_per_minute)
 
     # -- helpers ---------------------------------------------------------------
 
@@ -556,6 +614,107 @@ def create_app(settings: Settings) -> FastAPI:
                 raise HTTPException(503, "analysis backend unavailable") from exc
             _versioned_cache_put(game_id, _SUMMARY_PLY, bot_db_id, payload)
         return {"game_id": game_id, "checkpoint_id": spec.slug, "cached": cached, **payload}
+
+    # -- lab (live model-internals sandbox) --------------------------------------------
+
+    def _lab_gate(request: Request, bucket: TokenBucket) -> None:
+        """Enable flag + per-IP limiter for the lab endpoints."""
+        if not settings.lab_enabled:
+            raise HTTPException(404, "the lab is not enabled on this server")
+        if not bucket.allow(_client_key(request)):
+            raise HTTPException(429, "too many lab requests; slow down")
+
+    def _lab_checkpoint(checkpoint_id: str) -> CheckpointSpec:
+        spec = app.state.catalogue.get(checkpoint_id)
+        if spec is None:
+            raise HTTPException(404, f"unknown checkpoint {checkpoint_id!r}")
+        return spec
+
+    def _lab_route_key() -> int:
+        # Lab jobs have no tree to keep sticky (eval never searches; lab
+        # search trees are throwaway) — a random key spreads them across
+        # workers so they interleave with, rather than queue behind, one
+        # worker's game moves.
+        return int.from_bytes(os.urandom(4), "big")
+
+    @app.post("/api/lab/eval")
+    async def lab_eval(body: LabEvalRequest, request: Request):
+        """Net readout + requested internals for a visitor-built position.
+
+        Body carries exactly one of `actions` (a legal placement sequence,
+        replayed and validated here) or `stones` (a free-edit position; the
+        worker synthesizes history and zeroes the history-derived features —
+        the response names them in `zeroed_features`)."""
+        _lab_gate(request, app.state.lab_eval_bucket)
+        spec = _lab_checkpoint(body.checkpoint_id)
+        if (body.actions is None) == (body.stones is None):
+            raise HTTPException(422, "provide exactly one of 'actions' or 'stones'")
+        actions = stones = to_move = None
+        try:
+            if body.actions is not None:
+                actions = validate_actions([(c.q, c.r) for c in body.actions])
+            else:
+                stones = validate_free_stones(
+                    [(c.q, c.r) for c in body.stones.p0],
+                    [(c.q, c.r) for c in body.stones.p1],
+                )
+                to_move = (
+                    body.to_move
+                    if body.to_move is not None
+                    else default_free_to_move(len(stones[0]), len(stones[1]))
+                )
+        except LabPositionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        wants = body.wants
+        try:
+            payload = await app.state.pool.lab_eval(
+                route_key=_lab_route_key(),
+                bot_slug=spec.slug,
+                actions=actions,
+                stones=stones,
+                to_move=to_move,
+                attention_cell=(
+                    (wants.attention_query.q, wants.attention_query.r)
+                    if wants.attention_query is not None
+                    else None
+                ),
+                want_activations=wants.activations,
+                want_features=wants.features,
+            )
+        except (BotPoolError, BotPoolTimeout) as exc:
+            raise HTTPException(503, "lab backend unavailable") from exc
+        if "reject" in payload:
+            raise HTTPException(422, payload["reject"])
+        return {"checkpoint_id": spec.slug, **payload}
+
+    @app.post("/api/lab/search")
+    async def lab_search(body: LabSearchRequest, request: Request):
+        """One real search on a legal-sequence position, visit budget capped
+        by `SHOWCASE_LAB_SEARCH_VISIT_CAP`. Free-edit positions cannot be
+        searched: the engine cannot represent an unreachable position, so the
+        endpoint takes `actions` only."""
+        _lab_gate(request, app.state.lab_search_bucket)
+        spec = _lab_checkpoint(body.checkpoint_id)
+        if body.sims > settings.lab_search_visit_cap:
+            raise HTTPException(
+                422, f"sims must be <= {settings.lab_search_visit_cap}"
+            )
+        try:
+            actions = validate_actions([(c.q, c.r) for c in body.actions])
+        except LabPositionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        route_key = _lab_route_key()
+        try:
+            payload = await app.state.pool.lab_search(
+                route_key=route_key,
+                bot_slug=spec.slug,
+                actions=actions,
+                visits=body.sims,
+                seed=route_key * 5003 + len(actions),
+            )
+        except (BotPoolError, BotPoolTimeout) as exc:
+            raise HTTPException(503, "lab backend unavailable") from exc
+        return {"checkpoint_id": spec.slug, "sims": body.sims, **payload}
 
     # -- public feed / metadata / stats -----------------------------------------------
 

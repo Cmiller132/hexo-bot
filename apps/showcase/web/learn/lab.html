@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shrimp &mdash; lab</title>
+<meta name="description" content="Live sandbox: build a Hexo position and inspect the real Shrimp model on it — input features, net evaluation, attention, activation flow, and a real search.">
+<link rel="stylesheet" href="learn.css">
+<link rel="stylesheet" href="lab.css?v=1">
+</head>
+<body>
+
+<header class="learn-header">
+  <a class="wordmark" href="../">shrimp</a>
+  <nav class="learn-nav" aria-label="How it works">
+    <a href="./">Overview</a>
+    <a href="network.html">The network</a>
+    <a href="search.html">The search</a>
+    <a href="training.html">The training</a>
+    <a href="results.html">The results</a>
+    <a href="systems.html">The systems</a>
+    <a href="lab.html" class="current" aria-current="page">Lab</a>
+  </nav>
+</header>
+
+<!-- polished-stone gradients, shared by every board (same defs as ../index.html) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="gradS0" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#7db4ff"/>
+      <stop offset="0.45" stop-color="#4f93ff"/>
+      <stop offset="1" stop-color="#2f62c4"/>
+    </linearGradient>
+    <linearGradient id="gradS1" x1="0.22" y1="0" x2="0.78" y2="1">
+      <stop offset="0" stop-color="#ff8a80"/>
+      <stop offset="0.45" stop-color="#f0524c"/>
+      <stop offset="1" stop-color="#b93732"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<main class="lab-main">
+
+<h1>lab <span class="h-dim">&mdash; the live model, on your position</span></h1>
+<p class="lab-lede">
+Build any position on the board, then inspect what the real network computes
+on it: the input features it is fed, its evaluation and move preferences, the
+attention pattern from any cell, how activity moves through the trunk, and a
+real (budget-capped) search. Everything on the right reads the position on the
+left. Positions from the analysis tab open here via their
+<code>?game=&hellip;&amp;ply=&hellip;</code> link.
+</p>
+
+<div class="lab-grid">
+
+  <div class="board-col">
+    <div class="board-frame">
+      <span class="frame-tag" id="labTag">lab &middot; sandbox</span>
+      <span class="frame-read">cursor <b id="cursorPos">&mdash;</b></span>
+      <svg class="board" id="labBoard" role="img" aria-label="Hexo board, lab position editor"></svg>
+      <button class="place-chip" id="placeChip">place</button>
+    </div>
+
+    <div class="ed-strip">
+      <div class="seg" id="modeSeg" role="radiogroup" aria-label="Editor mode">
+        <button data-mode="sequence" class="sel" role="radio" aria-checked="true"
+                title="Stones placed as alternating legal Hexo turns">Legal sequence</button>
+        <button data-mode="free" role="radio" aria-checked="false"
+                title="Place or remove arbitrary stones; history is synthesized">Free edit</button>
+      </div>
+      <div class="seg" id="brushSeg" role="radiogroup" aria-label="Free-edit brush" hidden>
+        <button data-brush="0" class="sel" role="radio" aria-checked="true">blue</button>
+        <button data-brush="1" role="radio" aria-checked="false">red</button>
+        <button data-brush="erase" role="radio" aria-checked="false">erase</button>
+      </div>
+      <div class="seg" id="tmSeg" role="radiogroup" aria-label="Side to move (free edit)" hidden>
+        <button data-tm="0" class="sel" role="radio" aria-checked="true"
+                title="Blue to move">blue to move</button>
+        <button data-tm="1" role="radio" aria-checked="false"
+                title="Red to move">red to move</button>
+      </div>
+      <button class="k-btn" id="undoBtn">undo</button>
+      <button class="k-btn" id="clearBtn">clear</button>
+      <button class="k-btn" id="copyLab">copy lab link</button>
+    </div>
+    <div class="ed-note" id="freeNote" hidden>
+      free edit has no move history: the <b>own/opp recency</b> and
+      <b>opponent-last-turn</b> input features are zeroed, and the search
+      module is unavailable (the engine cannot replay an unreachable position).
+    </div>
+
+    <div class="lab-readout" id="labReadout" aria-live="polite">
+      <span class="ro-k" id="roK">position</span>
+      <span class="ro-t" id="roT">click a cell to place a stone.</span>
+    </div>
+  </div>
+
+  <aside class="panel">
+
+    <div class="sec">
+      <h2 class="k">Position</h2>
+      <select class="lab-select" id="presetSel" aria-label="Preset positions">
+        <option value="">empty board</option>
+      </select>
+      <div class="meta-grid">
+        <div class="mg-cell"><div class="n" id="mgStones">0</div><div class="l">stones</div></div>
+        <div class="mg-cell"><div class="n is-p0" id="mgToMove">blue</div><div class="l">to move</div></div>
+        <div class="mg-cell"><div class="n" id="mgPhase">opening</div><div class="l">phase</div></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h2 class="k">Checkpoint</h2>
+      <div id="ckptList" role="radiogroup" aria-label="Checkpoint"></div>
+    </div>
+
+    <div class="sec">
+      <h2 class="k">Module</h2>
+      <div class="seg" id="modSeg" role="tablist" aria-label="Lab modules">
+        <button data-mod="features" class="sel" role="tab" aria-selected="true">features</button>
+        <button data-mod="eval" role="tab" aria-selected="false">net eval</button>
+        <button data-mod="attention" role="tab" aria-selected="false">attention</button>
+        <button data-mod="activations" role="tab" aria-selected="false">activations</button>
+        <button data-mod="search" role="tab" aria-selected="false">search</button>
+      </div>
+
+      <!-- module 1: input features + support (client-computed) -->
+      <div class="mod active" id="mod-features" role="tabpanel">
+        <h2 class="k gap">Input planes</h2>
+        <div class="feat-list" id="featList"></div>
+        <p class="mod-note">
+          the network reads 15 features per support cell. the support set is
+          the stones, the legal cells within distance 4 of a stone, and a
+          one-cell halo (dashed). computed in the page with the same formulas
+          the server featurizer uses; own/opp planes are relative to the side
+          to move.
+        </p>
+      </div>
+
+      <!-- module 2: net eval (server-computed) -->
+      <div class="mod" id="mod-eval" role="tabpanel">
+        <div class="value-read">
+          <span class="value-big" id="valNow">&mdash;</span>
+          <span class="value-cap" id="valWho"></span>
+        </div>
+        <div class="horizon">
+          <div class="hz"><div class="hz-v" id="stv2">&mdash;</div><div class="hz-l">stv 2</div></div>
+          <div class="hz"><div class="hz-v" id="stv6">&mdash;</div><div class="hz-l">stv 6</div></div>
+          <div class="hz"><div class="hz-v" id="stv16">&mdash;</div><div class="hz-l">stv 16</div></div>
+          <div class="hz"><div class="hz-v" id="mlNow">&mdash;</div><div class="hz-l">moves left</div></div>
+        </div>
+        <h2 class="k gap">Policy head</h2>
+        <div class="seg" id="headSeg" role="radiogroup" aria-label="Policy head">
+          <button data-head="policy" class="sel" role="radio" aria-checked="true"
+                  title="Move distribution for the side to move">own</button>
+          <button data-head="opp_policy" role="radio" aria-checked="false"
+                  title="Predicted opponent reply distribution">opp</button>
+          <button data-head="soft_policy" role="radio" aria-checked="false"
+                  title="Auxiliary soft policy head">soft</button>
+        </div>
+        <ol class="rank-list" id="topList"></ol>
+        <h2 class="k gap">Value distribution &middot; 65 bins</h2>
+        <svg class="dist-chart" id="distChart" viewBox="0 0 300 72" role="img"
+             aria-label="65-bin value distribution"></svg>
+        <div class="mod-status" id="evalStatus"></div>
+        <p class="fineprint">bare-net readout &middot; no search &middot; value is side-to-move</p>
+      </div>
+
+      <!-- module 3: attention explorer (server-computed, hooked forward) -->
+      <div class="mod" id="mod-attention" role="tabpanel">
+        <p class="mod-note" style="margin-top:0;padding-top:0;border-top:none">
+          tap any support cell on the board to use it as the attention query;
+          the overlay shows where that cell attends. rows come from a hooked
+          forward of the real network (softmax(qk&#8348;/&radic;d + bias)).
+          board taps select the query while this module is open.
+        </p>
+        <h2 class="k gap">Block</h2>
+        <div class="seg" id="blockSeg" role="radiogroup" aria-label="Attention block"></div>
+        <h2 class="k gap">Head</h2>
+        <div class="seg" id="headSegAttn" role="radiogroup" aria-label="Attention head"></div>
+        <h2 class="k gap">Summary tokens</h2>
+        <svg class="tok-chart" id="tokChart" viewBox="0 0 300 56" role="img"
+             aria-label="Attention weight on the 8 summary tokens"></svg>
+        <ol class="rank-list" id="attnList"></ol>
+        <div class="mod-status" id="attnStatus"></div>
+      </div>
+
+      <!-- module 4: trunk activation flow (server-computed) -->
+      <div class="mod" id="mod-activations" role="tabpanel">
+        <p class="mod-note" style="margin-top:0;padding-top:0;border-top:none">
+          per-cell activation L2 norms after each trunk stage: where the
+          computation concentrates, layer by layer. scrub through the stem and
+          the 15 blocks.
+        </p>
+        <div class="scrub">
+          <label for="actRange">stage</label>
+          <input type="range" id="actRange" min="0" max="0" value="0" step="1"
+                 aria-label="Trunk stage">
+          <span class="val" id="actLabel">&mdash;</span>
+        </div>
+        <ol class="rank-list" id="actList"></ol>
+        <div class="mod-status" id="actStatus"></div>
+      </div>
+
+      <!-- module 5: search visit map (server-computed, real search) -->
+      <div class="mod" id="mod-search" role="tabpanel">
+        <h2 class="k" style="margin-top:0">Visits</h2>
+        <div class="seg" id="simsSeg" role="radiogroup" aria-label="Search budget">
+          <button data-sims="16" role="radio" aria-checked="false">16</button>
+          <button data-sims="64" class="sel" role="radio" aria-checked="true">64</button>
+          <button data-sims="256" role="radio" aria-checked="false">256</button>
+        </div>
+        <button class="line-btn" id="searchBtn">run search</button>
+        <div class="value-read">
+          <span class="value-big" id="searchVal">&mdash;</span>
+          <span class="value-cap" id="searchCap"></span>
+        </div>
+        <ol class="rank-list" id="visitList"></ol>
+        <div class="mod-status" id="searchStatus"></div>
+        <p class="fineprint">real search under the checkpoint&rsquo;s as-trained
+        profile &middot; greedy selection &middot; budget capped at 256 &middot;
+        legal-sequence positions only</p>
+      </div>
+    </div>
+
+  </aside>
+</div>
+
+</main>
+
+<div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+<script type="module" src="./lab.js?v=1"></script>
+</body>
+</html>
