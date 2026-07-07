@@ -8,7 +8,7 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=11";
+import * as api from "./api.js?v=12";
 import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=11";
 import { createBoard, findWin, key } from "./board.js?v=7";
 import { initStats, refreshStats } from "./stats.js?v=18";
@@ -168,7 +168,7 @@ async function autoSignNick(gameId, name) {
   } catch (_) { /* ignore */ }
 }
 const thinkNote = $("thinkNote");
-const playAlert = $("playAlert"), playAlertMsg = $("playAlertMsg");
+const playAlert = $("playAlert"), playAlertMsg = $("playAlertMsg"), retryBtn = $("retryBtn");
 
 /* Past this many seconds of one bot turn, add a calm "warming up" note — a
  * cold first move JITs for ~30s, so a long wait is expected, not broken. */
@@ -258,14 +258,35 @@ function stopThinking() {
  * The button label already reads "New game" in the abandoned/finished state, so
  * the notice just explains what happened and points at it. Cleared on any fresh
  * snapshot ingest so a recovered game never carries a stale alert. */
-function showPlayAlert(msg) {
+function showPlayAlert(msg, { retry = false } = {}) {
   playAlertMsg.textContent = msg;
+  if (retryBtn) retryBtn.hidden = !retry;
   playAlert.hidden = false;
 }
 function clearPlayAlert() {
   playAlert.hidden = true;
   playAlertMsg.textContent = "";
+  if (retryBtn) retryBtn.hidden = true;
 }
+
+/* Re-run a hiccuped bot turn in place: the server held the game in `bot_failed`
+ * (position intact), so a retry just re-enqueues the same search. On success the
+ * snapshot flips to bot_thinking and polling resumes; a 404 means the session
+ * expired, a 409 means the state moved on (resync from the server). */
+if (retryBtn) retryBtn.addEventListener("click", async () => {
+  if (!play.id) return;
+  retryBtn.disabled = true;
+  try {
+    ingestPlay(await api.retryBot(play.id));
+    if (play.snap && play.snap.status === "bot_thinking") startPoll();
+  } catch (e) {
+    if (e.status === 404) { stopThinking(); setStatus("game expired on the server", "over"); }
+    else if (e.status === 409) { try { ingestPlay(await api.getGame(play.id)); } catch (_) {} }
+    else apiFail(e, "retry failed — try again");
+  } finally {
+    retryBtn.disabled = false;
+  }
+});
 
 function clearStage() {
   play.staged = null;
@@ -348,6 +369,16 @@ function ingestPlay(snap) {
     setStatus(`${play.label} thinking…`, "think");
     startThinking(); // owns the status text from here: elapsed + warm-up note
     clearStage();
+  } else if (snap.status === "bot_failed") {
+    // the bot's search hiccuped but the game is intact — offer a retry instead
+    // of forcing a new game. The board and your position are untouched.
+    stopThinking();
+    clearStage();
+    setStatus("the bot stumbled — retry its move", "warn");
+    showPlayAlert(
+      "the bot backend hiccuped and couldn't finish its move — no fault of yours. Your game is safe; retry the move.",
+      { retry: true },
+    );
   } else if (finished) {
     stopThinking();
     clearStage();
@@ -373,7 +404,10 @@ function ingestPlay(snap) {
   analyzeBtn.hidden = !finished;
   paintTurnOutline(snap); // colour the board outline by whose move it is
   // lock the opponent/strength/side pickers while a game is actually running
-  setPlayConfigLocked(snap.status === "your_turn" || snap.status === "bot_thinking");
+  setPlayConfigLocked(
+    snap.status === "your_turn" || snap.status === "bot_thinking" ||
+    snap.status === "bot_failed"
+  );
   // the nickname prompt appears ONLY once a game has finished
   if (nickForm.hidden && finished) {
     nickForm.hidden = false;

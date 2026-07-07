@@ -360,8 +360,14 @@ def create_app(settings: Settings) -> FastAPI:
             log.exception("bot turn failed for game %s", session.game_id)
             async with session.lock:
                 session.bot_busy = False
+                # Recoverable: the search raised before mutating the position
+                # (no actions applied), so the game is intact. Hold it in
+                # `bot_failed` — NOT abandoned — so the human can retry the
+                # bot's move. touch() resets the idle clock so the sweeper gives
+                # them the full idle window to click Retry.
                 if session.active:
-                    _finalize(session, termination=None, winner=None)
+                    session.bot_failed = True
+                    session.touch()
             return
         async with session.lock:
             session.bot_busy = False
@@ -378,6 +384,7 @@ def create_app(settings: Settings) -> FastAPI:
                 _finalize(session, termination=TERMINATION_SIX_IN_LINE, winner=winner)
 
     def _start_bot_turn(session: GameSession) -> None:
+        session.bot_failed = False  # a fresh attempt clears any prior hiccup
         session.bot_busy = True
         asyncio.get_running_loop().create_task(_run_bot_turn(session))
 
@@ -516,6 +523,26 @@ def create_app(settings: Settings) -> FastAPI:
                 session, termination=TERMINATION_RESIGN,
                 winner=1 - session.human_color,
             )
+            return session.snapshot()
+
+    @app.post("/api/game/{game_id}/retry")
+    async def retry_bot(game_id: str, request: Request):
+        """Re-run a bot turn that hiccuped. The failed search never mutated the
+        position (the game was held in `bot_failed`, not abandoned), so this
+        simply re-enqueues the same turn. Idempotent while a retry is already
+        in flight."""
+        session = _session_or_404(game_id)
+        _authorize(session, request)
+        if not app.state.move_bucket.allow(_client_key(request)):
+            raise HTTPException(429, "too many requests; slow down")
+        async with session.lock:
+            if not session.active:
+                raise HTTPException(409, "game is finished")
+            if session.bot_busy:
+                return session.snapshot()  # a retry is already running
+            if not session.bot_failed or not session.bot_to_move:
+                raise HTTPException(409, "no failed bot turn to retry")
+            _start_bot_turn(session)
             return session.snapshot()
 
     @app.post("/api/game/{game_id}/nickname")

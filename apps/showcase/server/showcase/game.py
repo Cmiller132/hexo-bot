@@ -176,6 +176,7 @@ class GameSession:
     actions: list[int] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     bot_busy: bool = False
+    bot_failed: bool = False  # transient bot-turn failure; retryable, not terminal
     db_status: str = "active"  # active | finished | abandoned
     result: int | None = None  # +1 human, -1 bot, 0 none (schema convention)
     termination: str | None = None
@@ -312,6 +313,9 @@ class GameSession:
         finished = not self.active
         if finished:
             status = "finished"
+        elif self.bot_failed:
+            # bot turn hiccuped mid-search; position intact, awaiting a retry
+            status = "bot_failed"
         elif self.bot_busy or self.bot_to_move:
             status = "bot_thinking"
         else:

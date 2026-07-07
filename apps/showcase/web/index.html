@@ -6,7 +6,7 @@
 <title>shrimp &mdash; instrument</title>
 <!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
      in app.js whenever the bundle changes incompatibly -->
-<link rel="stylesheet" href="./style.css?v=15">
+<link rel="stylesheet" href="./style.css?v=16">
 </head>
 <body>
 
@@ -88,6 +88,10 @@
              unhides it on a fail-fast timeout / abandoned finish -->
         <div class="play-alert" id="playAlert" hidden>
           <div class="play-alert-msg" id="playAlertMsg" role="alert"></div>
+          <!-- shown only in the bot_failed state: re-runs the hiccuped bot turn
+               in place (the game is held, not abandoned) so a backend stumble
+               never costs the player their game -->
+          <button class="line-btn" id="retryBtn" type="button" hidden>Retry the bot&rsquo;s move</button>
         </div>
         <div class="meta-grid">
           <div class="mg-cell"><div class="n" id="plyCount">&mdash;</div><div class="l">ply</div></div>
@@ -266,6 +270,6 @@
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=18"></script>
+<script type="module" src="./app.js?v=19"></script>
 </body>
 </html>

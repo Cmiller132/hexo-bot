@@ -128,6 +128,10 @@ export const postMove = (id, q, r) =>
 
 export const resign = id => request(`/api/game/${id}/resign`, { method: "POST" });
 
+// Re-run a bot turn that hiccuped; the position is unchanged, so this is safe
+// to call whenever the game is in the `bot_failed` state.
+export const retryBot = id => request(`/api/game/${id}/retry`, { method: "POST" });
+
 export const setNickname = (id, nickname) =>
   request(`/api/game/${id}/nickname`, { method: "POST", body: { nickname } });
 

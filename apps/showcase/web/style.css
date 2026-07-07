@@ -301,6 +301,9 @@ main{max-width:1120px;margin:0 auto;padding:28px}
   font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;line-height:1.5;
   color:var(--p1-soft);
 }
+/* retry button rides just under the hiccup notice; reuses .line-btn styling */
+.play-alert .line-btn{margin-top:10px}
+.play-alert .line-btn[hidden]{display:none}
 .meta-grid{
   display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;
   margin-top:14px;padding-top:12px;border-top:1px solid var(--line-soft);
