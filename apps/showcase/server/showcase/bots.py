@@ -1067,14 +1067,32 @@ class BotPool:
             # one). We still record the recycle so the window reflects reality.
             under_cap = self._note_recycle(worker)
             if not under_cap and not just_failed_over:
-                self._poisoned[worker] = True
-                log.error(
-                    "shard %d exceeded %d recycles in %.0fs — leaving it dead; "
-                    "jobs for this shard will fail fast until restart (reason: %s)",
-                    worker, self._settings.max_recycles_per_window,
-                    self._settings.recycle_window_s, reason,
+                # Poisoning would leave this shard permanently dead. Only do that
+                # if some OTHER shard is still alive to take jobs — never poison
+                # the last live shard, since with a single worker that is a total
+                # outage (a shard that occasionally dies still serves far more
+                # than a dead one). Instead reset its recycle window and respawn.
+                others_live = any(
+                    w != worker and not self._poisoned[w]
+                    for w in range(len(self._poisoned))
                 )
-                return
+                if others_live:
+                    self._poisoned[worker] = True
+                    log.error(
+                        "shard %d exceeded %d recycles in %.0fs — leaving it "
+                        "dead; jobs for this shard will fail fast until restart "
+                        "(reason: %s)",
+                        worker, self._settings.max_recycles_per_window,
+                        self._settings.recycle_window_s, reason,
+                    )
+                    return
+                self._recycle_times[worker] = []  # last live shard: keep it alive
+                log.error(
+                    "shard %d over the recycle cap but it is the last live shard "
+                    "— respawning instead of poisoning to avoid a full outage "
+                    "(reason: %s)",
+                    worker, reason,
+                )
 
             # Fresh queue so any job the dead process never consumed is dropped
             # rather than inherited by the replacement.

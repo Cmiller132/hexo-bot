@@ -15,6 +15,7 @@ which is also everything the search can expand.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import numpy as np
@@ -37,22 +38,44 @@ TOP_K = 5
 # `value`; the value/stv gap is the model's read on imminent swings.
 STV_HEAD = "stvalue_2"
 
-# Batched-forward chunk for `summary_eval`: bounds peak memory on long games
-# while keeping the whole-game summary a handful of forwards.
-_SUMMARY_CHUNK = 64
+# Peak-memory budget (B * S_pad^2) per summary_eval forward. A fixed row COUNT
+# is unsafe: late positions in a long/spread game have a large support S, so a
+# 64-wide batch padded to S~5400 builds a (64, heads, S, S) tensor of tens of
+# GB and OOMs the 4 GB card (and the CPU container) — the exact fault that
+# poisoned the single worker. Grouping by B*S^2 instead makes a deep position
+# forward alone (~1.7 GB, fits) while shallow openings still batch wide.
+# Mirrors the serve path's SHRIMP_PAIR_CEILING sizing.
+_SUMMARY_PAIR_CEILING = float(
+    os.environ.get("SHOWCASE_SUMMARY_PAIR_CEILING", "0") or 3.0e7
+)
+
+
+def _release_cache(device: torch.device) -> None:
+    """Free the accelerator caching allocator's reserved blocks between big
+    forwards so a deep position can't pin its ~1.7 GB transient on the 4 GB
+    card. No-op on CPU."""
+    if device.type == "cpu":
+        return
+    accel = getattr(torch, device.type, None)  # torch.xpu / torch.cuda
+    if accel is None:
+        return
+    try:
+        accel.empty_cache()
+    except Exception:  # pragma: no cover - best-effort hygiene
+        pass
 
 
 def _model_forward(model: Any, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Full-head forward on whatever device the model lives on, with the fp32
-    relative-position-bias path.
+    """Full-head forward on whatever device the model lives on.
 
-    The batch comes off `collate_rows` on the CPU; when the worker runs the
-    model on an accelerator (SHOWCASE_DEVICE=xpu/cuda) the inputs move there
-    first. `build_attn_bias` gathers the bias table in fp16 under no-grad (the
-    CUDA serve path); running under `enable_grad` takes the fp32 master path
-    instead, which is unconditionally safe on CPU and XPU (the fast fused
-    kernels are `is_cuda`-gated anyway). Negligible cost for a single
-    position; downstream `.item()`/`.tolist()` reads are the D2H sync."""
+    Runs under `torch.no_grad()`: analysis and summary never backprop, so
+    retaining the autograd graph only wastes memory — and a deep/spread board's
+    activations are ~1.7 GB, enough to OOM the 4 GB card (or the CPU container)
+    if the whole graph is kept live. no-grad also takes the same fp16
+    relative-position-bias path the live serve forward uses, so the readout
+    matches gameplay rather than diverging onto an fp32 master path. The batch
+    comes off `collate_rows` on the CPU and moves to the model's device first
+    when on an accelerator."""
     device = next(model.parameters()).device
     feats, nbr, mask, coords = (
         batch["feats"], batch["nbr"], batch["mask"], batch["coords"]
@@ -62,7 +85,7 @@ def _model_forward(model: Any, batch: dict[str, torch.Tensor]) -> dict[str, torc
         nbr = nbr.to(device)
         mask = mask.to(device)
         coords = coords.to(device)
-    with torch.enable_grad():
+    with torch.no_grad():
         out = model.forward(feats, nbr, mask, coords)
     return {k: v.detach() for k, v in out.items()}
 
@@ -122,12 +145,31 @@ def summary_eval(model: Any, rows: list[tuple[Any, Any]]) -> dict[str, Any]:
     values: list[float] = []
     stvs: list[float] = []
     moves_left: list[float] = []
-    for start in range(0, len(rows), _SUMMARY_CHUNK):
-        batch = collate_rows(rows[start : start + _SUMMARY_CHUNK])
+    device = next(model.parameters()).device
+    n = len(rows)
+    start = 0
+    while start < n:
+        # Greedily grow the chunk while B * S_pad^2 stays under the ceiling, so a
+        # deep position forwards alone and shallow ones batch wide. Row order is
+        # preserved (result[i] corresponds to rows[i]). At least one row always
+        # forms a chunk, even if it alone exceeds the ceiling.
+        end = start
+        max_s = 0
+        while end < n:
+            s = rows[end][0].num_nodes
+            b = end - start + 1
+            if end > start and b * max(max_s, s) ** 2 > _SUMMARY_PAIR_CEILING:
+                break
+            max_s = max(max_s, s)
+            end += 1
+        batch = collate_rows(rows[start:end])
         out = _model_forward(model, batch)
         values += [round(v, 6) for v in decode_binned_value(out["value"].float()).tolist()]
         stvs += [round(v, 6) for v in decode_binned_value(out[STV_HEAD].float()).tolist()]
         moves_left += [round(v, 3) for v in decode_moves_left(out["moves_left"].float()).tolist()]
+        del out, batch
+        _release_cache(device)  # don't pin a deep chunk's ~1.7 GB between forwards
+        start = end
     # NaN/Inf entries -> null, per the net_eval contract note.
     return sanitize_json({"value": values, "stv": stvs, "moves_left": moves_left})
 
