@@ -185,6 +185,10 @@ main{max-width:1120px;margin:0 auto;padding:28px}
   background:linear-gradient(180deg,#171c23 0%,#141a20 100%);
   padding:16px;
 }
+/* game-setup group (checkpoint / strength / play-as) is locked while a game is
+   in progress — you pick an opponent only for a new game. Re-enabled in the
+   new-game and finished ("analyze") states. app.js toggles .locked + inert. */
+.sec.locked{opacity:.45;pointer-events:none;transition:opacity .2s ease}
 .k{
   font-family:var(--mono);
   font-size:10px;font-weight:400;

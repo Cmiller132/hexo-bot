@@ -189,6 +189,18 @@ function paintTurnOutline(snap) {
   }
 }
 
+/* Lock the game-setup group (checkpoint / strength / play-as) while a game is in
+ * progress — those settings only apply to a NEW game. `inert` blocks pointer +
+ * keyboard focus; the .locked class greys it. Re-enabled in the new-game and
+ * finished ("analyze") states. */
+const playConfig = $("playConfig");
+function setPlayConfigLocked(locked) {
+  if (!playConfig) return;
+  playConfig.classList.toggle("locked", locked);
+  playConfig.inert = locked;
+  playConfig.setAttribute("aria-disabled", String(locked));
+}
+
 // ---- bot-turn feedback: elapsed timer + warm-up note ------------------------
 
 /* Repaint the "thinking" status with elapsed seconds, and past the threshold
@@ -341,6 +353,8 @@ function ingestPlay(snap) {
   resignBtn.textContent = finished || !play.id ? "New game" : "Resign";
   analyzeBtn.hidden = !finished;
   paintTurnOutline(snap); // colour the board outline by whose move it is
+  // lock the opponent/strength/side pickers while a game is actually running
+  setPlayConfigLocked(snap.status === "your_turn" || snap.status === "bot_thinking");
   // the nickname prompt appears ONLY once a game has finished
   if (nickForm.hidden && finished) {
     nickForm.hidden = false;
@@ -455,6 +469,7 @@ function showStartBoard() {
   analyzeBtn.hidden = true;
   resignBtn.textContent = "New game";
   paintTurnOutline(null); // no game yet — neutral outline
+  setPlayConfigLocked(false); // new-game state: opponent/strength/side are editable
   setStatus("click the center hex to start", "over");
 }
 
