@@ -119,17 +119,17 @@
     </div>
 
     <aside class="panel">
-      <div class="sec">
-        <h2 class="k k-row"><span>Games</span><button class="k-btn" id="copyLink" aria-label="Copy game link" disabled>copy link</button></h2>
-        <div id="gameList"></div>
-        <div class="feed-note" id="feedNote" hidden></div>
-      </div>
-
       <!-- which catalogue checkpoint's net analyzes the game; defaults to the
            bot the game was played against -->
       <div class="sec">
         <h2 class="k">Checkpoint</h2>
         <div id="anaCkptList" role="radiogroup" aria-label="Analysis checkpoint"></div>
+      </div>
+
+      <div class="sec">
+        <h2 class="k">Value / ply</h2>
+        <svg class="chart" id="valueChart" viewBox="0 0 280 104" role="img" aria-label="Network value across plies, click to seek"></svg>
+        <div class="chart-note" id="chartNote" hidden></div>
       </div>
 
       <div class="sec">
@@ -162,14 +162,14 @@
       </div>
 
       <div class="sec">
-        <h2 class="k">Value / ply</h2>
-        <svg class="chart" id="valueChart" viewBox="0 0 280 104" role="img" aria-label="Network value across plies, click to seek"></svg>
-        <div class="chart-note" id="chartNote" hidden></div>
+        <h2 class="k">Moves</h2>
+        <ol class="movelist" id="moveList"></ol>
       </div>
 
       <div class="sec">
-        <h2 class="k">Moves</h2>
-        <ol class="movelist" id="moveList"></ol>
+        <h2 class="k k-row"><span>Games</span><button class="k-btn" id="copyLink" aria-label="Copy game link" disabled>copy link</button></h2>
+        <div id="gameList"></div>
+        <div class="feed-note" id="feedNote" hidden></div>
       </div>
     </aside>
   </section>
