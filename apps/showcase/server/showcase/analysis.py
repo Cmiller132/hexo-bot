@@ -46,8 +46,13 @@ STV_HEAD = "stvalue_2"
 # forward alone (~1.7 GB, fits) while shallow openings still batch wide.
 # Mirrors the serve path's SHRIMP_PAIR_CEILING sizing.
 _SUMMARY_PAIR_CEILING = float(
-    os.environ.get("SHOWCASE_SUMMARY_PAIR_CEILING", "0") or 3.0e7
+    os.environ.get("SHOWCASE_SUMMARY_PAIR_CEILING", "0") or 3.8e7
 )
+# Only release the accelerator cache after a chunk whose padded support crossed
+# this size — shallow openings batch wide and cheap, and calling empty_cache
+# after every one of those just forces a slow re-alloc next chunk. Deep chunks
+# (the ones that pin ~1.7 GB) still get released.
+_SUMMARY_RELEASE_S = int(os.environ.get("SHOWCASE_SUMMARY_RELEASE_S", "0") or 2048)
 
 
 def _release_cache(device: torch.device) -> None:
@@ -168,7 +173,8 @@ def summary_eval(model: Any, rows: list[tuple[Any, Any]]) -> dict[str, Any]:
         stvs += [round(v, 6) for v in decode_binned_value(out[STV_HEAD].float()).tolist()]
         moves_left += [round(v, 3) for v in decode_moves_left(out["moves_left"].float()).tolist()]
         del out, batch
-        _release_cache(device)  # don't pin a deep chunk's ~1.7 GB between forwards
+        if max_s >= _SUMMARY_RELEASE_S:
+            _release_cache(device)  # don't pin a deep chunk's ~1.7 GB
         start = end
     # NaN/Inf entries -> null, per the net_eval contract note.
     return sanitize_json({"value": values, "stv": stvs, "moves_left": moves_left})
