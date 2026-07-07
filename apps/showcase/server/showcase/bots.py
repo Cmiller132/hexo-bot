@@ -108,7 +108,7 @@ def _error_indicates_wedge(error: str) -> bool:
 # Catalogue config (web-process side, no torch)
 # ---------------------------------------------------------------------------
 
-DEFAULT_SIMS = (16, 64, 256, 512)
+DEFAULT_SIMS = (64, 128, 256, 512)
 
 # Built-in search profiles shipped alongside the server (bare `search_profile`
 # names in bots.toml resolve here).

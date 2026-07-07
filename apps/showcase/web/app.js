@@ -346,10 +346,13 @@ async function tryPlace(q, r) {
 
 function onPlayCell(q, r, ptrType) {
   const snap = play.snap;
-  if (!play.id || !snap || snap.status !== "your_turn") {
-    if (!play.id && !play.creating) toast("press new game to start");
+  // No active game (fresh or finished): the origin hex is the start button —
+  // clicking it begins a game with the current picks, for either side.
+  if (!play.id || !snap || snap.status === "finished") {
+    if (!play.creating && q === 0 && r === 0) newGame();
     return;
   }
+  if (snap.status !== "your_turn") return;
   if (ptrType === "touch") {
     // touch: first tap stages a persistent ghost + confirm chip, second commits
     if (play.staged && play.staged.q === q && play.staged.r === r) {
@@ -370,6 +373,28 @@ placeChip.addEventListener("click", () => {
   clearStage();
   tryPlace(s.q, s.r);
 });
+
+/* No active game: present an empty board with the origin hex glowing as the
+ * start target. Clicking it (see onPlayCell) creates the game — whichever side
+ * you picked, the server opens the correct player. Keeps the "New game" button
+ * as a way back to this state. */
+function showStartBoard() {
+  stopThinking();
+  clearPlayAlert();
+  play.id = null;
+  play.snap = null;
+  play.moves = [];
+  play.staged = null;
+  playBoard.setStones([], null);
+  playBoard.setLegal([{ q: 0, r: 0 }]); // origin is the clickable start target
+  playBoard.resetView();
+  $("plyCount").textContent = "—";
+  $("turnCount").textContent = "—";
+  nickForm.hidden = true;
+  analyzeBtn.hidden = true;
+  resignBtn.textContent = "New game";
+  setStatus("click the center hex to start", "over");
+}
 
 async function newGame() {
   if (!botsNorm || play.creating) return;
@@ -408,7 +433,9 @@ resignBtn.addEventListener("click", async () => {
       refreshFeed(true);
     } catch (e) { apiFail(e, "resign failed"); }
   } else {
-    newGame();
+    // No active game (fresh or finished): return to the start board; the
+    // player begins by clicking the center hex.
+    showStartBoard();
   }
 });
 
@@ -445,9 +472,8 @@ analyzeBtn.addEventListener("click", () => {
 // ---- bot pickers ---------------------------------------------------------------
 
 let botsNorm = null;
-// color: 0 (first, blue) | 1 (second, red) | "random" — default preserves the
-// old always-first behavior
-const sel = { ckpt: null, ckptLabel: "", sims: 0, color: 0 };
+// color: 0 (first, blue) | 1 (second, red) | "random" — default is a coin flip
+const sel = { ckpt: null, ckptLabel: "", sims: 0, color: "random" };
 
 /* The picker itself (grouping, featured/show-all filter, tags, default pick)
  * lives in the shared checkpoints.js so play, analysis and the lab never drift.
@@ -538,9 +564,9 @@ async function loadBots() {
   const def = defaultCheckpoint(botsNorm.checkpoints);
   sel.ckpt = def ? def.id : null;
   sel.ckptLabel = def ? def.label : "";
-  sel.sims = botsNorm.sims[botsNorm.sims.length - 1] || 0;
+  sel.sims = botsNorm.sims[0] || 0; // default to the lowest search budget
   renderPickers();
-  setStatus("pick an opponent · new game", "over");
+  showStartBoard();
 }
 
 // ============================== ANALYSIS =======================================

@@ -3,8 +3,8 @@
 #
 # A playable bot is a (checkpoint, sims) combination: the client picks one
 # checkpoint from the catalogue below and one search budget from the global
-# allowed set. Omitting `sims` defaults to [16, 64, 256, 512].
-sims = [16, 64, 256, 512]
+# allowed set. Omitting `sims` defaults to [64, 128, 256, 512].
+sims = [64, 128, 256, 512]
 
 # Schema per [[checkpoint]]:
 #   id             stable slug; games reference it (DB identity with weights sha)

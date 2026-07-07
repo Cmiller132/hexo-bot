@@ -66,11 +66,11 @@
         <div class="seg" id="simSeg" role="radiogroup" aria-label="Simulations"></div>
         <h2 class="k gap">Play as</h2>
         <div class="seg" id="colorSeg" role="radiogroup" aria-label="Play as">
-          <button data-color="0" class="sel" role="radio" aria-checked="true"
+          <button data-color="0" role="radio" aria-checked="false"
                   title="Player 1 — blue, moves first">First</button>
           <button data-color="1" role="radio" aria-checked="false"
                   title="Player 2 — red, moves second">Second</button>
-          <button data-color="random" role="radio" aria-checked="false"
+          <button data-color="random" class="sel" role="radio" aria-checked="true"
                   title="Coin flip">Random</button>
         </div>
       </div>
@@ -180,6 +180,6 @@
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=11"></script>
+<script type="module" src="./app.js?v=12"></script>
 </body>
 </html>
