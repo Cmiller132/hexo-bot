@@ -8,9 +8,9 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=10";
-import { buildCkptList, groupCheckpoints, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=10";
-import { createBoard, findWin, key } from "./board.js?v=6";
+import * as api from "./api.js?v=11";
+import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=11";
+import { createBoard, findWin, key } from "./board.js?v=7";
 
 "use strict";
 
@@ -174,6 +174,21 @@ function setStatus(txt, cls) {
   statusText.textContent = txt;
 }
 
+/* Colour the play board's outline by the side to move — sampled from the stone
+ * colours (blue --p0 / red --p1). Solid while it's your move, a light pulse
+ * while the bot thinks, neutral (no outline) otherwise. */
+const playFrame = $("playBoard").closest(".board-frame");
+function paintTurnOutline(snap) {
+  if (!playFrame) return;
+  playFrame.classList.remove("your-turn", "bot-turn", "side-p0", "side-p1");
+  if (!snap) return;
+  const st = snap.status, side = snap.to_move;
+  if ((st === "your_turn" || st === "bot_thinking") && (side === 0 || side === 1)) {
+    playFrame.classList.add(side === 0 ? "side-p0" : "side-p1");
+    playFrame.classList.add(st === "your_turn" ? "your-turn" : "bot-turn");
+  }
+}
+
 // ---- bot-turn feedback: elapsed timer + warm-up note ------------------------
 
 /* Repaint the "thinking" status with elapsed seconds, and past the threshold
@@ -325,6 +340,7 @@ function ingestPlay(snap) {
   }
   resignBtn.textContent = finished || !play.id ? "New game" : "Resign";
   analyzeBtn.hidden = !finished;
+  paintTurnOutline(snap); // colour the board outline by whose move it is
   // the nickname prompt appears ONLY once a game has finished
   if (nickForm.hidden && finished) {
     nickForm.hidden = false;
@@ -438,6 +454,7 @@ function showStartBoard() {
   nickForm.hidden = true;
   analyzeBtn.hidden = true;
   resignBtn.textContent = "New game";
+  paintTurnOutline(null); // no game yet — neutral outline
   setStatus("click the center hex to start", "over");
 }
 
@@ -521,25 +538,25 @@ let botsNorm = null;
 // color: 0 (first, blue) | 1 (second, red) | "random" — default is a coin flip
 const sel = { ckpt: null, ckptLabel: "", sims: 0, color: "random" };
 
-/* The picker itself (grouping, featured/show-all filter, tags, default pick)
- * lives in the shared checkpoints.js so play, analysis and the lab never drift.
- * When "show all" is off, only featured checkpoints (plus the current pick)
- * show; the rest wait behind the toggle. */
-let showAllCkpts = false;
+/* The picker itself (model grouping, per-model epoch dropdown, tags, default
+ * pick) lives in the shared checkpoints.js so play, analysis and the lab never
+ * drift. buildModelPicker wires its own row/dropdown events and calls back with
+ * the effective checkpoint id. */
 
-/* Re-render both checkpoint lists after the shared "show all" toggle flips. */
-function renderCkptLists() {
-  const play = $("showAllCkpt"); if (play) play.checked = showAllCkpts;
-  const ana = $("showAllAnaCkpt"); if (ana) ana.checked = showAllCkpts;
-  if ($("ckptList") && botsNorm) {
-    buildCkptList($("ckptList"), botsNorm.checkpoints, { selectedId: sel.ckpt, showAll: showAllCkpts });
-  }
-  renderAnaCkpts();
+/* (Re)build the play checkpoint picker, wiring selection into sel.ckpt. */
+function renderCkptList() {
+  if (!$("ckptList") || !botsNorm) return;
+  buildModelPicker($("ckptList"), botsNorm.checkpoints, {
+    selectedId: sel.ckpt,
+    onSelect: (id, c) => {
+      sel.ckpt = id;
+      sel.ckptLabel = c ? c.label : id;
+    },
+  });
 }
 
 function renderPickers() {
-  const chk = $("showAllCkpt"); if (chk) chk.checked = showAllCkpts;
-  buildCkptList($("ckptList"), botsNorm.checkpoints, { selectedId: sel.ckpt, showAll: showAllCkpts });
+  renderCkptList();
   const seg = $("simSeg");
   seg.textContent = "";
   for (const s of botsNorm.sims) {
@@ -553,25 +570,6 @@ function renderPickers() {
   }
 }
 
-$("ckptList").addEventListener("click", e => {
-  const b = e.target.closest(".bot");
-  if (!b) return;
-  sel.ckpt = b.dataset.ckpt;
-  const c = botsNorm.checkpoints.find(x => x.id === sel.ckpt);
-  sel.ckptLabel = c ? c.label : sel.ckpt;
-  document.querySelectorAll("#ckptList .bot").forEach(x => {
-    const on = x === b;
-    x.classList.toggle("sel", on);
-    x.setAttribute("aria-checked", on);
-  });
-});
-for (const id of ["showAllCkpt", "showAllAnaCkpt"]) {
-  const el = $(id);
-  if (el) el.addEventListener("change", e => {
-    showAllCkpts = e.target.checked;
-    renderCkptLists();
-  });
-}
 $("simSeg").addEventListener("click", e => {
   const b = e.target.closest("button");
   if (!b) return;
@@ -891,21 +889,19 @@ function updateAnaFine() {
 function renderAnaCkpts() {
   const list = $("anaCkptList");
   if (!list || !botsNorm) return; // cached pre-selector index.html
-  const chk = $("showAllAnaCkpt"); if (chk) chk.checked = showAllCkpts;
-  buildCkptList(list, botsNorm.checkpoints, { selectedId: ana.ckpt, showAll: showAllCkpts });
+  buildModelPicker(list, botsNorm.checkpoints, {
+    selectedId: ana.ckpt,
+    onSelect: id => setAnalysisCkpt(id),
+  });
 }
 
 /* Switch the analyzing net: drop all per-net state, then refetch the summary
  * and the current position under the new checkpoint. The scrubber position
- * (and a running autoplay) are kept. */
+ * (and a running autoplay) are kept. The picker owns its own selection paint,
+ * so this only handles the analysis-state teardown. */
 function setAnalysisCkpt(id) {
   if (!ana.id || id === ana.ckpt) return;
   ana.ckpt = id;
-  document.querySelectorAll("#anaCkptList .bot").forEach(x => {
-    const on = x.dataset.ckpt === id;
-    x.classList.toggle("sel", on);
-    x.setAttribute("aria-checked", on);
-  });
   ana.cache = new Map();
   ana.pending = new Map();
   ana.rlUntil = 0;
@@ -917,12 +913,6 @@ function setAnalysisCkpt(id) {
   loadSummary();
   setPly(ana.ply, true);
 }
-
-const anaCkptListEl = $("anaCkptList");
-if (anaCkptListEl) anaCkptListEl.addEventListener("click", e => {
-  const b = e.target.closest(".bot");
-  if (b) setAnalysisCkpt(b.dataset.ckpt);
-});
 
 // ---- value readout ----------------------------------------------------------------
 
@@ -1115,7 +1105,7 @@ function openAnalysis(rec) {
     if (botsNorm.checkpoints.some(c => c.id === rec.ckpt)) {
       ana.ckpt = rec.ckpt;
     } else {
-      const latest = latestCheckpoint(groupCheckpoints(botsNorm.checkpoints));
+      const latest = latestCheckpoint(botsNorm.checkpoints);
       ana.ckpt = latest ? latest.id : null;
     }
   }

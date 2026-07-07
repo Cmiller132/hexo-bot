@@ -14,7 +14,7 @@
  */
 
 import { S, axialX, axialY, createBoard, findWin, hexPts, key } from "../board.js?v=6";
-import { buildCkptList, defaultCheckpoint, normalizeCheckpoints } from "../checkpoints.js?v=10";
+import { buildModelPicker, defaultCheckpoint, normalizeCheckpoints } from "../checkpoints.js?v=11";
 import * as LF from "./lab_features.js?v=1";
 
 "use strict";
@@ -554,26 +554,16 @@ async function importFromGame(id, ply) {
 
 // ---- checkpoints (the shared picker; see ../checkpoints.js) ------------------------------
 
-let showAllCkpts = false;
-
 function renderCkpts() {
-  buildCkptList($("ckptList"), state.bots, { selectedId: state.ckpt, showAll: showAllCkpts });
-  const chk = $("showAllCkpt"); if (chk) chk.checked = showAllCkpts;
-}
-
-$("ckptList").addEventListener("click", e => {
-  const b = e.target.closest(".bot");
-  if (!b || b.dataset.ckpt === state.ckpt) return;
-  state.ckpt = b.dataset.ckpt;
-  const c = state.bots.find(x => x.id === state.ckpt);
-  state.ckptLabel = c ? c.label : state.ckpt;
-  renderCkpts();
-  refreshModule();
-});
-
-{
-  const chk = $("showAllCkpt");
-  if (chk) chk.addEventListener("change", e => { showAllCkpts = e.target.checked; renderCkpts(); });
+  buildModelPicker($("ckptList"), state.bots, {
+    selectedId: state.ckpt,
+    onSelect: (id, c) => {
+      if (id === state.ckpt) return;
+      state.ckpt = id;
+      state.ckptLabel = c ? c.label : id;
+      refreshModule();
+    },
+  });
 }
 
 async function loadBots() {

@@ -207,39 +207,42 @@
 .line-btn:hover:not(:disabled){color:var(--accent);border-color:var(--accent-dim)}
 .line-btn:disabled{opacity:.4;cursor:default}
 
-/* checkpoint list (same idiom as ../style.css #ckptList) */
-#ckptList{max-height:180px;overflow-y:auto}
+/* checkpoint model-grouped picker (same idiom as ../style.css #ckptList) */
+#ckptList{max-height:220px;overflow-y:auto}
 #ckptList::-webkit-scrollbar{width:6px}
 #ckptList::-webkit-scrollbar-thumb{background:var(--line)}
-.bot{
+.model{border:1px solid transparent}
+.model.sel{border-color:var(--accent-dim);background:#1a2027}
+.model-head{
   display:block;width:100%;text-align:left;
   padding:7px 10px;
-  border:1px solid transparent;
-  transition:border-color .15s ease,background .15s ease;
+  transition:background .15s ease;
 }
-.bot:hover{background:#1a2028}
-.bot.sel{border-color:var(--accent-dim);background:#1a2027}
+.model-head:hover{background:#1a2028}
 .bot-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
 .bot-name{font-size:13px;font-weight:600;letter-spacing:.01em}
-.bot.sel .bot-name{color:var(--accent)}
+.model.sel .bot-name{color:var(--accent)}
 .bot-meta{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap}
 .bot-meta .tag{color:var(--accent)}
 .bot-meta .tag.puct{color:var(--muted)}
 .bot-meta .tag.strong{color:var(--accent);font-weight:600}
-/* "show all checkpoints" toggle under the picker */
-.show-all{
-  display:flex;align-items:center;gap:6px;cursor:pointer;
-  font-family:var(--mono);font-size:10px;letter-spacing:.04em;color:var(--dim);
-  margin:6px 2px 0;
+/* selected model's epoch control (dropdown or single-epoch label) */
+.model-epoch{padding:0 10px 8px}
+.epoch-select{
+  width:100%;
+  font-family:var(--mono);font-size:11px;
+  color:var(--text);
+  background:var(--seam);
+  border:1px solid var(--line);
+  padding:6px 8px;
+  outline:none;cursor:pointer;
 }
-.show-all input{accent-color:var(--accent);cursor:pointer}
-.show-all:hover{color:var(--muted)}
-.bot-group{
-  font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
-  color:var(--dim);
-  margin:8px 0 3px;padding:0 10px;
+.epoch-select:focus{border-color:var(--accent-dim)}
+.epoch-static{
+  display:block;
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;
+  color:var(--muted);
 }
-.bot-group:first-child{margin-top:0}
 
 /* select (presets) */
 .lab-select{
