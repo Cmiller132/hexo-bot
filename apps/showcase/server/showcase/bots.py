@@ -56,6 +56,19 @@ log = logging.getLogger("showcase.bots")
 _READY = "__ready__"
 _SEED_MASK = (1 << 63) - 1
 
+# How many times a failed job is transparently re-run after its shard has been
+# recycled (or failed over to CPU). One retry is enough: a job that wedged the
+# accelerator recycles the shard — onto CPU once the fault threshold is hit — so
+# the retry lands on a healthy worker and the user sees a longer think instead of
+# an abandoned game. Env override for tuning.
+_JOB_RETRIES = int(os.environ.get("SHOWCASE_JOB_RETRIES", "1") or "1")
+
+# How often (seconds) an in-flight job polls its worker's liveness while waiting.
+# A crash (XPU OOM surfacing as a device abort) kills the process, so polling
+# is_alive() detects it within one interval instead of waiting the full
+# move_timeout — turning a 60 s stall into a ~2 s blip before failover+retry.
+_LIVENESS_POLL_S = 2.0
+
 
 class BotPoolError(RuntimeError):
     """A worker job raised; carries the worker-side traceback text."""
@@ -63,6 +76,11 @@ class BotPoolError(RuntimeError):
 
 class BotPoolTimeout(TimeoutError):
     """A worker job did not finish inside the configured deadline."""
+
+
+class _WorkerDied(Exception):
+    """Internal: the worker process backing an in-flight job exited (e.g. an
+    XPU OOM surfaced as a device-side abort/SIGSEGV) before replying."""
 
 
 # Substrings in a worker-side traceback that mean the worker's inference device
@@ -443,6 +461,33 @@ class _WorkerRuntime:
             device, settings.device, len(self.bots), len(profiles), threads,
         )
 
+    def release_gpu_cache_if_large(self, threshold_mb: float = 1024.0) -> None:
+        """Release the accelerator caching allocator's reserved memory after a
+        job whose peak allocation crossed `threshold_mb`, then reset the peak
+        counter.
+
+        The 4 GB A310 has no room to hold a deep/spread board's ~1.7 GB reserved
+        block idle between moves: a subsequent (possibly deeper) forward, or a
+        second worker, would exhaust the card and torch-xpu mis-surfaces the
+        failed allocation as an 'index out of bounds' device abort. Freeing the
+        reserved block after big moves keeps the most VRAM headroom available.
+        Only fires after large moves so ordinary shallow games pay nothing.
+        """
+        if self.device == "cpu":
+            return
+        import torch
+
+        accel = getattr(torch, self.device, None)  # torch.xpu / torch.cuda
+        if accel is None:
+            return
+        try:
+            peak_mb = accel.max_memory_allocated() / 1e6
+            if peak_mb >= threshold_mb:
+                accel.empty_cache()
+            accel.reset_peak_memory_stats()
+        except Exception:  # pragma: no cover - best-effort hygiene
+            pass
+
     @staticmethod
     def _replay(actions: list[int]) -> Any:
         import hexo_engine as engine
@@ -666,6 +711,12 @@ def _worker_main(
             result_queue.put((job_id, {"error": traceback.format_exc()}))
         else:
             result_queue.put((job_id, {"ok": out}))
+        finally:
+            # Release the accelerator's reserved memory after a big move so a
+            # deep/spread board can't leave a ~1.7 GB block pinned on the 4 GB
+            # card between jobs (see release_gpu_cache_if_large).
+            if kind in ("move", "analyze", "summary", "lab_search", "lab_eval"):
+                runtime.release_gpu_cache_if_large()
 
 
 def _gpu_probe_main(
@@ -1135,54 +1186,109 @@ class BotPool:
         except asyncio.CancelledError:  # pragma: no cover - shutdown
             raise
 
+    async def _await_reply(
+        self, worker: int, future: asyncio.Future, timeout: float
+    ) -> dict:
+        """Await a job's reply, but bail early if the worker process dies.
+
+        A crash (an XPU OOM that torch-xpu surfaces as a device-side abort)
+        kills the subprocess, so its future would otherwise hang until the full
+        `timeout`. Polling `is_alive()` every `_LIVENESS_POLL_S` catches the
+        death within one interval and raises `_WorkerDied`; a genuine hang
+        (process alive but stuck) still rides out to `asyncio.TimeoutError` at
+        the deadline."""
+        assert self._loop is not None
+        deadline = self._loop.time() + timeout
+        while True:
+            remaining = deadline - self._loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(future), min(_LIVENESS_POLL_S, remaining)
+                )
+            except asyncio.TimeoutError:
+                if future.done():  # completed as the poll window closed
+                    return future.result()
+                proc = self._procs[worker]
+                if proc is not None and not proc.is_alive():
+                    raise _WorkerDied from None
+                # else: still working — poll again until the deadline.
+
     async def _submit(
         self, worker: int, kind: str, kwargs: dict, timeout: float,
-        *, recycle_on_hang: bool = False,
+        *, recycle_on_hang: bool = False, retries: int = 0,
     ) -> Any:
+        """Enqueue a job on `worker` and await its reply.
+
+        On a hang, a mid-job worker death, or a device-fault error, the shard is
+        recycled (and failed over to CPU once the fault threshold is crossed);
+        the job is then transparently re-run up to `retries` times so a transient
+        accelerator fault costs the user a longer think, not an abandoned game."""
         assert self._loop is not None, "BotPool.start() was not awaited"
-        if self._poisoned[worker]:
-            raise BotPoolError(f"shard {worker} is out of service")
-        if self._recycle_locks[worker].locked():
-            # Shard is mid-recycle: its process is being replaced, so a job put
-            # on the (soon-dead) queue would just hang. Fail fast; the caller
-            # already handles BotPoolError as a backend-unavailable outcome.
-            raise BotPoolError(f"shard {worker} is recycling")
-        job_id = next(self._job_ids)
-        future: asyncio.Future = self._loop.create_future()
-        self._futures[job_id] = future
-        self._job_worker[job_id] = worker
-        self._job_queues[worker].put((job_id, kind, kwargs))
-        try:
-            payload = await asyncio.wait_for(future, timeout)
-        except asyncio.TimeoutError:
-            self._futures.pop(job_id, None)
-            self._job_worker.pop(job_id, None)
-            if recycle_on_hang:
-                # A hung move/search means the worker's device queue is wedged;
-                # respawn it so the next job for this shard runs on clean state.
-                # A hang on an accelerator shard is a device fault (drives the
-                # GPU->CPU failover); on a CPU shard `device_fault` is inert
-                # because there is no accelerator to downgrade from.
+        attempt = 0
+        while True:
+            if self._poisoned[worker]:
+                raise BotPoolError(f"shard {worker} is out of service")
+            if self._recycle_locks[worker].locked():
+                # Shard is mid-recycle: its process is being replaced, so a job
+                # put on the (soon-dead) queue would just hang. Fail fast; the
+                # caller handles BotPoolError as a backend-unavailable outcome.
+                raise BotPoolError(f"shard {worker} is recycling")
+            job_id = next(self._job_ids)
+            future: asyncio.Future = self._loop.create_future()
+            self._futures[job_id] = future
+            self._job_worker[job_id] = worker
+            self._job_queues[worker].put((job_id, kind, kwargs))
+
+            recycle_reason: str | None = None
+            failure: Exception | None = None
+            try:
+                payload = await self._await_reply(worker, future, timeout)
+            except asyncio.TimeoutError:
+                self._futures.pop(job_id, None)
+                self._job_worker.pop(job_id, None)
+                recycle_reason = f"{kind} job hung >{timeout:g}s"
+                failure = BotPoolTimeout(f"{kind} job exceeded {timeout:.0f}s")
+            except _WorkerDied:
+                self._futures.pop(job_id, None)
+                self._job_worker.pop(job_id, None)
+                # The process died mid-job — an XPU OOM that surfaced as a
+                # device-side abort. Always a device fault (drives the failover).
+                recycle_reason = f"{kind}: worker process died mid-job"
+                failure = BotPoolError(recycle_reason)
+            except asyncio.CancelledError:
+                self._futures.pop(job_id, None)
+                self._job_worker.pop(job_id, None)
+                raise
+            else:
+                if "error" in payload:
+                    if recycle_on_hang and _error_indicates_wedge(payload["error"]):
+                        # A device-fault signature (e.g. an XPU OOM reported as an
+                        # out-of-bounds kernel assert): the queue is corrupted and
+                        # later jobs would hang. Recycle + mark a device fault so
+                        # repeated accelerator wedges fail the shard over to CPU.
+                        recycle_reason = "worker reported device fault"
+                    failure = BotPoolError(payload["error"])
+                else:
+                    return payload["ok"]
+
+            # A recoverable failure occurred. Recycle the shard if this was a
+            # device/wedge fault (respawns it, on CPU once the fault threshold is
+            # crossed), then retry the job on the fresh worker if budget remains.
+            if recycle_reason is not None and recycle_on_hang:
                 await self._recycle_worker(
-                    worker, f"{kind} job hung >{timeout:g}s", device_fault=True,
+                    worker, recycle_reason, device_fault=True,
                 )
-            raise BotPoolTimeout(f"{kind} job exceeded {timeout:.0f}s") from None
-        except asyncio.CancelledError:
-            self._futures.pop(job_id, None)
-            self._job_worker.pop(job_id, None)
-            raise
-        if "error" in payload:
-            if recycle_on_hang and _error_indicates_wedge(payload["error"]):
-                # The job raised with a device-fault signature (e.g. an XPU
-                # out-of-bounds kernel assert): the SYCL queue is corrupted and
-                # every later job on this process would hang. Recycle now, and
-                # mark it a device fault so repeated accelerator wedges fail the
-                # shard over to CPU rather than poison it.
-                await self._recycle_worker(
-                    worker, "worker reported device fault", device_fault=True,
-                )
-            raise BotPoolError(payload["error"])
-        return payload["ok"]
+                if attempt < retries and not self._poisoned[worker]:
+                    attempt += 1
+                    log.warning(
+                        "retrying %s on shard %d after fault (attempt %d/%d): %s",
+                        kind, worker, attempt, retries, recycle_reason,
+                    )
+                    continue
+            assert failure is not None
+            raise failure from None
 
     # -- public jobs ------------------------------------------------------------
 
@@ -1197,6 +1303,7 @@ class BotPool:
             },
             self._settings.move_timeout_s,
             recycle_on_hang=True,
+            retries=_JOB_RETRIES,
         )
 
     async def analyze(
@@ -1212,6 +1319,7 @@ class BotPool:
             },
             self._settings.bot_timeout_s,
             recycle_on_hang=True,
+            retries=_JOB_RETRIES,
         )
 
     async def summary(self, *, route_key: int, bot_slug: str, actions: list[int]) -> dict:
@@ -1220,6 +1328,7 @@ class BotPool:
             {"bot_slug": bot_slug, "actions": list(actions)},
             self._settings.bot_timeout_s,
             recycle_on_hang=True,
+            retries=_JOB_RETRIES,
         )
 
     async def lab_eval(
@@ -1241,6 +1350,7 @@ class BotPool:
             },
             self._settings.bot_timeout_s,
             recycle_on_hang=True,
+            retries=_JOB_RETRIES,
         )
 
     async def lab_search(
@@ -1254,6 +1364,7 @@ class BotPool:
             {"bot_slug": bot_slug, "actions": actions, "visits": visits, "seed": seed},
             self._settings.bot_timeout_s,
             recycle_on_hang=True,
+            retries=_JOB_RETRIES,
         )
 
     def discard(self, *, game_key: int, bot_slug: str) -> None:
