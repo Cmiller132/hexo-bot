@@ -107,6 +107,47 @@ const statusEl = $("playStatus"), statusText = $("statusText");
 const resignBtn = $("resignBtn"), analyzeBtn = $("analyzeBtn");
 const nickForm = $("nickForm"), nickInput = $("nickInput"), nickMsg = $("nickMsg");
 const placeChip = $("placeChip"), playTag = $("playTag"), cursorPos = $("cursorPos");
+
+/* Per-visitor cached handle. A random animal name, generated once and kept in
+ * localStorage, pre-fills the "sign this game" box and auto-signs finished games
+ * — so every game is attributable to a returning visitor even when they never
+ * type a name. Editing the box and saving overwrites the cached handle, so a
+ * chosen name also sticks across games. Charset stays within the server's
+ * nickname allowlist (letters/digits/space); combos+number keep collisions rare. */
+const NICK_KEY = "hexo.nick";
+const NICK_ADJ = [
+  "Swift", "Brave", "Clever", "Sly", "Jolly", "Quiet", "Lucky", "Bold", "Wily",
+  "Merry", "Nimble", "Cosmic", "Fuzzy", "Rowdy", "Gentle", "Snappy", "Mighty",
+  "Plucky", "Zippy", "Sunny", "Spry", "Witty", "Dapper", "Feral", "Grumpy",
+  "Sleepy", "Dizzy", "Frosty", "Amber", "Velvet",
+];
+const NICK_ANIMAL = [
+  "Otter", "Panda", "Fox", "Wolf", "Heron", "Lynx", "Badger", "Falcon", "Newt",
+  "Koala", "Gecko", "Raven", "Bison", "Moose", "Shrimp", "Marten", "Tapir",
+  "Ibex", "Civet", "Quokka", "Puffin", "Stoat", "Vole", "Wombat", "Loris",
+  "Serval", "Okapi", "Dingo", "Numbat", "Kagu",
+];
+function makeNick() {
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  return `${pick(NICK_ADJ)} ${pick(NICK_ANIMAL)} ${Math.floor(100 + Math.random() * 900)}`;
+}
+function getNick() {
+  let n = "";
+  try { n = localStorage.getItem(NICK_KEY) || ""; } catch (_) { /* private mode */ }
+  if (!n) { n = makeNick(); saveNick(n); }
+  return n;
+}
+function saveNick(v) {
+  try { localStorage.setItem(NICK_KEY, v); } catch (_) { /* private mode */ }
+}
+async function autoSignNick(gameId, name) {
+  // Best-effort: tag an unattended finished game with the cached handle. A
+  // failure is silent — the visitor can still save a name by hand.
+  try {
+    await api.setNickname(gameId, name);
+    refreshFeed(true);
+  } catch (_) { /* ignore */ }
+}
 const thinkNote = $("thinkNote");
 const playAlert = $("playAlert"), playAlertMsg = $("playAlertMsg");
 
@@ -287,9 +328,13 @@ function ingestPlay(snap) {
   // the nickname prompt appears ONLY once a game has finished
   if (nickForm.hidden && finished) {
     nickForm.hidden = false;
-    nickInput.value = snap.nickname || "";
+    const cached = getNick();
+    nickInput.value = snap.nickname || cached;
     nickMsg.textContent = "";
     nickMsg.className = "nick-msg";
+    // Auto-sign an as-yet-unsigned game with the cached handle so it is
+    // attributable to this visitor even if they never press save.
+    if (!snap.nickname && play.id) autoSignNick(play.id, cached);
   }
 }
 
@@ -441,10 +486,11 @@ resignBtn.addEventListener("click", async () => {
 
 nickForm.addEventListener("submit", async e => {
   e.preventDefault();
-  const v = nickInput.value.trim();
-  if (!v || !play.id) return;
+  const v = nickInput.value.trim() || getNick(); // empty box falls back to handle
+  if (!play.id) return;
   try {
     const out = await api.setNickname(play.id, v);
+    saveNick(out.nickname || v); // remember the chosen handle for future games
     nickMsg.textContent = `saved — ${out.nickname}`;
     nickMsg.className = "nick-msg ok";
     refreshFeed(true);
