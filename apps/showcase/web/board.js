@@ -8,7 +8,7 @@
 
 export const S = 26;
 const SQ3 = Math.sqrt(3);
-const DRAW = 0.975;
+const DRAW = 0.965; // hex inset; the gap shows --bg as the inter-cell grid line
 const NS = "http://www.w3.org/2000/svg";
 
 const COL_W = S * SQ3;  // horizontal tile pitch
