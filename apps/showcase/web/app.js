@@ -11,6 +11,7 @@
 import * as api from "./api.js?v=11";
 import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=11";
 import { createBoard, findWin, key } from "./board.js?v=7";
+import { initStats, refreshStats } from "./stats.js?v=18";
 
 "use strict";
 
@@ -83,6 +84,24 @@ function activateView(name) {
   });
   if (name !== "analysis") stopAuto(); // leaving analysis pauses autoplay
   if (name === "analysis") refreshFeed();
+  if (name === "stats") activateStats();
+}
+
+/* Lazy stats bring-up: initStats() wires the filter/pagination controls once
+ * (idempotent-guarded here), then refreshStats() re-queries the leaderboard,
+ * winrate chart and history table on each activation. The catalogue (botsNorm)
+ * is needed to populate the checkpoint/sims filter selects; if it hasn't loaded
+ * yet the refresh still runs and the selects fill in on the next activation. */
+let statsWired = false;
+function activateStats() {
+  if (!statsWired) {
+    initStats({
+      openGame: id => loadServerGame(id), // reuse the analysis load-by-id flow
+      getCatalogue: () => botsNorm, // read live so a late bots load still fills the filters
+    });
+    statsWired = true;
+  }
+  refreshStats();
 }
 document.querySelectorAll(".tab").forEach(t => {
   t.addEventListener("click", () => {

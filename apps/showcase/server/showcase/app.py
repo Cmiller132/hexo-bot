@@ -70,6 +70,7 @@ from .lab_rules import (
     validate_free_stones,
 )
 from .db import ShowcaseDB, decode_payload, encode_payload
+from .elo import compute_ratings
 from .jsonsafe import sanitize_json
 from .game import (
     TERMINATION_RESIGN,
@@ -528,6 +529,10 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(422, "nickname has no allowed characters (A-Za-z0-9 _.-)")
         session.nickname = nickname
         app.state.db.set_nickname(session.game_id, nickname)
+        # Signing a finished game re-buckets it under the new nickname in the
+        # ELO fold, but does not change finished_count (the leaderboard cache
+        # key), so drop the cache to force a recompute on the next /api/stats.
+        app.state.leaderboard_cache = None
         return {"nickname": nickname}
 
     # -- analysis -----------------------------------------------------------------
@@ -725,17 +730,93 @@ def create_app(settings: Settings) -> FastAPI:
 
     # -- public feed / metadata / stats -----------------------------------------------
 
+    def _feed_item(row: dict[str, Any]) -> dict[str, Any]:
+        """One /api/games list item. `winner` is null on a draw, else the color
+        that won. `duration_s` is present only on the filtered path (the cursor
+        feed row omits it) and defaults to None there for a stable shape."""
+        winner = None
+        if row["result"]:
+            winner = (
+                row["human_color"] if row["result"] == 1 else 1 - row["human_color"]
+            )
+        return {
+            "id": row["id"],
+            "bot": {
+                "checkpoint_id": row["bot_slug"],
+                "label": row["bot_label"],
+                "epoch": row["bot_epoch"],
+                "sims": row["bot_visits"],
+            },
+            "human_color": row["human_color"],
+            "result": {
+                "winner": winner,
+                "termination": row["termination"],
+                "human_result": row["result"],
+            },
+            "ply_count": row["ply_count"],
+            "duration_s": row["duration_s"] if "duration_s" in row.keys() else None,
+            "finished_at": row["finished_at"],
+            "nickname": row["nickname"],
+        }
+
     @app.get("/api/games")
     async def games_feed(
         request: Request,
         limit: int = Query(default=_FEED_LIMIT_DEFAULT, ge=1, le=_FEED_LIMIT_MAX),
         before: str | None = Query(default=None, max_length=128),
+        nickname: str | None = Query(default=None, max_length=64),
+        checkpoint_id: str | None = Query(default=None, max_length=128),
+        sims: int | None = Query(default=None, ge=1),
+        result: Literal["win", "loss", "draw"] | None = Query(default=None),
+        sort: Literal[
+            "recent", "oldest", "longest", "shortest", "slowest", "fastest"
+        ] = Query(default="recent"),
+        offset: int = Query(default=0, ge=0),
     ):
-        """Public recent-games feed: finished games only, newest first. `before`
-        is the opaque cursor from the previous page's `next` (null when the
-        page is not full)."""
+        """Public finished-games feed.
+
+        Two shapes share the route. With NO filter/sort/offset param (the
+        Analysis feed's calls — it may still pass `limit`/`before`), it stays the
+        exact keyset-cursor response {"games": [...], "next": cursor} — `before`
+        pages it, `next` is null on a short page. As soon as any of
+        nickname/checkpoint_id/sims/result is set, sort != 'recent', offset > 0,
+        or the client explicitly sends a sort/offset param, it switches to
+        server-side LIMIT/OFFSET filtering and returns {"games", "total",
+        "offset", "limit", "next": null} instead."""
         if not app.state.analysis_bucket.allow(_client_key(request)):
             raise HTTPException(429, "too many requests; slow down")
+
+        # A paginating client (stats.js) always sends an explicit sort+offset, so
+        # their presence in the query string also triggers the filtered
+        # {games,total,offset,limit,duration_s} shape — even at the default
+        # sort=='recent' and offset==0. The Analysis feed sends neither (it may
+        # send `limit`+`before`, which stay on the keyset-cursor path), so it
+        # keeps the cursor response. `limit` is deliberately NOT a trigger: the
+        # cursor pagination uses it too.
+        qp = request.query_params
+        filtered = (
+            nickname is not None
+            or checkpoint_id is not None
+            or sims is not None
+            or result is not None
+            or sort != "recent"
+            or offset > 0
+            or "sort" in qp
+            or "offset" in qp
+        )
+        if filtered:
+            rows, total = app.state.db.list_games_filtered(
+                nickname=nickname, checkpoint_id=checkpoint_id, sims=sims,
+                result=result, sort=sort, limit=limit, offset=offset,
+            )
+            return {
+                "games": [_feed_item(row) for row in rows],
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "next": None,
+            }
+
         before_finished_at = before_id = None
         if before is not None:
             before_finished_at, sep, before_id = before.partition("~")
@@ -744,33 +825,7 @@ def create_app(settings: Settings) -> FastAPI:
         rows = app.state.db.list_finished(
             limit=limit, before_finished_at=before_finished_at, before_id=before_id,
         )
-        items = []
-        for row in rows:
-            winner = None
-            if row["result"]:
-                winner = (
-                    row["human_color"] if row["result"] == 1 else 1 - row["human_color"]
-                )
-            items.append(
-                {
-                    "id": row["id"],
-                    "bot": {
-                        "checkpoint_id": row["bot_slug"],
-                        "label": row["bot_label"],
-                        "epoch": row["bot_epoch"],
-                        "sims": row["bot_visits"],
-                    },
-                    "human_color": row["human_color"],
-                    "result": {
-                        "winner": winner,
-                        "termination": row["termination"],
-                        "human_result": row["result"],
-                    },
-                    "ply_count": row["ply_count"],
-                    "finished_at": row["finished_at"],
-                    "nickname": row["nickname"],
-                }
-            )
+        items = [_feed_item(row) for row in rows]
         next_cursor = None
         if len(items) == limit and items:
             last = rows[-1]
@@ -791,6 +846,33 @@ def create_app(settings: Settings) -> FastAPI:
             "sims": list(app.state.sims_allowed),
         }
 
+    def _leaderboard_payload(db: ShowcaseDB) -> dict[str, Any]:
+        """ELO leaderboard + totals, memoized on the finished-game count.
+
+        The count is monotone and only finished games feed the fold, so it is a
+        sound self-invalidating generation key: unchanged count -> reuse the
+        cached payload, changed count -> one recompute. Stored on app.state as
+        {"gen": int, "payload": dict}."""
+        gen = db.finished_count()
+        cached = getattr(app.state, "leaderboard_cache", None)
+        if cached is not None and cached["gen"] == gen:
+            return cached["payload"]
+        games_rows = db.finished_games_for_elo()
+        bots_index = db.bots_index()
+        ratings = compute_ratings(games_rows, bots_index)
+        draws = sum(1 for r in games_rows if r["result"] == 0)
+        payload = {
+            "totals": {
+                "games": gen,
+                "players": len(ratings["players"]),
+                "bots": len(ratings["bots"]),
+                "draws": draws,
+            },
+            "leaderboard": ratings,
+        }
+        app.state.leaderboard_cache = {"gen": gen, "payload": payload}
+        return payload
+
     @app.get("/api/stats")
     async def stats():
         db: ShowcaseDB = app.state.db
@@ -798,6 +880,7 @@ def create_app(settings: Settings) -> FastAPI:
             "bots": db.bot_stats(),
             "daily": db.daily(),
             "hall_of_fame": db.hall_of_fame(),
+            **_leaderboard_payload(db),
         }
 
     @app.get("/healthz")

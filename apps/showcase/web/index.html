@@ -6,7 +6,7 @@
 <title>shrimp &mdash; instrument</title>
 <!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
      in app.js whenever the bundle changes incompatibly -->
-<link rel="stylesheet" href="./style.css?v=14">
+<link rel="stylesheet" href="./style.css?v=15">
 </head>
 <body>
 
@@ -35,6 +35,7 @@
   <nav role="tablist" aria-label="Views">
     <button class="tab active" data-view="play" role="tab" aria-selected="true">Play</button>
     <button class="tab" data-view="analysis" role="tab" aria-selected="false">Analysis</button>
+    <button class="tab" data-view="stats" role="tab" aria-selected="false">Stats</button>
   </nav>
   <!-- plain link, deliberately NOT class="tab": the tab click handler in app.js
        binds every .tab and calls activateView(dataset.view) — a .tab link with
@@ -174,10 +175,97 @@
     </aside>
   </section>
 
+  <!-- ================= STATS ================= -->
+  <!-- single scrolling column (not the board+panel grid); stats.js fills it. -->
+  <section class="view" id="view-stats">
+    <div class="stats-wrap">
+
+      <!-- (a) totals strip -->
+      <div class="totals" id="statsTotals">
+        <div class="totals-cell"><div class="tn" id="totGames">&mdash;</div><div class="tl">games</div></div>
+        <div class="totals-cell"><div class="tn" id="totPlayers">&mdash;</div><div class="tl">players</div></div>
+        <div class="totals-cell"><div class="tn" id="totBots">&mdash;</div><div class="tl">bots</div></div>
+        <div class="totals-cell"><div class="tn" id="totDraws">&mdash;</div><div class="tl">draws</div></div>
+      </div>
+
+      <!-- (b) ELO leaderboard -->
+      <div class="stats-sec">
+        <h2 class="k">ELO leaderboard</h2>
+        <div class="lb-cols">
+          <div class="lb-col">
+            <h3>Players</h3>
+            <div class="lb-list" id="lbPlayers"></div>
+          </div>
+          <div class="lb-col">
+            <h3>Bots</h3>
+            <div class="lb-list" id="lbBots"></div>
+          </div>
+        </div>
+        <div class="stats-note" id="lbNote" hidden></div>
+      </div>
+
+      <!-- (c) winrate-by-bot chart -->
+      <div class="stats-sec">
+        <h2 class="k">Human winrate by bot</h2>
+        <svg class="wr-chart" id="wrChart" role="img" aria-label="Human winrate per bot"></svg>
+        <div class="stats-note" id="wrNote" hidden></div>
+      </div>
+
+      <!-- (d) game history: filter bar + table -->
+      <div class="stats-sec">
+        <h2 class="k">Game history</h2>
+        <div class="hist-filters">
+          <input type="text" id="fNick" placeholder="nickname" autocomplete="off"
+                 spellcheck="false" aria-label="Filter by nickname">
+          <select id="fCkpt" aria-label="Filter by checkpoint">
+            <option value="">all checkpoints</option>
+          </select>
+          <select id="fSims" aria-label="Filter by sims">
+            <option value="">all sims</option>
+          </select>
+          <select id="fResult" aria-label="Filter by result">
+            <option value="">all results</option>
+            <option value="win">human won</option>
+            <option value="loss">bot won</option>
+            <option value="draw">draw</option>
+          </select>
+          <select id="fSort" aria-label="Sort order">
+            <option value="recent">newest</option>
+            <option value="oldest">oldest</option>
+            <option value="longest">most plies</option>
+            <option value="shortest">fewest plies</option>
+            <option value="slowest">slowest</option>
+            <option value="fastest">fastest</option>
+          </select>
+        </div>
+        <div class="hist-scroll">
+          <table class="hist-table">
+            <thead>
+              <tr>
+                <th>date</th><th>player</th><th>opponent</th>
+                <th>result</th><th>plies</th><th>duration</th>
+              </tr>
+            </thead>
+            <tbody id="histBody"></tbody>
+          </table>
+        </div>
+        <div class="hist-empty" id="histEmpty" hidden>no games match these filters</div>
+        <div class="hist-page">
+          <span class="hist-count" id="histCount"></span>
+          <div class="hist-nav">
+            <button class="k-btn" id="histPrev" disabled>prev</button>
+            <button class="k-btn" id="histNext" disabled>next</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
 </main>
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=17"></script>
+<script type="module" src="./app.js?v=18"></script>
 </body>
 </html>

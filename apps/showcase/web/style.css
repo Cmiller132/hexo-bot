@@ -490,6 +490,139 @@ main{max-width:1120px;margin:0 auto;padding:28px}
   font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--dim);
 }
 
+/* ---------- stats tab ---------- */
+/* the stats view is a single scrolling column, not the two-pane board+panel
+   grid — override the .view.active grid for this section only. */
+.view#view-stats.active{display:block}
+.stats-wrap{display:flex;flex-direction:column;gap:22px;max-width:900px;min-width:0}
+/* flex/grid children default to min-width:auto, which lets a wide table shove
+   the column past the viewport; pin them to 0 so .hist-scroll's overflow-x
+   engages instead of the body scrolling. */
+.stats-wrap>*{min-width:0}
+.stats-sec{
+  border:1px solid var(--line);
+  background:linear-gradient(180deg,#171c23 0%,#141a20 100%);
+  padding:18px;
+}
+.stats-sec h2.k{margin-bottom:14px}
+.stats-note{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;color:var(--dim);
+  padding:6px 2px;
+}
+.stats-note[hidden]{display:none}
+
+/* totals strip */
+.totals{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:1px;
+  border:1px solid var(--line);background:var(--line);
+}
+.totals-cell{
+  background:linear-gradient(180deg,#171c23 0%,#141a20 100%);
+  padding:14px 16px;text-align:center;
+}
+.totals-cell .tn{font-family:var(--mono);font-size:22px;color:var(--text)}
+.totals-cell .tl{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);margin-top:2px;
+}
+
+/* leaderboard: two columns of ranked rating bars */
+.lb-cols{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.lb-col h3{
+  font-family:var(--mono);font-size:10px;font-weight:400;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--muted);
+  margin-bottom:12px;
+}
+.lb-list{display:flex;flex-direction:column;gap:8px}
+.lb-empty{font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+.lb-row{position:relative;padding:6px 8px;border:1px solid transparent}
+.lb-row:hover{background:#1a2028;border-color:var(--line-soft)}
+.lb-bar{
+  position:absolute;left:0;top:0;bottom:0;
+  background:linear-gradient(90deg,rgba(79,147,255,.16),rgba(79,147,255,.05));
+  border-left:2px solid var(--p0);
+  pointer-events:none;z-index:0;
+}
+.lb-row.bot .lb-bar{
+  background:linear-gradient(90deg,rgba(255,86,80,.15),rgba(255,86,80,.05));
+  border-left-color:var(--p1);
+}
+.lb-body{position:relative;z-index:1;display:flex;align-items:baseline;gap:8px}
+.lb-rank{font-family:var(--mono);font-size:10px;color:var(--dim);width:18px;flex:none}
+.lb-name{
+  font-family:var(--mono);font-size:11.5px;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;
+}
+.lb-name .anon{color:var(--dim)}
+.lb-rating{font-family:var(--mono);font-size:13px;color:var(--accent);flex:none}
+.lb-sub{
+  position:relative;z-index:1;margin-top:2px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;color:var(--dim);
+  display:flex;gap:8px;flex-wrap:wrap;
+}
+.lb-prov{color:var(--p1-soft)}
+
+/* winrate-by-bot chart */
+.wr-chart{width:100%;height:auto;display:block}
+.wr-bar0{fill:var(--p0)}
+.wr-bar1{fill:var(--p1)}
+.wr-track{fill:var(--tile)}
+.wr-lab{font-family:var(--mono);font-size:9px;fill:var(--muted)}
+.wr-val{font-family:var(--mono);font-size:9px;fill:var(--accent)}
+.wr-axis{stroke:var(--line);stroke-width:1}
+
+/* history filter bar */
+.hist-filters{
+  display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+  margin-bottom:14px;
+}
+.hist-filters input,.hist-filters select{
+  font-family:var(--mono);font-size:11px;
+  color:var(--text);background:var(--seam);
+  border:1px solid var(--line);
+  padding:6px 8px;outline:none;
+}
+.hist-filters input{min-width:120px}
+.hist-filters input:focus,.hist-filters select:focus{border-color:var(--accent-dim)}
+.hist-filters select{cursor:pointer}
+
+/* history table */
+.hist-scroll{overflow-x:auto}
+.hist-scroll::-webkit-scrollbar{height:6px}
+.hist-scroll::-webkit-scrollbar-thumb{background:var(--line)}
+.hist-table{
+  width:100%;border-collapse:collapse;
+  font-family:var(--mono);font-size:11px;
+}
+.hist-table th{
+  text-align:left;font-weight:400;
+  font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
+  padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap;
+}
+.hist-table td{
+  padding:7px 10px;border-bottom:1px solid var(--line-soft);
+  color:var(--muted);white-space:nowrap;
+}
+.hist-row{cursor:pointer;transition:background .15s ease}
+.hist-row:hover td{background:#1a2028}
+.hist-row .ht-player{color:var(--text)}
+.hist-row .ht-player .anon{color:var(--dim)}
+.hist-glyph{display:inline-block;vertical-align:middle;margin-right:6px}
+.ht-res.win{color:var(--accent)}
+.ht-res.loss,.ht-res.draw{color:var(--dim)}
+.hist-empty{
+  font-family:var(--mono);font-size:10.5px;color:var(--dim);
+  padding:14px 4px;
+}
+
+/* history pagination */
+.hist-page{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  margin-top:12px;
+}
+.hist-count{font-family:var(--mono);font-size:10px;color:var(--dim)}
+.hist-nav{display:flex;gap:6px}
+
 /* ---------- toasts + network banner ---------- */
 .toast-wrap{
   position:fixed;bottom:22px;left:50%;transform:translateX(-50%);
@@ -530,6 +663,10 @@ main{max-width:1120px;margin:0 auto;padding:28px}
   header{padding:14px 18px}
   main{padding:18px}
   .view.active{grid-template-columns:1fr;gap:18px}
+  .lb-cols{grid-template-columns:1fr;gap:18px}
+}
+@media (max-width:520px){
+  .totals{grid-template-columns:repeat(2,1fr)}
 }
 @media (max-width:420px){
   header{padding:12px 12px;gap:20px}

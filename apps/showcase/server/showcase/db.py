@@ -235,6 +235,112 @@ class ShowcaseDB:
             rows = self._conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
+    # -- game stats (ELO + filtered history) ---------------------------------
+
+    def finished_games_for_elo(self) -> list[dict[str, Any]]:
+        """The minimal finished-game stream the ELO fold needs, in the exact
+        chronological order the running-rating update depends on. Only rows
+        with a meaningful result participate (result IS NOT NULL, in {-1,0,1});
+        status='finished' already implies a result, the extra guard is belt."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, bot_id, result, nickname, finished_at"
+                " FROM games"
+                " WHERE status = 'finished' AND result IS NOT NULL"
+                " ORDER BY finished_at ASC, id ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def bots_index(self) -> dict[int, dict[str, Any]]:
+        """bot_id -> catalogue metadata, keyed for the ELO output join."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, slug, label, run, epoch, visits FROM bots"
+            ).fetchall()
+        return {
+            int(r["id"]): {
+                "checkpoint_id": r["slug"],
+                "label": r["label"],
+                "run": r["run"],
+                "epoch": r["epoch"],
+                "sims": r["visits"],
+            }
+            for r in rows
+        }
+
+    def finished_count(self) -> int:
+        """Number of finished games — a cheap monotone generation key the app
+        caches the (expensive-ish) ELO recompute against."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM games WHERE status = 'finished'"
+            ).fetchone()
+        return int(row["n"])
+
+    # sort token -> ORDER BY clause. Whitelist only; unknown tokens fall back
+    # to 'recent' so a hostile ?sort= can never reach the SQL text.
+    _SORTS: dict[str, str] = {
+        "recent": "g.finished_at DESC, g.id DESC",
+        "oldest": "g.finished_at ASC, g.id ASC",
+        "longest": "g.ply_count DESC",
+        "shortest": "g.ply_count ASC",
+        "slowest": "g.duration_s DESC",
+        "fastest": "g.duration_s ASC",
+    }
+    _RESULTS: dict[str, int] = {"win": 1, "loss": -1, "draw": 0}
+
+    def list_games_filtered(
+        self, *, nickname: str | None = None, checkpoint_id: str | None = None,
+        sims: int | None = None, result: str | None = None, sort: str = "recent",
+        limit: int, offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Filtered/sorted page of finished games plus the total match count.
+
+        All filters are optional and AND-combined; every user value is bound,
+        never interpolated. `nickname=''` matches the anonymous bucket (NULL or
+        empty). `sort` is resolved through the `_SORTS` whitelist (unknown ->
+        'recent'). Returns (page_rows, total)."""
+        where = ["g.status = 'finished'"]
+        params: list[Any] = []
+        if nickname is not None:
+            if nickname == "":
+                where.append("(g.nickname IS NULL OR g.nickname = '')")
+            else:
+                where.append("g.nickname = ?")
+                params.append(nickname)
+        if checkpoint_id is not None:
+            where.append("b.slug = ?")
+            params.append(checkpoint_id)
+        if sims is not None:
+            where.append("b.visits = ?")
+            params.append(int(sims))
+        if result is not None and result in self._RESULTS:
+            where.append("g.result = ?")
+            params.append(self._RESULTS[result])
+        where_sql = " AND ".join(where)
+        order_sql = self._SORTS.get(sort, self._SORTS["recent"])
+
+        base = (
+            " FROM games g JOIN bots b ON b.id = g.bot_id"
+            f" WHERE {where_sql}"
+        )
+        with self._lock:
+            total = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) AS n" + base, params
+                ).fetchone()["n"]
+            )
+            rows = self._conn.execute(
+                "SELECT g.id, g.human_color, g.result, g.termination, g.ply_count,"
+                " g.duration_s, g.finished_at, g.nickname,"
+                " b.slug AS bot_slug, b.label AS bot_label, b.run AS bot_run,"
+                " b.epoch AS bot_epoch, b.visits AS bot_visits"
+                + base
+                + f" ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                params + [int(limit), int(offset)],
+            ).fetchall()
+        return [dict(r) for r in rows], total
+
     def abandon_stale_active(self, finished_at: str) -> int:
         """Mark leftover 'active' rows abandoned (startup hygiene: sessions are
         in-memory only, so an active row after a restart is unrecoverable).
