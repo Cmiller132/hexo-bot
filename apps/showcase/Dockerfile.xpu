@@ -162,13 +162,18 @@ ENV PYTHONPATH=/app/apps/showcase/server \
 # the CPU image. GPU access comes from compose's `group_add` (host render
 # gid), not from baking a group here — gids differ per host.
 RUN useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin app \
-    && mkdir -p /data \
-    && chown app:app /data
+    && mkdir -p /data /xpu-cache \
+    && chown app:app /data /xpu-cache
 USER app
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+# start-period must exceed the pool's startup budget (BotPool waits up to 300s
+# per worker for READY: checkpoint sha256 + torch.load + XPU kernel JIT + the
+# CPU-vs-XPU parity self-check). At the old 120s a legal-but-slow cold boot
+# went "unhealthy" at ~210s and autoheal restarted it into a loop, re-JITting
+# from scratch each time.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=420s --retries=3 \
     CMD ["curl", "-fsS", "http://127.0.0.1:8000/healthz"]
 
 # Single uvicorn process by design: SHOWCASE_WORKERS controls the model

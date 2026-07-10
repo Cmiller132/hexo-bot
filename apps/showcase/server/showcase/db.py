@@ -54,8 +54,17 @@ CREATE TABLE IF NOT EXISTS games (
   record       BLOB
 );
 CREATE INDEX IF NOT EXISTS games_bot_time ON games (bot_id, finished_at);
-CREATE INDEX IF NOT EXISTS games_status   ON games (status);
+-- games_status (status) was dropped: games_feed's leading column serves every
+-- status-only lookup, so the extra index only taxed writes.
+DROP INDEX IF EXISTS games_status;
 CREATE INDEX IF NOT EXISTS games_feed     ON games (status, finished_at DESC, id DESC);
+
+-- Single-row bookkeeping (e.g. the analysis payload schema version, so a
+-- version bump can drop the whole cache instead of leaving dead blobs).
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS analysis_cache (
   game_id  TEXT NOT NULL REFERENCES games(id),
@@ -125,6 +134,12 @@ class ShowcaseDB:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
+            # WAL's standard durability pairing: NORMAL skips the per-commit
+            # WAL fsync (the default FULL fsyncs EVERY commit — a several-ms
+            # stall on the event loop for each game create/finalize and each
+            # analysis-cache put). Worst case on power loss is losing the last
+            # commit(s), never corruption — fine for showcase data.
+            self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
@@ -355,6 +370,39 @@ class ShowcaseDB:
             return cur.rowcount
 
     # -- analysis cache -------------------------------------------------------
+
+    def ensure_analysis_version(self, version: int, *, max_rows: int = 200_000) -> None:
+        """Startup cache hygiene: drop the whole analysis cache when the
+        payload schema version changed (stale-version rows are dead weight —
+        reads treat them as misses and they'd sit on disk forever), and bound
+        the table with a coarse global cap (public endpoints can mint rows at
+        games x plies x checkpoints; the cache is cheap to rebuild)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = 'analysis_version'"
+            ).fetchone()
+            stored = int(row["value"]) if row is not None else None
+            if stored != version:
+                self._conn.execute("DELETE FROM analysis_cache")
+                self._conn.execute(
+                    "INSERT INTO meta (key, value) VALUES ('analysis_version', ?)"
+                    " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    (str(version),),
+                )
+            else:
+                count = int(
+                    self._conn.execute(
+                        "SELECT COUNT(*) AS n FROM analysis_cache"
+                    ).fetchone()["n"]
+                )
+                if count > max_rows:
+                    self._conn.execute(
+                        "DELETE FROM analysis_cache WHERE rowid IN ("
+                        " SELECT rowid FROM analysis_cache ORDER BY rowid"
+                        " LIMIT ?)",
+                        (count - max_rows,),
+                    )
+            self._conn.commit()
 
     def analysis_get(self, game_id: str, ply: int, bot_id: int) -> bytes | None:
         with self._lock:

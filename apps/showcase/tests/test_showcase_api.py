@@ -402,7 +402,7 @@ def test_recent_games_feed_pagination(client):
 
     item = page1["games"][0]
     assert set(item) == {"id", "bot", "human_color", "result", "ply_count",
-                         "finished_at", "nickname"}
+                         "finished_at", "nickname", "duration_s"}
     assert set(item["bot"]) == {"checkpoint_id", "label", "epoch", "sims"}
     assert item["result"]["termination"] in ("six_in_line", "resign")
     assert item["result"]["human_result"] in (-1, 1)

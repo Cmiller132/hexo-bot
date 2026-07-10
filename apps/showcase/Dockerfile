@@ -120,7 +120,10 @@ USER app
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+# start-period covers the pool's worst-case startup (BotPool allows 300s per
+# worker for checkpoint load); below it, a slow cold boot gets restarted by
+# autoheal before it can finish loading — a restart loop.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=360s --retries=3 \
     CMD ["curl", "-fsS", "http://127.0.0.1:8000/healthz"]
 
 # Single uvicorn process by design: SHOWCASE_WORKERS controls the model

@@ -156,9 +156,15 @@ def archived_six_game(client) -> dict:
     session) — the archive/shareable-URL shape."""
     session = drive_six_in_line_session()
     db = client.app.state.db
+    # The game's bot row must carry the CATALOGUE checkpoint's real sha: the
+    # analysis endpoints key the default cache under the game's own row only
+    # while its weights_sha still matches the served checkpoint (a mismatch -
+    # i.e. a same-slug checkpoint refresh - redirects to an analysis-only row
+    # so stale readouts from the old net are never served).
     bot_db_id = db.upsert_bot(
         slug="tiny", label="Tiny test bot", run="showcase_tiny_test", epoch=0,
-        visits=8, weights_sha="scripted-six", active_from=now_iso(),
+        visits=8, weights_sha=client.app.state.catalogue["tiny"].weights_sha,
+        active_from=now_iso(),
     )
     db.create_game(
         game_id=session.game_id, bot_id=bot_db_id, human_color=0,

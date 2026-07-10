@@ -70,6 +70,7 @@ from .lab_rules import (
     validate_free_stones,
 )
 from .db import ShowcaseDB, decode_payload, encode_payload
+from .matchapi import MatchDeps, build_match_router
 from .elo import compute_ratings
 from .jsonsafe import sanitize_json
 from .game import (
@@ -98,6 +99,14 @@ _ANALYSIS_VERSION = 3
 # analysis_cache "ply" slot for the whole-game summary payload (real plies are
 # always >= 0, so -1 can never collide).
 _SUMMARY_PLY = -1
+
+# Global cap on concurrently in-flight NON-MOVE pool jobs (analysis, summary,
+# lab). These public, cookieless jobs share the worker pool with live game
+# moves; without a cap, per-IP token buckets still let a burst pile dozens of
+# multi-second jobs onto the single worker's FIFO queue ahead of every move.
+# Two slots keeps the analysis UI responsive while bounding the queue a move
+# can land behind.
+_BACKGROUND_JOBS_MAX = 2
 
 # analysis_cache rows key on a bots-table id. Default analysis (no selector)
 # keys under the game's own bot row, so pre-selector cache entries stay valid.
@@ -209,9 +218,17 @@ def create_app(settings: Settings) -> FastAPI:
     """Wire the app. All startup work (DB, catalogue, worker pool, sweeper)
     runs in the lifespan so constructing the app object stays side-effect free."""
 
+    # Keep the container healthcheck's /healthz probes out of the access log:
+    # at one line per 30s they were the overwhelming majority of `docker logs`
+    # output, burying the rare recycle/failover lines that matter.
+    logging.getLogger("uvicorn.access").addFilter(
+        lambda record: "/healthz" not in record.getMessage()
+    )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.db = ShowcaseDB(settings.db_path)
+        app.state.db.ensure_analysis_version(_ANALYSIS_VERSION)
         swept = app.state.db.abandon_stale_active(now_iso())
         if swept:
             log.info("swept %d stale active games from a previous run", swept)
@@ -225,6 +242,12 @@ def create_app(settings: Settings) -> FastAPI:
         app.state.pool = BotPool(list(catalogue.checkpoints), settings)
         await app.state.pool.start()
         sweeper = asyncio.create_task(_sweeper(app))
+        # The sweeper must never die silently: with it gone, idle games are
+        # never finalized and their slots leak until "server is full".
+        sweeper.add_done_callback(
+            lambda t: t.cancelled()
+            or log.critical("sweeper task exited: %r", t.exception())
+        )
         try:
             yield
         finally:
@@ -245,6 +268,7 @@ def create_app(settings: Settings) -> FastAPI:
     # worker pool with live game moves (tight). Both per client IP.
     app.state.lab_eval_bucket = TokenBucket(settings.lab_eval_per_minute)
     app.state.lab_search_bucket = TokenBucket(settings.lab_search_per_minute)
+    app.state.background_jobs = 0  # in-flight non-move pool jobs (see gate)
 
     # -- helpers ---------------------------------------------------------------
 
@@ -298,13 +322,23 @@ def create_app(settings: Settings) -> FastAPI:
         checkpoint shares the default cache rows; any other selection keys
         under the `_ANALYSIS_BOT_VISITS` analysis-only bot row."""
         if checkpoint_id is None:
-            _, spec = _bot_row_and_spec(row["bot_id"])
+            bot_row, spec = _bot_row_and_spec(row["bot_id"])
+            # Same-slug checkpoint refresh: the game's bot row still points at
+            # the OLD weights' sha, so its cached analysis was computed by a
+            # net the worker no longer serves. Key under the analysis-only row
+            # for the current sha instead of serving stale readouts.
+            if bot_row["weights_sha"] != spec.weights_sha:
+                return spec, _bot_db_id(spec, _ANALYSIS_BOT_VISITS)
             return spec, int(row["bot_id"])
         spec = app.state.catalogue.get(checkpoint_id)
         if spec is None:
             raise HTTPException(404, f"unknown checkpoint {checkpoint_id!r}")
         bot_row = app.state.db.get_bot(int(row["bot_id"]))
-        if bot_row is not None and bot_row["slug"] == spec.slug:
+        if (
+            bot_row is not None
+            and bot_row["slug"] == spec.slug
+            and bot_row["weights_sha"] == spec.weights_sha
+        ):
             return spec, int(row["bot_id"])
         return spec, _bot_db_id(spec, _ANALYSIS_BOT_VISITS)
 
@@ -312,6 +346,19 @@ def create_app(settings: Settings) -> FastAPI:
         """Token-bucket gate for public (cookieless) reads of finished games."""
         if not app.state.analysis_bucket.allow(_client_key(request)):
             raise HTTPException(429, "too many requests; slow down")
+
+    @asynccontextmanager
+    async def _background_job_slot():
+        """Admission control for non-move pool jobs (see _BACKGROUND_JOBS_MAX).
+        Single event loop: the check-and-increment is atomic (no await between
+        them), so no lock is needed."""
+        if app.state.background_jobs >= _BACKGROUND_JOBS_MAX:
+            raise HTTPException(429, "analysis backend is busy; try again shortly")
+        app.state.background_jobs += 1
+        try:
+            yield
+        finally:
+            app.state.background_jobs -= 1
 
     def _versioned_cache_get(game_id: str, ply: int, bot_db_id: int) -> dict[str, Any] | None:
         """analysis_cache read that treats entries from an older payload schema
@@ -341,6 +388,9 @@ def create_app(settings: Settings) -> FastAPI:
             record=record,
         )
         app.state.pool.discard(game_key=session.game_key, bot_slug=session.bot_slug)
+        # A finished game changes every /api/stats aggregate — drop the
+        # whole-payload TTL cache so the next read recomputes.
+        app.state.stats_cache = None
 
     async def _run_bot_turn(session: GameSession) -> None:
         """Background bot turn: search in the pool, apply under the game lock.
@@ -388,21 +438,33 @@ def create_app(settings: Settings) -> FastAPI:
         session.bot_busy = True
         asyncio.get_running_loop().create_task(_run_bot_turn(session))
 
+    def _resolve_color(requested: int | str) -> int:
+        """0/1 pass through; "random" resolves to a fair server-side coin."""
+        return os.urandom(1)[0] & 1 if requested == "random" else int(requested)
+
     async def _sweeper(app: FastAPI) -> None:
-        """Idle-game finalizer + finished-session eviction."""
+        """Idle-game finalizer + finished-session eviction. Each session is
+        swept under its own guard: one game whose finalize raises (disk-full
+        during the record write, a transient SQLite error) must cost that
+        sweep pass only, never the sweeper task itself."""
         while True:
             await asyncio.sleep(settings.sweep_interval_s)
             for session in list(app.state.sessions.values()):
-                if session.active:
-                    if session.bot_busy or session.idle_seconds() < settings.idle_timeout_s:
-                        continue
-                    async with session.lock:
-                        if session.active and not session.bot_busy and (
-                            session.idle_seconds() >= settings.idle_timeout_s
-                        ):
-                            _finalize(session, termination=TERMINATION_TIMEOUT, winner=None)
-                elif session.idle_seconds() >= settings.finished_ttl_s:
-                    app.state.sessions.pop(session.game_id, None)
+                try:
+                    if session.active:
+                        if session.bot_busy or session.idle_seconds() < settings.idle_timeout_s:
+                            continue
+                        async with session.lock:
+                            if session.active and not session.bot_busy and (
+                                session.idle_seconds() >= settings.idle_timeout_s
+                            ):
+                                _finalize(session, termination=TERMINATION_TIMEOUT, winner=None)
+                    elif session.idle_seconds() >= settings.finished_ttl_s:
+                        app.state.sessions.pop(session.game_id, None)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("sweeper: failed to sweep game %s", session.game_id)
 
     # -- game lifecycle ----------------------------------------------------------
 
@@ -431,9 +493,7 @@ def create_app(settings: Settings) -> FastAPI:
         # player index (player0 = blue moves first). When the human resolves
         # to 1 the bot owns the opening: `session.bot_to_move` is true below
         # and the bot turn is enqueued right away.
-        human_color: int = (
-            os.urandom(1)[0] & 1 if body.human_color == "random" else body.human_color
-        )
+        human_color: int = _resolve_color(body.human_color)
         bot_db_id = _bot_db_id(spec, body.sims)
         session = GameSession.create(
             bot_slug=spec.slug, bot_db_id=bot_db_id, bot_label=spec.label,
@@ -560,6 +620,7 @@ def create_app(settings: Settings) -> FastAPI:
         # ELO fold, but does not change finished_count (the leaderboard cache
         # key), so drop the cache to force a recompute on the next /api/stats.
         app.state.leaderboard_cache = None
+        app.state.stats_cache = None  # hall_of_fame/leaderboard both shift
         return {"nickname": nickname}
 
     # -- analysis -----------------------------------------------------------------
@@ -592,19 +653,22 @@ def create_app(settings: Settings) -> FastAPI:
         if ply > len(actions):
             raise HTTPException(422, f"ply {ply} out of range (game has {len(actions)} plies)")
 
-        payload = _versioned_cache_get(game_id, ply, bot_db_id)
+        # Cache blob read + gunzip off the loop (a busy analysis tab issues
+        # these back to back; each is ~ms of gzip work the loop doesn't need).
+        payload = await asyncio.to_thread(_versioned_cache_get, game_id, ply, bot_db_id)
         cached = payload is not None
         if payload is None or (search and "search" not in payload):
             route_key = int(hashlib.sha256(game_id.encode()).hexdigest()[:12], 16)
             try:
-                fresh = await app.state.pool.analyze(
-                    route_key=route_key,
-                    bot_slug=spec.slug,
-                    actions=list(actions[:ply]),
-                    want_search=search,
-                    search_visits=settings.analysis_search_visit_cap,
-                    seed=route_key * 5003 + ply,
-                )
+                async with _background_job_slot():
+                    fresh = await app.state.pool.analyze(
+                        route_key=route_key,
+                        bot_slug=spec.slug,
+                        actions=list(actions[:ply]),
+                        want_search=search,
+                        search_visits=settings.analysis_search_visit_cap,
+                        seed=route_key * 5003 + ply,
+                    )
             except (BotPoolError, BotPoolTimeout) as exc:
                 raise HTTPException(503, "analysis backend unavailable") from exc
             # Web-boundary scrub: whatever the worker sent, the fresh response
@@ -614,7 +678,9 @@ def create_app(settings: Settings) -> FastAPI:
                 payload["search"] = fresh["search"]
             else:
                 payload = fresh
-            _versioned_cache_put(game_id, ply, bot_db_id, payload)
+            await asyncio.to_thread(
+                _versioned_cache_put, game_id, ply, bot_db_id, payload
+            )
             cached = False
         return {"game_id": game_id, "checkpoint_id": spec.slug, "cached": cached, **payload}
 
@@ -640,18 +706,23 @@ def create_app(settings: Settings) -> FastAPI:
         spec, bot_db_id = _analysis_target(row, checkpoint_id)
         actions = _record_actions(game_id)
 
-        payload = _versioned_cache_get(game_id, _SUMMARY_PLY, bot_db_id)
+        payload = await asyncio.to_thread(
+            _versioned_cache_get, game_id, _SUMMARY_PLY, bot_db_id
+        )
         cached = payload is not None
         if payload is None:
             route_key = int(hashlib.sha256(game_id.encode()).hexdigest()[:12], 16)
             try:
-                payload = await app.state.pool.summary(
-                    route_key=route_key, bot_slug=spec.slug, actions=list(actions),
-                )
+                async with _background_job_slot():
+                    payload = await app.state.pool.summary(
+                        route_key=route_key, bot_slug=spec.slug, actions=list(actions),
+                    )
             except (BotPoolError, BotPoolTimeout) as exc:
                 raise HTTPException(503, "analysis backend unavailable") from exc
             payload = sanitize_json(payload)  # web-boundary scrub (see analysis)
-            _versioned_cache_put(game_id, _SUMMARY_PLY, bot_db_id, payload)
+            await asyncio.to_thread(
+                _versioned_cache_put, game_id, _SUMMARY_PLY, bot_db_id, payload
+            )
         return {"game_id": game_id, "checkpoint_id": spec.slug, "cached": cached, **payload}
 
     # -- lab (live model-internals sandbox) --------------------------------------------
@@ -706,20 +777,21 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(422, str(exc)) from exc
         wants = body.wants
         try:
-            payload = await app.state.pool.lab_eval(
-                route_key=_lab_route_key(),
-                bot_slug=spec.slug,
-                actions=actions,
-                stones=stones,
-                to_move=to_move,
-                attention_cell=(
-                    (wants.attention_query.q, wants.attention_query.r)
-                    if wants.attention_query is not None
-                    else None
-                ),
-                want_activations=wants.activations,
-                want_features=wants.features,
-            )
+            async with _background_job_slot():
+                payload = await app.state.pool.lab_eval(
+                    route_key=_lab_route_key(),
+                    bot_slug=spec.slug,
+                    actions=actions,
+                    stones=stones,
+                    to_move=to_move,
+                    attention_cell=(
+                        (wants.attention_query.q, wants.attention_query.r)
+                        if wants.attention_query is not None
+                        else None
+                    ),
+                    want_activations=wants.activations,
+                    want_features=wants.features,
+                )
         except (BotPoolError, BotPoolTimeout) as exc:
             raise HTTPException(503, "lab backend unavailable") from exc
         if "reject" in payload:
@@ -744,16 +816,37 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(422, str(exc)) from exc
         route_key = _lab_route_key()
         try:
-            payload = await app.state.pool.lab_search(
-                route_key=route_key,
-                bot_slug=spec.slug,
-                actions=actions,
-                visits=body.sims,
-                seed=route_key * 5003 + len(actions),
-            )
+            async with _background_job_slot():
+                payload = await app.state.pool.lab_search(
+                    route_key=route_key,
+                    bot_slug=spec.slug,
+                    actions=actions,
+                    visits=body.sims,
+                    seed=route_key * 5003 + len(actions),
+                )
         except (BotPoolError, BotPoolTimeout) as exc:
             raise HTTPException(503, "lab backend unavailable") from exc
         return {"checkpoint_id": spec.slug, "sims": body.sims, **payload}
+
+    # -- external bot matches (/api/match/*, see matchapi.py) ---------------------------
+
+    app.include_router(
+        build_match_router(
+            MatchDeps(
+                settings=settings,
+                game_bucket=app.state.game_bucket,
+                move_bucket=app.state.move_bucket,
+                client_key=_client_key,
+                client_hash=_client_hash,
+                bot_db_id=_bot_db_id,
+                start_bot_turn=_start_bot_turn,
+                finalize=_finalize,
+                resolve_color=_resolve_color,
+                sanitize_agent=sanitize_nickname,
+                termination_resign=TERMINATION_RESIGN,
+            )
+        )
+    )
 
     # -- public feed / metadata / stats -----------------------------------------------
 
@@ -900,18 +993,42 @@ def create_app(settings: Settings) -> FastAPI:
         app.state.leaderboard_cache = {"gen": gen, "payload": payload}
         return payload
 
+    _STATS_TTL_S = 5.0
+
     @app.get("/api/stats")
-    async def stats():
-        db: ShowcaseDB = app.state.db
-        return {
-            "bots": db.bot_stats(),
-            "daily": db.daily(),
-            "hall_of_fame": db.hall_of_fame(),
-            **_leaderboard_payload(db),
-        }
+    async def stats(request: Request):
+        """Public aggregates. Rate-limited (it was the one unthrottled
+        unbounded-cost endpoint) and built OFF the event loop: the view scans
+        + ELO fold grow with the games table, and this loop also serves
+        /healthz. A short whole-payload TTL cache absorbs bursts; 5s staleness
+        is invisible on a stats page."""
+        if not app.state.analysis_bucket.allow(_client_key(request)):
+            raise HTTPException(429, "too many requests; slow down")
+        cached = getattr(app.state, "stats_cache", None)
+        now = time.monotonic()
+        if cached is not None and now - cached["at"] < _STATS_TTL_S:
+            return cached["payload"]
+
+        def _build() -> dict[str, Any]:
+            db: ShowcaseDB = app.state.db
+            return {
+                "bots": db.bot_stats(),
+                "daily": db.daily(),
+                "hall_of_fame": db.hall_of_fame(),
+                **_leaderboard_payload(db),
+            }
+
+        payload = await asyncio.to_thread(_build)
+        app.state.stats_cache = {"at": now, "payload": payload}
+        return payload
 
     @app.get("/healthz")
     async def healthz():
+        # A pool with every shard poisoned serves nothing and only a restart
+        # helps — surface that as unhealthy so the container healthcheck (and
+        # autoheal) turns a permanent silent outage into a ~90s blip.
+        if app.state.pool.all_dead():
+            raise HTTPException(503, "bot worker pool is out of service")
         return {
             "ok": True,
             "checkpoints": len(app.state.catalogue),

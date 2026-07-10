@@ -29,7 +29,31 @@ services:
       # device is not cpu; spelled out here for discoverability). On failure
       # the workers serve on cpu and log loudly instead of serving wrong moves.
       SHOWCASE_DEVICE_SELFCHECK: "1"
+      # ONE worker on the GPU stack, overriding the base file's 4: a 4 GB
+      # A310 cannot hold even one deep board's ~1.7 GB fp32 reserved block
+      # plus a second worker's concurrent forward — that VRAM exhaustion IS
+      # the torch-xpu 'index out of bounds' device abort (see
+      # release_gpu_cache_if_large in bots.py). The card serializes compute
+      # anyway, so a single shard loses little throughput.
+      SHOWCASE_WORKERS: "1"
+      # Conservative re-promotion cadence after a GPU->CPU failover: probe
+      # every 5 min and require 3 consecutive healthy probes. The pool only
+      # promotes an IDLE shard, so promotions never abort live games.
+      SHOWCASE_GPU_REPROBE_S: "300"
+      SHOWCASE_GPU_REPROBE_HEALTHY_STREAK: "3"
+      # SYCL/Level-Zero JIT kernel cache on the persistent volume below (the
+      # rootfs is read-only and /tmp is tmpfs): without it every container
+      # restart re-JITs every serve kernel — tens of seconds of extra
+      # first-move latency after each deploy/autoheal restart.
+      XDG_CACHE_HOME: /xpu-cache/.cache
     devices:
       - /dev/dri:/dev/dri
     group_add:
       - "${RENDER_GID:?set RENDER_GID in .env (stat -c %g /dev/dri/renderD128)}"
+    volumes:
+      - showcase-db:/data
+      - ./deploy/models:/models:ro
+      - showcase-xpu-cache:/xpu-cache
+
+volumes:
+  showcase-xpu-cache:

@@ -45,6 +45,9 @@ class FakeQueue:
     def put(self, item) -> None:
         self.items.append(item)
 
+    def put_nowait(self, item) -> None:  # recycle retires old result queues
+        self.items.append(item)
+
 
 class FakeCtx:
     def Queue(self) -> FakeQueue:  # noqa: N802 (mp API shape)
@@ -71,8 +74,11 @@ def _make_pool() -> BotPool:
     pool._settings = FakeSettings()
     pool._ctx = FakeCtx()
     pool._job_queues = [FakeQueue()]
+    pool._result_queues = [FakeQueue()]
+    pool._readers = []
     pool._procs = [FakeProc()]
     pool._futures = {}
+    pool._started = set()
     pool._job_worker = {}
     pool._job_ids = itertools.count(1)
     pool._loop = asyncio.get_running_loop()
@@ -88,17 +94,26 @@ def _make_pool() -> BotPool:
     pool._ready_pending = {}
     pool._stopping = False
 
-    def fake_spawn(index, queue):
-        proc = FakeProc()
-        pool._procs[index] = proc
-        return proc
+    def fake_spawn_shard(index):
+        # Mirror _spawn_shard's contract: fresh queues + fresh proc, no
+        # real reader thread (tests resolve replies directly).
+        pool._job_queues[index] = FakeQueue()
+        pool._result_queues[index] = FakeQueue()
+        pool._procs[index] = FakeProc()
 
     async def fake_await_ready(index):
         return None
 
-    pool._spawn_proc = fake_spawn  # type: ignore[assignment]
+    pool._spawn_shard = fake_spawn_shard  # type: ignore[assignment]
     pool._await_ready = fake_await_ready  # type: ignore[assignment]
     return pool
+
+
+def _start(pool: BotPool, job_id: int) -> None:
+    """Simulate the worker's _STARTED marker for `job_id` (a real worker posts
+    it the moment the job is dequeued; timeouts before it are classified as
+    queue backlog, not device hangs)."""
+    pool._mark_started(job_id)
 
 
 def _last_job_id(queue: FakeQueue) -> int:
@@ -111,7 +126,9 @@ def test_happy_path_returns_ok():
 
         async def worker():
             await asyncio.sleep(0.01)
-            pool._resolve(_last_job_id(pool._job_queues[0]), {"ok": {"move": 42}})
+            jid = _last_job_id(pool._job_queues[0])
+            _start(pool, jid)
+            pool._resolve(jid, {"ok": {"move": 42}})
 
         task = asyncio.ensure_future(worker())
         out = await pool._submit(0, "move", {}, 0.5, recycle_on_hang=True, retries=1)
@@ -130,13 +147,17 @@ def test_worker_death_triggers_failover_and_retry_succeeds():
             while not pool._job_queues[0].items:  # first job arrives
                 await asyncio.sleep(0.005)
             calls["n"] += 1
+            _start(pool, _last_job_id(pool._job_queues[0]))
             pool._procs[0].alive = False  # simulate SIGSEGV death, no reply
             await asyncio.sleep(0.06)  # let _await_reply detect + recycle
             q = pool._job_queues[0]  # fresh queue after recycle
             while not q.items:
                 await asyncio.sleep(0.005)
+                q = pool._job_queues[0]  # recycle swaps the queue object
             calls["n"] += 1
-            pool._resolve(_last_job_id(q), {"ok": {"move": 7}})
+            jid = _last_job_id(q)
+            _start(pool, jid)
+            pool._resolve(jid, {"ok": {"move": 7}})
 
         task = asyncio.ensure_future(worker())
         out = await pool._submit(0, "move", {}, 0.5, recycle_on_hang=True, retries=1)
@@ -158,14 +179,18 @@ def test_device_fault_error_payload_retries():
             while not pool._job_queues[0].items:
                 await asyncio.sleep(0.005)
             attempts["n"] += 1
-            pool._resolve(_last_job_id(pool._job_queues[0]),
-                          {"error": "torch.OutOfMemoryError: XPU out of memory"})
+            jid = _last_job_id(pool._job_queues[0])
+            _start(pool, jid)
+            pool._resolve(jid, {"error": "torch.OutOfMemoryError: XPU out of memory"})
             await asyncio.sleep(0.06)
             q = pool._job_queues[0]
             while not q.items:
                 await asyncio.sleep(0.005)
+                q = pool._job_queues[0]
             attempts["n"] += 1
-            pool._resolve(_last_job_id(q), {"ok": {"ok": True}})
+            jid = _last_job_id(q)
+            _start(pool, jid)
+            pool._resolve(jid, {"ok": {"ok": True}})
 
         task = asyncio.ensure_future(worker())
         out = await pool._submit(0, "analyze", {}, 0.5, recycle_on_hang=True, retries=1)
@@ -188,6 +213,7 @@ def test_retries_exhausted_raises():
                     await asyncio.sleep(0.005)
                 jid = _last_job_id(pool._job_queues[0])
                 pool._job_queues[0].items.clear()
+                _start(pool, jid)
                 pool._resolve(jid, {"error": "xpu device-side assert"})
                 await asyncio.sleep(0.03)
 
@@ -203,17 +229,77 @@ def test_retries_exhausted_raises():
     assert asyncio.run(scenario()) is True
 
 
-def test_true_hang_times_out():
+def test_true_hang_times_out_and_fails_over():
+    """A job that STARTED and then went silent is a device hang: the deadline
+    fires, the shard recycles as a device fault, and (threshold=1) fails over
+    to CPU."""
     async def scenario():
-        pool = _make_pool()  # worker never replies, stays alive -> hang
+        pool = _make_pool()
+
+        async def worker():
+            while not pool._job_queues[0].items:
+                await asyncio.sleep(0.005)
+            _start(pool, _last_job_id(pool._job_queues[0]))
+            # ...then never reply: mid-run hang.
+
+        task = asyncio.ensure_future(worker())
         raised = False
         try:
             await pool._submit(0, "move", {}, 0.2, recycle_on_hang=True, retries=0)
         except BotPoolTimeout:
             raised = True
-        return raised
+        await task
+        return raised, pool._worker_devices[0]
 
-    assert asyncio.run(scenario()) is True
+    raised, dev = asyncio.run(scenario())
+    assert raised is True
+    assert dev == "cpu"  # started+hung -> device fault -> failover
+
+
+def test_queue_backlog_timeout_is_not_a_device_fault():
+    """A job that never left the queue (no _STARTED marker) times out as plain
+    backlog: no recycle, no GPU fault, the shard keeps its device."""
+    async def scenario():
+        pool = _make_pool()  # nobody dequeues the job
+        raised = False
+        try:
+            await pool._submit(0, "move", {}, 0.2, recycle_on_hang=True, retries=1)
+        except BotPoolTimeout:
+            raised = True
+        return raised, pool._worker_devices[0], pool._poisoned[0], pool._gpu_fault_times[0]
+
+    raised, dev, poisoned, faults = asyncio.run(scenario())
+    assert raised is True
+    assert dev is None       # still on the accelerator
+    assert poisoned is False
+    assert faults == []      # no fault recorded
+
+
+def test_stranded_job_retries_after_recycle():
+    """A job stranded by ANOTHER job's recycle is transparently re-run on the
+    fresh worker instead of surfacing the other game's fault."""
+    async def scenario():
+        pool = _make_pool()
+
+        async def worker():
+            while not pool._job_queues[0].items:
+                await asyncio.sleep(0.005)
+            # A concurrent fault recycles the shard, stranding our job.
+            await pool._recycle_worker(0, "another job wedged", device_fault=True)
+            q = pool._job_queues[0]
+            while not q.items:
+                await asyncio.sleep(0.005)
+                q = pool._job_queues[0]
+            jid = _last_job_id(q)
+            _start(pool, jid)
+            pool._resolve(jid, {"ok": {"move": 11}})
+
+        task = asyncio.ensure_future(worker())
+        out = await pool._submit(0, "move", {}, 0.5, recycle_on_hang=True, retries=1)
+        await task
+        return out
+
+    assert asyncio.run(scenario()) == {"move": 11}
 
 
 if __name__ == "__main__":

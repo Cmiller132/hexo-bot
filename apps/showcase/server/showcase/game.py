@@ -104,6 +104,7 @@ def find_winning_line(stones: list[dict[str, int]], winner: int) -> list[dict[st
 def encode_hxr(
     *, game_id: str, bot_slug: str, human_color: int, action_ids: list[int],
     winner: int | None, termination: str | None, seed: int,
+    human_role: str = "human",
 ) -> bytes:
     """Encode a finished game as `.hxr` bytes (the repo's binary game codec).
 
@@ -112,7 +113,7 @@ def encode_hxr(
     replayable by the dev tools. The codec writes files, so this stages
     through a temp file.
     """
-    roles = {human_color: "human", 1 - human_color: f"bot:{bot_slug}"}
+    roles = {human_color: human_role, 1 - human_color: f"bot:{bot_slug}"}
     players = tuple(
         HexoRecordPlayer(roles[color], f"player{color}", roles[color])
         for color in (0, 1)
@@ -170,6 +171,13 @@ class GameSession:
     sims: int
     human_color: int
     client_hash: str
+    # Who occupies the non-server seat: "human" (browser play, cookie auth) or
+    # "match" (external agent via /api/match, bearer auth). Endpoints of one
+    # kind never operate on sessions of the other.
+    kind: str = "human"
+    # Role label written into the .hxr record for the non-server seat
+    # ("agent:<name>" for matches).
+    human_role: str = "human"
     game_key: int = field(default_factory=lambda: int.from_bytes(os.urandom(6), "big"))
     seed: int = field(default_factory=lambda: int.from_bytes(os.urandom(6), "big"))
     state: Any = field(default_factory=engine.new_game)
@@ -293,6 +301,7 @@ class GameSession:
             winner=winner,
             termination=termination,
             seed=self.seed,
+            human_role=self.human_role,
         )
 
     def duration_s(self) -> float:

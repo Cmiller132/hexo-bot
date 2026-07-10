@@ -6,7 +6,7 @@
 <title>shrimp &mdash; instrument</title>
 <!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
      in app.js whenever the bundle changes incompatibly -->
-<link rel="stylesheet" href="./style.css?v=16">
+<link rel="stylesheet" href="./style.css?v=17">
 </head>
 <body>
 
@@ -36,6 +36,7 @@
     <button class="tab active" data-view="play" role="tab" aria-selected="true">Play</button>
     <button class="tab" data-view="analysis" role="tab" aria-selected="false">Analysis</button>
     <button class="tab" data-view="stats" role="tab" aria-selected="false">Stats</button>
+    <button class="tab" data-view="api" role="tab" aria-selected="false">API</button>
   </nav>
   <!-- plain link, deliberately NOT class="tab": the tab click handler in app.js
        binds every .tab and calls activateView(dataset.view) — a .tab link with
@@ -261,6 +262,106 @@
             <button class="k-btn" id="histNext" disabled>next</button>
           </div>
         </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================= API (bot developers) ================= -->
+  <section class="view" id="view-api">
+    <div class="stats-wrap">
+
+      <div class="stats-sec">
+        <h2 class="k">Play your bot against shrimp</h2>
+        <p class="api-lead">
+          The match API lets your own Hexo bot play <b>rated matches</b> against any
+          checkpoint on this server, over plain HTTP &mdash; no browser, no cookies.
+          Matches land in the games feed and your agent name is ranked on the ELO
+          leaderboard, exactly like a human player.
+        </p>
+        <div class="api-dl">
+          <a class="k-btn" href="./bot-api.md" download>&darr; bot-api.md &mdash; full protocol</a>
+          <a class="k-btn" href="./hexo_match_client.py" download>&darr; hexo_match_client.py &mdash; Python SDK</a>
+        </div>
+        <div class="stats-note">the .md file is the complete wire-protocol reference; the SDK is a single
+          zero-dependency Python file &mdash; copy it into your project.</div>
+      </div>
+
+      <div class="stats-sec">
+        <h2 class="k">Quickstart &mdash; three steps</h2>
+        <div class="api-step"><span class="api-n">1</span> Pick an opponent: <code>GET /api/bots</code> lists
+          playable checkpoints and the allowed <code>sims</code> budgets.</div>
+        <div class="api-step"><span class="api-n">2</span> Subclass the SDK's <code>BotAdapter</code> &mdash; one method returns your stone.</div>
+        <div class="api-step"><span class="api-n">3</span> Run it. The SDK handles polling, retries, and the two-stones-per-turn shape.</div>
+<pre class="api-pre"><code>from hexo_match_client import BotAdapter, MatchServer
+
+class MyBot(BotAdapter):
+    def select_stone(self, state):
+        # state["history"]: every move so far   [{q, r, color}, ...]
+        # state["legal"]:   cells you may play  [{q, r}, ...]
+        # state["you"]:     your color (0 moves first)
+        cell = my_engine.think(state)
+        return cell["q"], cell["r"]
+
+result = MyBot().play_match(
+    MatchServer("https://&lt;this-server&gt;"),
+    agent="my-bot",            # your public leaderboard name
+    checkpoint_id="main7-ep90", sims=128, agent_color="random",
+)
+print(result["result"])        # {"winner": ..., "termination": ...}</code></pre>
+        <div class="stats-note">demo without writing a bot:
+          <code>python hexo_match_client.py --server &lt;url&gt; --agent test --checkpoint main7-ep90 --sims 64 --random-demo</code></div>
+      </div>
+
+      <div class="stats-sec">
+        <h2 class="k">Endpoints</h2>
+        <div class="hist-scroll">
+          <table class="hist-table">
+            <thead><tr><th>call</th><th>what it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>POST /api/match</code></td>
+                  <td>create a match &rarr; <code>{match_id, token, state}</code>; the token is your auth, shown once</td></tr>
+              <tr><td><code>GET /api/match/{id}?wait=25</code></td>
+                  <td>state; long-polls up to 25s until you can act (bearer token)</td></tr>
+              <tr><td><code>POST /api/match/{id}/move</code></td>
+                  <td>place ONE stone <code>{q, r}</code> &mdash; post-opening turns are two calls</td></tr>
+              <tr><td><code>POST /api/match/{id}/resign</code></td>
+                  <td>concede</td></tr>
+              <tr><td><code>POST /api/match/{id}/retry</code></td>
+                  <td>re-run the server bot's turn after <code>status == "bot_failed"</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="stats-note">every call after create carries <code>Authorization: Bearer &lt;token&gt;</code></div>
+      </div>
+
+      <div class="stats-sec">
+        <h2 class="k">The state payload</h2>
+<pre class="api-pre"><code>{
+  "status": "your_turn",          // your_turn | bot_thinking | bot_failed | finished
+  "you": 0,                       // your color (0 moves first)
+  "to_move": 0,
+  "stones_left_this_turn": 2,     // turns place two stones after the opening
+  "history": [{"q":0,"r":0,"color":0}, ...],   // whole game, move order
+  "legal":   [{"q":1,"r":-1}, ...],            // cells you may play NOW
+  "result":  null,                // set once finished; human_result +1 = you won
+  "bot": {"checkpoint_id":"main7-ep90","sims":128, ...}
+}</code></pre>
+        <div class="stats-note">rules in one line: unbounded hex grid, six in a row wins, color 0's opening
+          stone is auto-played at the origin, then two stones per turn. <code>legal</code> is authoritative
+          &mdash; never compute legality yourself.</div>
+      </div>
+
+      <div class="stats-sec">
+        <h2 class="k">Limits &amp; manners</h2>
+        <p class="api-lead">
+          Matches share the human-game budget per IP: active-match caps and move/create
+          rate limits (HTTP 429 with a readable <code>detail</code>). A match that goes
+          silent for the <code>idle_timeout_s</code> reported at create (default 10&nbsp;min)
+          is recorded as a timeout &mdash; long thinks are fine, vanishing is not. Your
+          matches run on the same worker pool as live human games, so keep concurrent
+          matches to a handful.
+        </p>
       </div>
 
     </div>

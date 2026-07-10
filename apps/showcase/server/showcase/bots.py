@@ -54,6 +54,12 @@ from .config import Settings
 log = logging.getLogger("showcase.bots")
 
 _READY = "__ready__"
+# Posted by a worker the moment it DEQUEUES a job, before running it. Lets the
+# pool tell "job is executing and hung" (a device wedge — recycle) apart from
+# "job never left the queue" (backlog behind slow turns — just a timeout).
+# Without it, ordinary queue-wait was misdiagnosed as an accelerator fault and,
+# at GPU_FAULT_THRESHOLD=1, needlessly failed the shard over to CPU.
+_STARTED = "__started__"
 _SEED_MASK = (1 << 63) - 1
 
 # How many times a failed job is transparently re-run after its shard has been
@@ -81,6 +87,41 @@ class BotPoolTimeout(TimeoutError):
 class _WorkerDied(Exception):
     """Internal: the worker process backing an in-flight job exited (e.g. an
     XPU OOM surfaced as a device-side abort/SIGSEGV) before replying."""
+
+
+class _Stranded(Exception):
+    """Internal: this job's future was failed by a recycle of its worker
+    (another job's fault, not this one's). Distinct from BotPoolError so
+    _submit can transparently retry once the recycle completes instead of
+    surfacing another game's accelerator fault to this game's user."""
+
+
+def _effective_cpu_count() -> int:
+    """CPU budget for this process: the cgroup CPU quota when one applies
+    (docker `cpus:` limits), else os.cpu_count().
+
+    os.cpu_count() reports the HOST's CPUs inside a container, so sizing
+    torch's threadpool from it oversubscribes the quota (observed:
+    torch_threads=16 under a 7-CPU limit) — under quota throttling the extra
+    threads just add context-switch and allocator contention exactly when the
+    pool has failed over to CPU and needs every cycle.
+    """
+    count = os.cpu_count() or 2
+    try:  # cgroup v2
+        quota_raw, period_raw = (
+            Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        )
+        if quota_raw != "max":
+            count = min(count, max(1, int(int(quota_raw) / int(period_raw))))
+    except Exception:
+        try:  # cgroup v1
+            quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+            period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+            if quota > 0:
+                count = min(count, max(1, quota // period))
+        except Exception:
+            pass
+    return count
 
 
 # Substrings in a worker-side traceback that mean the worker's inference device
@@ -379,7 +420,7 @@ class _WorkerRuntime:
         import torch
 
         threads = settings.torch_threads or max(
-            1, (os.cpu_count() or 2) // max(1, settings.workers)
+            1, _effective_cpu_count() // max(1, settings.workers)
         )
         torch.set_num_threads(threads)
 
@@ -428,10 +469,9 @@ class _WorkerRuntime:
                     check = devmod.verify_device(model, device)
                     if check.ok:
                         log.info(
-                            "device self-check passed on %s: max |dvalue|=%.2e "
-                            "|dpolicy|=%.2e (tol %.0e)",
+                            "device self-check passed on %s (serve path): "
+                            "max |dvalue|=%.2e |dpolicy|=%.2e",
                             device, check.value_diff, check.policy_diff,
-                            devmod.SELFCHECK_TOL,
                         )
                     else:
                         log.warning(
@@ -691,6 +731,10 @@ def _worker_main(
         if job is None:
             return
         job_id, kind, kwargs = job
+        if job_id is not None:
+            # Execution begins now: the pool's hang deadline starts here, and
+            # only a timeout AFTER this marker counts as a device fault.
+            result_queue.put((_STARTED, job_id))
         try:
             if kind == "move":
                 out = runtime.bot_turn(**kwargs)
@@ -776,14 +820,23 @@ class BotPool:
         self._ctx = mp.get_context("spawn")
         self._job_queues: list[Any] = []
         self._procs: list[Any] = []
-        self._result_queue = self._ctx.Queue()
+        # One result queue PER WORKER GENERATION, replaced together with the
+        # job queue on every (re)spawn, each drained by its own guarded reader
+        # thread. A single shared queue was a pool-wide single point of
+        # failure: terminate() on a worker mid-`put` can corrupt the pipe, and
+        # a corrupted shared queue silently killed reply delivery for every
+        # shard forever. A per-generation queue dies with its process.
+        self._result_queues: list[Any] = []
+        self._readers: list[threading.Thread] = []
         self._futures: dict[int, asyncio.Future] = {}
+        # job ids whose worker has posted the _STARTED marker (i.e. the job is
+        # executing, not queued). Timeout classification depends on this.
+        self._started: set[int] = set()
         # job_id -> worker index it was routed to, so a recycle can reject every
         # in-flight future stuck on the process it is about to kill.
         self._job_worker: dict[int, int] = {}
         self._job_ids = itertools.count(1)
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._reader: threading.Thread | None = None
         # Serializes recycles so two concurrent timeouts on the same shard don't
         # both spawn a replacement; per-worker locks keep independent shards free
         # to recycle in parallel. Created in start() (needs the running loop).
@@ -822,21 +875,36 @@ class BotPool:
         self._ready_pending: dict[int, Any] = {}
         self._stopping = False
 
-    def _spawn_proc(self, index: int, queue: Any) -> Any:
+    def _spawn_shard(self, index: int) -> None:
+        """Fresh job queue + result queue + reader thread + process for shard
+        `index` (slots must already exist). The old queues, if any, are simply
+        abandoned — jobs the dead process never consumed are dropped rather
+        than inherited, and a reply pipe possibly corrupted by terminate()
+        can only take down its own retired reader."""
+        job_queue = self._ctx.Queue()
+        result_queue = self._ctx.Queue()
+        self._job_queues[index] = job_queue
+        self._result_queues[index] = result_queue
+        reader = threading.Thread(
+            target=self._reader_loop, args=(result_queue,),
+            name=f"showcase-pool-reader-{index}", daemon=True,
+        )
+        reader.start()
+        self._readers.append(reader)
         # Thread the shard's current device override (None == resolve
         # SHOWCASE_DEVICE) so a failover respawn comes up forced on CPU.
         override = self._worker_devices[index] if self._worker_devices else None
         proc = self._ctx.Process(
             target=_worker_main,
             args=(
-                index, self._specs, self._settings, queue, self._result_queue,
+                index, self._specs, self._settings, job_queue, result_queue,
                 override,
             ),
             daemon=True,
             name=f"showcase-bot-{index}",
         )
         proc.start()
-        return proc
+        self._procs[index] = proc
 
     def _resolve_accel_device(self) -> str | None:
         """The accelerator this deploy would serve on, or None when cpu.
@@ -870,19 +938,14 @@ class BotPool:
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
-        # Reader thread runs first so it can route the workers' READY sentinels
-        # (and, later, recycled workers' READY) to `_ready_waiters`.
-        self._reader = threading.Thread(
-            target=self._reader_loop, name="showcase-pool-reader", daemon=True
-        )
-        self._reader.start()
         # Resolve what "the accelerator" is for this deploy (web-side, cheap —
         # no torch model is touched). When SHOWCASE_DEVICE resolves to cpu there
         # is no accelerator to fail over from, so failover/re-promotion are inert.
         self._accel_device = self._resolve_accel_device()
         for index in range(self._settings.workers):
-            queue = self._ctx.Queue()
-            self._job_queues.append(queue)
+            self._job_queues.append(None)
+            self._result_queues.append(None)
+            self._procs.append(None)
             self._recycle_locks.append(asyncio.Lock())
             self._recycle_times.append([])
             self._poisoned.append(False)
@@ -890,8 +953,8 @@ class BotPool:
             # forced "cpu" is only set later, on failover.
             self._worker_devices.append(None)
             self._gpu_fault_times.append([])
-            # _spawn_proc reads _worker_devices[index], so append it first.
-            self._procs.append(self._spawn_proc(index, queue))
+            # _spawn_shard reads _worker_devices[index], so append it first.
+            self._spawn_shard(index)
         for index in range(self._settings.workers):
             await self._await_ready(index)
         # Background GPU re-promotion loop (no-op unless an accelerator is in
@@ -910,38 +973,67 @@ class BotPool:
                 pass
             self._reprobe_task = None
         for queue in self._job_queues:
-            queue.put(None)
-        self._result_queue.put(None)
+            if queue is not None:
+                queue.put(None)
+        for queue in self._result_queues:
+            if queue is not None:
+                try:
+                    queue.put(None)  # unblock that generation's reader
+                except Exception:  # pragma: no cover - broken pipe at shutdown
+                    pass
         for proc in self._procs:
+            if proc is None:
+                continue
             proc.join(timeout=10)
             if proc.is_alive():
                 proc.terminate()
-        if self._reader is not None:
-            self._reader.join(timeout=5)
+        for reader in self._readers:
+            reader.join(timeout=5)
         for fut in self._futures.values():
             if not fut.done():
                 fut.cancel()
         self._futures.clear()
         self._job_worker.clear()
+        self._started.clear()
 
-    def _reader_loop(self) -> None:
+    def _reader_loop(self, result_queue: Any) -> None:
+        """Drain ONE worker generation's result queue until a None sentinel or
+        the queue breaks. Guarded end to end: an unpicklable/corrupt frame
+        (terminate() can sever a mid-put pipe) kills only this retired
+        generation's reader, never reply delivery for live shards."""
         while True:
-            item = self._result_queue.get()
+            try:
+                item = result_queue.get()
+            except Exception:
+                log.exception("pool reader: result queue broken; reader exiting")
+                return
             if item is None:
                 return
-            # READY sentinels are 3-tuples (_READY, worker_index, error); job
-            # replies are 2-tuples (job_id, payload). Route the former to the
-            # pending ready-waiter, the latter to the job's future. Compare with
-            # == not `is`: _READY is a str pickled across the mp.Queue, so it is a
-            # different object in this process and `is` would never match.
-            if len(item) == 3 and item[0] == _READY:
-                _, index, error = item
-                self._loop.call_soon_threadsafe(self._deliver_ready, index, error)
-                continue
-            job_id, payload = item
-            # All _futures / _job_worker mutation happens on the loop thread so a
-            # recycle (which scans _job_worker) never races the reader's pop.
-            self._loop.call_soon_threadsafe(self._resolve, job_id, payload)
+            try:
+                # READY sentinels are 3-tuples (_READY, worker_index, error);
+                # started markers are (_STARTED, job_id); job replies are
+                # (job_id, payload). Compare with == not `is`: the markers are
+                # strs pickled across the mp.Queue, so they are different
+                # objects in this process and `is` would never match.
+                if len(item) == 3 and item[0] == _READY:
+                    _, index, error = item
+                    self._loop.call_soon_threadsafe(self._deliver_ready, index, error)
+                    continue
+                if len(item) == 2 and item[0] == _STARTED:
+                    self._loop.call_soon_threadsafe(self._mark_started, item[1])
+                    continue
+                job_id, payload = item
+                # All _futures / _job_worker mutation happens on the loop thread
+                # so a recycle (which scans _job_worker) never races this pop.
+                self._loop.call_soon_threadsafe(self._resolve, job_id, payload)
+            except Exception:  # pragma: no cover - malformed frame
+                log.exception("pool reader: malformed result item %r; dropped", item)
+
+    def _mark_started(self, job_id: int) -> None:
+        """Record that a worker began executing `job_id` (loop thread only).
+        Ignored for jobs already resolved/stranded."""
+        if job_id in self._futures:
+            self._started.add(job_id)
 
     def _deliver_ready(self, index: int, error: Any) -> None:
         waiter = self._ready_waiters.pop(index, None)
@@ -953,9 +1045,24 @@ class BotPool:
     def _resolve(self, job_id: int, payload: dict) -> None:
         """Deliver a worker reply to its future (loop thread only)."""
         self._job_worker.pop(job_id, None)
+        self._started.discard(job_id)
         future = self._futures.pop(job_id, None)
         if future is not None and not future.done():
             future.set_result(payload)
+
+    def _drop_job(self, job_id: int) -> None:
+        """Forget an in-flight job's bookkeeping (loop thread only)."""
+        self._futures.pop(job_id, None)
+        self._job_worker.pop(job_id, None)
+        self._started.discard(job_id)
+
+    def _drop_job_future(self, job_id: int, exc: Exception) -> None:
+        """Drop a job's bookkeeping AND fail its future (loop thread only)."""
+        self._job_worker.pop(job_id, None)
+        self._started.discard(job_id)
+        fut = self._futures.pop(job_id, None)
+        if fut is not None and not fut.done():
+            fut.set_exception(exc)
 
     def _route(self, key: int) -> int:
         return int(key) % len(self._job_queues)
@@ -1038,15 +1145,12 @@ class BotPool:
 
             old_proc = self._procs[worker]
             # Reject in-flight futures pinned to this worker: their process is
-            # about to die and no reply will ever arrive for them.
+            # about to die and no reply will ever arrive for them. _Stranded
+            # (not BotPoolError) so their submitters retry on the fresh worker
+            # instead of surfacing another game's fault to this game's user.
             stranded = [jid for jid, w in self._job_worker.items() if w == worker]
             for jid in stranded:
-                self._job_worker.pop(jid, None)
-                fut = self._futures.pop(jid, None)
-                if fut is not None and not fut.done():
-                    fut.set_exception(
-                        BotPoolError(f"worker {worker} recycled: {reason}")
-                    )
+                self._drop_job_future(jid, _Stranded(f"worker {worker} recycled: {reason}"))
             # Terminate the wedged process off the event loop (join can block).
             def _kill(proc: Any) -> None:
                 try:
@@ -1059,6 +1163,13 @@ class BotPool:
                     pass
 
             await self._loop.run_in_executor(None, _kill, old_proc)
+            # Release the retired generation's reader thread (it would
+            # otherwise park on get() forever). Best-effort: if the pipe is
+            # broken the reader's own guard already exits it.
+            try:
+                self._result_queues[worker].put_nowait(None)
+            except Exception:  # pragma: no cover - broken pipe
+                pass
 
             # The poison cap breaks a respawn loop on a genuinely poisonous
             # accelerator shard. A failover respawn (to CPU) is exempt: CPU
@@ -1094,11 +1205,10 @@ class BotPool:
                     worker, reason,
                 )
 
-            # Fresh queue so any job the dead process never consumed is dropped
-            # rather than inherited by the replacement.
-            queue = self._ctx.Queue()
-            self._job_queues[worker] = queue
-            self._procs[worker] = self._spawn_proc(worker, queue)
+            # Fresh queues (job AND result) so any job the dead process never
+            # consumed is dropped rather than inherited by the replacement, and
+            # a reply pipe the terminate() may have corrupted retires with it.
+            self._spawn_shard(worker)
             log.warning(
                 "recycled shard %d (reason: %s); awaiting fresh worker ready",
                 worker, reason,
@@ -1106,6 +1216,48 @@ class BotPool:
             try:
                 await self._await_ready(worker)
             except Exception:
+                # The respawn itself failed (worker died loading, or hung past
+                # the ready deadline — e.g. XPU init wedged). Reap it and any
+                # stale READY it might still post.
+                await self._loop.run_in_executor(None, _kill, self._procs[worker])
+                self._ready_pending.pop(worker, None)
+                others_live = any(
+                    w != worker and not self._poisoned[w]
+                    for w in range(len(self._poisoned))
+                )
+                on_accelerator = (
+                    self._accel_device is not None
+                    and self._worker_devices[worker] is None
+                )
+                if not others_live and on_accelerator:
+                    # Last live shard, and the failed respawn targeted the
+                    # accelerator: poisoning here would be a permanent, silent
+                    # outage (the old last-live-shard rule only guarded the
+                    # recycle-cap path). Force CPU — where the XPU init hang
+                    # cannot recur — and try once more.
+                    self._worker_devices[worker] = "cpu"
+                    self._reprobe_streak = 0
+                    log.error(
+                        "shard %d failed to respawn on %s and is the last live "
+                        "shard — retrying once on CPU instead of poisoning",
+                        worker, self._accel_device,
+                    )
+                    self._spawn_shard(worker)
+                    try:
+                        await self._await_ready(worker)
+                    except Exception:
+                        await self._loop.run_in_executor(
+                            None, _kill, self._procs[worker]
+                        )
+                        self._ready_pending.pop(worker, None)
+                        self._poisoned[worker] = True
+                        log.exception(
+                            "CPU respawn for shard %d also failed to load; "
+                            "leaving it dead", worker,
+                        )
+                        return
+                    log.warning("shard %d back online (forced cpu)", worker)
+                    return
                 self._poisoned[worker] = True
                 log.exception(
                     "fresh worker for shard %d failed to load; leaving it dead", worker
@@ -1119,6 +1271,12 @@ class BotPool:
             w for w in range(len(self._worker_devices))
             if self._worker_devices[w] == "cpu" and not self._poisoned[w]
         ]
+
+    def all_dead(self) -> bool:
+        """True when every shard is poisoned — the pool can serve nothing and
+        only a process restart helps. Surfaced through /healthz so the
+        container healthcheck (and autoheal) can see the outage."""
+        return bool(self._poisoned) and all(self._poisoned)
 
     async def _probe_gpu_health(self) -> tuple[bool, str]:
         """Run the device self-check in a short-lived throwaway subprocess and
@@ -1188,12 +1346,23 @@ class BotPool:
                 )
                 if self._reprobe_streak < need:
                     continue
-                self._reprobe_streak = 0
                 # Promote the lowest-indexed downgraded shard back to the
-                # accelerator. Clearing the override before recycle makes the
-                # respawn come up on the resolved SHOWCASE_DEVICE; its own
-                # startup self-check is the final gate before it serves.
+                # accelerator — but only when it is IDLE: the recycle strands
+                # every in-flight job on the shard, so promoting a busy shard
+                # aborts live games for a non-emergency (the CPU shard was
+                # serving fine). Keep the streak and let the next probe cycle
+                # retry; games finish in minutes, so an idle window comes.
                 worker = downgraded[0]
+                if any(w == worker for w in self._job_worker.values()):
+                    log.info(
+                        "GPU healthy but shard %d is mid-job; deferring "
+                        "re-promotion to the next probe cycle", worker,
+                    )
+                    continue
+                self._reprobe_streak = 0
+                # Clearing the override before recycle makes the respawn come
+                # up on the resolved SHOWCASE_DEVICE; its own startup
+                # self-check is the final gate before it serves.
                 self._worker_devices[worker] = None
                 self._gpu_fault_times[worker] = []
                 log.warning(
@@ -1205,9 +1374,16 @@ class BotPool:
             raise
 
     async def _await_reply(
-        self, worker: int, future: asyncio.Future, timeout: float
+        self, worker: int, future: asyncio.Future, timeout: float, job_id: int
     ) -> dict:
         """Await a job's reply, but bail early if the worker process dies.
+
+        Two-phase deadline: up to `timeout` for the job to START (queue wait
+        behind other jobs), then `timeout` of run time once the worker's
+        _STARTED marker lands. Separating the phases keeps the hang detector
+        honest — "started and silent for `timeout`" means a wedged forward,
+        while "never started" is mere backlog and must not be treated as a
+        device fault (see _submit).
 
         A crash (an XPU OOM that torch-xpu surfaces as a device-side abort)
         kills the subprocess, so its future would otherwise hang until the full
@@ -1216,8 +1392,12 @@ class BotPool:
         (process alive but stuck) still rides out to `asyncio.TimeoutError` at
         the deadline."""
         assert self._loop is not None
-        deadline = self._loop.time() + timeout
+        start_deadline = self._loop.time() + timeout
+        run_deadline: float | None = None
         while True:
+            if run_deadline is None and job_id in self._started:
+                run_deadline = self._loop.time() + timeout
+            deadline = run_deadline if run_deadline is not None else start_deadline
             remaining = deadline - self._loop.time()
             if remaining <= 0:
                 raise asyncio.TimeoutError
@@ -1262,22 +1442,47 @@ class BotPool:
             recycle_reason: str | None = None
             failure: Exception | None = None
             try:
-                payload = await self._await_reply(worker, future, timeout)
+                payload = await self._await_reply(worker, future, timeout, job_id)
             except asyncio.TimeoutError:
-                self._futures.pop(job_id, None)
-                self._job_worker.pop(job_id, None)
-                recycle_reason = f"{kind} job hung >{timeout:g}s"
+                started = job_id in self._started
+                self._drop_job(job_id)
+                if not started:
+                    # The job never left the queue: the shard is merely
+                    # backlogged behind slow turns (or a hung job whose OWN
+                    # submitter will recycle it). Recycling here would punish a
+                    # healthy accelerator for congestion — at the deployed
+                    # GPU_FAULT_THRESHOLD=1 that meant one busy minute forced
+                    # the whole shard onto CPU. Plain timeout, no fault.
+                    raise BotPoolTimeout(
+                        f"{kind} job waited >{timeout:.0f}s behind other jobs"
+                    ) from None
+                recycle_reason = f"{kind} job hung >{timeout:g}s mid-run"
                 failure = BotPoolTimeout(f"{kind} job exceeded {timeout:.0f}s")
             except _WorkerDied:
-                self._futures.pop(job_id, None)
-                self._job_worker.pop(job_id, None)
+                self._drop_job(job_id)
                 # The process died mid-job — an XPU OOM that surfaced as a
                 # device-side abort. Always a device fault (drives the failover).
                 recycle_reason = f"{kind}: worker process died mid-job"
                 failure = BotPoolError(recycle_reason)
+            except _Stranded as exc:
+                # Another job's fault recycled this worker and failed our
+                # future (the recycler already dropped the bookkeeping). Wait
+                # out the in-flight recycle, then transparently re-run on the
+                # fresh worker — this job did nothing wrong.
+                if attempt < retries:
+                    async with self._recycle_locks[worker]:
+                        pass  # barrier: recycle finished
+                    if not self._poisoned[worker]:
+                        attempt += 1
+                        log.warning(
+                            "retrying %s on shard %d after it was stranded by a "
+                            "recycle (attempt %d/%d): %s",
+                            kind, worker, attempt, retries, exc,
+                        )
+                        continue
+                raise BotPoolError(str(exc)) from None
             except asyncio.CancelledError:
-                self._futures.pop(job_id, None)
-                self._job_worker.pop(job_id, None)
+                self._drop_job(job_id)
                 raise
             else:
                 if "error" in payload:

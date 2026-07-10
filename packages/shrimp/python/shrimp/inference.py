@@ -47,6 +47,21 @@ def _ceil_quant(n: int) -> int:
     return max(QUANT_NODES, -(-int(n) // QUANT_NODES) * QUANT_NODES)
 
 
+def serve_autocast(device: torch.device | str) -> bool:
+    """Whether the serve forward autocasts to fp16 on `device`.
+
+    True on cuda and xpu (both memory-bound at serve batch sizes; fp16 roughly
+    halves bytes moved AND halves the activation VRAM that wedges small cards)
+    unless disabled via SHRIMP_SERVE_AUTOCAST=0. Exposed so the showcase
+    device self-check can verify the exact numeric path the evaluator serves
+    (device.py builds its parity forward with the same flag).
+    """
+    dev = torch.device(device)
+    if dev.type not in ("cuda", "xpu"):
+        return False
+    return os.environ.get("SHRIMP_SERVE_AUTOCAST", "1") != "0"
+
+
 class _PinnedRing:
     """Ring of pinned staging buffer-sets for the copy-stream H2D path
     (SHRIMP_COPY_STREAM). A pageable H2D copy serializes the submitting host
@@ -348,20 +363,43 @@ class ShrimpEvaluator:
         # Opt out with SHRIMP_NO_COMPILE=1; falls back to eager on any error.
         self._raw_fpv = self.model.forward_policy_value
         self._compiled_fpv = self._raw_fpv
+        # cuda: compile by default. xpu: opt-in only (SHRIMP_COMPILE_XPU=1) —
+        # inductor-on-xpu is young and a JIT stall on this backend presents as
+        # exactly the mid-move hang the showcase failover exists to catch.
         self._use_compile = (
             self.device.type == "cuda"
             and os.environ.get("SHRIMP_NO_COMPILE") != "1"
+        ) or (
+            self.device.type == "xpu"
+            and os.environ.get("SHRIMP_COMPILE_XPU") == "1"
         )
         # When set, defer the per-group decode/softmax/gather (which carry two
         # device syncs) from submit_payload to result(), so submit only enqueues
         # forwards. Default off (SHRIMP_DEFER_DECODE=1 to enable).
         self._defer_decode = os.environ.get("SHRIMP_DEFER_DECODE") == "1"
-        # Keep feats f16 through pack+H2D (CUDA): half the feats H2D bytes and no
-        # astype copy. SHRIMP_F32_FEATS=1 forces the f32 path instead.
+        # Keep feats f16 through pack+H2D (cuda AND xpu): half the feats H2D
+        # bytes and no astype copy — the wire feats are already f16, and on
+        # both accelerators the forward consumes them under fp16 autocast.
+        # SHRIMP_F32_FEATS=1 forces the f32 path instead.
         self._f16_feats = (
-            self.device.type == "cuda"
+            self.device.type in ("cuda", "xpu")
             and os.environ.get("SHRIMP_F32_FEATS") != "1"
         )
+        # Serve autocast (see serve_autocast): fp16 on cuda/xpu. On the 4 GB
+        # A310 this matters twice over — memory-bound kernels run ~2x faster
+        # AND the deep-board activation transient that exhausts the card (the
+        # torch-xpu 'index out of bounds' abort) shrinks by half.
+        self._autocast = serve_autocast(self.device)
+        # Pinned + non_blocking H2D capability: standard on cuda; on xpu it
+        # depends on the runtime, so probe once instead of assuming. Pageable
+        # blocking copies remain the fallback.
+        self._pin_h2d = self.device.type == "cuda"
+        if self.device.type == "xpu":
+            try:
+                torch.empty(1).pin_memory()
+                self._pin_h2d = True
+            except Exception:
+                self._pin_h2d = False
         # Pure-fp16 serve (SHRIMP_SERVE_HALF=1, CUDA only): run the forward on
         # an fp16 COPY of the net with autocast DISABLED. Under autocast the
         # norm ops run fp32, which keeps the residual stream fp32 and doubles
@@ -825,7 +863,7 @@ class ShrimpEvaluator:
     ) -> None:
         g = end - start
         # Host pack: build the padded (g, pad_to, *) numpy buffers one pass per
-        # field, then one from_numpy + .to(device) per field. feats f16 on CUDA
+        # field, then one from_numpy + .to(device) per field. feats f16 on accelerators
         # (CPU path stays f32; numpy upcasts the f16 source on assignment there),
         # nbr sentinel remapped to pad_to, int64 coords, bool mask.
         feat_dtype = np.float16 if self._f16_feats else np.float32
@@ -848,14 +886,14 @@ class ShrimpEvaluator:
         batch_coords = torch.from_numpy(np_coords)
 
         device = self.device
-        use_fp16 = device.type == "cuda"
-        # Pinned + non_blocking H2D on CUDA: page-lock each host buffer so the
-        # driver can DMA it asynchronously and overlap the copies with queued GPU
-        # work. The consuming forward runs on the same stream, so ordering holds.
-        # CPU device uses the plain blocking copy.
+        # Pinned + non_blocking H2D where the runtime supports it (cuda always;
+        # xpu probed at init): page-lock each host buffer so the driver can DMA
+        # it asynchronously and overlap the copies with queued GPU work. The
+        # consuming forward runs on the same stream, so ordering holds. CPU (and
+        # an xpu runtime without pinning) uses the plain blocking copy.
 
         def _h2d(t):
-            return t.pin_memory().to(device, non_blocking=True) if use_fp16 else t.to(device)
+            return t.pin_memory().to(device, non_blocking=True) if self._pin_h2d else t.to(device)
 
         d_feats = _h2d(batch_feats)
         d_nbr = _h2d(batch_nbr)
@@ -879,7 +917,6 @@ class ShrimpEvaluator:
         mark_dynamic, autocast, and the defer-or-decode path. The two packers
         differ only in how these four device tensors are produced."""
         device = self.device
-        use_fp16 = device.type == "cuda"
         # One dynamic graph for every shape (see __init__): mark both varying
         # dims dynamic — batch (dim 0) and cell-count Npad (dim 1).
         #
@@ -922,7 +959,7 @@ class ShrimpEvaluator:
                 torch._dynamo.mark_dynamic(t, 1)  # Npad dynamic
         # serve-half runs the fp16 module natively: autocast must stay OFF, else
         # its fp32 norm policy re-upcasts the residual stream (see __init__).
-        autocast_on = use_fp16 and not self._serve_half
+        autocast_on = self._autocast and not self._serve_half
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=autocast_on):
             out = fpv(
                 d_feats,
@@ -954,28 +991,46 @@ class ShrimpEvaluator:
 
     def _decode_group(self, out, legal_counts, start, end, request_ml, request_logits=False):
         """Per-group serve decode: binned value, moves-left, and the flattened
-        legal-prefix prior gather. Carries the two device syncs (group_counts H2D
-        and the priors[legal] nonzero); invoked from submit (immediate) or result
-        (deferred). Decoded value/ml are (g,) GPU tensors; priors[legal] flattens
-        each row's first legal_counts[row] entries in row order (`legal` is
-        row-major and l==0 rows select nothing)."""
+        legal-prefix prior gather. Sync-free: the legal mask comes from a
+        host-side WRITABLE int64 copy of the counts (one small H2D enqueue per
+        group; a copy of the read-only frombuffer view, which torch.from_numpy
+        cannot take without the undefined-behavior warning), and the flat
+        legal-prefix gather is a host-built index_select — unlike the boolean
+        `priors[legal]` advanced index, whose nonzero() forces a device->host
+        sync per group. Decoded value/ml are (g,) GPU tensors; the flat gather
+        takes each row's first legal_counts[row] entries in row order (l==0
+        rows contribute nothing)."""
         value = decode_binned_value(out["value"].float())
         ml = decode_moves_left(out["moves_left"].float()) if request_ml else None
         logits = out["policy"].float()
+        npad = logits.shape[1]
+        counts_host = np.array(legal_counts[start:end], dtype=np.int64)  # writable copy
+        group_counts = torch.from_numpy(counts_host).to(
+            logits.device, dtype=torch.long, non_blocking=True
+        )
+        col_idx = torch.arange(npad, device=logits.device)
         # Set columns at index >= the row's legal count to -inf before one
         # batched softmax. The model mask-zeroes (not -inf) those logits, so a
         # bare slice softmax would let the zeros enter the denominator. The -inf
         # columns contribute exp(-inf)=0, so each [:l] slice equals
         # torch.softmax(logits[k, :l]).
-        group_counts = torch.from_numpy(
-            np.ascontiguousarray(legal_counts[start:end])
-        ).to(logits.device, dtype=torch.long)
-        col_idx = torch.arange(logits.shape[1], device=logits.device)
         legal = col_idx.unsqueeze(0) < group_counts.unsqueeze(1)  # (g, Npad)
         masked = logits.masked_fill(~legal, float("-inf"))
         priors = torch.softmax(masked, dim=1)  # fp32, GPU; rows with l==0 -> NaN
-        # When requested, gather the raw (pre-softmax, un-masked) logits over the
-        # same legal mask / row-major order as priors[legal], so the flat layout
-        # is positionally identical to priors_bytes. Skipped otherwise.
-        logits_flat = logits[legal] if request_logits else None
-        return value, ml, priors[legal], logits_flat
+        # Row-major flat indices of every legal slot, built host-side from the
+        # same counts (no device nonzero): row k contributes k*Npad + [0, l_k).
+        flat_idx = torch.from_numpy(
+            np.concatenate(
+                [np.arange(c, dtype=np.int64) + k * npad for k, c in enumerate(counts_host)]
+            )
+            if counts_host.size
+            else np.empty(0, dtype=np.int64)
+        ).to(logits.device, non_blocking=True)
+        priors_flat = priors.reshape(-1).index_select(0, flat_idx)
+        # When requested, gather the raw (pre-softmax, un-masked) logits over
+        # the same indices, so the flat layout is positionally identical to
+        # priors_bytes. Skipped otherwise.
+        logits_flat = (
+            logits.reshape(-1).index_select(0, flat_idx) if request_logits else None
+        )
+        return value, ml, priors_flat, logits_flat
