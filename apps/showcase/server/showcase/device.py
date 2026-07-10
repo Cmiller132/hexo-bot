@@ -29,6 +29,7 @@ the web process can import the showcase package without the model stack.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -271,11 +272,17 @@ def warmup(model: Any, device: str, iters: int = 2) -> None:
     if dev.type == "cpu":
         return
     autocast_on = serve_autocast(device)
-    shapes = (
+    shapes = [
         (1, 128),   # opening/shallow flush (batch-1 group, small support)
         (2, 256),   # ordinary mid-game group
-        (2, _BIAS_GATHER_CHUNK_THRESHOLD + 128),  # deep board, chunked gather
-    )
+    ]
+    # Deep-board warmup (past the chunked-gather threshold) is OPT-IN: it
+    # JIT-compiles the S>1024 kernels at boot instead of mid-game, but that
+    # first deep compile is ALSO the load that wedged the A310's kernel
+    # driver and stalled the whole LXC host. Off by default; enable with
+    # SHOWCASE_WARMUP_DEEP=1 only when watching the box.
+    if os.environ.get("SHOWCASE_WARMUP_DEEP") == "1":
+        shapes.append((2, _BIAS_GATHER_CHUNK_THRESHOLD + 128))
     for batch_size, npad in shapes:
         batch = _synthetic_batch(batch_size, npad)
         for _ in range(max(1, iters)):

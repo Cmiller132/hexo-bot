@@ -50,16 +50,22 @@ def _ceil_quant(n: int) -> int:
 def serve_autocast(device: torch.device | str) -> bool:
     """Whether the serve forward autocasts to fp16 on `device`.
 
-    True on cuda and xpu (both memory-bound at serve batch sizes; fp16 roughly
-    halves bytes moved AND halves the activation VRAM that wedges small cards)
-    unless disabled via SHRIMP_SERVE_AUTOCAST=0. Exposed so the showcase
-    device self-check can verify the exact numeric path the evaluator serves
-    (device.py builds its parity forward with the same flag).
+    cuda: on unless SHRIMP_SERVE_AUTOCAST=0 (long-proven path).
+    xpu: OPT-IN via SHRIMP_SERVE_AUTOCAST=1. fp16 halves bytes moved and the
+    activation VRAM that wedges small cards, but the first fp16 kernel
+    compile on an Arc A310 wedged the i915/xe KERNEL driver in production —
+    and an LXC-shared kernel turns that into a host-wide outage, not a
+    recycleable worker fault. Enable deliberately, watch dmesg, keep a finger
+    on the power button. Exposed so the showcase device self-check verifies
+    the exact numeric path the evaluator serves (device.py builds its parity
+    forward with the same flag).
     """
     dev = torch.device(device)
-    if dev.type not in ("cuda", "xpu"):
-        return False
-    return os.environ.get("SHRIMP_SERVE_AUTOCAST", "1") != "0"
+    if dev.type == "cuda":
+        return os.environ.get("SHRIMP_SERVE_AUTOCAST", "1") != "0"
+    if dev.type == "xpu":
+        return os.environ.get("SHRIMP_SERVE_AUTOCAST", "0") == "1"
+    return False
 
 
 class _PinnedRing:
@@ -377,24 +383,24 @@ class ShrimpEvaluator:
         # device syncs) from submit_payload to result(), so submit only enqueues
         # forwards. Default off (SHRIMP_DEFER_DECODE=1 to enable).
         self._defer_decode = os.environ.get("SHRIMP_DEFER_DECODE") == "1"
-        # Keep feats f16 through pack+H2D (cuda AND xpu): half the feats H2D
-        # bytes and no astype copy — the wire feats are already f16, and on
-        # both accelerators the forward consumes them under fp16 autocast.
-        # SHRIMP_F32_FEATS=1 forces the f32 path instead.
+        # Serve autocast (see serve_autocast): fp16 default on cuda, OPT-IN on
+        # xpu (the first fp16 kernel JIT wedged the A310's kernel driver and
+        # took the whole LXC host down — see serve_autocast's docstring).
+        self._autocast = serve_autocast(self.device)
+        # Keep feats f16 through pack+H2D only where the forward will consume
+        # them under fp16 autocast (f16 inputs into fp32 modules would dtype-
+        # error). cuda: default. xpu: follows the autocast opt-in.
+        # SHRIMP_F32_FEATS=1 forces the f32 path regardless.
         self._f16_feats = (
-            self.device.type in ("cuda", "xpu")
+            (self.device.type == "cuda" or (self.device.type == "xpu" and self._autocast))
             and os.environ.get("SHRIMP_F32_FEATS") != "1"
         )
-        # Serve autocast (see serve_autocast): fp16 on cuda/xpu. On the 4 GB
-        # A310 this matters twice over — memory-bound kernels run ~2x faster
-        # AND the deep-board activation transient that exhausts the card (the
-        # torch-xpu 'index out of bounds' abort) shrinks by half.
-        self._autocast = serve_autocast(self.device)
-        # Pinned + non_blocking H2D capability: standard on cuda; on xpu it
-        # depends on the runtime, so probe once instead of assuming. Pageable
-        # blocking copies remain the fallback.
+        # Pinned + non_blocking H2D: standard on cuda; on xpu OPT-IN
+        # (SHRIMP_XPU_PIN=1) with a capability probe — pinned allocations on
+        # this backend are another first-touch driver surface we don't
+        # exercise by default after the host wedge.
         self._pin_h2d = self.device.type == "cuda"
-        if self.device.type == "xpu":
+        if self.device.type == "xpu" and os.environ.get("SHRIMP_XPU_PIN") == "1":
             try:
                 torch.empty(1).pin_memory()
                 self._pin_h2d = True
