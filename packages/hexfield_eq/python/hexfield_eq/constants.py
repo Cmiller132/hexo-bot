@@ -169,6 +169,9 @@ HALO_DIST_FEATURE = HALO_DIST / DIST_SCALE  # 1.125
 # --- heads / targets ------------------------------------------------------------
 VALUE_BINS = 65
 MOVES_LEFT_CAP = 209
+# Auxiliary soft-policy target loss weight. Lives here (torch-free) so both
+# losses.py and config.TrainingSection default from one source.
+SOFT_POLICY_WEIGHT = 4.0
 
 # --- trunk ----------------------------------------------------------------------
 # Trunk width from env HEXFIELD_EQ_CHANNELS (default 96), read once at import.

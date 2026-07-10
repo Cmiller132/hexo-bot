@@ -56,7 +56,6 @@ from .buffer_manifest import scan_or_update_manifest
 from .config import HexfieldConfig
 from .constants import GROUP_ORDER
 from .expand_backends import (
-    _row_view_to_sample,  # re-exported here; imported from this module by tests
     expand_rows,
     resolve_expand_workers,
 )

@@ -15,14 +15,11 @@ from collections.abc import Mapping
 import torch
 from torch.nn import functional as F
 
-from .constants import MOVES_LEFT_CAP, VALUE_BINS
+from .constants import MOVES_LEFT_CAP, SOFT_POLICY_WEIGHT, VALUE_BINS
 
 POLICY_WEIGHT = 1.0
 VALUE_WEIGHT = 1.0
 OPP_POLICY_WEIGHT = 0.25
-# Auxiliary soft-policy target loss weight. The soft target is built in
-# batching.py. Mirrored by config.TrainingSection.soft_policy_weight.
-SOFT_POLICY_WEIGHT = 4.0
 SHORT_TERM_VALUE_WEIGHT = 0.1
 MOVES_LEFT_WEIGHT = 0.1
 Q_HEAD_WEIGHT = 0.1

@@ -24,7 +24,8 @@ Exposed as the `hexfield_eq::attn_pair` custom op (with a fake kernel) so the
 serve torch.compile graph keeps it in-graph as an opaque call. Enabled via
 HEXFIELD_TRITON_ATTN=1; model.py routes to it from RelPosAttention.forward on
 the no-grad CUDA fp16 path when the block bias is a _FlexPairBias carrying
-seq_lens, for head_dim in {32, 64}. Everything else falls through to flex.
+seq_lens, for head_dim in {16, 32, 64, 128}. Everything else falls through to
+flex.
 
 Numerics: fp16 QK^T and PV tensor-core dots with fp32 accumulation, fp32
 online softmax — the same accumulation class as flex_attention; output fp16.

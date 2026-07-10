@@ -94,7 +94,7 @@ from .eval_driver import (
     run_hexfield_ply,
     settle,
 )
-from .geometry import pack_action_id, unpack_action_id
+from .geometry import unpack_action_id
 
 # Logger for the eval .hxr writer; a 0-record write is logged as a warning.
 _EVAL_LOG = logging.getLogger("hexfield.eval")
@@ -207,11 +207,51 @@ def _new_rust_session(max_states: int) -> Any:
     return _rust.HexfieldMctsSession(max_states=max_states)
 
 
+def _check_eq_arch_matches_import(meta: dict | None, path: Path) -> None:
+    """Fail fast when a checkpoint's equivariant arch cannot be rebuilt here.
+
+    GROUP_ORDER / C_ORBIT (and, through C = GROUP_ORDER * C_ORBIT, the trunk
+    width) are read from HEXFIELD_EQ_* env ONCE at import and baked into the
+    weight tie / head reads; constructor kwargs cannot override them (see
+    model.infer_net_kwargs_from_state_dict's docstring). A foreign-arch
+    EQUIVARIANT checkpoint therefore fails strict load with an opaque
+    size-mismatch — this guard raises the true error instead, mirroring the
+    dashboard worker's ``_check_eq_meta_matches_import`` (hexo_frontend
+    debug_infer.py). Meta-less (pre-arch_meta) checkpoints skip the guard and
+    rely on strict load. Passthrough checkpoints (group_order == 1) keep the
+    cross-width rebuild: only group_order itself is enforced for them.
+    """
+    from .constants import C_ORBIT, CHANNELS, GROUP_ORDER
+
+    meta = meta or {}
+    ckpt_group_order = meta.get("group_order")
+    checks: list[tuple[str, object, int, str]] = [
+        ("group_order", ckpt_group_order, GROUP_ORDER, "HEXFIELD_EQ_GROUP_ORDER"),
+    ]
+    if ckpt_group_order is not None and int(ckpt_group_order) > 1:
+        checks += [
+            ("c_orbit", meta.get("c_orbit"), C_ORBIT, "HEXFIELD_EQ_C_ORBIT"),
+            ("channels", meta.get("channels"), CHANNELS, "HEXFIELD_EQ_CHANNELS"),
+        ]
+    for key, want, imported, env_var in checks:
+        if want is not None and int(want) != int(imported):
+            raise RuntimeError(
+                f"hexfield_eq checkpoint {path} was trained with {key}={int(want)} "
+                f"but this process imported hexfield_eq with {key}={int(imported)} "
+                f"(HEXFIELD_EQ_* env is read once at import); relaunch with "
+                f"{env_var}={int(want)} (and the checkpoint's other HEXFIELD_EQ_* "
+                "arch env) to evaluate this checkpoint"
+            )
+
+
 def _load_hexfield_net(checkpoint: str | Path) -> HexfieldNet:
     """Strict-load a hexfield checkpoint into a fresh HexfieldNet.
 
     Loads ``payload["model"]`` with ``strict=True`` so a value-/moves-left-head
-    mismatch raises rather than keeping a random head.
+    mismatch raises rather than keeping a random head. A checkpoint whose meta
+    declares an equivariant arch this process cannot rebuild (import-frozen
+    GROUP_ORDER / C_ORBIT / CHANNELS) is rejected up front with a clear
+    relaunch instruction instead of an opaque strict-load size mismatch.
     """
     import torch  # lazy: keep the module importable on CPU hosts without torch
 
@@ -224,11 +264,10 @@ def _load_hexfield_net(checkpoint: str | Path) -> HexfieldNet:
     if not isinstance(payload, dict) or "model" not in payload:
         raise RuntimeError(f"hexfield checkpoint payload has no 'model' state: {path}")
     sd = payload["model"]
-    # Build the net at the checkpoint's OWN arch (width, head count, trunk
-    # layout), not the process-global env constants, so a foreign-arch anchor
-    # loads instead of shape-mismatching — main_7 (c=192, 3 heads, CCAx5)
-    # evaluates main_6/main_5 anchors (c=128, 4 heads, CCCACCCACCA) and vice
-    # versa. Undeterminable fields fall back to the env defaults.
+    # Build the net at the checkpoint's OWN arch (head count, trunk layout —
+    # and, for passthrough builds, width), not the process-global env
+    # constants, so a foreign-arch anchor loads instead of shape-mismatching.
+    # Undeterminable fields fall back to the env defaults.
     from .model import infer_net_kwargs_from_state_dict
 
     # Meta-first (checklist B2 / spec D-S32): the persisted arch_meta is the
@@ -238,41 +277,12 @@ def _load_hexfield_net(checkpoint: str | Path) -> HexfieldNet:
     # with this process's env default (blockers ON) — a semantics flip, not a
     # shape error. Checkpoints without meta fall back to shape inference as
     # before.
+    _check_eq_arch_matches_import(payload.get("meta"), path)
     net_kwargs = infer_net_kwargs_from_state_dict(sd, payload.get("meta"))
-    ckpt_channels = net_kwargs.get("channels")
     model = HexfieldNet(**net_kwargs)
-    try:
-        model.load_state_dict(sd, strict=True)
-    except RuntimeError:
-        # Legacy architecture (6 conv blocks, shared aux reduction, no
-        # cell_q / ml_reduction / LayerScale). Load into the frozen eval-only v2
-        # snapshot. Still strict, so genuine corruption raises.
-        #
-        # (The old shared-``bias_table`` -> per-block ``bias_tables.{i}`` remap
-        # retry was removed: this lineage's HexfieldNet carries no ``bias_tables``
-        # attribute — its per-block tables are ``bias_free_tables`` / ``bias_theta``
-        # — so the guard's ``len(model.bias_tables)`` was a latent AttributeError
-        # behind a predicate that never matched the current key set.)
-        from .legacy_model_v2 import HexfieldNet as HexfieldNetV2
-
-        model = HexfieldNetV2() if ckpt_channels is None else HexfieldNetV2(channels=ckpt_channels)
-        model.load_state_dict(payload["model"], strict=True)
+    model.load_state_dict(sd, strict=True)
     model.eval()
     return model
-
-
-def _infer_checkpoint_channels(sd: dict) -> int | None:
-    """Trunk channel width of a hexfield checkpoint, or None if undeterminable.
-
-    The width is the last dim of the learned ``tokens`` parameter (NUM_TOKENS, c);
-    the stem conv bias (c,) is the fallback. None means the default (process-global
-    CHANNELS) should be used.
-    """
-    for key in ("tokens", "stem.bias"):
-        t = sd.get(key)
-        if t is not None and hasattr(t, "shape") and len(t.shape) >= 1:
-            return int(t.shape[-1])
-    return None
 
 
 def _resolve_eval_overrides(
@@ -901,9 +911,10 @@ def play_multi_checkpoint_match(
 
     def _run_candidate_opening(grp: "_Group", openers: list[EvalGame], seed: int) -> int:
         """Per-opponent candidate opening-leader batch. Uses the candidate session
-        and evaluator but this opponent's own ``open_seed`` and per-group
-        root_index, so each leader's native ``seed+root_index`` sampling stream is
-        keyed per opponent."""
+        and evaluator but this opponent's own ``open_seed`` (the caller folds
+        ``grp.opp_index`` into the seed), so each opponent group samples a
+        distinct opening stream rather than every group replaying identical
+        candidate openings."""
         return run_hexfield_ply(
             cand_counting,
             cand_eval,
@@ -1012,9 +1023,14 @@ def play_multi_checkpoint_match(
                 else:
                     cand_greedy.append(g)
             # Opening leaders: per-opponent with that opponent's own open_seed (net A
-            # offset 13_000_003).
+            # offset 13_000_003, plus a per-opponent 23_000_009 stride so candidate
+            # openings are not correlated across opponent groups).
             for opp_index, openers in cand_openers_by_opp.items():
-                open_seed = game_seed_base + 13_000_003 + rounds * 1_000_003
+                open_seed = (
+                    game_seed_base + 13_000_003
+                    + opp_index * 23_000_009
+                    + rounds * 1_000_003
+                )
                 plies_this_round += _run_candidate_opening(groups[opp_index], openers, open_seed)
             # Followers replay their leader's recorded opening line (no search).
             for g in cand_followers:

@@ -8,58 +8,8 @@ import json
 import time
 from typing import Any
 
-import torch
 
-from hexo_engine import api
-from hexo_engine.types import AxialCoord, PlacementAction
-
-from .config import ML_AUTO_DISABLED_FLAG, build_divergence_overrides, parse_hexfield_config
-from .geometry import unpack_action_id
-from .inference import HexfieldEvaluator
-from .model import HexfieldNet
-
-
-def _play_pair(session_a, eval_a, session_b, eval_b, *, visits, c_puct, seed, sp,
-               max_plies, opening_plies=8, opening_temperature=1.0,
-               divergence_overrides=None, divergence_overrides_b=None):
-    """Play one game. A is player0. Returns (winner_int|None, plies).
-
-    The first `opening_plies` moves use temperature sampling (seeded per game);
-    after the opening, both sides play greedy (temperature 0). Sampling is
-    applied symmetrically to both sides."""
-
-    state = api.new_game()
-    sessions = (session_a, session_b)
-    evaluators = (eval_a, eval_b)
-    # Both seats use the same divergence overrides by default. Passing
-    # divergence_overrides_b gives seat B a different search config.
-    ov_a = divergence_overrides if divergence_overrides is not None else build_divergence_overrides(sp)
-    ov_b = divergence_overrides_b if divergence_overrides_b is not None else ov_a
-    overrides_by_mover = (ov_a, ov_b)
-    ply = 0
-    while ply < max_plies:
-        mover = 0 if ply == 0 else (1 if ((ply - 1) // 2) % 2 == 0 else 0)
-        session = sessions[mover]
-        evaluator = evaluators[mover]
-        temperature = opening_temperature if ply < opening_plies else 0.0
-        result = session.search(
-            [seed], (state,), visits=visits, c_puct=c_puct, temperature=temperature,
-            seed=seed * 5003 + ply, evaluator=evaluator,
-            virtual_batch_size=8,
-            widening_policy_mass=sp.widening_policy_mass,
-            widening_max_children=sp.widening_max_children,
-            widening_min_children=sp.widening_min_children,
-            fpu_reduction=sp.fpu_reduction, tss_enabled=sp.tss_enabled,
-            search_parity_mode=sp.search_parity_mode,
-            divergence_overrides=overrides_by_mover[mover],
-        )[0]
-        q, r = unpack_action_id(int(result["action_id"]))
-        outcome = api.apply_action(state, PlacementAction(AxialCoord(q=q, r=r)))
-        ply += 1
-        if outcome.terminal:
-            terminal = api.terminal(state)
-            return (0 if str(terminal.winner) == "player0" else 1), ply
-    return None, ply
+from .config import ML_AUTO_DISABLED_FLAG, parse_hexfield_config
 
 
 def evaluate_epoch(*, ctx, components, epoch: int) -> dict[str, Any]:

@@ -633,14 +633,16 @@ class OpponentAdapter(Protocol):
 
     Net A is always the hexfield candidate (driven by ``run_hexfield_ply``); an
     adapter supplies only net B's move generation. ``start`` builds per-game net-B
-    state; ``advance`` moves every game in ``batch`` where net B is to move
-    (leaders/greedy — followers are handled by the driver's opening replay) and
-    returns the number of plies applied; ``close`` tears down any pools/servers and
-    (for Strix) injects telemetry."""
+    state (``seed_base`` is the driver's CRN ``game_seed_base``, so e.g. net B's
+    equal-time calibration probes the same positions net A did); ``advance`` moves
+    every game in ``batch`` where net B is to move (leaders/greedy — followers are
+    handled by the driver's opening replay) and returns the number of plies
+    applied; ``close`` tears down any pools/servers and (for Strix) injects
+    telemetry."""
 
     label: str
 
-    def start(self, games: list[EvalGame]) -> None:
+    def start(self, games: list[EvalGame], *, seed_base: int = 0) -> None:
         ...
 
     def advance(
@@ -749,78 +751,84 @@ def play_eval_match(
 
     started = time.perf_counter()
 
-    # ----- Net A: one persistent hexfield session + evaluator. -----
-    if build_candidate_evaluator is not None:
-        eval_a = build_candidate_evaluator()
-    else:
-        from .inference import build_serve_evaluator  # lazy: torch only on the GPU path
-
-        eval_a = build_serve_evaluator(
-            eval_arena._load_hexfield_net(candidate_ckpt), cfg, role="eval"
-        )
-    session_a = make_session() if make_session is not None else eval_arena._new_rust_session(max_states)
-
-    # ----- Equal-time leg (spec D-S35): re-calibrate net A's visit budget so a
-    # move costs ~time_budget_ms of wall clock. 0.0 (the default) skips this
-    # block entirely — the fixed-visit path is untouched.
-    time_budget_ms = _resolve_time_budget(cfg, time_ms_per_move)
-    calibration_a: dict[str, Any] | None = None
-    if time_budget_ms > 0.0:
-        eval_visits, calibration_a = calibrate_time_budget_visits(
-            session_a,
-            eval_a,
-            search_kwargs=search_kwargs,
-            overrides=ov_a,
-            time_ms_per_move=time_budget_ms,
-            seed=game_seed_base,
-        )
-        search_kwargs = dict(search_kwargs, visits=eval_visits)
-
-    # ----- Build the in-flight game set (seats + CRN seeds). Net-B per-game state
-    # (a second-session key is keyed by g.index; per-game players when net B is not
-    # a hexfield session) comes from the adapter's optional new_state / factory. ---
-    new_state = getattr(opponent, "new_state", None)
-    if new_state is None:
-        new_state = lambda seed: api.new_game()  # noqa: E731 - default engine state
-    b_player_factory = getattr(opponent, "b_player_factory", None)
-    games, pair_members = build_paired_games(
-        n_games,
-        game_seed_base,
-        paired_openings,
-        new_state=new_state,
-        b_player_factory=b_player_factory,
-        side_seed_offset=side_seed_offset,
-    )
-
-    # ----- Net B: hand the built games to the adapter (builds its session/pool). --
-    opponent.start(games)
-    opp_discard = getattr(opponent, "on_game_discard", None)
-
-    telemetry_a = _HexTelemetry()
-    budget_hit = False
-    rounds = 0
-
-    def on_discard(g: EvalGame) -> None:
-        session_a.discard(g.index)
-        if opp_discard is not None:
-            opp_discard(g)
-
-    def settle_fn(g: EvalGame) -> None:
-        # settle -> finalize only runs during normal play (budget not yet hit);
-        # the wall-clock branch below finalizes directly with budget_hit=True.
-        settle(g, sp.max_game_plies, budget_hit=False, on_discard=on_discard)
-
-    def record_fn(g: EvalGame, action_id: int, *, is_a: bool) -> None:
-        record_move(g, action_id, is_a=is_a, opening_plies=opening_plies, settle_fn=settle_fn)
-
-    # ----- Round loop: each round advances every active game by at least one ply.
-    # Net A pass first (openers batched / followers replay / greedy batched), then
-    # the adapter's net-B pass (re-gathered, so a game net A just moved can also
-    # move this round). A round that makes no progress raises rather than hangs.
-    # The loop is wrapped so the adapter is torn down even on a mid-round exception
-    # (the strix adapter's close() shuts the daemon batch server + blocked pool
-    # workers, which would otherwise hang); ``opponent.close()`` runs exactly once.
+    # ----- Teardown is owed from here on: the adapter may already own live
+    # resources (strix's GPU batch server + thread pool are built in its
+    # __init__; SealBot workers during ``build_paired_games``) and the callers
+    # catch failures fail-open, so everything through the round loop runs in
+    # ONE try whose finally calls ``opponent.close()`` exactly once — a failure
+    # in the candidate load / session build / time calibration / game build /
+    # ``opponent.start`` must not strand the server or blocked pool workers.
     try:
+        # ----- Net A: one persistent hexfield session + evaluator. -----
+        if build_candidate_evaluator is not None:
+            eval_a = build_candidate_evaluator()
+        else:
+            from .inference import build_serve_evaluator  # lazy: torch only on the GPU path
+
+            eval_a = build_serve_evaluator(
+                eval_arena._load_hexfield_net(candidate_ckpt), cfg, role="eval"
+            )
+        session_a = make_session() if make_session is not None else eval_arena._new_rust_session(max_states)
+
+        # ----- Equal-time leg (spec D-S35): re-calibrate net A's visit budget so a
+        # move costs ~time_budget_ms of wall clock. 0.0 (the default) skips this
+        # block entirely — the fixed-visit path is untouched.
+        time_budget_ms = _resolve_time_budget(cfg, time_ms_per_move)
+        calibration_a: dict[str, Any] | None = None
+        if time_budget_ms > 0.0:
+            eval_visits, calibration_a = calibrate_time_budget_visits(
+                session_a,
+                eval_a,
+                search_kwargs=search_kwargs,
+                overrides=ov_a,
+                time_ms_per_move=time_budget_ms,
+                seed=game_seed_base,
+            )
+            search_kwargs = dict(search_kwargs, visits=eval_visits)
+
+        # ----- Build the in-flight game set (seats + CRN seeds). Net-B per-game state
+        # (a second-session key is keyed by g.index; per-game players when net B is not
+        # a hexfield session) comes from the adapter's optional new_state / factory. ---
+        new_state = getattr(opponent, "new_state", None)
+        if new_state is None:
+            new_state = lambda seed: api.new_game()  # noqa: E731 - default engine state
+        b_player_factory = getattr(opponent, "b_player_factory", None)
+        games, pair_members = build_paired_games(
+            n_games,
+            game_seed_base,
+            paired_openings,
+            new_state=new_state,
+            b_player_factory=b_player_factory,
+            side_seed_offset=side_seed_offset,
+        )
+
+        # ----- Net B: hand the built games to the adapter (builds its session/pool;
+        # seed_base lets a hexfield net-B calibrate on the same probe seed as net A).
+        opponent.start(games, seed_base=game_seed_base)
+        opp_discard = getattr(opponent, "on_game_discard", None)
+
+        telemetry_a = _HexTelemetry()
+        budget_hit = False
+        rounds = 0
+
+        def on_discard(g: EvalGame) -> None:
+            session_a.discard(g.index)
+            if opp_discard is not None:
+                opp_discard(g)
+
+        def settle_fn(g: EvalGame) -> None:
+            # settle -> finalize only runs during normal play (budget not yet hit);
+            # the wall-clock branch below finalizes directly with budget_hit=True.
+            settle(g, sp.max_game_plies, budget_hit=False, on_discard=on_discard)
+
+        def record_fn(g: EvalGame, action_id: int, *, is_a: bool) -> None:
+            record_move(g, action_id, is_a=is_a, opening_plies=opening_plies, settle_fn=settle_fn)
+
+        # ----- Round loop: each round advances every active game by at least one ply.
+        # Net A pass first (openers batched / followers replay / greedy batched), then
+        # the adapter's net-B pass (re-gathered, so a game net A just moved can also
+        # move this round). A round that makes no progress raises rather than hangs
+        # (the enclosing try's ``opponent.close()`` still tears the adapter down).
         while True:
             active = [g for g in games if not g.done]
             if not active:
@@ -989,7 +997,7 @@ class HexfieldCheckpointAdapter:
     # No per-game net-B player object (net B is a session, keyed by g.index).
     b_player_factory = None
 
-    def start(self, games: list[EvalGame]) -> None:
+    def start(self, games: list[EvalGame], *, seed_base: int = 0) -> None:
         from . import eval_arena
         from .config import build_eval_search_kwargs
 
@@ -1016,8 +1024,10 @@ class HexfieldCheckpointAdapter:
         )
         # Equal-time leg (spec D-S35): net B calibrates against ITS OWN
         # evaluator/session, so each arm's visit budget reflects its own
-        # architecture's latency (the entire point of the leg). Same probe
-        # positions/seed as net A (seed 0 default) — the probes are
+        # architecture's latency (the entire point of the leg). ``seed_base``
+        # is the driver's game_seed_base — the SAME probe seed net A calibrated
+        # with, so both arms time the same positions and the equal-time ratio
+        # compares architectures, not probe draws. The probes are
         # measurement-only and never touch game trees.
         time_budget_ms = _resolve_time_budget(self._config, self._time_ms_per_move)
         if time_budget_ms > 0.0:
@@ -1027,6 +1037,7 @@ class HexfieldCheckpointAdapter:
                 search_kwargs=self._search_kwargs,
                 overrides=self._overrides_b,
                 time_ms_per_move=time_budget_ms,
+                seed=seed_base,
             )
             self._search_kwargs = dict(self._search_kwargs, visits=visits_b)
 
@@ -1194,7 +1205,7 @@ class StrixAdapter:
     def b_player_factory(self, seed: int) -> Any:
         return self._build_strix(seed, True)
 
-    def start(self, games: list[EvalGame]) -> None:
+    def start(self, games: list[EvalGame], *, seed_base: int = 0) -> None:
         # Players are already built per game via ``b_player_factory`` during
         # ``build_paired_games``; the server/pool were built in ``__init__``.
         return None
@@ -1291,6 +1302,11 @@ class SealBotAdapter:
         self.label = label
         self._make_opponent = make_opponent
         self._games: list[EvalGame] = []
+        # Workers are built during ``build_paired_games`` (``b_player_factory``),
+        # BEFORE the driver calls ``start`` — track them as created so ``close``
+        # shuts every worker even when a failure between the game build and
+        # ``start`` means the games list was never handed over.
+        self._players: list[Any] = []
         # SealBot decide() wall time, surfaced to the wrapper's meta_extra_fn.
         self.opponent_elapsed = 0.0
 
@@ -1303,11 +1319,14 @@ class SealBotAdapter:
     # One SealBotPlayer per game, built during ``build_paired_games`` (the seed is
     # unused — the player holds no engine state).
     def b_player_factory(self, seed: int) -> Any:
-        return self._make_opponent()
+        player = self._make_opponent()
+        self._players.append(player)
+        return player
 
-    def start(self, games: list[EvalGame]) -> None:
-        # Players are already built per game via ``b_player_factory``; keep the
-        # game list so ``close`` can shut every worker.
+    def start(self, games: list[EvalGame], *, seed_base: int = 0) -> None:
+        # Players are already built per game via ``b_player_factory`` (and
+        # tracked in ``self._players`` for ``close``); keep the game list for
+        # any per-game bookkeeping.
         self._games = games
 
     def advance(
@@ -1339,8 +1358,11 @@ class SealBotAdapter:
         return applied
 
     def close(self) -> None:
-        for g in self._games:
+        # Iterate the workers tracked at creation, not ``self._games`` — the
+        # games list is only assigned in ``start``, which a pre-loop failure
+        # (candidate load / calibration) may never reach.
+        for player in self._players:
             try:
-                g.b_player.close()
+                player.close()
             except Exception:
                 pass

@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from .constants import SOFT_POLICY_WEIGHT
+
 
 @dataclass(frozen=True)
 class SelfplayConfig:
@@ -103,8 +105,6 @@ class SelfplayConfig:
     # (m -> ceil(m/2) -> ...) until round 0 affords >= 4 visits per candidate,
     # so smaller budgets (eval matches, quick-gate evals) shrink the candidate
     # set instead of starving the round quota.
-    # export_root_prior_logits requests the raw pre-softmax policy logits from the
-    # evaluator, which the σ/Gumbel/target math consumes.
     gumbel_target_enabled: bool = False
     gumbel_root_enabled: bool = False
     gumbel_sequential_halving: bool = False
@@ -128,7 +128,6 @@ class SelfplayConfig:
     # schedule mass (~budget/(R·m) per eliminated candidate) from move sampling
     # while leaving every recorded training target untouched.
     gumbel_play_prune: bool = False
-    export_root_prior_logits: bool = False
     # --- Per-class Gumbel for the Fast PCR class (main_8) ----------------------
     # main_8 runs PUCT for Full turns and Gumbel+SH for Fast turns. These OPTIONAL
     # fast_* levers describe the Fast class's Gumbel view; the base
@@ -190,10 +189,13 @@ class TrainingSection:
     short_term_value_weight: float = 0.1
     moves_left_weight: float = 0.1
     q_head_weight: float = 0.1
-    # Loss weight for the train-only soft_policy head (CE against the
-    # (visit_policy+1e-7)^(1/4) renormalized soft target). Default mirrors
-    # losses.SOFT_POLICY_WEIGHT (config.py does not import losses).
-    soft_policy_weight: float = 8.0
+    # Loss weight for the train-only soft_policy head. The soft target is
+    # built in batching.collate_training: the row's base policy-improvement
+    # distribution (the gumbel improved policy pi' when the row carries one,
+    # else the visit policy), row-normalized then raised to pow(0.5) — T=2
+    # softening — over its support only. constants.SOFT_POLICY_WEIGHT is the
+    # single source for the default (losses.py re-exports it).
+    soft_policy_weight: float = SOFT_POLICY_WEIGHT
     # --- Policy-surprise self-CE reweight ------------------------------------
     policy_surprise_uniform_fraction: float = 0.5
     policy_surprise_max_weight: float = 8.0
@@ -232,19 +234,10 @@ class TrainingSection:
     policy_target: str = "visit"
 
 
-@dataclass(frozen=True)
-class EvaluationSection:
-    games_per_epoch: int = 16
-    eval_visits: int = 128
-    # Run the H2H arena every Nth epoch.
-    eval_every: int = 1
-
-
 # --- Multi-stage standalone evaluation ---------------------------------------
 #
-# A separate, opt-in evaluator from the per-epoch ``EvaluationSection`` lockstep
-# arena above. Run by a standalone script (scripts/), not inside the training
-# pipeline. Its product is a verdict label (PROMOTE / REGRESS / INCONCLUSIVE)
+# An opt-in evaluator run by a standalone script (scripts/), not inside the
+# training pipeline. Its product is a verdict label (PROMOTE / REGRESS / INCONCLUSIVE)
 # plus rolling ratings; it does not gate, promote, or halt the run. The
 # ``*_gating_*`` / ``*_promotion_*`` knobs below default OFF and are not wired
 # to anything that changes training.
@@ -453,7 +446,6 @@ class HexfieldConfig:
     device: str = "cuda"
     selfplay: SelfplayConfig = field(default_factory=SelfplayConfig)
     training: TrainingSection = field(default_factory=TrainingSection)
-    evaluation: EvaluationSection = field(default_factory=EvaluationSection)
     multi_stage_eval: MultiStageEvalSection = field(default_factory=MultiStageEvalSection)
 
     def temperature_by_ply(self) -> list[float]:
@@ -644,6 +636,5 @@ def parse_hexfield_config(config: Mapping[str, Any]) -> HexfieldConfig:
         device=str(config.get("device", "cuda")),
         selfplay=_merge(SelfplayConfig, dict(config.get("selfplay", {}))),
         training=_merge(TrainingSection, dict(config.get("training", {}))),
-        evaluation=_merge(EvaluationSection, dict(config.get("evaluation", {}))),
         multi_stage_eval=_merge_multi_stage_eval(dict(config.get("multi_stage_eval", {}))),
     )

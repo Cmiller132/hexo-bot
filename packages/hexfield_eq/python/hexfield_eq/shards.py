@@ -42,10 +42,6 @@ SCHEMA = "hexfield_compact_v1"
 # graded planes derive from history regardless).
 SCHEMA_VERSION = 4
 _ACCEPTED_SCHEMA_VERSIONS = (1, 2, 3, 4)
-# The restnet compact-v1 schema_version the adapter reads
-# (dense_cnn_restnet.compact_io.COMPACT_SCHEMA_VERSION). The adapter accepts a
-# shard with no schema_version but raises on a present-but-different version.
-LEGACY_RESTNET_SCHEMA_VERSION = 1
 _PHASES = ("Opening", "FirstStone", "SecondStone")
 _PHASE_INDEX = {name: i for i, name in enumerate(_PHASES)}
 
@@ -250,7 +246,7 @@ def write_compact_shard(
     os.replace(npz_tmp, path)
 
     meta = {
-        "lineage": "hexfield",
+        "lineage": "hexfield_eq",
         "schema": SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "rows": n,
@@ -385,84 +381,3 @@ def read_compact_shard(path: Path) -> list[HexfieldSampleData]:
         )
     return out
 
-
-def read_legacy_restnet_shard(path: Path) -> list[HexfieldSampleData]:
-    """Read a restnet compact-v1 shard as hexfield rows.
-
-    The stored legal_ids and crop center are ignored; legality re-derives from
-    stones at expansion. Any stored hot/standing-win cell columns are ignored —
-    the graded per-axis window planes are recomputed from the placement history
-    at expand time. The stored visit policies are used as-is. Rows are tagged
-    ``metadata={"source": "legacy_shard"}``.
-    """
-
-    with np.load(path, allow_pickle=True) as data:
-        arrays = {key: data[key] for key in data.files}
-
-    # Accept a shard with no schema_version; raise on a present-but-different
-    # version.
-    legacy_version = arrays.get("schema_version")
-    if legacy_version is not None and int(legacy_version) != LEGACY_RESTNET_SCHEMA_VERSION:
-        raise ValueError(
-            f"unsupported legacy restnet shard schema {int(legacy_version)} "
-            f"(adapter expects {LEGACY_RESTNET_SCHEMA_VERSION})"
-        )
-
-    n = int(arrays["num_rows"])
-    horizons = [int(h) for h in arrays["horizons"]]
-    moves_left = arrays.get("moves_left")
-    out: list[HexfieldSampleData] = []
-    for i in range(n):
-        h0, h1 = int(arrays["hist_off"][i]), int(arrays["hist_off"][i + 1])
-        qr = arrays["hist_qr"][2 * h0 : 2 * h1]
-        records = tuple(
-            (
-                int(qr[2 * k]),
-                int(qr[2 * k + 1]),
-                int(arrays["hist_owner"][h0 + k]),
-                int(arrays["hist_idx"][h0 + k]),
-            )
-            for k in range(h1 - h0)
-        )
-        s0, s1 = int(arrays["stones_off"][i]), int(arrays["stones_off"][i + 1])
-        if (s1 - s0) != len(records):
-            raise ValueError(
-                f"legacy row {i}: stones ({s1 - s0}) != history ({len(records)}) — "
-                "the unified-records assumption does not hold"
-            )
-        current = int(arrays["current_player"][i])
-        p0, p1 = int(arrays["pol_off"][i]), int(arrays["pol_off"][i + 1])
-        policy = tuple(
-            (int(arrays["pol_act"][k]), float(arrays["pol_w"][k])) for k in range(p0, p1)
-        )
-        o0, o1 = int(arrays["opp_off"][i]), int(arrays["opp_off"][i + 1])
-        opp_policy = tuple(
-            (int(arrays["opp_act"][k]), float(arrays["opp_w"][k])) for k in range(o0, o1)
-        )
-        stval = tuple(
-            (horizons[c], float(arrays["stvalue"][i, c]))
-            for c in range(len(horizons))
-            if arrays["stvalue_mask"][i, c] > 0.0
-        )
-        first = (
-            (int(arrays["first_q"][i]), int(arrays["first_r"][i]))
-            if int(arrays["first_present"][i]) == 1
-            else None
-        )
-        out.append(
-            HexfieldSampleData(
-                game_id="",
-                turn_index=int(arrays["turn_index"][i]),
-                current_player=current,
-                phase=str(arrays["phase"][i]),
-                records=records,
-                first_stone=first,
-                policy=policy,
-                opp_policy=opp_policy,
-                value=float(arrays["value"][i]),
-                short_term_value=stval,
-                moves_left=float(moves_left[i]) if moves_left is not None else -1.0,
-                metadata={"source": "legacy_shard"},
-            )
-        )
-    return out

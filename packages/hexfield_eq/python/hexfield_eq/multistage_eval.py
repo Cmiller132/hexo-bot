@@ -94,6 +94,7 @@ training loop.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -764,6 +765,13 @@ def _load_pool(path: Path) -> dict[str, Any]:
         return {"format": POOL_FORMAT, "version": POOL_VERSION, "anchor": SEALBOT_LABEL, "edges": []}
     if not isinstance(doc, dict) or doc.get("format") != POOL_FORMAT:
         return {"format": POOL_FORMAT, "version": POOL_VERSION, "anchor": SEALBOT_LABEL, "edges": []}
+    if doc.get("version") != POOL_VERSION:
+        _EVAL_LOG.warning(
+            "eval pool %s has version %r != expected %r; starting a fresh pool "
+            "(prior edges dropped, CIs loosen until it refills)",
+            path, doc.get("version"), POOL_VERSION,
+        )
+        return {"format": POOL_FORMAT, "version": POOL_VERSION, "anchor": SEALBOT_LABEL, "edges": []}
     doc.setdefault("anchor", SEALBOT_LABEL)
     doc.setdefault("edges", [])
     if not isinstance(doc["edges"], list):
@@ -781,6 +789,69 @@ def _save_pool(path: Path, doc: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(doc, indent=1), encoding="utf-8")
     tmp.replace(path)
+
+
+def _default_strix_runner() -> Callable[..., dict[str, Any]] | None:
+    """``eval_arena.play_strix_match``, or ``None`` when unavailable.
+
+    The Strix runner is resolved INDEPENDENTLY of the other two: injecting
+    ``play_checkpoint_match`` + ``play_sealbot_match`` used to skip the lazy
+    ``eval_arena`` import entirely, leaving ``play_strix_match`` None so Stage C
+    silently skipped Strix without ever flagging ``strix_unavailable``. A failed
+    import (e.g. a torch-less box exercising the injection seams) degrades to
+    ``None``, which the callers flag as strix_unavailable when Strix is enabled
+    — so the anchor substitution is surfaced instead of silent.
+    """
+
+    try:
+        # Lazy import: keep torch/CUDA out of import time and out of the pure
+        # statistics path; only needed when actually playing games.
+        from . import eval_arena as _arena
+    except Exception:  # noqa: BLE001 — degrade to unavailable, flagged downstream
+        return None
+    return getattr(_arena, "play_strix_match", None)
+
+
+@contextlib.contextmanager
+def _pool_write_lock(path: Path, *, timeout_s: float = 60.0, poll_s: float = 0.1):
+    """Serialize the pool's load->append->save across concurrent eval parts.
+
+    Two parts run from parallel shells both do load-modify-write on
+    ``eval_pool.json``; without mutual exclusion the last writer wins and the
+    other part's edge is silently dropped. An exclusive lockfile
+    (``os.O_CREAT | os.O_EXCL``, dependency-free) next to the pool provides the
+    critical section; a concurrent holder is waited out with a short poll. The
+    lockfile is removed in ``finally`` (self-cleaning); on timeout a clear
+    ``TimeoutError`` is raised rather than proceeding unlocked, and it names
+    the lockfile so an abandoned lock (SIGKILL mid-append) can be removed by
+    hand.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_suffix(path.suffix + ".lock")
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"timed out after {timeout_s:.0f}s waiting for the eval-pool "
+                    f"lock {lock}; if no other eval part is running, remove the "
+                    f"stale lockfile and retry"
+                ) from None
+            time.sleep(poll_s)
+    try:
+        # Aid stale-lock debugging: record who holds it.
+        os.write(fd, str(os.getpid()).encode("ascii"))
+        yield
+    finally:
+        os.close(fd)
+        try:
+            os.unlink(lock)
+        except OSError:
+            pass
 
 
 def _bt_edges_from_pool(doc: dict[str, Any]) -> list[eval_stats.BTEdge]:
@@ -915,8 +986,6 @@ def run_multistage_eval(
             play_checkpoint_match = _arena.play_checkpoint_match
         if play_sealbot_match is None:
             play_sealbot_match = _arena.play_sealbot_match
-        if play_strix_match is None:
-            play_strix_match = getattr(_arena, "play_strix_match", None)
 
     # ----- Roster (used by Stage A onward). -----
     roster = select_opponents(
@@ -924,6 +993,11 @@ def run_multistage_eval(
         candidate_epoch=candidate_epoch, candidate_label=candidate_label,
         checkpoints_dir=checkpoints_dir,
     )
+    if play_strix_match is None and roster.strix is not None:
+        # Resolved independently of the other two (see _default_strix_runner):
+        # injecting both non-Strix runners must not silently drop Strix. Gated
+        # on the roster so a strix-disabled run stays import-free.
+        play_strix_match = _default_strix_runner()
     cand_label = roster.candidate_label
 
     stages: list[StageResult] = []
@@ -1564,6 +1638,32 @@ def _foreign_opponent_overrides(
     return out
 
 
+def _overrides_search_profile(overrides: dict | None) -> str:
+    """Provenance label for the searcher an opponent's override map resolves to.
+
+    ``None`` (this-run lineage) keeps the candidate's self-play profile ->
+    ``"selfplay"``. A resolved map is classified by the Gumbel levers it
+    actually carries: :func:`_foreign_opponent_overrides` resolves a foreign
+    anchor's NATIVE profile via :func:`_anchor_native_overrides`, which for a
+    Gumbel-lineage anchor (main_6 / main_7) is a Gumbel map -> ``"gumbel"``;
+    only a PUCT-native or fallback map is ``"puct"``. Guessing ``"puct"`` from
+    mere not-None persisted Gumbel anchors under the wrong regime label in
+    ``eval_pool.json``, defeating the post-hoc split-by-regime this field
+    exists for. The lever set mirrors ``eval_arena.puct_eval_overrides`` (the
+    four mechanisms it forces off define the PUCT profile).
+    """
+
+    if overrides is None:
+        return "selfplay"
+    gumbel_levers = (
+        "gumbel_target",
+        "gumbel_root",
+        "gumbel_sequential_halving",
+        "gumbel_nonroot_select",
+    )
+    return "gumbel" if any(bool(overrides.get(k)) for k in gumbel_levers) else "puct"
+
+
 def _play_checkpoint_opponent(
     cfg: MultiStageEvalSection,
     roster: Roster,
@@ -1608,22 +1708,36 @@ def _play_checkpoint_opponent(
             virtual_batch_size=_eval_virtual_batch_size(cfg, full_cfg),
             opening_plies=cfg.opening_plies,
             opening_temperature=cfg.opening_temperature,
-            # Foreign anchors search with their original PUCT profile; None for
-            # this-run lineage (symmetric with the candidate).
+            # Foreign anchors search with their NATIVE profile (Gumbel- or
+            # PUCT-lineage, per _foreign_opponent_overrides); None for this-run
+            # lineage (symmetric with the candidate).
             divergence_overrides_b=divergence_overrides_b,
             diagnostics_dir=str(diagnostics_dir),
             # Offset the topup's CRN seeds from the SPRT batch so the added pairs
-            # are distinct openings.
-            game_seed_base=1_000_000 + (opp.epoch or 0),
+            # are distinct openings. The CANDIDATE epoch is folded in with a
+            # large odd stride (eval_arena's seed-constant style): keyed on the
+            # opponent epoch alone, a fixed anchor replayed the identical
+            # opening-seed stream every candidate epoch, so the pooled
+            # fixed-anchor edges shared openings across epochs (correlated
+            # samples, violating the BT fit's independence assumption). Still
+            # deterministic for a given (candidate, opponent) pair, so a resume
+            # re-derives the same seeds — and run_eval_part's resume skips
+            # already-pooled parts wholesale (match records are reused, never
+            # re-simulated), so the base change cannot tear a played part.
+            game_seed_base=(
+                1_000_000
+                + (opp.epoch or 0)
+                + (roster.candidate_epoch or 0) * 9_000_011
+            ),
         )
         match = _merge_matches(match, fresh) if match is not None else fresh
     if match is None:
         return None
     return _build_checkpoint_edge_from_match(
         roster, opp, match, reused=reused, cfg=cfg,
-        opponent_search_profile=(
-            "puct" if divergence_overrides_b is not None else "selfplay"
-        ),
+        # Label the profile that was ACTUALLY resolved (a foreign anchor's
+        # native profile can be Gumbel), not a guess from not-None.
+        opponent_search_profile=_overrides_search_profile(divergence_overrides_b),
     )
 
 
@@ -1677,7 +1791,13 @@ def _stage_c_deep(
     strix_unavailable: str | None = None
 
     # ----- Strix zero-point edge (preferred anchor; concurrent, unpaired). -----
-    if has_strix and play_strix_match is not None and alloc.get(STRIX_LABEL, 0) > 0:
+    if has_strix and play_strix_match is None:
+        # Strix is enabled but no runner resolved (e.g. eval_arena has no
+        # play_strix_match): flag it exactly like a runner failure so Stage D
+        # surfaces the anchor substitution instead of silently skipping the
+        # zero-point.
+        strix_unavailable = "no Strix runner (play_strix_match unresolved)"
+    elif has_strix and alloc.get(STRIX_LABEL, 0) > 0:
         sx_games = alloc[STRIX_LABEL]
         sx_edge, sx_ci, sx_unavail = _play_strix_opponent(
             cfg, roster, candidate_ckpt, full_cfg, sx_games,
@@ -1930,7 +2050,7 @@ def _stage_d_pool(
             # One edge gates by default, so alpha is unadjusted unless
             # bonferroni_correction is set.
             alpha = (
-                eval_stats.bonferroni_alpha(cfg.primary_alpha, _n_gating_edges(roster))
+                eval_stats.bonferroni_alpha(cfg.primary_alpha, _n_gating_edges())
                 if cfg.bonferroni_correction
                 else cfg.primary_alpha
             )
@@ -2193,14 +2313,17 @@ def run_eval_part(
             play_checkpoint_match = _arena.play_checkpoint_match
         if play_sealbot_match is None:
             play_sealbot_match = _arena.play_sealbot_match
-        if play_strix_match is None:
-            play_strix_match = getattr(_arena, "play_strix_match", None)
 
     roster = select_opponents(
         run_dir, candidate_ckpt, cfg,
         candidate_epoch=candidate_epoch, candidate_label=candidate_label,
         checkpoints_dir=checkpoints_dir,
     )
+    if play_strix_match is None and roster.strix is not None:
+        # Resolved independently of the other two (see _default_strix_runner):
+        # injecting both non-Strix runners must not silently drop Strix. Gated
+        # on the roster so a strix-disabled run stays import-free.
+        play_strix_match = _default_strix_runner()
     cand_label = roster.candidate_label
     epoch_tag = roster.candidate_epoch if roster.candidate_epoch is not None else 0
 
@@ -2217,6 +2340,7 @@ def run_eval_part(
     pool_path = _pool_path(run_dir, cfg)
     # Use the injected in-memory pool when given; otherwise load from disk. Either
     # way ``pool_doc`` is the accumulator the skip-check and the append act on.
+    pool_injected = pool_doc is not None
     if pool_doc is None:
         pool_doc = _load_pool(pool_path)
 
@@ -2242,9 +2366,16 @@ def run_eval_part(
     # ----- Play the one opponent (the same helpers Stage C uses). -----
     if opp.role == "strix":
         sx_games = alloc.get(STRIX_LABEL, 0)
-        if sx_games <= 0 or play_strix_match is None:
+        if play_strix_match is None:
+            # Mirror the runner-failure path: "unavailable" (not "empty") so
+            # the part record — and the aggregate's no-Strix-edge-in-pool
+            # inference — surface the anchor substitution.
+            return {"part": opp.label, "status": "unavailable", "epoch": epoch_tag,
+                    "reason": "no Strix runner (play_strix_match unresolved)",
+                    "pool_doc": pool_doc}
+        if sx_games <= 0:
             return {"part": opp.label, "status": "empty", "epoch": epoch_tag,
-                    "reason": "zero Strix budget or no runner", "pool_doc": pool_doc}
+                    "reason": "zero Strix budget", "pool_doc": pool_doc}
         edge, _sx_ci, unavail = _play_strix_opponent(
             cfg, roster, candidate_ckpt, full_cfg, sx_games,
             play_strix_match=play_strix_match,
@@ -2284,9 +2415,21 @@ def run_eval_part(
 
     # ----- Durably append the single edge row and persist immediately. -----
     row = _edge_pool_row(epoch_tag, edge)
-    pool_doc["edges"].append(row)
     if write_pool:
-        _save_pool(pool_path, pool_doc)
+        # Concurrent parts (parallel shells) race on the pool file's
+        # load-modify-write: without mutual exclusion the last writer wins and
+        # the other part's edge is dropped. Take the lockfile and RE-READ the
+        # on-disk doc inside the critical section so an edge appended while our
+        # games were playing survives. An injected accumulator stays the
+        # caller's doc (appended as before), still under the lock so the save
+        # itself is serialized.
+        with _pool_write_lock(pool_path):
+            if not pool_injected:
+                pool_doc = _load_pool(pool_path)
+            pool_doc["edges"].append(row)
+            _save_pool(pool_path, pool_doc)
+    else:
+        pool_doc["edges"].append(row)
 
     return {
         "part": opp.label,
@@ -2697,14 +2840,17 @@ def run_multistage_eval_in_parts(
             play_checkpoint_match = _arena.play_checkpoint_match
         if play_sealbot_match is None:
             play_sealbot_match = _arena.play_sealbot_match
-        if play_strix_match is None:
-            play_strix_match = getattr(_arena, "play_strix_match", None)
 
     roster = select_opponents(
         run_dir, candidate_ckpt, cfg,
         candidate_epoch=candidate_epoch, candidate_label=candidate_label,
         checkpoints_dir=checkpoints_dir,
     )
+    if play_strix_match is None and roster.strix is not None:
+        # Resolved independently of the other two (see _default_strix_runner):
+        # injecting both non-Strix runners must not silently drop Strix. Gated
+        # on the roster so a strix-disabled run stays import-free.
+        play_strix_match = _default_strix_runner()
 
     # write_diagnostics=True: each part loads + persists the on-disk pool, so a
     # restart resumes from what prior runs wrote. write_diagnostics=False: thread
@@ -2806,14 +2952,17 @@ def run_multistage_eval_concurrent(
             play_multi_checkpoint_match = _arena.play_multi_checkpoint_match
         if play_sealbot_match is None:
             play_sealbot_match = _arena.play_sealbot_match
-        if play_strix_match is None:
-            play_strix_match = getattr(_arena, "play_strix_match", None)
 
     roster = select_opponents(
         run_dir, candidate_ckpt, cfg,
         candidate_epoch=candidate_epoch, candidate_label=candidate_label,
         checkpoints_dir=checkpoints_dir,
     )
+    if play_strix_match is None and roster.strix is not None:
+        # Resolved independently of the other two (see _default_strix_runner):
+        # injecting both non-Strix runners must not silently drop Strix. Gated
+        # on the roster so a strix-disabled run stays import-free.
+        play_strix_match = _default_strix_runner()
     cand_label = roster.candidate_label
     epoch_tag = roster.candidate_epoch if roster.candidate_epoch is not None else 0
 
@@ -2835,11 +2984,12 @@ def run_multistage_eval_concurrent(
     multi_error: str | None = None
 
     # ----- Strix zero-point (preferred anchor; separate concurrent runner). -----
-    if (
-        roster.strix is not None
-        and play_strix_match is not None
-        and alloc.get(STRIX_LABEL, 0) > 0
-    ):
+    if roster.strix is not None and play_strix_match is None:
+        # Strix is enabled but no runner resolved: flag it exactly like a
+        # runner failure so Stage D surfaces the anchor substitution instead of
+        # silently skipping the zero-point.
+        strix_unavailable = "no Strix runner (play_strix_match unresolved)"
+    elif roster.strix is not None and alloc.get(STRIX_LABEL, 0) > 0:
         sx_games = alloc[STRIX_LABEL]
         sx_edge, sx_ci, sx_unavail = _play_strix_opponent(
             cfg, roster, candidate_ckpt, full_cfg, sx_games,
@@ -2884,8 +3034,9 @@ def run_multistage_eval_concurrent(
                 virtual_batch_size=_eval_virtual_batch_size(cfg, full_cfg),
                 opening_plies=cfg.opening_plies,
                 opening_temperature=cfg.opening_temperature,
-                # Foreign anchors search with their original PUCT profile;
-                # this-run lineage keeps the candidate's (self-play) profile.
+                # Foreign anchors search with their NATIVE profile (Gumbel- or
+                # PUCT-lineage, per _foreign_opponent_overrides); this-run
+                # lineage keeps the candidate's (self-play) profile.
                 divergence_overrides_by_opponent=foreign_ov or None,
                 diagnostics_dir=str(diag_dir),
             )
@@ -2899,8 +3050,11 @@ def run_multistage_eval_concurrent(
             edges.append(
                 _build_checkpoint_edge_from_match(
                     roster, opp, match, cfg=cfg,
-                    opponent_search_profile=(
-                        "puct" if opp.label in foreign_ov else "selfplay"
+                    # Label the profile that was ACTUALLY resolved (a foreign
+                    # anchor's native profile can be Gumbel), not a guess from
+                    # map membership.
+                    opponent_search_profile=_overrides_search_profile(
+                        foreign_ov.get(opp.label)
                     ),
                 )
             )
@@ -2914,10 +3068,11 @@ def run_multistage_eval_concurrent(
         "opponents_played": played,
         "concurrent_one_pass": True,
         # Audit: which searcher each checkpoint opponent used. Foreign anchors
-        # (checkpoints outside this run) search with their original PUCT
-        # profile; lineage opponents mirror the candidate's self-play profile.
+        # (checkpoints outside this run) search with their NATIVE profile
+        # (Gumbel- or PUCT-lineage, per the resolved override map); lineage
+        # opponents mirror the candidate's self-play profile.
         "opponent_search_profiles": {
-            o.label: ("puct" if o.label in foreign_ov else "selfplay")
+            o.label: _overrides_search_profile(foreign_ov.get(o.label))
             for o in ckpt_opps
         },
     }
@@ -3066,11 +3221,17 @@ def _anchor_in_edges(anchor: str, bt_edges: list[eval_stats.BTEdge]) -> bool:
     return any(anchor in (e.a, e.b) for e in bt_edges)
 
 
-def _n_gating_edges(roster: Roster) -> int:
+def _n_gating_edges() -> int:
     """Number of edges that gate (>=1).
 
-    Exactly one edge gates (candidate vs champion), so this is 1 and Bonferroni
-    is a no-op.
+    HONEST CONSTANT, not a computation: in the current design exactly one edge
+    carries a significance verdict — the candidate-vs-champion PRIMARY
+    hypothesis in :func:`_stage_d_pool`. Every other edge (SealBot / Strix
+    zero-points, anchors, bracket) is built as ``primary: False`` /
+    "DESCRIPTIVE ... no significance verdict" and never gates, so the
+    Bonferroni adjustment over k=1 is deliberately a no-op today. If a second
+    gating hypothesis is ever added, count it here (the former ``roster``
+    parameter was dead — nothing in the roster changes the count).
     """
 
     return 1
@@ -3092,13 +3253,48 @@ def _verdict_with_thresholds(
     return "INCONCLUSIVE"
 
 
+def _match_pentanomial_pairs(match: dict[str, Any]) -> list[dict[str, Any]]:
+    """A match's pentanomial as a list of pair records, for merging.
+
+    Prefers the exact per-pair ``pairs`` list. A histogram-only pentanomial
+    (``histogram_a_wins`` over full 2-decided-game pairs, no ``pairs``) is
+    expanded into synthetic full-pair records with the same fields
+    ``_pentanomial_to_paired_result`` consumes (``a_wins`` / ``n_decided``), so
+    its pairs survive a merge instead of vanishing from the pentanomial and the
+    effective counts. When a ``pairs`` list is present the histogram is a
+    summary of it, so only one of the two is ever used (no double count).
+    """
+
+    pent = match.get("pentanomial") or {}
+    pairs = pent.get("pairs") or []
+    if pairs:
+        return list(pairs)
+    hist = pent.get("histogram_a_wins") or {}
+    out: list[dict[str, Any]] = []
+    for a_wins_key in ("0", "1", "2"):
+        n = int(hist.get(a_wins_key, 0) or 0)
+        a_wins = int(a_wins_key)
+        out.extend(
+            {
+                "n_games": 2,
+                "n_decided": 2,
+                "a_wins": a_wins,
+                "pentanomial_a_score": a_wins,
+            }
+            for _ in range(n)
+        )
+    return out
+
+
 def _merge_matches(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     """Pool two checkpoint matches vs the same opponent into one result dict.
 
-    Merges only the downstream-consumed fields: ``score`` (counts) and
-    ``pentanomial`` (pairs + histogram). Used to combine the reused SPRT champion
-    match with a fresh top-up. Both inputs must be net-A-centric on the same
-    candidate.
+    Merges the downstream-consumed fields: ``score`` (counts), ``pentanomial``
+    (pairs; a histogram-only side is expanded to synthetic pairs) and ``meta``
+    (both sides kept — additive counters summed, calibration records collected,
+    otherwise net B's top-up value wins per key). Used to combine the reused
+    SPRT champion match with a fresh top-up. Both inputs must be net-A-centric
+    on the same candidate.
     """
 
     if a is None:
@@ -3119,13 +3315,43 @@ def _merge_matches(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         if merged_score["decided"] else None
     )
     # Concatenate pentanomial pairs (the pair-level SE is recomputed downstream
-    # from the combined pairs).
-    pa = (a.get("pentanomial") or {}).get("pairs") or []
-    pb = (b.get("pentanomial") or {}).get("pairs") or []
-    combined_pairs = list(pa) + list(pb)
+    # from the combined pairs). Histogram-only sides contribute synthetic pairs.
+    combined_pairs = _match_pentanomial_pairs(a) + _match_pentanomial_pairs(b)
     merged_penta = {"pairs": combined_pairs} if combined_pairs else None
+    # Meta: keep both sides (A first, B's top-up values win per key), then fix
+    # up the keys where "B wins" is the wrong semantics: additive counters are
+    # summed (games_requested must reflect BOTH matches, not just the top-up)
+    # and per-net time-calibration records are collected rather than dropped.
+    ma, mb = a.get("meta") or {}, b.get("meta") or {}
+    merged_meta: dict[str, Any] = {**ma, **mb}
+    for key in (
+        "games_requested",
+        "hxr_games_written",
+        "forward_batches",
+        "rounds",
+        "elapsed_seconds",
+        "mcts_search_elapsed_seconds",
+    ):
+        va, vb = ma.get(key), mb.get(key)
+        if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
+            total = va + vb
+            merged_meta[key] = round(total, 2) if isinstance(total, float) else total
+    for key in ("time_calibration_a", "time_calibration_b"):
+        ca, cb = ma.get(key), mb.get(key)
+        if ca is not None and cb is not None:
+            # Already-merged sides carry lists; flatten so chained merges keep
+            # one flat list of calibration records.
+            merged_meta[key] = (
+                (ca if isinstance(ca, list) else [ca])
+                + (cb if isinstance(cb, list) else [cb])
+            )
+        elif ca is not None and cb is None:
+            merged_meta[key] = ca
+    merged_meta["merged_from"] = int(ma.get("merged_from", 1) or 1) + int(
+        mb.get("merged_from", 1) or 1
+    )
     return {
-        "meta": {**(b.get("meta") or {}), "merged_from": 2},
+        "meta": merged_meta,
         "score": merged_score,
         "pentanomial": merged_penta,
     }

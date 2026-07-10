@@ -72,7 +72,7 @@ import warnings
 
 import torch
 
-from .constants import RAY_HEADS, RAY_REACH, RAYLEN_SLOTS
+from .constants import RAY_REACH, RAYLEN_SLOTS
 from .geometry import rel_bias_index
 
 try:  # pragma: no cover - triton ships with cuda torch builds

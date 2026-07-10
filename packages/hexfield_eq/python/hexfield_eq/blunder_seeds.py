@@ -81,13 +81,15 @@ def _mine_shard(
 ) -> tuple[list[BlunderSeed], list[float]]:
     """Extract candidate seeds and the full-row surprise values from one shard.
 
-    Returns ``(candidates, surprises)`` where ``candidates`` are rows with
-    ``1 <= turn_index <= max_ply`` (every recorded row is a full-search turn;
-    fast rows are never written to shards), and
-    ``surprises`` is the list of surprise values over those same full,
-    in-ply-range rows (used by the caller to compute the epoch-wide quantile
-    BEFORE thresholding). A malformed / unreadable shard is skipped with a
-    warning and contributes nothing.
+    Returns ``(candidates, surprises)`` where ``candidates`` are the accepted
+    rows with ``1 <= turn_index <= max_ply`` (every recorded row is a
+    full-search turn; fast rows are never written to shards), and ``surprises``
+    is the list of surprise values over those same accepted rows (used by the
+    caller to compute the epoch-wide quantile BEFORE thresholding). Corrupt
+    rows (history length != turn_index, or truncated history arrays) are
+    rejected before entering either list, so they cannot skew the quantile
+    pool. A malformed / unreadable shard is skipped with a warning and
+    contributes nothing.
 
     The reconstruction reads the row's placement history directly from the
     columnar arrays (no ``read_compact_shard`` round-trip through the full
@@ -103,7 +105,7 @@ def _mine_shard(
             # treated as malformed (skip + warn).
             required = (
                 "num_rows", "turn_index", "policy_surprise",
-                "hist_qr", "hist_owner", "hist_pidx", "hist_off",
+                "hist_qr", "hist_pidx", "hist_off",
             )
             missing = [k for k in required if k not in data.files]
             if missing:
@@ -138,7 +140,6 @@ def _mine_shard(
         s = float(surprise[i])
         if not np.isfinite(s):
             continue
-        surprises.append(s)
         # Reconstruct the ordered move prefix from the row's placement history.
         h0, h1 = int(hist_off[i]), int(hist_off[i + 1])
         length = h1 - h0
@@ -163,6 +164,9 @@ def _mine_shard(
         # Order by placement_index -> true play order.
         recs.sort(key=lambda t: t[0])
         prefix = tuple((q, r) for _pidx, q, r in recs)
+        # Row accepted: only now does it enter the quantile pool, so corrupt
+        # rows rejected above never skew the surprise threshold.
+        surprises.append(s)
         candidates.append(
             BlunderSeed(
                 move_prefix=prefix,

@@ -8,9 +8,9 @@ columns while keeping them packed; it does not materialize the per-row
 ``shards.read_compact_shard``.
 
 :class:`PackedWindow` holds the compact column set concatenated across shards
-(with CSR offsets rebased to one global index) plus per-row ``generation`` and
-``row_shard_id`` tags. :class:`PackedRowView` returns zero-copy slices for one
-row in the shape one :func:`~hexfield.samples.expand_sample` call consumes.
+(with CSR offsets rebased to one global index). :class:`PackedRowView` returns
+zero-copy slices for one row in the shape one
+:func:`~hexfield.samples.expand_sample` call consumes.
 
 Notes:
 - ``horizons`` on a :class:`PackedWindow` is the union across concatenated
@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 
-from .shards import _ACCEPTED_SCHEMA_VERSIONS, SCHEMA_VERSION
+from .shards import _ACCEPTED_SCHEMA_VERSIONS
 
 if TYPE_CHECKING:
     from .buffer_manifest import ShardEntry
@@ -138,8 +138,6 @@ class PackedRowView:
     opp_w: np.ndarray  # (O,) f32 view
     # tags
     horizons: tuple[int, ...]
-    generation: int
-    row_shard_id: int
 
     def records(self) -> tuple[tuple[int, int, int, int], ...]:
         """``(q, r, owner, placement_index)`` tuples — the ``records`` field."""
@@ -202,8 +200,7 @@ class PackedWindow:
     ``cols`` holds every ``hexfield_compact_v1`` column kept packed: the per-row
     scalar arrays, the ``(n,H)`` blocks, the flat CSR data arrays, and the
     ``int64[n+1]`` CSR offsets (one global offsets array per group, rebased by
-    :func:`concat_packed`). ``generation`` and ``row_shard_id`` are ``int32[n]``
-    per-row tags.
+    :func:`concat_packed`).
 
     The window exposes neither ``window_size`` nor an ``index`` with
     ``sample_count``, so ``D6SymmetrySelector`` treats it as opaque
@@ -213,8 +210,6 @@ class PackedWindow:
     n: int
     cols: dict[str, np.ndarray]
     horizons: tuple[int, ...]
-    generation: np.ndarray  # int32[n]
-    row_shard_id: np.ndarray  # int32[n]
 
     @classmethod
     def empty(cls) -> "PackedWindow":
@@ -229,13 +224,7 @@ class PackedWindow:
         for _off, datas, _doubled in CSR_GROUPS:
             for d in datas:
                 cols[d] = np.empty(0, dtype=_CSR_DTYPES[d])
-        return cls(
-            n=0,
-            cols=cols,
-            horizons=(),
-            generation=np.empty(0, dtype=np.int32),
-            row_shard_id=np.empty(0, dtype=np.int32),
-        )
+        return cls(n=0, cols=cols, horizons=())
 
     def row_view(self, i: int) -> PackedRowView:
         """Zero-copy slices for row ``i``, in the shape one ``expand_sample`` consumes."""
@@ -273,8 +262,6 @@ class PackedWindow:
             opp_act=c["opp_act"][o0:o1],
             opp_w=c["opp_w"][o0:o1],
             horizons=self.horizons,
-            generation=int(self.generation[i]),
-            row_shard_id=int(self.row_shard_id[i]),
         )
 
 
@@ -308,66 +295,13 @@ _CSR_DTYPES: dict[str, np.dtype] = {
 }
 
 
-def _shard_generation(path: Path, num_rows: int) -> int:
-    """Producing epoch for the shard.
-
-    Resolution order: key-derived epoch (``game_key // 1_000_000`` parsed from the
-    filename stem) takes precedence; the sidecar ``.json`` ``epoch`` is used only
-    to cross-check (warns on mismatch) and as a fallback when the key parse fails;
-    a parent directory named ``epoch_NNNNNN`` is the final fallback. Returns 0 if
-    none resolve. Does not use mtime.
-    """
-    stem = path.stem  # e.g. "game_1000000"
-    key_epoch: int | None = None
-    if "_" in stem:
-        try:
-            game_key = int(stem.split("_", 1)[1])
-            key_epoch = game_key // 1_000_000
-        except (ValueError, IndexError):
-            key_epoch = None
-
-    sidecar = path.with_suffix(".json")
-    side_epoch: int | None = None
-    if sidecar.exists():
-        try:
-            import json
-
-            meta = json.loads(sidecar.read_text(encoding="utf-8"))
-            if "epoch" in meta:
-                side_epoch = int(meta["epoch"])
-        except (ValueError, OSError):
-            side_epoch = None
-
-    if key_epoch is not None:
-        if side_epoch is not None and side_epoch != key_epoch:
-            import warnings
-
-            warnings.warn(
-                f"shard {path.name}: sidecar epoch {side_epoch} != key-derived "
-                f"epoch {key_epoch}; trusting key-derived",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        return key_epoch
-    if side_epoch is not None:
-        return side_epoch
-    # Last resort: parent dir name "epoch_NNNNNN".
-    parent = path.parent.name
-    if parent.startswith("epoch_"):
-        try:
-            return int(parent.split("_", 1)[1])
-        except (ValueError, IndexError):
-            pass
-    return 0
-
-
 def load_packed_shard(path: Path) -> PackedWindow:
     """Load one ``hexfield_compact_v1`` shard with columns kept packed.
 
     Loads via ``np.load`` and validates ``schema_version`` against
-    ``SCHEMA_VERSION`` (raises on mismatch). Columns are not exploded into
+    ``_ACCEPTED_SCHEMA_VERSIONS`` (raises on mismatch). Columns are not exploded into
     :class:`HexfieldSampleData`. This loader handles only ``hexfield_compact_v1``
-    shards; restnet shards are read by ``shards.read_legacy_restnet_shard``.
+    shards (the legacy-restnet adapter lives in the hexfield lineage's shards.py).
     """
     path = Path(path)
     with np.load(path) as data:
@@ -449,15 +383,7 @@ def load_packed_shard(path: Path) -> PackedWindow:
                 cols["gumbel_w"] = np.empty(0, dtype=_CSR_DTYPES["gumbel_w"])
                 cols["gumbel_off"] = np.zeros(n + 1, dtype=np.int64)
 
-    generation = np.full(n, _shard_generation(path, n), dtype=np.int32)
-    row_shard_id = np.zeros(n, dtype=np.int32)
-    return PackedWindow(
-        n=n,
-        cols=cols,
-        horizons=horizons,
-        generation=generation,
-        row_shard_id=row_shard_id,
-    )
+    return PackedWindow(n=n, cols=cols, horizons=horizons)
 
 
 def concat_packed(parts: Sequence[PackedWindow]) -> PackedWindow:
@@ -507,15 +433,13 @@ def concat_packed(parts: Sequence[PackedWindow]) -> PackedWindow:
     for off in OFF_COLS:
         out[off] = np.empty(total_n + 1, dtype=np.int64)
         out[off][0] = 0
-    out_gen = np.empty(total_n, dtype=np.int32)
-    out_sid = np.empty(total_n, dtype=np.int32)
 
     # --- fill in place, rebasing CSR offsets ---------------------------------
     row_cursor = 0
     data_cursor: dict[str, int] = {d: 0 for d in data_totals}
     off_base: dict[str, int] = {off: 0 for off in OFF_COLS}
 
-    for shard_idx, part in enumerate(nonempty):
+    for part in nonempty:
         pc = part.cols
         pn = part.n
         r0, r1 = row_cursor, row_cursor + pn
@@ -524,11 +448,6 @@ def concat_packed(parts: Sequence[PackedWindow]) -> PackedWindow:
             out[name][r0:r1] = pc[name]
         for name in BLOCK_COLS:
             out[name][r0:r1, :] = pc[name]
-        out_gen[r0:r1] = part.generation
-        # row_shard_id is set to this part's index within the window (part-level
-        # row_shard_id from load is 0).
-        out_sid[r0:r1] = np.int32(shard_idx)
-
         for off in OFF_COLS:
             src_off = pc[off]  # int64[pn+1], starts at 0
             base = off_base[off]
@@ -547,8 +466,6 @@ def concat_packed(parts: Sequence[PackedWindow]) -> PackedWindow:
         row_cursor = r1
         # Free the part's columns after its copy.
         part.cols.clear()
-        part.generation = np.empty(0, dtype=np.int32)
-        part.row_shard_id = np.empty(0, dtype=np.int32)
         part.n = 0
 
     # Sanity: every CSR data array filled exactly, and each offsets array ends at
@@ -558,13 +475,7 @@ def concat_packed(parts: Sequence[PackedWindow]) -> PackedWindow:
     for off in OFF_COLS:
         assert int(out[off][total_n]) == off_base[off]
 
-    return PackedWindow(
-        n=total_n,
-        cols=out,
-        horizons=horizons,
-        generation=out_gen,
-        row_shard_id=out_sid,
-    )
+    return PackedWindow(n=total_n, cols=out, horizons=horizons)
 
 
 # =============================================================================
@@ -857,10 +768,4 @@ def _subset_packed(window: PackedWindow, mask: np.ndarray) -> PackedWindow:
             assert wcur == elems, f"_subset_packed: {d} fill {wcur} != {elems}"
             out[d] = dst
 
-    return PackedWindow(
-        n=kept,
-        cols=out,
-        horizons=window.horizons,
-        generation=np.ascontiguousarray(window.generation[keep_idx]),
-        row_shard_id=np.ascontiguousarray(window.row_shard_id[keep_idx]),
-    )
+    return PackedWindow(n=kept, cols=out, horizons=window.horizons)

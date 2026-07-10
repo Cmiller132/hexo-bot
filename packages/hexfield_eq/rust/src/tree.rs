@@ -27,13 +27,10 @@ use crate::cache::{state_hash, RustEvaluation};
 use crate::state::move_error;
 use crate::threats_shared as threats;
 
-/// Edge Q is `value_sum / visits` on the symmetric interval [-1, 1] (win/loss
-/// utility, no per-node normalization). The exploration (U) and value (Q) terms
-/// are added on this same scale. `Q_UTILITY_WIDTH` is the width of that interval
-/// (2.0) and is not read in the selection math; it documents the c_puct scale.
-pub const Q_UTILITY_WIDTH: f32 = 2.0;
-/// Alternate reference utility width (1.4). Not read in the selection math.
-pub const KATAGO_UTILITY_WIDTH: f32 = 1.4;
+// Edge Q is `value_sum / visits` on the symmetric interval [-1, 1] (win/loss
+// utility, no per-node normalization). The exploration (U) and value (Q) terms
+// are added on this same scale, so the effective Q utility width is 2.0 (vs
+// KataGo's 1.4 reference width); this documents the c_puct scale.
 
 #[derive(Clone, Copy, Debug)]
 pub struct RootDirichletNoise {
@@ -209,7 +206,9 @@ impl Divergences {
 
     /// Gumbel AlphaZero profile (Danihelka et al. 2022): starts from
     /// `production()` and turns the four Gumbel mechanism bools on, with the
-    /// σ/m scalars at their defaults.
+    /// σ/m scalars at their defaults. Test-only convenience: production
+    /// builds this profile from Python-side divergence overrides instead.
+    #[cfg(test)]
     pub fn gumbel() -> Self {
         Self {
             gumbel_target: true,
@@ -330,15 +329,8 @@ pub struct RustNode {
 pub struct RustSearchDiagnostics {
     pub node_count: usize,
     pub active_edge_count: usize,
-    pub hidden_prior_count: usize,
     pub root_active_edges: usize,
     pub root_hidden_priors: usize,
-    pub max_active_edges_per_node: usize,
-    pub max_hidden_priors_per_node: usize,
-    pub active_edge_bytes: usize,
-    pub hidden_prior_bytes: usize,
-    pub shared_prior_nodes: usize,
-    pub shared_prior_refs: usize,
 }
 
 impl RustNode {
@@ -439,7 +431,6 @@ pub struct RustSearch {
     /// noise. Lazily populated on first root setup; None until then.
     clean_root_priors: Option<HashMap<PackedCoord, f32>>,
     active_edge_count: usize,
-    max_active_edges_per_node: usize,
     /// Per-root Gumbel-Top-k candidate set + Sequential-Halving state. `Some`
     /// only when `gumbel_root` is on for a Full move; `None` otherwise, in which
     /// case the PUCT root path runs.
@@ -509,7 +500,6 @@ impl RustSearch {
             early_stopped: false,
             clean_root_priors,
             active_edge_count: 0,
-            max_active_edges_per_node: 0,
             gumbel_root: None,
         })
     }
@@ -1037,7 +1027,6 @@ impl RustSearch {
         self.nodes.push(node);
         self.node_table.insert(hash, id);
         self.active_edge_count += injected_edges;
-        self.max_active_edges_per_node = self.max_active_edges_per_node.max(injected_edges);
         Ok(id)
     }
 
@@ -1247,7 +1236,7 @@ impl RustSearch {
                     let edge_index = self.nodes[node_id].edges.len();
                     let edge = self.nodes[node_id].materialize_next_candidate();
                     self.nodes[node_id].edges.push(edge);
-                    self.record_materialized_edge(node_id);
+                    self.record_materialized_edge();
                     return Some(edge_index);
                 }
             }
@@ -1380,7 +1369,7 @@ impl RustSearch {
                 let edge_index = self.nodes[node_id].edges.len();
                 let edge = self.nodes[node_id].materialize_next_candidate();
                 self.nodes[node_id].edges.push(edge);
-                self.record_materialized_edge(node_id);
+                self.record_materialized_edge();
                 return Some(edge_index);
             }
         }
@@ -1538,7 +1527,7 @@ impl RustSearch {
                 let candidate = unexpanded.remove(pos);
                 let edge_index = self.nodes[0].edges.len();
                 self.nodes[0].edges.push(candidate.into_edge());
-                self.record_materialized_edge(0);
+                self.record_materialized_edge();
                 return Some(edge_index);
             }
         }
@@ -1601,60 +1590,29 @@ impl RustSearch {
         }
     }
 
-    fn record_materialized_edge(&mut self, node_id: usize) {
+    fn record_materialized_edge(&mut self) {
         self.active_edge_count += 1;
-        self.max_active_edges_per_node = self
-            .max_active_edges_per_node
-            .max(self.nodes[node_id].edges.len());
     }
 
     pub fn diagnostics(&self) -> RustSearchDiagnostics {
-        let mut hidden_prior_count = 0usize;
-        let mut max_hidden_priors_per_node = 0usize;
-        let mut shared_prior_nodes = 0usize;
-        let mut shared_prior_refs = 0usize;
-        for node in &self.nodes {
-            match &node.priors {
-                NodePriors::Owned(unexpanded) => {
-                    hidden_prior_count += unexpanded.len();
-                    max_hidden_priors_per_node = max_hidden_priors_per_node.max(unexpanded.len());
-                }
-                NodePriors::Shared(_) => {
-                    shared_prior_nodes += 1;
-                    shared_prior_refs += node.remaining_prior_count();
-                }
-            }
-        }
         RustSearchDiagnostics {
             node_count: self.nodes.len(),
             active_edge_count: self.active_edge_count,
-            hidden_prior_count,
             root_active_edges: self.nodes.first().map(|node| node.edges.len()).unwrap_or(0),
             root_hidden_priors: self
                 .nodes
                 .first()
                 .map(|node| node.remaining_prior_count())
                 .unwrap_or(0),
-            max_active_edges_per_node: self.max_active_edges_per_node,
-            max_hidden_priors_per_node,
-            active_edge_bytes: self.active_edge_count * std::mem::size_of::<RustEdge>(),
-            hidden_prior_bytes: hidden_prior_count * std::mem::size_of::<RustPriorCandidate>(),
-            shared_prior_nodes,
-            shared_prior_refs,
         }
     }
 
     pub fn advance_root(&mut self, action_id: PackedCoord) -> PyResult<bool> {
-        let Some((edge_index, edge)) = self
+        let Some(edge) = self
             .nodes
             .first()
-            .and_then(|node| {
-                node.edges
-                    .iter()
-                    .enumerate()
-                    .find(|(_, edge)| edge.action_id == action_id)
-            })
-            .map(|(index, edge)| (index, edge.clone()))
+            .and_then(|node| node.edges.iter().find(|edge| edge.action_id == action_id))
+            .cloned()
         else {
             return Ok(false);
         };
@@ -1717,18 +1675,11 @@ impl RustSearch {
         // promoted root's own clean (post-temp, pre-noise) priors.
         self.clean_root_priors = None;
         self.recompute_accounting();
-        let _ = edge_index;
         Ok(true)
     }
 
     fn recompute_accounting(&mut self) {
-        self.active_edge_count = 0;
-        self.max_active_edges_per_node = 0;
-        for node in &self.nodes {
-            let active = node.edges.len();
-            self.active_edge_count += active;
-            self.max_active_edges_per_node = self.max_active_edges_per_node.max(active);
-        }
+        self.active_edge_count = self.nodes.iter().map(|node| node.edges.len()).sum();
     }
 }
 
@@ -2628,7 +2579,6 @@ mod tests {
     fn eval_with_priors(priors: Vec<(PackedCoord, f32)>, value: f32) -> RustEvaluation {
         RustEvaluation {
             value,
-            legal_action_count: priors.len(),
             priors,
             moves_left: None,
             logits: None,
@@ -2836,7 +2786,6 @@ mod tests {
     ) -> RustEvaluation {
         RustEvaluation {
             value,
-            legal_action_count: priors.len(),
             priors,
             moves_left: None,
             logits: Some(logits),
@@ -2911,7 +2860,6 @@ mod tests {
             .collect();
         RustEvaluation {
             value: 0.0,
-            legal_action_count: n,
             priors,
             moves_left: None,
             logits: Some(logits),

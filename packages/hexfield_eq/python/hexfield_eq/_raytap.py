@@ -106,19 +106,6 @@ def build_tap_reach(raylen: torch.Tensor) -> torch.Tensor:
     return raylen[:, :, slots]  # advanced index -> (B, N, 2, 6)
 
 
-def build_tap_gather_index(coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """(B, N, 6, 5) int64 row index of the cell at offset ``k * DIRECTIONS[t]``
-    (sentinel N = absent from the support -> the zero row), sliced out of the
-    sync-free (B, N, 32) ray gather index by the generated tap -> slot LUT and
-    widened for ``gather``. Block-independent: built once per forward and
-    shared by every equipped conv (and, on 'L' layouts, the same underlying
-    index feeds ray attention)."""
-
-    idx = build_ray_gather_index(coords, mask)  # (B, N, 32) int32, custom op
-    lut = tap_ray_slot_lut().to(idx.device)
-    return idx[:, :, lut].to(torch.int64)  # (B, N, 6, 5)
-
-
 def _tap_flat_index(idx_taps: torch.Tensor, d: int, c: int) -> torch.Tensor:
     """The (B, N*5, C) gather/scatter index for direction tap ``d`` (an
     expanded view; no materialization)."""

@@ -15,7 +15,6 @@ value/stvalue/cell_q/moves_left heads are masked via the truncated flag
 from __future__ import annotations
 
 import json
-import math
 import os
 import queue
 import threading
@@ -40,7 +39,7 @@ from .config import (
 )
 from .engine_facts import player_int
 from .features import record_phase, record_player
-from .geometry import pack_action_id, unpack_action_id
+from .geometry import unpack_action_id
 from .inference import build_serve_evaluator
 from .samples import (
     STV_HORIZONS,
@@ -1089,51 +1088,63 @@ def generate_selfplay_epoch(*, ctx, components, epoch: int, games_per_epoch: int
     with HexoRecordFile.create(record_path, api.engine_metadata(), players) as record_file:
         driver.record_file = record_file
         driver._start_writer()
-        scheduler_stats = session.run_continuous(
-            [tape.key for tape in tapes],
-            tuple(tape.state for tape in tapes),
-            evaluator=evaluator,
-            on_move=driver,
-            visits=sp.search_visits,
-            c_puct=sp.c_puct,
-            base_seed=(ctx.config.run.seed or 1) * 1_000_003 + epoch,
-            virtual_batch_size=sp.virtual_batch_size,
-            flush_target=sp.flush_target,
-            active_root_limit=sp.active_root_limit,
-            temperature_by_ply=cfg.temperature_by_ply(),
-            root_policy_temperature=sp.root_policy_temperature,
-            root_policy_temperature_early=sp.root_policy_temperature_early or None,
-            root_policy_temperature_halflife=sp.root_policy_temperature_halflife or None,
-            fpu_reduction=sp.fpu_reduction,
-            virtual_loss=sp.virtual_loss,
-            widening_policy_mass=sp.widening_policy_mass,
-            widening_max_children=sp.widening_max_children,
-            widening_min_children=sp.widening_min_children,
-            forced_playout_k=sp.forced_playout_k,
-            pcr_full_proportion=sp.pcr_full_proportion,
-            pcr_fast_visits=sp.pcr_fast_visits,
-            pcr_fast_temperature=sp.pcr_fast_temperature,
-            policy_init_fraction=sp.policy_init_fraction,
-            policy_init_avg_plies=sp.policy_init_avg_plies,
-            policy_init_max_plies=sp.policy_init_max_plies,
-            policy_init_temperature=sp.policy_init_temperature,
-            tss_enabled=sp.tss_enabled,
-            # Root FPU reduction. root_fpu_zero_under_noise and search_parity_mode
-            # gate how this interacts with root Dirichlet noise (handled in Rust).
-            root_fpu_reduction=sp.root_fpu_reduction,
-            root_fpu_zero_under_noise=sp.root_fpu_zero_under_noise,
-            search_parity_mode=sp.search_parity_mode,
-            divergence_overrides=build_divergence_overrides(
-                sp, disabled=(ctx.diagnostics_dir / ML_AUTO_DISABLED_FLAG).exists()
-            ),
-            # Fast-class (main_8: Gumbel Fast) override map. Equals the base map
-            # when no fast_* levers are set, so absent = today's single profile
-            # and Rust's divergences_fast == divergences_full (golden invariant).
-            fast_divergence_overrides=build_fast_divergence_overrides(
-                sp, disabled=(ctx.diagnostics_dir / ML_AUTO_DISABLED_FLAG).exists()
-            ),
-            **noise_kwargs,
-        )
+        try:
+            scheduler_stats = session.run_continuous(
+                [tape.key for tape in tapes],
+                tuple(tape.state for tape in tapes),
+                evaluator=evaluator,
+                on_move=driver,
+                visits=sp.search_visits,
+                c_puct=sp.c_puct,
+                base_seed=(ctx.config.run.seed or 1) * 1_000_003 + epoch,
+                virtual_batch_size=sp.virtual_batch_size,
+                flush_target=sp.flush_target,
+                active_root_limit=sp.active_root_limit,
+                temperature_by_ply=cfg.temperature_by_ply(),
+                root_policy_temperature=sp.root_policy_temperature,
+                root_policy_temperature_early=sp.root_policy_temperature_early or None,
+                root_policy_temperature_halflife=sp.root_policy_temperature_halflife or None,
+                fpu_reduction=sp.fpu_reduction,
+                virtual_loss=sp.virtual_loss,
+                widening_policy_mass=sp.widening_policy_mass,
+                widening_max_children=sp.widening_max_children,
+                widening_min_children=sp.widening_min_children,
+                forced_playout_k=sp.forced_playout_k,
+                pcr_full_proportion=sp.pcr_full_proportion,
+                pcr_fast_visits=sp.pcr_fast_visits,
+                pcr_fast_temperature=sp.pcr_fast_temperature,
+                policy_init_fraction=sp.policy_init_fraction,
+                policy_init_avg_plies=sp.policy_init_avg_plies,
+                policy_init_max_plies=sp.policy_init_max_plies,
+                policy_init_temperature=sp.policy_init_temperature,
+                tss_enabled=sp.tss_enabled,
+                # Root FPU reduction. root_fpu_zero_under_noise and search_parity_mode
+                # gate how this interacts with root Dirichlet noise (handled in Rust).
+                root_fpu_reduction=sp.root_fpu_reduction,
+                root_fpu_zero_under_noise=sp.root_fpu_zero_under_noise,
+                search_parity_mode=sp.search_parity_mode,
+                divergence_overrides=build_divergence_overrides(
+                    sp, disabled=(ctx.diagnostics_dir / ML_AUTO_DISABLED_FLAG).exists()
+                ),
+                # Fast-class (main_8: Gumbel Fast) override map. Equals the base map
+                # when no fast_* levers are set, so absent = today's single profile
+                # and Rust's divergences_fast == divergences_full (golden invariant).
+                fast_divergence_overrides=build_fast_divergence_overrides(
+                    sp, disabled=(ctx.diagnostics_dir / ML_AUTO_DISABLED_FLAG).exists()
+                ),
+                **noise_kwargs,
+            )
+        except BaseException:
+            # run_continuous crashed: still drain and join the writer while the
+            # .hxr file is open, so already-queued finished games land on disk
+            # instead of dying with the daemon thread. The original exception
+            # wins; a secondary writer error is swallowed here (it would have
+            # been re-raised by the success-path _stop_writer below).
+            try:
+                driver._stop_writer()
+            except Exception:
+                pass
+            raise
         # Drain and join the writer while the .hxr file is still open; re-raises
         # any write error so all finished games are on disk before the epoch closes.
         driver._stop_writer()

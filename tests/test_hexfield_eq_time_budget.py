@@ -158,7 +158,7 @@ def test_zero_budget_is_the_fixed_visit_path(monkeypatch) -> None:
 class _NullOpponent:
     label = "null"
 
-    def start(self, games):
+    def start(self, games, *, seed_base=0):
         return None
 
     def advance(self, batch, **kwargs):

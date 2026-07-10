@@ -113,7 +113,10 @@ class PairedResult:
     win_rate:   candidate win rate = mean pair score / 2, in [0, 1].
     se:         standard error of ``win_rate`` on N_pairs units.
     var_drift:  per-pair variance of the (points/2) score (0 => every pair
-                identical, 0.25 => max Bernoulli-like).
+                identical, 0.25 => max Bernoulli-like). Bessel-corrected
+                (sample variance), the same convention as ``se``, so the
+                design effect in :func:`effective_counts` is consistent at
+                small ``n_pairs``.
     """
 
     n_pairs: int
@@ -156,7 +159,9 @@ def pentanomial_summary(penta: "tuple[int, ...] | np.ndarray") -> PairedResult:
         return PairedResult(0, _as5(counts), float("nan"), float("nan"), float("nan"))
     weight = counts / counts.sum()
     mean = float((weight * scores).sum())
-    # Population variance of the per-pair score over the realised distribution.
+    # Population variance of the per-pair score over the realised distribution,
+    # then Bessel-corrected: se and var_drift share the sample-variance
+    # convention (see PairedResult).
     var = float((weight * (scores - mean) ** 2).sum())
     if n_pairs > 1:
         # Bessel correction. With one pair this reduces to the population
@@ -165,7 +170,7 @@ def pentanomial_summary(penta: "tuple[int, ...] | np.ndarray") -> PairedResult:
     else:
         sample_var = var
     se = math.sqrt(sample_var / n_pairs)
-    return PairedResult(n_pairs, _as5(counts), mean, se, var)
+    return PairedResult(n_pairs, _as5(counts), mean, se, sample_var)
 
 
 def paired_winrate(pair_scores: "list[float] | np.ndarray") -> PairedResult:
@@ -192,9 +197,10 @@ def paired_winrate(pair_scores: "list[float] | np.ndarray") -> PairedResult:
         return PairedResult(0, _as5(penta), float("nan"), float("nan"), float("nan"))
     mean = float(arr.mean())
     var = float(arr.var())  # population variance of the realised scores
+    # Bessel-corrected: se and var_drift share the sample-variance convention.
     sample_var = var * n_pairs / (n_pairs - 1) if n_pairs > 1 else var
     se = math.sqrt(sample_var / n_pairs)
-    return PairedResult(n_pairs, _as5(penta), mean, se, var)
+    return PairedResult(n_pairs, _as5(penta), mean, se, sample_var)
 
 
 def effective_counts(result: PairedResult) -> tuple[float, float, float]:
@@ -221,10 +227,12 @@ def effective_counts(result: PairedResult) -> tuple[float, float, float]:
         # game count.
         n_eff = n_games
     else:
-        # var_drift is the per-pair variance of (points/2). For independent
-        # games the per-pair mean variance is var_binom / 2, so the design
-        # effect on the pair mean is var_drift / (var_binom / 2), and the
-        # effective independent game count is the physical count / deff.
+        # var_drift is the Bessel-corrected per-pair variance of (points/2) —
+        # the same convention as the pair-level se, so deff is not biased low
+        # (n_eff high) at small n_pairs. For independent games the per-pair
+        # mean variance is var_binom / 2, so the design effect on the pair mean
+        # is var_drift / (var_binom / 2), and the effective independent game
+        # count is the physical count / deff.
         deff = (result.var_drift / (var_binom / 2.0)) if result.var_drift > 0 else 1.0
         deff = max(deff, 1e-6)
         n_eff = n_games / deff
@@ -440,7 +448,6 @@ def bradley_terry(
     n = len(labels)
     a_idx = index[anchor]
     free = [k for k in range(n) if k != a_idx]  # estimated coordinates
-    fpos = {k: p for p, k in enumerate(free)}   # full-index -> free-index
     m = len(free)
 
     # Precompute edge index arrays for a vectorised gradient/Hessian.
@@ -513,19 +520,22 @@ def bradley_terry(
     if not used_scipy:
         theta, iterations = _newton_solve(neg_log_post, grad_free, hess_free, theta, grad_tol, max_iter)
 
-    # If scipy ran but missed tolerance, polish with Newton.
-    if np.max(np.abs(grad_free(theta))) >= grad_tol:
+    # If scipy ran but missed tolerance, polish with Newton. Guard m == 0 (an
+    # anchor-only pool): grad_free is zero-size and np.max would raise.
+    if m > 0 and np.max(np.abs(grad_free(theta))) >= grad_tol:
         theta, extra = _newton_solve(neg_log_post, grad_free, hess_free, theta, grad_tol, max_iter)
         iterations += extra
 
     max_grad = float(np.max(np.abs(grad_free(theta)))) if m > 0 else 0.0
     # Require a stationary point before inverting the Hessian for the covariance.
-    assert max_grad < grad_tol, (
-        f"Bradley-Terry did not converge: max|grad|={max_grad:.3e} "
-        f">= grad_tol={grad_tol:.3e}. A non-stationary fit makes the "
-        f"Hessian-inverse covariance invalid. Increase max_iter or check for "
-        f"degenerate edges."
-    )
+    # A real raise (not an assert) so ``python -O`` cannot strip the check.
+    if max_grad >= grad_tol:
+        raise RuntimeError(
+            f"Bradley-Terry did not converge: max|grad|={max_grad:.3e} "
+            f">= grad_tol={grad_tol:.3e}. A non-stationary fit makes the "
+            f"Hessian-inverse covariance invalid. Increase max_iter or check for "
+            f"degenerate edges."
+        )
 
     # Covariance = inverse Hessian of the neg-log-posterior at the optimum,
     # scaled logit^2 -> Elo^2. Anchor row/col stay zero (fixed parameter).
@@ -673,30 +683,6 @@ def bonferroni_alpha(alpha: float, k: int) -> float:
     if k <= 0:
         raise ValueError("k must be >= 1")
     return alpha / k
-
-
-# --------------------------------------------------------------------------- #
-# Verdict label (returns a string; performs no gating).
-# --------------------------------------------------------------------------- #
-def primary_verdict(
-    diff_ci: tuple[float, float],
-    *,
-    regress_elo: float = 0.0,
-) -> str:
-    """Map a BT difference CI ``(lo, hi)`` for ``r_candidate - r_champion`` to a label.
-
-    Returns:
-      - "PROMOTE"      if the whole CI is above 0,
-      - "REGRESS"      if the whole CI is below ``regress_elo``,
-      - "INCONCLUSIVE" otherwise (CI straddles the threshold).
-    """
-
-    lo, hi = diff_ci
-    if lo > 0.0:
-        return "PROMOTE"
-    if hi < regress_elo:
-        return "REGRESS"
-    return "INCONCLUSIVE"
 
 
 # --------------------------------------------------------------------------- #

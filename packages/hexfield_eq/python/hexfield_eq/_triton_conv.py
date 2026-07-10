@@ -11,7 +11,8 @@ Exposed as the `hexfield_eq::hex_conv` custom op (with a fake kernel), so the
 serve torch.compile(dynamic=True) graph keeps it in-graph as an opaque call —
 no graph breaks. Enabled via HEXFIELD_TRITON_CONV=1; model.py routes to it on
 the no-grad CUDA path only (there is no backward), for 16-aligned channel
-counts (the stem's C_in=15 keeps the reference path).
+counts (the stem's C_in=NUM_FEATURES — 25, or 46 under feature version 2 —
+keeps the reference path).
 
 Numerics: fp16 tap rows x fp16 weights with fp32 accumulation — the same class
 as the autocast cuBLAS GEMM it replaces (bias added in fp32, one final fp16

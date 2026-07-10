@@ -3,14 +3,16 @@
 Definitions:
 
 1. ``stones`` = occupied cells; ``legal`` = empty cells with hex-dist
-   <= LEGAL_RADIUS of any stone (empty stone list => {(0, 0)}).
+   <= _SUPPORT_RADIUS of any stone (default LEGAL_RADIUS; empty stone list
+   => {(0, 0)}).
 2. ``core = stones ∪ legal``; ``halo`` = cells hex-adjacent to core and not in
    core.
 3. ``support = core ∪ halo``.
 
-A single multi-source BFS of depth LEGAL_RADIUS+1 from the stones produces the
-support, the halo, and the dist_to_stone values in one pass. core is the union
-of radius-LEGAL_RADIUS disks; halo is the distance-(LEGAL_RADIUS+1) shell.
+A single multi-source BFS of depth _SUPPORT_RADIUS+1 from the stones produces
+the support, the halo, and the dist_to_stone values in one pass. core is the
+union of radius-_SUPPORT_RADIUS disks; halo is the
+distance-(_SUPPORT_RADIUS+1) shell.
 
 Node order: segments ``[ legal | stones | halo ]``, each ascending by packed
 action id (== ascending signed (q, r)). The legal nodes of a row occupy slots
@@ -47,8 +49,9 @@ class SupportContractError(ValueError):
     """Raised when the closed-form legal set disagrees with the engine's
     ``expected_legal`` set passed to :func:`build_support`.
 
-    The closed-form legality ``empty ∧ dist <= LEGAL_RADIUS`` equals the
-    engine's legal set on decision states. On a terminal state the engine
+    The closed-form legality ``empty ∧ dist <= _SUPPORT_RADIUS`` equals the
+    engine's legal set on decision states (both featurizers read the same
+    radius; the default is LEGAL_RADIUS). On a terminal state the engine
     returns an empty legal set while the closed form yields a non-empty legal
     prefix.
     """
@@ -95,10 +98,10 @@ def build_support(
 ) -> Support:
     """Build the support set from the stone list (empty list => origin state).
 
-    Legality is derived in closed form (``empty ∧ dist <= LEGAL_RADIUS``),
-    which equals the engine's legal set on decision states. On a terminal state
-    the engine's legal set is empty while the closed form produces a non-empty
-    legal prefix.
+    Legality is derived in closed form (``empty ∧ dist <= _SUPPORT_RADIUS``,
+    default LEGAL_RADIUS), which equals the engine's legal set on decision
+    states. On a terminal state the engine's legal set is empty while the
+    closed form produces a non-empty legal prefix.
 
     When ``expected_legal`` is ``None`` no validation runs. Passing an iterable
     of ``(q, r)`` coords requires the closed-form legal set to equal that set

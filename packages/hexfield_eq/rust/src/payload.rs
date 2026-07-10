@@ -207,18 +207,20 @@ fn parse_chunk_reply(
     } else {
         None
     };
-    // Optional raw-logit column. Same positional layout as `priors_bytes` (sum
-    // of legal prefixes, fp32). When `request_logits` is unset, or when set but
-    // the key is absent from the reply, this is None.
+    // Raw-logit column, REQUIRED when `request_logits` is set. Same positional
+    // layout as `priors_bytes` (sum of legal prefixes, fp32). Tolerating a
+    // missing key here would silently degrade Gumbel root/nonroot selection AND
+    // the exported gumbel_target training policy (search-side unwrap_or_default
+    // on the absent logits), so mirror the moves_left_bytes contract above.
     let logits_bytes: Option<Vec<u8>> = if request_logits {
-        match output.get_item("priors_logits_bytes") {
-            Ok(obj) => {
-                let bytes = obj.downcast::<PyBytes>()?.as_bytes().to_vec();
-                require_exact_bytes("priors_logits_bytes", bytes.len(), expected_priors, 4)?;
-                Some(bytes)
-            }
-            Err(_) => None,
-        }
+        let obj = output.get_item("priors_logits_bytes").map_err(|_| {
+            PyValueError::new_err(
+                "hexfield evaluator output missing priors_logits_bytes (request_logits was set)",
+            )
+        })?;
+        let bytes = obj.downcast::<PyBytes>()?.as_bytes().to_vec();
+        require_exact_bytes("priors_logits_bytes", bytes.len(), expected_priors, 4)?;
+        Some(bytes)
     } else {
         None
     };
@@ -280,7 +282,6 @@ fn parse_chunk_reply(
                 row.request_index,
                 RustEvaluation {
                     value,
-                    legal_action_count: row.legal_ids.len(),
                     priors,
                     moves_left,
                     logits,

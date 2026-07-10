@@ -60,12 +60,18 @@ def save_checkpoint(path: Path, *, model: HexfieldNet, optimizer, epoch: int, ex
     return path
 
 
-def load_into(model: HexfieldNet, payload: dict, *, optimizer=None) -> dict:
-    state = payload["model"]
+def _check_meta_contract(meta: dict | None) -> None:
+    """Enforce the featurizer input contract recorded in checkpoint meta.
+
+    Shared by the strict load and the warm-start path: a weights-only warm
+    start across radii/plane-maps shifts the input distribution just as
+    silently as a strict load would, so both must fail loudly.
+    """
+
     # The featurizer support radius is part of the input contract (spec
     # D-S26): a checkpoint trained at a different radius would silently shift
     # the input distribution, so a recorded mismatch fails loudly.
-    meta_radius = (payload.get("meta") or {}).get("support_radius")
+    meta_radius = (meta or {}).get("support_radius")
     if meta_radius is not None and int(meta_radius) != _SUPPORT_RADIUS:
         raise ValueError(
             f"checkpoint support_radius={int(meta_radius)} != this build's "
@@ -75,12 +81,17 @@ def load_into(model: HexfieldNet, payload: dict, *, optimizer=None) -> dict:
     # (SPEC_RAYTAP_CONV.md §1.1): a checkpoint trained under the other map
     # would silently read permuted/missing planes, so a recorded mismatch
     # fails loudly (same class as the support_radius check above).
-    meta_fv = (payload.get("meta") or {}).get("feature_version")
+    meta_fv = (meta or {}).get("feature_version")
     if meta_fv is not None and int(meta_fv) != FEATURE_VERSION:
         raise ValueError(
             f"checkpoint feature_version={int(meta_fv)} != this build's "
             f"HEXFIELD_EQ_FEATURE_VERSION={FEATURE_VERSION}; refusing the load"
         )
+
+
+def load_into(model: HexfieldNet, payload: dict, *, optimizer=None) -> dict:
+    state = payload["model"]
+    _check_meta_contract(payload.get("meta"))
     expected = set(model.state_dict().keys())
     got = set(state.keys())
     if expected != got:
@@ -122,7 +133,11 @@ def warm_start_into(model: HexfieldNet, state: dict) -> dict:
             shape_mismatch.append(key)
             continue
         to_load[key] = val
-    missing = sorted(set(model_sd) - set(to_load))
+    # ``missing`` counts only model params absent from the checkpoint;
+    # shape-mismatched keys are reported once, under ``shape_mismatch`` (they
+    # also keep their initialized value, but double-listing them here
+    # double-counted them in the summary).
+    missing = sorted(set(model_sd) - set(state))
     unexpected = sorted(set(state) - set(model_sd))
     # strict=False: missing keys keep their initialized value; the matched
     # subset is copied into the live params (dtype/device unchanged).
@@ -166,6 +181,11 @@ class HexfieldCheckpointLoader:
             if not resume:
                 # initialize_from warm start (meta-shape checkpoint): tolerant
                 # load of matching weights; optimizer state is not restored.
+                # The featurizer input contract (support_radius /
+                # feature_version, spec D-S26) applies to a warm start too — a
+                # cross-radius initialize_from must fail loudly, not silently
+                # shift the input distribution.
+                _check_meta_contract(payload.get("meta"))
                 summary = warm_start_into(model, payload["model"])
                 return {
                     "status": "initialized_from",

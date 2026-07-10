@@ -195,18 +195,23 @@ def resolve_expand_workers(configured: int | None = None) -> int:
     """Resolve the pool worker count.
 
     Precedence: ``HEXFIELD_EXPAND_WORKERS`` env > the ``configured`` value
-    (``config.training.expand_workers``, ``0`` ⇒ auto) > the auto default
-    ``min(8, max(1, cpu_count // 4))``. Always ``>= 1``.
+    (``config.training.expand_workers``) > the auto default
+    ``min(8, max(1, cpu_count // 4))``. In BOTH positions ``0`` (or a negative
+    value) means "auto" — the env var follows the same convention as the
+    config field. A non-integer env value is ignored. Always ``>= 1``.
     """
+    auto = min(8, max(1, (os.cpu_count() or 4) // 4))
     env = os.environ.get("HEXFIELD_EXPAND_WORKERS")
     if env is not None:
         try:
-            return max(1, int(env))
+            n = int(env)
         except ValueError:
-            pass
+            n = None
+        if n is not None:
+            return n if n > 0 else auto
     if configured is not None and int(configured) > 0:
         return max(1, int(configured))
-    return min(8, max(1, (os.cpu_count() or 4) // 4))
+    return auto
 
 
 def _chunk_bounds(n: int, chunk_rows: int) -> list[tuple[int, int]]:
@@ -553,9 +558,9 @@ def expand_rows(
     rows = [None] * n  # type: ignore[assignment]
     valid = np.zeros(n, dtype=bool)
     bounds = _chunk_bounds(n, _CHUNK_ROWS)
+    pending = iter(bounds)
+    inflight: dict[Any, tuple[int, int]] = {}
     try:
-        pending = iter(bounds)
-        inflight: dict[Any, tuple[int, int]] = {}
 
         def _submit_one() -> bool:
             for start, stop in pending:
@@ -584,6 +589,15 @@ def expand_rows(
                 rows[start:stop] = chunk_rows
                 valid[start:stop] = chunk_valid
                 _submit_one()
+    except BaseException:
+        # With the trainer's persistent pool an expand error must not leave the
+        # inflight chunks running (only an owned pool gets cancel_futures via
+        # shutdown below). Cancel what has not started; the pool itself stays
+        # alive for reuse.
+        if not owns_pool:
+            for fut in inflight:
+                fut.cancel()
+        raise
     finally:
         if owns_pool:
             pool.shutdown(wait=False, cancel_futures=True)

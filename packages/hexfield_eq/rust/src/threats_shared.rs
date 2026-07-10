@@ -6,10 +6,7 @@
 //! and hexgt lineages: both are `#[path]`-included into this crate (see
 //! `packages/hexo_models/rust/src/lib.rs`) and reach it via
 //! `crate::threats_shared`, so those two share exactly one definition of
-//! "what is a threat / win-now / forced loss". EXCEPTION: the hexgnn crate --
-//! compiled into the SAME native module -- carries its own duplicated fork
-//! (`packages/hexgnn/rust/src/threats.rs`); drift there is NOT caught by the
-//! dense_cnn/hexgt parity test (tests/test_dense_cnn_tss.py). Here it is
+//! "what is a threat / win-now / forced loss". Here it is
 //! consumed by:
 //!   - the tactical-candidate INJECTION at node expansion (mcts_tree.rs),
 //!   - the phase-aware hitting-set leaf value OVERRIDE (mcts.rs),
@@ -55,6 +52,9 @@ pub(crate) fn placements_remaining(state: &RustHexoState) -> u8 {
 /// Result of a 1-ply phase-aware threat analysis at one node/leaf.
 pub(crate) struct ThreatAnalysis {
     /// Placements remaining this turn (the budget B).
+    // Read only by analysis_pydict (python feature, dense_cnn/hexgt diagnostic
+    // surface); the hexfield lineages construct but never read it.
+    #[allow(dead_code)]
     pub(crate) b: u8,
     /// The side to move can complete a window with its B placements this turn
     /// (own count-5 for any B, or own count-4 when B == 2).
@@ -65,12 +65,18 @@ pub(crate) struct ThreatAnalysis {
     /// when there are no opponent threats.
     pub(crate) min_hitting_set: Option<u8>,
     /// Number of active opponent >=4 windows (the must-answer threats).
+    // Read only by analysis_pydict (python feature, dense_cnn/hexgt diagnostic
+    // surface); the hexfield lineages construct but never read it.
+    #[allow(dead_code)]
     pub(crate) opp_threat_count: usize,
 }
 
 impl ThreatAnalysis {
     /// 1-ply forced LOSS for the side to move: no own win this node AND the
     /// opponent's threats cannot all be hit with B placements.
+    // Called only by analysis_pydict (python feature) and unit tests; the
+    // hexfield lineages key off verdict() alone.
+    #[allow(dead_code)]
     pub(crate) fn forced_loss(&self) -> bool {
         !self.own_win_now && self.min_hitting_set.is_none()
     }
@@ -78,6 +84,9 @@ impl ThreatAnalysis {
     /// Phase-aware leaf verdict for the side to move: `Some(1.0)` proven win,
     /// `Some(-1.0)` proven loss, `None` no 1-ply proof (let net/search decide).
     /// HARD WIN is checked first (the side to move moves first).
+    // Compiled unused in hexo_models' no-python build; used via #[path]
+    // include by the hexfield lineages and by analysis_pydict under `python`.
+    #[allow(dead_code)]
     pub(crate) fn verdict(&self) -> Option<f32> {
         if self.own_win_now {
             Some(1.0)
@@ -136,6 +145,9 @@ fn min_hitting_set(sets: &[Vec<HexCoord>], budget: u8) -> Option<u8> {
 /// Phase-aware 1-ply threat analysis for the side to move at `state`. Single
 /// pass over the live threat windows (this runs at every searched leaf in the
 /// override, so it avoids the two separate `threat_entries` scans).
+// Compiled unused in hexo_models' no-python build; used via #[path] include by
+// the hexfield lineages and by dense_cnn/hexgt under `python`.
+#[allow(dead_code)]
 pub(crate) fn analyze(state: &RustHexoState) -> ThreatAnalysis {
     let b = placements_remaining(state);
     // Threat-free short-circuit (the common case). With no active >= 4 window the
@@ -189,6 +201,9 @@ pub(crate) fn analyze(state: &RustHexoState) -> ThreatAnalysis {
 /// These are full-board engine coordinates. A fixed-crop lineage (dense_cnn) is
 /// responsible for intersecting them with its representable candidate set; an
 /// infinite-candidate lineage (hexgt) injects all of them.
+// Compiled unused in hexo_models' no-python build; used via #[path] include by
+// the hexfield lineages and by dense_cnn/hexgt under `python`.
+#[allow(dead_code)]
 pub(crate) fn tactical_cells(state: &RustHexoState) -> Vec<HexCoord> {
     // Threat-free short-circuit (the common case): with no active >= 4 window the
     // scan below collects nothing, so the tactical set is empty. Identical result,
@@ -240,6 +255,9 @@ use pyo3::types::PyDict;
 /// Build the phase-aware threat-analysis diagnostic dict for a live engine state.
 /// Drives the TSS regression fixtures from Python and lets self-play instrument
 /// how often the override/injection fire.
+// Compiled unused in the hexfield lineages (they expose no *_threat_analysis
+// pyfunction); used by the dense_cnn/hexgt pybridges in hexo_models.
+#[allow(dead_code)]
 #[cfg(feature = "python")]
 pub(crate) fn analysis_pydict<'py>(
     py: Python<'py>,

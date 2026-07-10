@@ -16,8 +16,6 @@ pub const EVAL_CACHE_MAX_STATES: usize = 262_144;
 pub struct RustEvaluation {
     /// Scalar value from the evaluated state's side-to-move perspective.
     pub value: f32,
-    /// Legal move count; equals `priors.len()`.
-    pub legal_action_count: usize,
     /// One prior per legal move, ordered descending by prior then ascending id.
     pub priors: Vec<(PackedCoord, f32)>,
     /// Moves-left estimate in decisions [0, 512], or None when the reply omitted it.

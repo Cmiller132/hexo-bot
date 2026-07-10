@@ -32,7 +32,6 @@ import os
 import argparse
 import copy
 import json
-import math
 import random
 import time
 from pathlib import Path
@@ -45,6 +44,7 @@ from .batching import (
     PAD_QUANTUM,
     collate_training,
     pair_budget_microbuckets,
+    policy_surprise_weights,
     split_stvalue_columns,
     step_global_denominators,
 )
@@ -153,13 +153,27 @@ class BootstrapShards(IterableDataset):
                 for s in chunk
             ]
             denoms = step_global_denominators(expanded, STV_HORIZONS)
+            # Per-row self-policy surprise weights over the same nominal chunk
+            # (mirrors the trainer): denoms["policy_ce_weight_sum"] above is the
+            # surprise-weight SUM, so the CE numerator must carry the matching
+            # per-row weights — all-ones rows against a weighted denominator
+            # silently deflate the policy CE. The 0.5/8.0 arguments are
+            # step_global_denominators' own defaults, keyed by id(row) because
+            # pair_budget_microbuckets reorders rows within the chunk.
+            row_weights, _ = policy_surprise_weights(
+                [row.policy_surprise for row in expanded], 0.5, 8.0
+            )
+            weight_by_row = {id(r): w for r, w in zip(expanded, row_weights)}
             buckets = []
             for bucket in pair_budget_microbuckets(expanded, quantize=PAD_QUANTUM):
                 # Round the padded node count up to a multiple of PAD_QUANTUM.
                 # pair_budget_microbuckets above used the same quantum for its
                 # budget.
                 pad_to = -(-max(r.support.num_nodes for r in bucket) // PAD_QUANTUM) * PAD_QUANTUM
-                batch = collate_training(bucket, pad_to=pad_to)
+                batch = collate_training(
+                    bucket, pad_to=pad_to,
+                    row_weights=[weight_by_row[id(r)] for r in bucket],
+                )
                 buckets.append(split_stvalue_columns(batch, STV_HORIZONS))
             yield buckets, denoms
 
@@ -287,11 +301,16 @@ def evaluate(
     rows_seen = 0
     policy_ce_sum = 0.0
     value_ce_sum = 0.0
+    value_rows_seen = 0.0  # value_mask>0 rows only: the value-CE denominator
+    # Value diagnostics collect only value_mask>0 rows (truncated games carry
+    # no meaningful z; including them skews ECE / optimism / MAE).
     evs: list[float] = []
     zs: list[float] = []
-    # Per-row diagnostics aligned with evs/zs (C4): stones-on-board (the ply
-    # bucket key), the threat-dense flag (max fork-plane input), top-1 hit.
+    # stones-on-board per collected VALUE row (the ply bucket key) — aligned
+    # with evs/zs, so mask-filtered the same way.
     plies: list[int] = []
+    # Policy-side diagnostics stay over ALL rows: the threat-dense flag (max
+    # fork-plane input) and the top-1 hit, aligned with each other.
     threat: list[bool] = []
     hits: list[bool] = []
     for path in shard_paths:
@@ -302,7 +321,6 @@ def evaluate(
             denoms = step_global_denominators(expanded, STV_HORIZONS)
             chunk_policy = 0.0
             chunk_value = 0.0
-            chunk_rows = len(expanded)
             # eval collate pads to the raw max N (pad_to=None), so the bucketing
             # uses quantize=1 to match.
             for bucket in pair_budget_microbuckets(expanded, quantize=1):
@@ -323,9 +341,14 @@ def evaluate(
                 chunk_value += float(comps["value"])
                 b = batch["value"].shape[0]
                 ev = decode_binned_value(out["value"])
-                evs.extend(ev.tolist())
-                zs.extend(batch["value"].tolist())
-                plies.extend(int(r.support.stone_count) for r in bucket)
+                vm = batch["value_mask"] > 0
+                evs.extend(ev[vm].tolist())
+                zs.extend(batch["value"][vm].tolist())
+                plies.extend(
+                    int(r.support.stone_count)
+                    for r, keep in zip(bucket, vm.tolist())
+                    if keep
+                )
                 fork_max = (
                     batch["feats"][:, :, (F_OWN_FORK, F_OPP_FORK)].amax(dim=(1, 2))
                 )
@@ -354,28 +377,38 @@ def evaluate(
                 hits.extend((pred == tgt).tolist())
                 top1_hits += int((pred == tgt).sum())
                 rows_seen += b
-            policy_ce_sum += chunk_policy * chunk_rows
-            value_ce_sum += chunk_value * chunk_rows
+            # Undo each component's own chunk-global denominator with THAT
+            # denominator (comps["value"] was averaged over the chunk's
+            # value_mask>0 count, not chunk_rows; comps["policy"] over the
+            # surprise-weight sum — all-ones here, but the sum can differ from
+            # chunk_rows when clamps fire), so the sums are true CE totals.
+            policy_ce_sum += chunk_policy * denoms["policy_ce_weight_sum"]
+            value_ce_sum += chunk_value * denoms["value"]
+            value_rows_seen += denoms["value"]
         if rows_seen >= max_rows:
             break
     evs_arr = np.asarray(evs)
     zs_arr = np.asarray(zs)
-    deciles = np.quantile(evs_arr, np.linspace(0, 1, 11))
     ece = 0.0
-    for k in range(10):
-        lo, hi = deciles[k], deciles[k + 1]
-        sel = (evs_arr >= lo) & (evs_arr <= hi if k == 9 else evs_arr < hi)
-        if sel.sum() == 0:
-            continue
-        ece += sel.mean() * abs(evs_arr[sel].mean() - zs_arr[sel].mean())
+    if evs_arr.size:  # all-truncated val rows leave no value diagnostics
+        deciles = np.quantile(evs_arr, np.linspace(0, 1, 11))
+        for k in range(10):
+            lo, hi = deciles[k], deciles[k + 1]
+            sel = (evs_arr >= lo) & (evs_arr <= hi if k == 9 else evs_arr < hi)
+            if sel.sum() == 0:
+                continue
+            ece += sel.mean() * abs(evs_arr[sel].mean() - zs_arr[sel].mean())
     model.train()
     metrics = {
         "val_rows": rows_seen,
         "top1": top1_hits / max(rows_seen, 1),
         "policy_ce": policy_ce_sum / max(rows_seen, 1),
-        "value_ce": value_ce_sum / max(rows_seen, 1),
+        # Mean over value_mask>0 rows only — the same denominator the loss uses.
+        "value_ce": value_ce_sum / max(value_rows_seen, 1.0),
         "value_ece": float(ece),
-        "value_optimism": float(evs_arr.mean() - zs_arr.mean()),
+        "value_optimism": (
+            float(evs_arr.mean() - zs_arr.mean()) if evs_arr.size else None
+        ),
     }
     # Ply-bucketed value MAE (C4, the head_audit bucket idea): |EV - z| per
     # stones-on-board band.
@@ -596,7 +629,7 @@ def main(argv=None) -> None:
         grad_stats: list[float] = []
         group_stats: dict[str, list[float]] = {}
         steps = 0
-        lr = LR
+        lr = args.lr  # pre-first-step fallback for the log record, not the constant
         for buckets, denoms in loader:
             # Linear warmup then cosine decay LR -> LR/10 over the run (C1;
             # trainer.scheduled_lr — warmup in optimizer steps, decay in epochs).

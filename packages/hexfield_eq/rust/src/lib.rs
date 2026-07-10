@@ -8,9 +8,6 @@
 //!
 //! Build: scripts/_rebuild_hexfield.sh (hexfield-dev venv, --release).
 
-// Several search-stat fields are write-only (telemetry).
-#![allow(dead_code)]
-
 mod constants;
 mod features;
 mod support;

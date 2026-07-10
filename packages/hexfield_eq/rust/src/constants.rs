@@ -33,17 +33,31 @@ pub const F_DIST_TO_STONE: usize = 9;
 pub const F_OPP_LAST_TURN: usize = 10;
 // Graded per-axis window planes. Each quantity spans 3 contiguous slots ordered
 // by Axis::ALL == [Q, R, QR], so `BASE + Axis::index()` selects the axis plane.
+// Rust code writes the whole block via `F_OWN_LINE_Q + k`; the individual
+// plane names below are retained (allow(dead_code)) as the named plane-map
+// mirror of python/hexfield_eq/constants.py.
 pub const F_OWN_LINE_Q: usize = 11;
+#[allow(dead_code)]
 pub const F_OWN_LINE_R: usize = 12;
+#[allow(dead_code)]
 pub const F_OWN_LINE_QR: usize = 13;
+#[allow(dead_code)]
 pub const F_OPP_LINE_Q: usize = 14;
+#[allow(dead_code)]
 pub const F_OPP_LINE_R: usize = 15;
+#[allow(dead_code)]
 pub const F_OPP_LINE_QR: usize = 16;
+#[allow(dead_code)]
 pub const F_OWN_LIVE_Q: usize = 17;
+#[allow(dead_code)]
 pub const F_OWN_LIVE_R: usize = 18;
+#[allow(dead_code)]
 pub const F_OWN_LIVE_QR: usize = 19;
+#[allow(dead_code)]
 pub const F_OPP_LIVE_Q: usize = 20;
+#[allow(dead_code)]
 pub const F_OPP_LIVE_R: usize = 21;
+#[allow(dead_code)]
 pub const F_OPP_LIVE_QR: usize = 22;
 // Version-dependent planes. The fork planes keep their definition but move
 // under version 2 (the spec §1.2 re-index) — consumers go through

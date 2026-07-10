@@ -41,6 +41,12 @@ class RegisterRefresh(nn.Module):
         # builds the refresh at a different head count (foreign-arch loaders),
         # mirroring RelPosAttention.
         self.heads = ATTENTION_HEADS if heads is None else int(heads)
+        if channels % self.heads != 0:
+            raise ValueError(
+                f"RegisterRefresh: channels ({channels}) must be divisible by "
+                f"heads ({self.heads}); a foreign-arch rebuild must pass the "
+                "checkpoint's own head count (see infer_net_kwargs_from_state_dict)"
+            )
         self.head_dim = channels // self.heads
         self.scale = 1.0 / math.sqrt(self.head_dim)
         self.equivariant = EQUIVARIANT

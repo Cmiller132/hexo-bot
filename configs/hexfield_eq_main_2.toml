@@ -81,7 +81,6 @@ policy_init_max_plies = 8
 policy_init_temperature = 1.4
 ml_two_sided = false
 ml_final_pick_band = 0.08
-export_root_prior_logits = true
 
 # ---- Gumbel AlphaZero (main_11 target regime; m=16 fits 256 visits exactly) ----
 gumbel_root_enabled = true
@@ -132,11 +131,6 @@ expand_backend = "rust"
 expand_workers = 0
 # The Gumbel completedQ improved-policy target (pi' = softmax(logits + sigma(Q))).
 policy_target = "gumbel"
-
-[model.config.evaluation]
-games_per_epoch = 16
-eval_visits = 128
-eval_every = 5
 
 [model.config.multi_stage_eval]
 enabled = true

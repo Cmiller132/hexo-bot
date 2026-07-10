@@ -137,16 +137,50 @@ def _rows_from_moves(moves, game_id: str) -> list[HexfieldSampleData]:
     """Play ``moves`` in order, recording one decision row before each move.
 
     The row's policy target is the played move (weight 1.0), so every row expands
-    to a valid legal-set projection. Value/moves_left are left masked-out."""
+    to a valid legal-set projection. Value/moves_left are left masked-out.
+
+    Rows also carry synthetic opp/gumbel/cell-Q targets so the backend parity
+    comparisons exercise real projection + renormalization (f32 accumulation,
+    f64 gumbel renormalizer, coverage tracking) rather than all-zero defaults:
+    a few legal ids with non-terminating-binary weights, plus (when the board
+    has stones) one OFF-legal id — an occupied cell — whose mass must be
+    dropped identically by both backends (opp_coverage < 1, gumbel renorm over
+    the kept support)."""
     state = api.new_game()
     rows: list[HexfieldSampleData] = []
     for q, r in moves:
         if api.terminal(state) is not None:
             break
         action_id = pack_action_id(q, r)
-        if action_id not in set(api.legal_action_ids(state)):
+        legal = sorted(int(a) for a in api.legal_action_ids(state))
+        if action_id not in set(legal):
             raise AssertionError(f"crafted move {(q, r)} is not legal")
         facts = facts_from_engine(api.to_python_state(state))
+        # Deterministic per-row target support: a small legal slice, rotated by
+        # the ply so different rows hit different cells.
+        k = min(3, len(legal))
+        base = len(rows) % max(1, len(legal) - k + 1)
+        tgt_ids = legal[base : base + k]
+        weights = (0.6, 0.3, 0.1)[:k]
+        # An off-legal id: any occupied cell (absent from the legal set).
+        off_legal = (
+            (pack_action_id(facts.records[0][0], facts.records[0][1]),)
+            if facts.records
+            else ()
+        )
+        gumbel = tuple(zip(tgt_ids, weights)) + tuple((a, 0.2) for a in off_legal)
+        opp = tuple(zip(tgt_ids, (0.7, 0.2, 0.1)[:k])) + tuple(
+            (a, 0.3) for a in off_legal
+        )
+        # The shard stores cell-Q aligned to the recorded policy actions, so
+        # give the policy a small tail over tgt_ids (all legal) and key the Q
+        # targets to those same actions.
+        policy = ((int(action_id), 1.0),) + tuple(
+            (a, 0.05) for a in tgt_ids if a != int(action_id)
+        )
+        qpol = ((int(action_id), 0.5),) + tuple(
+            zip((a for a in tgt_ids if a != int(action_id)), (-0.25, 0.125, 0.0625))
+        )
         rows.append(
             HexfieldSampleData(
                 game_id=game_id,
@@ -155,7 +189,10 @@ def _rows_from_moves(moves, game_id: str) -> list[HexfieldSampleData]:
                 phase=facts.phase,
                 records=facts.records,
                 first_stone=facts.first_stone,
-                policy=((int(action_id), 1.0),),
+                policy=policy,
+                opp_policy=opp,
+                q_policy=qpol,
+                gumbel_policy=gumbel,
                 value=0.0,
                 moves_left=-1.0,
             )
@@ -270,7 +307,13 @@ def test_serve_featurizer_parity() -> None:
 
 
 @needs_rust
-def test_expand_all_12_d6_rust_eq_serial() -> None:
+def test_expand_all_12_d6_rust_eq_serial(monkeypatch) -> None:
+    # Force the serial raylen oracle on (it is gated off under C/A layouts,
+    # spec D-S29, while the rust kernel always emits raylen) so the raylen
+    # comparison below is apples-to-apples on every layout.
+    from hexfield_eq import samples as samples_mod
+
+    monkeypatch.setattr(samples_mod, "_EXPAND_RAYLEN", True)
     with tempfile.TemporaryDirectory() as td:
         window = _build_window(Path(td))
         n = window.n
@@ -293,6 +336,18 @@ def test_expand_all_12_d6_rust_eq_serial() -> None:
                 assert np.array_equal(a.support.nbr, b.support.nbr), f"nbr row {k} sym {sym}"
                 assert np.array_equal(a.support.dist, b.support.dist), f"dist row {k} sym {sym}"
                 assert np.array_equal(a.policy, b.policy), f"policy row {k} sym {sym}"
+                # Auxiliary training targets: both backends promise bit-parity
+                # (f32 accumulation in sample order; the gumbel renormalizer
+                # accumulates f64 and divides the f32 array by the one-rounding
+                # f32 scalar on both sides; cell_q is a scalar assign; raylen is
+                # integer; opp_coverage is pure f64 arithmetic) — exact equality.
+                assert np.array_equal(a.opp_policy, b.opp_policy), f"opp_policy row {k} sym {sym}"
+                assert a.opp_coverage == b.opp_coverage, f"opp_coverage row {k} sym {sym}"
+                assert np.array_equal(a.cell_q, b.cell_q), f"cell_q row {k} sym {sym}"
+                assert np.array_equal(a.cell_q_mask, b.cell_q_mask), f"cell_q_mask row {k} sym {sym}"
+                assert np.array_equal(a.gumbel_policy, b.gumbel_policy), f"gumbel_policy row {k} sym {sym}"
+                assert a.gumbel_policy_valid == b.gumbel_policy_valid, f"gumbel_policy_valid row {k} sym {sym}"
+                assert np.array_equal(a.raylen, b.raylen), f"raylen row {k} sym {sym}"
                 # Graded feature planes: serial (f64->f32) vs rust (f32) can differ
                 # by <= 1 ULP on the /6 live planes, so compare on the tolerant path.
                 d = np.abs(a.feats - b.feats)

@@ -300,6 +300,11 @@ struct ContinuousSchedulerStats {
     early_stops_fast: u64,
     early_stops_full: u64,
     early_stop_visits_saved: u64,
+    // Moves finalized by the SH-saturation safety net (force_stuck_gumbel): a
+    // stuck Gumbel root finalized from the visits accrued so far. Distinct from
+    // the early_stops_* counters — a forced completion is not a genuine early
+    // stop and contributes nothing to early_stop_visits_saved.
+    force_stuck_completions: u64,
     lcb_overrides: u64,
     // Play-policy telemetry: moves selected via the quota-pruned Gumbel play
     // distribution, and how many of those played the raw delta leader (the SH
@@ -593,7 +598,7 @@ impl HexfieldMctsSession {
         debug_no_advance: Option<bool>,
     ) -> PyResult<Py<PyAny>> {
         validate_search_inputs(visits, c_puct, temperature)?;
-        let divergences = resolve_divergences(search_parity_mode, divergence_overrides)?;
+        let divergences = resolve_divergences(search_parity_mode, divergence_overrides, false)?;
         let roots = states_from_py_states(py, states)?;
         if roots.is_empty() {
             return Ok(PyTuple::empty(py).into_any().unbind());
@@ -856,7 +861,9 @@ impl HexfieldMctsSession {
             .zip(selected_actions.into_iter())
         {
             if no_advance {
-                // Forensics only: store the searched tree as-is for debug_dump.
+                // Forensics only: store the searched tree as-is (root not
+                // advanced) so the next search call on this game_key can
+                // inspect/reuse it unchanged.
                 self.searches.insert(game_key, search);
                 continue;
             }
@@ -917,12 +924,13 @@ impl HexfieldMctsSession {
         fast_divergence_overrides: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
         validate_search_inputs(visits, c_puct, 0.0)?;
-        let divergences = resolve_divergences(search_parity_mode, divergence_overrides)?;
+        let divergences = resolve_divergences(search_parity_mode, divergence_overrides, false)?;
         // Fast-class view: parse the fast override map when provided, else fall
         // back to the base view (golden invariant: divergences_fast ==
-        // divergences_full when no fast_* keys are set).
+        // divergences_full when no fast_* keys are set). Only this map may
+        // carry fast_* keys.
         let divergences_fast = match fast_divergence_overrides {
-            Some(fast) => resolve_divergences(search_parity_mode, Some(fast))?,
+            Some(fast) => resolve_divergences(search_parity_mode, Some(fast), true)?,
             None => divergences,
         };
         let roots = states_from_py_states(py, states)?;
@@ -1401,6 +1409,7 @@ impl HexfieldMctsSession {
         dict.set_item("early_stops_fast", stats.early_stops_fast)?;
         dict.set_item("early_stops_full", stats.early_stops_full)?;
         dict.set_item("early_stop_visits_saved", stats.early_stop_visits_saved)?;
+        dict.set_item("force_stuck_completions", stats.force_stuck_completions)?;
         dict.set_item("lcb_overrides", stats.lcb_overrides)?;
         dict.set_item("gumbel_play_moves", stats.gumbel_play_moves)?;
         dict.set_item("gumbel_play_winner_moves", stats.gumbel_play_winner_moves)?;
@@ -2281,6 +2290,11 @@ struct PreparedMove {
     /// True when this completion is an early stop (drives the early-stop search
     /// mutation + stats in Phase B).
     early: bool,
+    /// True when the completion came from the SH-saturation safety net
+    /// (force_stuck_gumbel): `early` still drives the finalization mutation,
+    /// but Phase B counts it as `force_stuck_completions` instead of the
+    /// early-stop counters/visits-saved.
+    force_stuck: bool,
     /// `search.remaining_visits()` captured before the early-stop mutation, used
     /// for the `early_stop_visits_saved` stat.
     early_remaining_visits: u32,
@@ -2318,7 +2332,7 @@ fn complete_continuous_slots(
             }
             let move_class = slot.move_class;
             let in_flight = slot.in_flight;
-            let (complete, early) = slot
+            let (complete, early, force_stuck) = slot
                 .search
                 .as_ref()
                 .map(|search| {
@@ -2328,7 +2342,7 @@ fn complete_continuous_slots(
                         in_flight,
                     );
                     if normal {
-                        return (true, false);
+                        return (true, false, false);
                     }
                     // SH saturation safety net: a Gumbel root can exhaust its
                     // reachable tree (terminal/solved subtrees) below
@@ -2342,7 +2356,11 @@ fn complete_continuous_slots(
                         && in_flight == 0
                         && search.needs_visits()
                     {
-                        return (true, true);
+                        // `early=true` drives the same finalization mutation in
+                        // Phase B; `force_stuck=true` routes the stats to
+                        // force_stuck_completions instead of the early-stop
+                        // counters.
+                        return (true, true, true);
                     }
                     // Fast moves stop unrestricted; recorded Full roots keep the
                     // visit floor.
@@ -2352,9 +2370,9 @@ fn complete_continuous_slots(
                         matches!(move_class, MoveClass::Full),
                         in_flight,
                     );
-                    (early, early)
+                    (early, early, false)
                 })
-                .unwrap_or((false, false));
+                .unwrap_or((false, false, false));
             if !complete {
                 return Ok(None);
             }
@@ -2415,6 +2433,7 @@ fn complete_continuous_slots(
                 game_key,
                 ply,
                 early,
+                force_stuck,
                 early_remaining_visits,
                 payload,
                 action_id,
@@ -2455,10 +2474,17 @@ fn complete_continuous_slots(
         // here in slot order.
         if prepared.early {
             let search = slots[slot_index].search.as_mut().expect("active slot");
-            stats.early_stop_visits_saved += prepared.early_remaining_visits as u64;
-            match move_class {
-                MoveClass::Full => stats.early_stops_full += 1,
-                _ => stats.early_stops_fast += 1,
+            if prepared.force_stuck {
+                // SH-saturation safety-net finalization: a stuck-root forced
+                // completion, not a genuine early stop — count it separately
+                // and leave the early-stop counters/visits-saved untouched.
+                stats.force_stuck_completions += 1;
+            } else {
+                stats.early_stop_visits_saved += prepared.early_remaining_visits as u64;
+                match move_class {
+                    MoveClass::Full => stats.early_stops_full += 1,
+                    _ => stats.early_stops_fast += 1,
+                }
             }
             search.early_stopped = true;
             search.target_visits = search.completed_visits;
@@ -2581,6 +2607,20 @@ fn complete_continuous_slots(
                 if keep_promoted {
                     slots[slot_index].phase = ContinuousPhase::Active;
                 } else {
+                    // Driver-contract guard: 'advance' must carry a NON-terminal
+                    // state (the driver detects game end and responds None /
+                    // 'replace' instead). A terminal state can never promote a
+                    // subtree (advance_root returns false on terminal children),
+                    // so it always lands here; requeueing it as a RootInit would
+                    // surface later as a misleading batch-wide "continuous MCTS
+                    // root has no legal actions" abort. Raise the attributable
+                    // error now instead.
+                    if next_state.terminal().is_some() {
+                        return Err(PyValueError::new_err(format!(
+                            "continuous driver advanced slot {slot_index} (game key {game_key}, ply {next_ply}) into a terminal state; \
+                             'advance' requires a non-terminal state (driver contract violation — respond None or ('replace', ...) when the game ends)"
+                        )));
+                    }
                     slots[slot_index].search = None;
                     slots[slot_index].phase = ContinuousPhase::AwaitRootEval;
                     queue.push(ContinuousEvalItem::RootInit {
@@ -2718,6 +2758,10 @@ const KNOWN_DIVERGENCE_KEYS: &[&str] = &[
     // whitelisted here so the strict known-keys gate never rejects them when
     // they ride in an override dict — a parser/whitelist mismatch on new keys
     // tripped the supervisor circuit breaker on 2026-07-04 (supervisor_halted.flag).
+    // NOTE: accepted ONLY in the fast override map; the BASE map rejects them
+    // (allow_fast_keys=false in resolve_divergences) because folding a fast_*
+    // key into the base map silently mutates the Full-class profile — the
+    // exact skew this whitelist exists to prevent.
     "fast_gumbel_root_enabled",
     "fast_gumbel_sequential_halving",
     "fast_gumbel_nonroot_select",
@@ -2727,9 +2771,31 @@ const KNOWN_DIVERGENCE_KEYS: &[&str] = &[
     "fast_gumbel_play_prune",
 ];
 
+/// Validate a numeric divergence override on top of extraction: every f32
+/// override must be finite, plus the field's semantic range (`range` is the
+/// human-readable range for the error message, `ok` the predicate enforcing it).
+fn checked_divergence_f32(
+    key: &str,
+    value: f32,
+    range: &str,
+    ok: impl Fn(f32) -> bool,
+) -> PyResult<f32> {
+    if !value.is_finite() || !ok(value) {
+        return Err(PyValueError::new_err(format!(
+            "divergence override {key:?} must be {range}, got {value}"
+        )));
+    }
+    Ok(value)
+}
+
 fn resolve_divergences(
     search_parity_mode: Option<bool>,
     overrides: Option<&Bound<'_, PyDict>>,
+    // True only for the SECOND (Fast-class) override map: fast_* keys are the
+    // Fast view's levers and folding them into the BASE map would silently skew
+    // the Full-class profile — exactly what the strict whitelist exists to
+    // prevent — so the base map rejects them.
+    allow_fast_keys: bool,
 ) -> PyResult<Divergences> {
     if let Some(overrides) = overrides {
         for key in overrides.keys() {
@@ -2737,6 +2803,13 @@ fn resolve_divergences(
             if !KNOWN_DIVERGENCE_KEYS.contains(&key.as_str()) {
                 return Err(PyValueError::new_err(format!(
                     "unknown divergence override key {key:?}; known keys: {KNOWN_DIVERGENCE_KEYS:?}"
+                )));
+            }
+            if !allow_fast_keys && key.starts_with("fast_") {
+                return Err(PyValueError::new_err(format!(
+                    "divergence override key {key:?} is a Fast-class lever and is only \
+                     accepted in the fast override map; in the base map it would silently \
+                     mutate the Full-class profile"
                 )));
             }
         }
@@ -2761,13 +2834,23 @@ fn resolve_divergences(
             dv.moves_left_utility = v.extract()?;
         }
         if let Some(v) = overrides.get_item("ml_weight")? {
-            dv.ml_weight = v.extract()?;
+            dv.ml_weight = checked_divergence_f32("ml_weight", v.extract()?, "finite", |_| true)?;
         }
         if let Some(v) = overrides.get_item("ml_scale")? {
-            dv.ml_scale = v.extract()?;
+            // tanh divisor in the moves-left bonus: 0 => NaN, negative flips
+            // the bonus direction. It is a positive length scale (in moves).
+            dv.ml_scale =
+                checked_divergence_f32("ml_scale", v.extract()?, "finite and > 0 (tanh length scale)", |x| {
+                    x > 0.0
+                })?;
         }
         if let Some(v) = overrides.get_item("ml_q_gate")? {
-            dv.ml_q_gate = v.extract()?;
+            // Q-gate in value units (Q in [-1, 1]); negative gates invert the
+            // dead-zone semantics.
+            dv.ml_q_gate =
+                checked_divergence_f32("ml_q_gate", v.extract()?, "finite and >= 0 (Q gate in value units)", |x| {
+                    x >= 0.0
+                })?;
         }
         if let Some(v) = overrides.get_item("ml_two_sided")? {
             dv.ml_two_sided = v.extract()?;
@@ -2776,16 +2859,29 @@ fn resolve_divergences(
             dv.ml_final_pick = v.extract()?;
         }
         if let Some(v) = overrides.get_item("ml_final_pick_band")? {
-            dv.ml_final_pick_band = v.extract()?;
+            dv.ml_final_pick_band = checked_divergence_f32(
+                "ml_final_pick_band",
+                v.extract()?,
+                "finite and >= 0 (LCB band in value units)",
+                |x| x >= 0.0,
+            )?;
         }
         if let Some(v) = overrides.get_item("lcb_z")? {
-            dv.lcb_z = v.extract()?;
+            dv.lcb_z = checked_divergence_f32("lcb_z", v.extract()?, "finite", |_| true)?;
         }
         if let Some(v) = overrides.get_item("c_scale")? {
-            dv.c_scale = v.extract()?;
+            dv.c_scale =
+                checked_divergence_f32("c_scale", v.extract()?, "finite and >= 0", |x| x >= 0.0)?;
         }
         if let Some(v) = overrides.get_item("c_base")? {
-            dv.c_base = v.extract()?;
+            // c_for computes ((visits + c_base) / c_base).ln(): c_base == 0
+            // yields inf/NaN that partial_cmp tie-breaks silently swallow.
+            dv.c_base = checked_divergence_f32(
+                "c_base",
+                v.extract()?,
+                "finite and > 0 (dynamic c_puct log denominator)",
+                |x| x > 0.0,
+            )?;
         }
         // Search divergences, individually flippable via the override dict.
         if let Some(v) = overrides.get_item("nucleus_f64")? {
@@ -2823,20 +2919,42 @@ fn resolve_divergences(
             dv.gumbel_nonroot_select = v.extract()?;
         }
         if let Some(v) = overrides.get_item("gumbel_c_visit")? {
-            dv.gumbel_c_visit = v.extract()?;
+            dv.gumbel_c_visit = checked_divergence_f32(
+                "gumbel_c_visit",
+                v.extract()?,
+                "finite and >= 0 (σ transform visit constant)",
+                |x| x >= 0.0,
+            )?;
         }
         if let Some(v) = overrides.get_item("gumbel_c_scale")? {
-            dv.gumbel_c_scale = v.extract()?;
+            dv.gumbel_c_scale = checked_divergence_f32(
+                "gumbel_c_scale",
+                v.extract()?,
+                "finite and >= 0 (σ transform scale)",
+                |x| x >= 0.0,
+            )?;
         }
         // Export-only target σ override (absent => target keeps gumbel_c_scale).
         if let Some(v) = overrides.get_item("gumbel_target_c_scale")? {
-            dv.gumbel_target_c_scale = Some(v.extract()?);
+            dv.gumbel_target_c_scale = Some(checked_divergence_f32(
+                "gumbel_target_c_scale",
+                v.extract()?,
+                "finite and >= 0 (export-only σ transform scale)",
+                |x| x >= 0.0,
+            )?);
         }
         if let Some(v) = overrides.get_item("gumbel_m")? {
             dv.gumbel_m = v.extract()?;
         }
         if let Some(v) = overrides.get_item("gumbel_draw_temperature")? {
-            dv.gumbel_draw_temperature = v.extract()?;
+            // τ <= 0 is the documented disable sentinel (init_gumbel_root falls
+            // back to today's raw logit+g draw), so only non-finite is invalid.
+            dv.gumbel_draw_temperature = checked_divergence_f32(
+                "gumbel_draw_temperature",
+                v.extract()?,
+                "finite (<= 0 disables the draw-temperature transform)",
+                |_| true,
+            )?;
         }
         if let Some(v) = overrides.get_item("gumbel_target_min_visits")? {
             dv.gumbel_target_min_visits = v.extract()?;
@@ -2860,10 +2978,20 @@ fn resolve_divergences(
             dv.gumbel_nonroot_select = v.extract()?;
         }
         if let Some(v) = overrides.get_item("fast_gumbel_c_visit")? {
-            dv.gumbel_c_visit = v.extract()?;
+            dv.gumbel_c_visit = checked_divergence_f32(
+                "fast_gumbel_c_visit",
+                v.extract()?,
+                "finite and >= 0 (σ transform visit constant)",
+                |x| x >= 0.0,
+            )?;
         }
         if let Some(v) = overrides.get_item("fast_gumbel_c_scale")? {
-            dv.gumbel_c_scale = v.extract()?;
+            dv.gumbel_c_scale = checked_divergence_f32(
+                "fast_gumbel_c_scale",
+                v.extract()?,
+                "finite and >= 0 (σ transform scale)",
+                |x| x >= 0.0,
+            )?;
         }
         if let Some(v) = overrides.get_item("fast_gumbel_m")? {
             dv.gumbel_m = v.extract()?;
@@ -3016,7 +3144,7 @@ fn build_search_result_payload_native(
     forced_playout_k: f32,
 ) -> PyResult<PayloadNative> {
     let root = search.root();
-    let (policy_action_ids, policy_weights, _policy_q, policy_total) = visit_policy(root, baseline);
+    let (policy_action_ids, policy_weights, policy_q, policy_total) = visit_policy(root, baseline);
     // Forced-playout pruning is PUCT bookkeeping: at a Gumbel SH root the
     // selection path never takes the forced branches, so there are no forced
     // playouts to prune and the PUCT pruning math (n_forced = sqrt(k*P*N))
@@ -3029,8 +3157,9 @@ fn build_search_result_payload_native(
             let effective_c = search.effective_pruning_c_puct(c_puct, root.visits);
             pruned_visit_policy(root, baseline, forced_playout_k, effective_c)
         } else {
-            let (ids, w, q, _t) = visit_policy(root, baseline);
-            (ids, w, q)
+            // Common branch: the recorded target IS the play policy computed
+            // above, so reuse it instead of a second full visit_policy scan.
+            (policy_action_ids.clone(), policy_weights.clone(), policy_q)
         };
     // Recorded-target fallback for a force-completed Gumbel SH root: such a move
     // can finalize with zero net delta visits over its reuse baseline, so the
@@ -3879,7 +4008,10 @@ fn select_action_from_policy(
     let mut total = 0.0f64;
     let mut adjusted = Vec::with_capacity(weights.len());
     for weight in weights {
-        let value = weight.powf(inv_temperature) as f64;
+        // powf in f64: at low temperatures (large exponents) an f32 powf
+        // underflows flat histograms to all-zero mass, aborting the batch with
+        // the positive-finite-mass error below. f64 keeps ~1e-308 of headroom.
+        let value = (*weight as f64).powf(inv_temperature as f64);
         total += value;
         adjusted.push(value);
     }
@@ -4278,7 +4410,7 @@ mod fallback_tests {
             let overrides = PyDict::new(py);
             overrides.set_item("gumbel_target_c_scale", 0.35f32).unwrap();
             overrides.set_item("gumbel_draw_temperature", 1.0f32).unwrap();
-            let dv = resolve_divergences(None, Some(&overrides))
+            let dv = resolve_divergences(None, Some(&overrides), false)
                 .expect("new lever keys must pass the known-keys gate");
             assert_eq!(dv.gumbel_target_c_scale, Some(0.35));
             assert_eq!(dv.gumbel_draw_temperature, 1.0);
@@ -4294,8 +4426,8 @@ mod fallback_tests {
             fast.set_item("fast_gumbel_c_scale", 0.5f32).unwrap();
             fast.set_item("fast_gumbel_m", 8u32).unwrap();
             fast.set_item("fast_gumbel_play_prune", true).unwrap();
-            let fv = resolve_divergences(None, Some(&fast))
-                .expect("fast_* keys must pass the known-keys gate");
+            let fv = resolve_divergences(None, Some(&fast), true)
+                .expect("fast_* keys must pass the known-keys gate in the fast map");
             assert!(fv.gumbel_root);
             assert!(fv.gumbel_sequential_halving);
             assert!(fv.gumbel_nonroot_select);
@@ -4307,7 +4439,43 @@ mod fallback_tests {
             // The gate itself still rejects a genuinely unknown key.
             let bogus = PyDict::new(py);
             bogus.set_item("gumbel_bogus_lever", 1.0f32).unwrap();
-            assert!(resolve_divergences(None, Some(&bogus)).is_err());
+            assert!(resolve_divergences(None, Some(&bogus), false).is_err());
+
+            // fast_* keys are Fast-view levers: accepted only in the fast map,
+            // rejected in the BASE map where they would silently mutate the
+            // Full-class profile.
+            assert!(
+                resolve_divergences(None, Some(&fast), false).is_err(),
+                "base map must reject fast_* keys"
+            );
+
+            // Numeric validation: garbage values fail loudly instead of
+            // reaching c_for/tanh as inf/NaN.
+            for (key, value) in [
+                ("c_base", 0.0f32),
+                ("c_base", f32::NAN),
+                ("c_scale", -0.1f32),
+                ("ml_scale", 0.0f32),
+                ("lcb_z", f32::INFINITY),
+                ("gumbel_c_visit", -1.0f32),
+                ("gumbel_c_scale", f32::NAN),
+                ("gumbel_target_c_scale", -0.5f32),
+                ("gumbel_draw_temperature", f32::INFINITY),
+                ("ml_q_gate", -0.1f32),
+                ("ml_final_pick_band", f32::NAN),
+                ("ml_weight", f32::NAN),
+            ] {
+                let bad = PyDict::new(py);
+                bad.set_item(key, value).unwrap();
+                assert!(
+                    resolve_divergences(None, Some(&bad), false).is_err(),
+                    "{key}={value} must be rejected"
+                );
+            }
+            // The documented τ<=0 disable sentinel stays accepted.
+            let tau_off = PyDict::new(py);
+            tau_off.set_item("gumbel_draw_temperature", 0.0f32).unwrap();
+            assert!(resolve_divergences(None, Some(&tau_off), false).is_ok());
         });
     }
 
@@ -4408,7 +4576,7 @@ mod fallback_tests {
             let base_overrides = PyDict::new(py);
             base_overrides.set_item("gumbel_root", true).unwrap();
             base_overrides.set_item("gumbel_c_scale", 0.7f32).unwrap();
-            let base = resolve_divergences(None, Some(&base_overrides)).unwrap();
+            let base = resolve_divergences(None, Some(&base_overrides), false).unwrap();
             // No fast overrides => fast view IS the base view (Rust fallback).
             let fast_fallback = base;
             assert_eq!(

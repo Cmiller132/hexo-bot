@@ -30,12 +30,7 @@ from torch.nn import functional as F
 from .constants import (
     ATTENTION_HEADS,
     BIAS_CELL_TOKEN_ROW,
-    BIAS_DISK_RADIUS,
-    BIAS_FAR_ROW,
-    BIAS_OFF_AXIS_BASE,
-    BIAS_ON_AXIS_BASE,
     BIAS_RING_MAX,
-    BIAS_RING_MIN,
     BIAS_ROWS,
     BIAS_TOKEN_CELL_ROW,
     BIAS_TOKEN_TOKEN_ROW,
@@ -43,7 +38,6 @@ from .constants import (
     C_ORBIT,
     FEATURE_VERSION,
     GROUP_ORDER,
-    HEAD_DIM,
     MLP_RATIO,
     NUM_FEATURES,
     NUM_TOKENS,
@@ -203,14 +197,15 @@ else:
 try:
     from torch.nn.attention.flex_attention import flex_attention as _flex_attention
 
-    # Inner-compiled flex_attention. _flex_call (below) is torch.compiler.disable'd
-    # so the outer torch.compile(dynamic=True) serve graph breaks at the attention
-    # and the flex op compiles in its own inner graph.
+    # _flex_call (below) is torch.compiler.disable'd so the outer
+    # torch.compile(dynamic=True) serve graph breaks at the attention and the
+    # flex op compiles in its own inner graph.
     #
-    # dynamic=False: the score_mod does data-dependent indexing (coords[b, kc],
-    # table[row, h]) which inductor cannot lower under dynamic shapes, so flex
-    # specializes per distinct (batch, Npad) serve shape.
-    _flex_compiled = torch.compile(_flex_attention, dynamic=False)
+    # dynamic=False on the per-shape instances: the score_mod does
+    # data-dependent indexing (coords[b, kc], table[row, h]) which inductor
+    # cannot lower under dynamic shapes, so flex specializes per distinct
+    # (batch, Npad) serve shape.
+    #
     # SHAPE-KEYED compile instances (2026-07-03): a single compiled callable
     # holds every (B, S) specialization in ONE dynamo cache, and dynamo resolves
     # hits by linearly scanning guard-sets — with hundreds of live serve shapes
@@ -1187,22 +1182,20 @@ class RayAttnBlock(nn.Module):
 # layouts are mapped explicitly. main_1..main_6 = CCC A CCC A CC A; main_7 =
 # CC A x5; main_9 = CC A CC A CC A (6C/3A, the HEXFIELD_TRUNK=CCACCACCA arch).
 #
-# (6, 3) is SHARED by two DIFFERENT classes: main_9's current-arch net AND the
-# frozen legacy-v2 snapshot (also 6C/3A, also CCACCACCA interleaving). This is
-# safe because the two are NOT disambiguated by this map — they are told apart
-# by their parameter-key SETS at strict-load time in eval_arena._load_checkpoint:
-# legacy-v2 carries a single shared `bias_table` + `aux_reduction` and lacks
-# `bias_free_tables.{i}` / cell_q / LayerScale (ls_attn/ls_mlp), so a legacy-v2 state
-# dict fails the current HexfieldNet's strict load and falls through to
-# eval_arena's HexfieldNetV2 fallback regardless of the trunk_layout inferred
-# here. A main_9 state dict has the current-arch keys and loads cleanly. Mapping
-# (6, 3) is thus NEEDED so a main_9 anchor rebuilt in a foreign-arch process
-# (e.g. a main_7 CCAx5 dashboard worker) gets the right CCACCACCA interleaving
-# instead of the process-global HEXFIELD_EQ_TRUNK default.
+# (6, 3) was historically SHARED by main_9's current-arch net and the frozen
+# legacy-v2 snapshot (also 6C/3A). The legacy-v2 fallback class was removed
+# (eval_arena now raises on a strict-load failure instead of retrying); a
+# legacy-v2 state dict — single shared `bias_table` + `aux_reduction`, no
+# `bias_free_tables.{i}` / cell_q / LayerScale keys — fails strict load with
+# that error. Mapping (6, 3) is still NEEDED so a main_9 anchor rebuilt in a
+# foreign-arch process (e.g. a main_7 CCAx5 dashboard worker) gets the right
+# CCACCACCA interleaving instead of the process-global HEXFIELD_EQ_TRUNK
+# default.
 KNOWN_TRUNK_LAYOUTS: dict[tuple[int, int], str] = {
     (8, 3): "CCCACCCACCA",
     (10, 5): "CCACCACCACCACCA",
     (6, 3): "CCACCACCA",  # main_9 (current arch); legacy-v2 same shape, see above
+    (5, 3): "CCACCACA",  # a5 production arch (scripts/prefit_env/hexfield_eq_raytap_a5.env)
 }
 
 

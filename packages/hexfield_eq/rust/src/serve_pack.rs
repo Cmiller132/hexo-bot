@@ -23,6 +23,7 @@ use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
+use std::sync::LazyLock;
 
 use half::f16;
 
@@ -31,10 +32,46 @@ use crate::constants::{num_features, RAYLEN_SLOTS};
 const NBR_SENTINEL: u16 = 0xFFFF;
 // Node-count quantization for pad_to; mirrors inference.py.
 const QUANT_NODES: usize = 64;
-// Token count added in the (pad_to + NUM_TOKENS)^2 pair-ceiling test.
-const NUM_TOKENS: usize = 8;
-const PAIR_CEILING: f64 = 3.8e7;
-const WASTE_FRACTION: f64 = 0.18;
+// Token count added in the (pad_to + NUM_TOKENS)^2 pair-ceiling test; mirrors
+// hexfield_eq constants.py NUM_TOKENS (6: value/aux/moves-left tokens 0..5).
+const NUM_TOKENS: usize = 6;
+// Planner defaults; mirror inference.py PAIR_CEILING / WASTE_FRACTION (env
+// overrides below).
+const DEFAULT_PAIR_CEILING: f64 = 3.8e7;
+const DEFAULT_WASTE_FRACTION: f64 = 0.18;
+// Hard per-group row cap, aligned with the Python planner's MAX_GROUP_ROWS
+// (_GraphCache.MAX_B): a group above it cannot be graph-captured.
+const MAX_GROUP_ROWS: usize = 260;
+
+/// Mirror of the Python planner's module-level env read, e.g.
+/// `float(os.environ.get("HEXFIELD_PAIR_CEILING", 0) or 3.8e7)`: unset or
+/// empty => the default; any other value must parse as a float (Python raises
+/// ValueError at import, we surface a PyValueError at first planner use).
+fn planner_env_f64(name: &str, default: f64) -> Result<f64, String> {
+    match std::env::var(name) {
+        Ok(raw) if !raw.is_empty() => raw.trim().parse::<f64>().map_err(|_| {
+            format!("environment override {name}={raw:?} must parse as a float")
+        }),
+        _ => Ok(default),
+    }
+}
+
+/// Env-overridable planner constants, read once (mirroring the Python module
+/// import) and shared by every planner call.
+static PAIR_CEILING: LazyLock<Result<f64, String>> =
+    LazyLock::new(|| planner_env_f64("HEXFIELD_PAIR_CEILING", DEFAULT_PAIR_CEILING));
+static WASTE_FRACTION: LazyLock<Result<f64, String>> =
+    LazyLock::new(|| planner_env_f64("HEXFIELD_WASTE_FRACTION", DEFAULT_WASTE_FRACTION));
+
+fn planner_constants() -> PyResult<(f64, f64)> {
+    let pair_ceiling = PAIR_CEILING
+        .as_ref()
+        .map_err(|e| PyValueError::new_err(e.clone()))?;
+    let waste_fraction = WASTE_FRACTION
+        .as_ref()
+        .map_err(|e| PyValueError::new_err(e.clone()))?;
+    Ok((*pair_ceiling, *waste_fraction))
+}
 
 /// 64-quantized ceiling of `n`: `max(64, div_ceil(n, 64) * 64)`. Returns 64
 /// for `n == 0`.
@@ -44,26 +81,37 @@ fn ceil_quant(n: usize) -> usize {
 }
 
 /// Group boundary planner. Rows arrive size-descending. Returns
-/// (start, end, pad_to) groups in ascending row order.
-pub fn plan_groups(sizes: &[usize]) -> Vec<(usize, usize, usize)> {
+/// (start, end, pad_to) groups in ascending row order. Byte-plan-identical to
+/// the Python `plan_groups` in inference.py for the same inputs (same
+/// constants, same env overrides, same break order: row cap, pair ceiling,
+/// waste floor).
+pub fn plan_groups(sizes: &[usize]) -> PyResult<Vec<(usize, usize, usize)>> {
+    let (pair_ceiling, waste_fraction) = planner_constants()?;
     let n = sizes.len();
     let mut groups: Vec<(usize, usize, usize)> = Vec::new();
     let mut start = 0usize;
     while start < n {
         let pad_to = ceil_quant(sizes[start]);
         // floor = pad_to - max(QUANT_NODES, trunc(WASTE_FRACTION * pad_to)).
-        // The f64 product is non-negative, so `as usize` truncates toward zero.
-        let waste = (WASTE_FRACTION * pad_to as f64) as usize;
-        let floor = pad_to - QUANT_NODES.max(waste);
+        // The f64 product is non-negative, so `as i64` truncates toward zero
+        // like Python's int(). i64 because an env-raised WASTE_FRACTION > 1.0
+        // makes the Python floor negative (never splits on waste).
+        let waste = (waste_fraction * pad_to as f64) as i64;
+        let floor = pad_to as i64 - (QUANT_NODES as i64).max(waste);
         let mut end = start + 1;
         while end < n {
+            // Row cap FIRST (matching the Python break order): groups above
+            // MAX_GROUP_ROWS rows cannot be graph-captured.
+            if end - start >= MAX_GROUP_ROWS {
+                break;
+            }
             // (end - start + 1) is the candidate group size INCLUDING sizes[end].
             let g = (end - start + 1) as f64;
             let pair = g * ((pad_to + NUM_TOKENS) * (pad_to + NUM_TOKENS)) as f64;
-            if pair > PAIR_CEILING {
+            if pair > pair_ceiling {
                 break;
             }
-            if sizes[end] < floor {
+            if (sizes[end] as i64) < floor {
                 break;
             }
             end += 1;
@@ -71,7 +119,7 @@ pub fn plan_groups(sizes: &[usize]) -> Vec<(usize, usize, usize)> {
         groups.push((start, end, pad_to));
         start = end;
     }
-    groups
+    Ok(groups)
 }
 
 // --- Zero-copy buffers --------------------------------------------------------
@@ -284,7 +332,7 @@ pub fn build_serve_groups<'py>(
     let offsets_us: Vec<usize> = offsets.iter().map(|&o| o as usize).collect();
     let sizes: Vec<usize> = (0..b).map(|i| offsets_us[i + 1] - offsets_us[i]).collect();
 
-    let groups = plan_groups(&sizes);
+    let groups = plan_groups(&sizes)?;
 
     // Parallel pad with the GIL released.
     let assembled = py.detach(|| {
@@ -310,6 +358,6 @@ pub fn build_serve_groups<'py>(
 
 /// Exposes `plan_groups` to Python. Returns the (start, end, pad_to) tuples.
 #[pyfunction]
-pub fn debug_plan_groups(sizes: Vec<usize>) -> Vec<(usize, usize, usize)> {
+pub fn debug_plan_groups(sizes: Vec<usize>) -> PyResult<Vec<(usize, usize, usize)>> {
     plan_groups(&sizes)
 }
