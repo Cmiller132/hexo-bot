@@ -19,13 +19,14 @@ results are recorded consistently in the diagnostics directory.
 Model packages own tensors, losses, optimizer details, sample decoding, and
 checkpoint contents. Game execution happens inside each plugin's
 `generate_selfplay` hook (the plugin drives hexo_engine/hexo_runner itself —
-e.g. packages/dense_cnn_restnet/python/dense_cnn_restnet/selfplay.py for the
-active run); this pipeline never imports the engine or runner directly.
+e.g. packages/hexfield/python/hexfield/selfplay.py for the active run); this
+pipeline never imports the engine or runner directly.
 
 Entry point: cli/train_model.py (`python -m hexo_train.cli.train_model
 <config.toml>`), which the WSL supervisor scripts
-(scripts/_dc_restnet_supervise_main1.sh and friends) loop over for the live
-runs. Tests also call `TrainingPipeline().run()` directly.
+(scripts/_hexfield_supervise_main1.sh, scripts/_hexfield_eq_supervise_main1.sh)
+loop over for the live runs. Tests also call `TrainingPipeline().run()`
+directly.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from .config import load_training_config
 from .context import RunContext
 from .defaults import build_shared_components
 from .epoch import run_epochs
+from .epoch.samples import prepare_sample_store
 from .registry import load_model_plugin
 
 
@@ -94,9 +96,9 @@ class TrainingPipeline:
         """Release model-owned resources at run end (success or failure).
 
         Generic: a model trainer that holds external resources (e.g. the
-        dense_cnn / dense_cnn_restnet trainers' persistent shard-expansion
-        process pools) may expose ``close()``; calling it in a finally keeps
-        those resources from leaking past the run. Best-effort.
+        hexfield trainer's persistent shard-expansion ProcessPool built by
+        ``_get_expand_pool``) may expose ``close()``; calling it in a finally
+        keeps those resources from leaking past the run. Best-effort.
         """
 
         trainer = getattr(getattr(components, "model", None), "trainer", None)
@@ -112,12 +114,12 @@ class TrainingPipeline:
         ctx: RunContext,
         components: TrainingComponents,
     ) -> Mapping[str, Any]:
-        """Write initial run files.
+        """Write initial run files and open the sample store.
 
         This is the only setup step that touches run metadata. It writes the
-        normalized config and manifest before epochs start. Every shipped
-        plugin owns its own replay storage (`uses_shared_sample_store=False`);
-        hexo_train no longer opens a shared sample store here.
+        normalized config and manifest before epochs start, then opens the
+        shared sample store so self-play/finalization can append model-owned
+        records through the same handle.
         """
 
         normalized_config = ctx.diagnostics.write_json(
@@ -126,15 +128,12 @@ class TrainingPipeline:
         )
         manifest = write_run_manifest(ctx)
         if components.model.uses_shared_sample_store:
-            raise RuntimeError(
-                "uses_shared_sample_store=True is no longer supported; "
-                "hexo_train no longer ships a shared sample store. Plugins "
-                "must own their replay storage."
-            )
-        sample_store = {
-            "status": "skipped",
-            "reason": "model owns replay storage",
-        }
+            sample_store = prepare_sample_store(ctx, components)
+        else:
+            sample_store = {
+                "status": "skipped",
+                "reason": "model owns replay storage",
+            }
         return {
             "config": str(normalized_config),
             "manifest": str(manifest),

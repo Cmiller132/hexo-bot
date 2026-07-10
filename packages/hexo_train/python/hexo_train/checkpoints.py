@@ -4,10 +4,10 @@
 plugin owns what a checkpoint contains. These helpers therefore delegate to
 model-provided loader/saver objects when they exist, and otherwise write small
 placeholder metadata files so the pipeline remains executable during early
-development. All four registered plugins ship a real loader/saver (e.g.
-packages/dense_cnn_restnet/python/dense_cnn_restnet/checkpoints.py), so the
-placeholder branches only fire for the FakePlugin unit tests in
-tests/test_training_pipeline_simplification.py.
+development. Real model plugins ship a real loader/saver (e.g.
+packages/hexfield/python/hexfield/checkpoints.py), so the placeholder
+branches only fire for FakePlugin-style pipeline unit tests, never on a
+production run.
 
 Cross-module contract: the loader's return dict is stored on
 `components.shared.checkpoint_state` and read by epoch/loop.py `_start_epoch`
@@ -130,8 +130,9 @@ def _publish_epoch_checkpoint_pointer(ctx: RunContext, checkpoint_result: dict[s
 
     Near-duplicate of artifacts.publish_selfplay_checkpoint_pointer (the final
     variant); the two writers must stay format-identical. Only legacy
-    dense_cnn/hexgt configs set `update_checkpoint_pointer = true` — all
-    restnet main_* configs disable it, so this returns None on the active run.
+    dense_cnn/hexgt configs set `update_checkpoint_pointer = true` — the active
+    hexfield/hexfield_eq configs disable it, so this returns None on the active
+    run.
     """
 
     if not ctx.config.selfplay.update_checkpoint_pointer:

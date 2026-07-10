@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hexfield_eq &mdash; the position</title>
+<meta name="description" content="What the hexfield_eq network reads: the support set (legal cells, stones, halo), the 46 feature planes, the graded window scan, and the 12 blocker-aware ray lengths.">
+<link rel="stylesheet" href="learn.css">
+<style>
+/* ---- page-specific: boards, plane tables, readout extensions ---- */
+.fig svg.eqboard{max-width:620px;margin:0 auto;cursor:pointer}
+.eqboard polygon{fill:#0c0f13;stroke:#141920;stroke-width:1}
+.eqboard polygon.c-off{fill:#0c0f13;stroke:#141920}
+.eqboard polygon.c-legal{fill:#1b222b;stroke:#2a333e}
+.eqboard polygon.c-stone{fill:#212a34;stroke:#2a333e}
+.eqboard polygon.c-halo{fill:#211e16;stroke:#3a3529}
+.eqboard circle.stone{stroke:#0a0d10;stroke-width:1.2}
+.eqboard .stone.p0{fill:var(--p0)}
+.eqboard .stone.p1{fill:var(--p1)}
+.eqboard .zone{fill:none;stroke:var(--dim);stroke-dasharray:5 5;stroke-width:1.2;opacity:.85}
+.eqboard .probe{fill:none;stroke:var(--accent);stroke-width:2}
+.eqboard text{font-family:var(--mono);fill:var(--accent)}
+.eqboard .stone,.eqboard .ovl,.eqboard text,.eqboard .zone{pointer-events:none}
+
+/* legend swatches in control strips */
+.lg{display:inline-flex;align-items:center;gap:6px;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--dim);white-space:nowrap}
+.lg i{display:inline-block;width:10px;height:10px;border:1px solid var(--line)}
+.lg i.bar{height:3px;border:none}
+.sw-legal{background:#1b222b;border-color:#2a333e}
+.sw-stonec{background:#212a34;border-color:#2a333e}
+.sw-halo{background:#211e16;border-color:#3a3529}
+.sw-off{background:#0c0f13;border-color:#141920}
+
+/* node-order bar inside fig 1 readout */
+.order-bar{display:flex;gap:2px;margin:2px 0 4px;max-width:520px}
+.order-bar .ob{
+  font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);padding:3px 7px;border:1px solid var(--line);
+  white-space:nowrap;overflow:hidden;min-width:0;flex-basis:0}
+.ob-legal{background:#223041}
+.ob-stone{background:#2c3642}
+.ob-halo{background:#2c2820}
+
+/* multi-line mono data in readouts */
+.ro-scroll{overflow-x:auto}
+.ro-pre{margin:0;padding:0;background:none;border:none;
+        font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre}
+
+/* plane tables (fig 2) */
+.pt-tag{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+        color:var(--dim);margin:16px 0 8px}
+.pt-tag:first-child{margin-top:0}
+.pt-wrap{overflow-x:auto}
+.ptable{border-collapse:collapse;width:100%;font-size:12.5px;line-height:1.5;min-width:540px}
+.ptable th{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+           color:var(--dim);text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);
+           white-space:nowrap;font-weight:400}
+.ptable td{padding:5px 10px;border-bottom:1px solid var(--line-soft);color:var(--muted);vertical-align:top}
+.ptable tr:last-child td{border-bottom:none}
+.ptable td.ix{font-family:var(--mono);font-size:11.5px;color:var(--accent);white-space:nowrap}
+.ptable td.nm{font-family:var(--mono);font-size:11.5px;color:var(--text);white-space:nowrap}
+.ptable td.nrm{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap}
+</style>
+</head>
+<body>
+
+<header class="learn-header">
+  <a class="wordmark" href="../">hexo</a>
+  <nav class="learn-nav" aria-label="How it works">
+    <a href="./">Overview</a>
+    <a href="position.html" class="current" aria-current="page">The position</a>
+    <a href="symmetry.html">The symmetry</a>
+    <a href="network.html">The network</a>
+    <a href="walkthrough.html">End to end</a>
+    <a href="search.html">The search</a>
+    <a href="systems.html">The serving</a>
+    <a href="training.html">The training</a>
+  </nav>
+</header>
+
+<main class="learn-main">
+
+<h1>The position <span class="h-dim">&mdash; what the network reads</span></h1>
+
+<p class="lede">
+The network never sees a padded grid. Every position is rebuilt, from raw
+placement facts, into a <em>support set</em> &mdash; exactly the cells that
+matter right now &mdash; and every cell in it carries 46 feature planes plus 12
+blocker-aware ray lengths. This page is what those numbers are: the three-layer
+support build, the complete plane map, and live versions of the window scan and
+ray walk that produce most of the planes. Every figure below runs the same
+geometry as the production featurizer.
+</p>
+
+<h2 id="support"><span class="sec-no">01</span>the support set</h2>
+
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §2; support.py _build_support;
+     support radius 4 vs rules legality radius 8 (constants.py LEGAL_RADIUS = 8) -->
+<p>
+Three layers, rebuilt per position:
+</p>
+<ul>
+  <li><b>Stones</b> &mdash; every occupied cell.</li>
+  <li><b>Legal cells</b> &mdash; every empty cell within hex-distance 4 of a
+      stone (the support radius; the rules themselves allow distance 8).</li>
+  <li><b>Halo</b> &mdash; the one-cell shell just outside, so a convolution
+      centered on an edge cell still has neighbours to read.</li>
+</ul>
+
+<p>
+One multi-source BFS outward from the stones produces all three layers
+<em>plus</em> each cell&rsquo;s distance-to-nearest-stone in a single pass.
+Early positions have a few dozen nodes, crowded ones a few hundred.
+</p>
+
+<p>
+Nodes are stored in a fixed order &mdash; <b>legal cells, then stones, then
+halo</b>, each segment sorted by packed coordinate id (ascending signed
+<code>(q,&thinsp;r)</code>). Legal-first gives the <b>legal-prefix
+property</b>: the policy head emits one logit per node in node order, so the
+first <code>legal_count</code> outputs <em>are</em> the legal moves. Nothing
+downstream ever matches coordinates against a rules oracle &mdash; taking the
+first <code>legal_count</code> logits is the mask, a slice that cannot drift
+out of sync with the node order.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §2 (node order, legal-prefix property);
+     constants.py COORD_OFFSET comment (packed-id order == ascending (q, r)) -->
+</p>
+
+<figure class="fig" id="fig-support">
+  <figcaption>fig 1 &middot; <b>the support set, live</b> &middot; click inside the dotted zone to cycle a cell empty &rarr; blue &rarr; red &middot; hover for node row</figcaption>
+  <!-- src: eq.js buildSupport — validated JS port of support.py _build_support;
+       demo position is illustrative (7 stones, plausible midgame), the support
+       math is the real algorithm at production radius 4 -->
+  <div class="fig-body">
+    <svg class="eqboard" id="svg1" role="img" aria-label="Interactive hex board: stones, legal cells, halo, and off-support cells of the current position"></svg>
+  </div>
+  <div class="fig-controls">
+    <button id="resetBtn" type="button">reset position</button>
+    <span class="spacer"></span>
+    <span class="lg"><i class="sw-legal"></i>legal</span>
+    <span class="lg"><i class="sw-stonec"></i>stone cell</span>
+    <span class="lg"><i class="sw-halo"></i>halo</span>
+    <span class="lg"><i class="sw-off"></i>off support</span>
+  </div>
+  <div class="fig-readout" aria-live="polite">
+    <span class="ro-k" id="ro1k">support</span>
+    <div class="order-bar" aria-hidden="true">
+      <span class="ob ob-legal" id="obLegal"></span>
+      <span class="ob ob-stone" id="obStone"></span>
+      <span class="ob ob-halo" id="obHalo"></span>
+    </div>
+    <span class="ro-t" id="ro1t"></span>
+    <span class="ro-t" id="ro1c">hover a cell for its layer, node row, and distance-to-stone.</span>
+  </div>
+</figure>
+
+<p>
+To the network a position is five aligned arrays over the N nodes:
+<code>feats (N &times; 46)</code>, <code>coords (N &times; 2)</code> axial
+coordinates, <code>nbr (N &times; 6)</code> neighbour row-indices along the six
+hex directions (a missing neighbour is a sentinel that reads as a zero row),
+<code>raylen (N &times; 12)</code> ray lengths (&sect;04 below), and a boolean
+node mask used only for batch padding.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §2 (five aligned arrays);
+     constants.py NBR_SENTINEL_U16 -->
+</p>
+
+<div class="note">
+<b>Real scale:</b> the ply-40 self-play position traced on
+<a href="walkthrough.html">the end-to-end page</a> builds
+<b>N&nbsp;=&nbsp;402 nodes</b> = 288 legal + 40 stones + 74 halo &mdash; so its
+policy output is 402 logits of which the first 288 are exactly the legal moves.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §6; data/eq_walkthrough.json
+     (n_nodes 402, legal_count 288, stone_count 40, halo_count 74) -->
+</div>
+
+<h2 id="planes"><span class="sec-no">02</span>forty-six planes per cell</h2>
+
+<p>
+The featurizer is implemented twice &mdash; Rust for production, Python as the
+reference oracle &mdash; kept identical by exact-parity tests. Stone and threat
+planes are <b>side-to-move relative</b>: &ldquo;own&rdquo; always means the
+player about to move, whichever colour that is. One colour plane (index 6)
+carries the absolute side, and it is the only one that does.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §3 (dual featurizer, side-to-move relativity) -->
+</p>
+
+<p>
+The 46 planes split into 11 base scalars, 30 axis-indexed window planes, 2 fork
+scalars, and 3 global scalars. Under a lattice symmetry the 16 scalar planes
+stay in place while each window quantity&rsquo;s {Q,&thinsp;R,&thinsp;QR}
+triple permutes &mdash; the typed layout
+<a href="symmetry.html">the symmetry machinery</a> acts on.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §4.3 (16 fixed planes + 10 permuting triples) -->
+</p>
+
+<figure class="fig" id="fig-planes">
+  <figcaption>fig 2 &middot; <b>the plane table</b> &middot; all 46 planes &middot; indices from constants.py (feature version 2)</figcaption>
+  <!-- src: constants.py F_OWN_STONE=0 … F_SPREAD=45, NUM_FEATURES=46,
+       AXIS_PLANE_BASE=11, N_AXIS_QUANTITIES=10, N_AXES=3;
+       norms LINE_NORM=5, LIVE_NORM=6, FORK_NORM=3, FORK_LINE_THRESHOLD=3,
+       PLY_NORM=96, SPREAD_NORM=16, DIST_SCALE=8;
+       meanings HEXFIELD_EQ_EXPLAINER.md §3.1–3.3; formulas features.py -->
+  <div class="fig-body">
+
+    <div class="pt-tag">planes 0&ndash;10 &middot; base scalars &middot; one value per cell</div>
+    <div class="pt-wrap">
+    <table class="ptable">
+      <thead><tr><th>#</th><th>plane</th><th>meaning</th></tr></thead>
+      <tbody>
+        <tr><td class="ix">0</td><td class="nm">own-stone</td><td>1 where the side to move has a stone (occupancy one-hot)</td></tr>
+        <tr><td class="ix">1</td><td class="nm">opp-stone</td><td>1 where the opponent has a stone</td></tr>
+        <tr><td class="ix">2</td><td class="nm">empty</td><td>1 &minus; stones</td></tr>
+        <tr><td class="ix">3</td><td class="nm">legal</td><td>1 on the legal prefix</td></tr>
+        <tr><td class="ix">4</td><td class="nm">phase-is-second-stone</td><td>1 everywhere when this move is the turn&rsquo;s second placement</td></tr>
+        <tr><td class="ix">5</td><td class="nm">first-stone</td><td>1 where this turn&rsquo;s first stone landed</td></tr>
+        <tr><td class="ix">6</td><td class="nm">player-colour</td><td>1 everywhere when player 0 is to move &mdash; the one absolute plane</td></tr>
+        <tr><td class="ix">7</td><td class="nm">own-recency</td><td>1&thinsp;/&thinsp;(1&thinsp;+&thinsp;age) at each own stone, age in placements</td></tr>
+        <tr><td class="ix">8</td><td class="nm">opp-recency</td><td>the same for the opponent&rsquo;s stones</td></tr>
+        <tr><td class="ix">9</td><td class="nm">distance-to-stone</td><td>BFS distance to the nearest stone / 8 (stones read 0, the halo reads 0.625)</td></tr>
+        <tr><td class="ix">10</td><td class="nm">opp-last-turn</td><td>1 on the opponent&rsquo;s most recent full turn (1&ndash;2 cells)</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="pt-tag">planes 11&ndash;42 &middot; graded window planes &middot; 10 quantities &times; 3 axes, then 2 fork scalars</div>
+    <div class="pt-wrap">
+    <table class="ptable">
+      <thead><tr><th>quantity</th><th>Q</th><th>R</th><th>QR</th><th>meaning (per cell, per axis)</th><th>norm</th></tr></thead>
+      <tbody>
+        <tr><td class="nm">own_line</td><td class="ix">11</td><td class="ix">12</td><td class="ix">13</td><td>max own-stone count among clean-for-own windows</td><td class="nrm">/5</td></tr>
+        <tr><td class="nm">opp_line</td><td class="ix">14</td><td class="ix">15</td><td class="ix">16</td><td>the same for the opponent</td><td class="nrm">/5</td></tr>
+        <tr><td class="nm">own_live</td><td class="ix">17</td><td class="ix">18</td><td class="ix">19</td><td>count of clean-for-own windows</td><td class="nrm">/6</td></tr>
+        <tr><td class="nm">opp_live</td><td class="ix">20</td><td class="ix">21</td><td class="ix">22</td><td>count of clean-for-opp windows</td><td class="nrm">/6</td></tr>
+        <tr><td class="nm">own_live3</td><td class="ix">23</td><td class="ix">24</td><td class="ix">25</td><td>clean-for-own windows already holding &ge;&thinsp;3 own stones</td><td class="nrm">/6</td></tr>
+        <tr><td class="nm">opp_live3</td><td class="ix">26</td><td class="ix">27</td><td class="ix">28</td><td>&hellip; &ge;&thinsp;3 opponent stones</td><td class="nrm">/6</td></tr>
+        <tr><td class="nm">own_live4</td><td class="ix">29</td><td class="ix">30</td><td class="ix">31</td><td>clean windows holding &ge;&thinsp;4 own stones (distinct win-in-two threats)</td><td class="nrm">/6</td></tr>
+        <tr><td class="nm">opp_live4</td><td class="ix">32</td><td class="ix">33</td><td class="ix">34</td><td>&hellip; &ge;&thinsp;4 opponent stones</td><td class="nrm">/6</td></tr>
+        <tr><td class="nm">own_live5</td><td class="ix">35</td><td class="ix">36</td><td class="ix">37</td><td>clean windows holding &ge;&thinsp;5 own stones (standing-win multiplicity)</td><td class="nrm">/6</td></tr>
+        <tr><td class="nm">opp_live5</td><td class="ix">38</td><td class="ix">39</td><td class="ix">40</td><td>&hellip; &ge;&thinsp;5 opponent stones</td><td class="nrm">/6</td></tr>
+        <tr><td class="nm">own_fork</td><td class="ix" colspan="3">41 &mdash; scalar</td><td>number of axes (of 3) whose raw line count reaches 3</td><td class="nrm">/3</td></tr>
+        <tr><td class="nm">opp_fork</td><td class="ix" colspan="3">42 &mdash; scalar</td><td>the same for the opponent</td><td class="nrm">/3</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="pt-tag">planes 43&ndash;45 &middot; global scalars &middot; one value broadcast to every node</div>
+    <div class="pt-wrap">
+    <table class="ptable">
+      <thead><tr><th>#</th><th>plane</th><th>meaning</th></tr></thead>
+      <tbody>
+        <tr><td class="ix">43</td><td class="nm">ply</td><td>min(placements made, 96) / 96</td></tr>
+        <tr><td class="ix">44</td><td class="nm">dist-to-centroid</td><td>min(&thinsp;hexd(node &minus; stone centroid) / (2&thinsp;&middot;&thinsp;spread), 1&thinsp;) &mdash; per node</td></tr>
+        <tr><td class="ix">45</td><td class="nm">spread</td><td>min(spread, 16) / 16, spread = the stones&rsquo; max distance from their centroid (min 1)</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+  </div>
+</figure>
+
+<p>
+Each window quantity&rsquo;s three axis values are contiguous
+(<code>plane = 11 + quantity&thinsp;&times;&thinsp;3 + axis</code>), so a
+60&deg; rotation acts on the 30 axis planes as ten independent 3-cycles and a
+reflection as ten transpositions. The three globals &mdash; ply, distance to
+the stone centroid, and spread &mdash; are all symmetry-invariant; on an empty
+board ply and dist-to-centroid stay 0 and the spread plane reads 1/16.
+<!-- src: constants.py AXIS_PLANE_BASE comment; features.py _fill_global_scalars
+     (empty board: ply 0, dist_centroid 0, spread plane 1/16);
+     HEXFIELD_EQ_EXPLAINER.md §3.3 (all three symmetry-invariant) -->
+</p>
+
+<h2 id="windows"><span class="sec-no">03</span>the window scan</h2>
+
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §3.2 (window, clean, line/live/liveK, fork,
+     off-support convention); constants.py WINDOW_LEN=6, LINE_NORM comment -->
+<p>
+A <b>window</b> is one of the 6 possible length-6 alignments through a cell
+along one win axis (Q, R, or QR) &mdash; 18 windows per cell in all. A window
+is <b>clean for a side</b> if it contains no enemy stones: it could still
+become that side&rsquo;s six-in-a-row. For every support cell and every axis
+the featurizer scans all 6 windows and emits:
+</p>
+<ul>
+  <li><code>own_line</code>, <code>opp_line</code> &mdash; the
+      <em>maximum</em> stone count among that side&rsquo;s clean windows, /5:
+      how advanced the best line through this cell is. (A clean window holds at
+      most 5 own stones in a decision state &mdash; 6 is a played win.)</li>
+  <li><code>own_live</code>, <code>opp_live</code> &mdash; the
+      <em>count</em> of clean windows, /6: how open this cell is on this
+      axis.</li>
+  <li><code>own_live3/4/5</code>, <code>opp_live3/4/5</code> &mdash; the count
+      of clean windows already holding &ge;&thinsp;3, &ge;&thinsp;4,
+      &ge;&thinsp;5 side stones, /6. Graded threat multiplicity:
+      <code>live5</code> is per-cell standing-win multiplicity,
+      <code>live4</code> counts distinct win-in-two threats.</li>
+</ul>
+
+<p>
+Two <b>fork scalars</b> follow the 30 axis planes: the number of axes (of 3)
+whose raw line count reaches 3, per side, /3 &mdash; a cell that forks is a
+cell whose best lines on two or three different axes are all advanced at once.
+</p>
+
+<p>
+<b>Windows that run off the support count as clean-and-empty:</b> an absent
+cell contributes no stones. Edge cells therefore read slightly more open than
+they are. The convention is deliberate &mdash; it is player-symmetric and
+identical in both featurizers, so neither side and neither implementation ever
+disagrees about what an off-support cell means.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §3.2 (off-support windows clean-and-empty,
+     player-symmetric, identical in both featurizers) -->
+</p>
+
+<figure class="fig" id="fig-windows">
+  <figcaption>fig 3 &middot; <b>the 18 windows through a cell</b> &middot; hover or click a support cell &middot; windows run off the support on purpose</figcaption>
+  <!-- src: eq.js scanWindows — validated JS port of features.py window scan;
+       shares the fig-1 position state -->
+  <div class="fig-body">
+    <svg class="eqboard" id="svg3" role="img" aria-label="Interactive hex board: the 18 length-6 windows through the selected cell, colored by clean-for-own, clean-for-opp, both clean, or dead"></svg>
+  </div>
+  <div class="fig-controls">
+    <button type="button" class="ax sel" data-ax="all">all</button>
+    <button type="button" class="ax" data-ax="0">Q</button>
+    <button type="button" class="ax" data-ax="1">R</button>
+    <button type="button" class="ax" data-ax="2">QR</button>
+    <span class="spacer"></span>
+    <button type="button" class="meb sel" data-me="0">blue to move</button>
+    <button type="button" class="meb" data-me="1">red to move</button>
+    <button type="button" id="editBtn" aria-pressed="false">edit stones</button>
+  </div>
+  <div class="fig-controls">
+    <span class="lg"><i class="bar" id="swOwn"></i>clean for own</span>
+    <span class="lg"><i class="bar" id="swOpp"></i>clean for opp</span>
+    <span class="lg"><i class="bar" style="background:#7d8792"></i>both clean</span>
+    <span class="lg"><i class="bar" style="background:#3d444d"></i>dead</span>
+  </div>
+  <div class="fig-readout" aria-live="polite">
+    <span class="ro-k" id="ro3k">windows</span>
+    <div class="ro-scroll"><pre class="ro-pre" id="ro3t"></pre></div>
+  </div>
+</figure>
+
+<p>
+The colours are side-relative, so flipping the side to move swaps them: a
+window clean for blue when blue moves is the same window clean for
+&ldquo;opp&rdquo; when red moves. Filter to one axis and place a stone of each
+colour on it &mdash; the moment a window holds both colours it goes dead for
+both sides, and the live counts drop together.
+</p>
+
+<h2 id="rays"><span class="sec-no">04</span>the ray lengths</h2>
+
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §3.3 (ray walk rules, values 0–5, feeds ray
+     taps not planes); constants.py RAYLEN_SLOTS=12, RAY_REACH=WINDOW_LEN-1=5,
+     flat index side*6 + axis*2 + dir -->
+<p>
+Separately from the planes, every node carries <b>12 ray lengths</b>: for each
+side &times; axis &times; direction, how far a straight walk from the cell
+stays <em>attendable</em>. The walk rules:
+</p>
+<ul>
+  <li>a cell off the support stops the walk;</li>
+  <li>an enemy stone is <b>included</b> &mdash; the blocker itself is visible
+      &mdash; and then stops it;</li>
+  <li>own stones and empty cells pass through &mdash; a side&rsquo;s line of
+      sight is never blocked by its own stones.</li>
+</ul>
+<p>
+Values run 0&ndash;5. The reach of 5 is the window-6 geometry made exact
+&mdash; a length-6 window through a cell extends at most 5 cells along its
+axis &mdash; not a tunable knob. The flat order is
+<code>side&thinsp;&times;&thinsp;6 + axis&thinsp;&times;&thinsp;2 + dir</code>
+with side own-first, axes [Q,&thinsp;R,&thinsp;QR], and dir {+,&thinsp;&minus;}.
+</p>
+
+<p>
+Ray lengths are <em>not</em> input planes. They feed the trunk convolutions
+directly: each conv&rsquo;s six direction taps read a visibility-masked,
+distance-weighted span of up to 5 cells, masked by exactly these lengths
+&mdash; own-side visibility on half of each orbit&rsquo;s channels, opp-side
+on the other half. That mechanism lives on
+<a href="network.html#raytap">the network page</a>; here you can see the raw
+quantity it consumes.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §3.3, §5.2 -->
+</p>
+
+<figure class="fig" id="fig-rays">
+  <figcaption>fig 4 &middot; <b>the 12 rays</b> &middot; click a support cell &middot; a ring marks an enemy blocker (included, then stops), a tick marks the support edge</figcaption>
+  <!-- src: eq.js walkRays — validated JS port of features.py ray_lengths_for_cell;
+       shares the fig-1 position and the fig-3 selected cell -->
+  <div class="fig-body">
+    <svg class="eqboard" id="svg4" role="img" aria-label="Interactive hex board: the 12 blocker-truncated rays from the selected cell with their lengths"></svg>
+  </div>
+  <div class="fig-controls">
+    <button type="button" class="rsb sel" data-rs="0">own-side visibility</button>
+    <button type="button" class="rsb" data-rs="1">opp-side visibility</button>
+    <span class="spacer"></span>
+    <button type="button" class="meb sel" data-me="0">blue to move</button>
+    <button type="button" class="meb" data-me="1">red to move</button>
+  </div>
+  <div class="fig-readout" aria-live="polite">
+    <span class="ro-k" id="ro4k">rays</span>
+    <div class="ro-scroll"><pre class="ro-pre" id="ro4t"></pre></div>
+  </div>
+</figure>
+
+<p>
+The two sides&rsquo; rays differ only in who counts as the enemy: an own-side
+ray walks through own stones and stops one cell into a red stone (when blue is
+to move); the opp-side ray from the same cell walks through red stones and
+stops at blue ones. Flip the visibility toggle on a cell next to stones of both
+colours and watch the same six directions truncate differently.
+</p>
+
+<p>
+That is the network&rsquo;s entire view of a position: N nodes in
+[legal&thinsp;|&thinsp;stones&thinsp;|&thinsp;halo] order, 46 planes and 12
+ray lengths each. <a href="symmetry.html">Next</a>: why rotating that input
+rotates the output, exactly.
+</p>
+
+</main>
+
+<footer class="learn-footer">
+  <div class="foot-row">
+    <a href="./">&larr; prev &middot; overview</a>
+    <span class="foot-spacer"></span>
+    <a href="symmetry.html">next &middot; the symmetry &rarr;</a>
+  </div>
+</footer>
+
+<script type="module">
+import { DIRS, AXES, hexDist, key, buildSupport, scanWindows, walkRays,
+         figBoard, disk, svgEl, hexPts } from "./eq.js?v=1";
+
+"use strict";
+
+/* ---------- shared state ---------- */
+
+const ZONE = 4;                 // stone-placement zone: keeps support on screen
+const BOARD = disk(9);          // ZONE + support radius 4 + halo 1 = 9
+const rootStyle = getComputedStyle(document.documentElement);
+const C_P0 = rootStyle.getPropertyValue("--p0").trim() || "#4f93ff";
+const C_P1 = rootStyle.getPropertyValue("--p1").trim() || "#ff5650";
+const C_BOTH = "#7d8792", C_DEAD = "#3d444d";
+
+// Illustrative 7-stone midgame: p0 building on the QR axis, p1 four-in-a-row
+// on the Q axis at r = 1. p0 to move (first stone of the turn).
+const INIT = [[0,0,0],[0,1,1],[1,1,1],[1,-1,0],[2,-2,0],[-1,1,1],[2,1,1]];
+
+let stones = new Map();
+const resetStones = () => { stones = new Map(INIT.map(([q,r,o]) => [key(q,r), o])); };
+resetStones();
+
+let me = 0;            // side to move (0 = blue/p0)
+let probe = [3, -3];   // selected cell, shared by figs 3 & 4
+let axisSel = 3;       // 0/1/2 = Q/R/QR, 3 = all
+let raySide = 0;       // 0 = own-side visibility, 1 = opp-side
+let edit3 = false;     // fig-3 click mode: select vs edit stones
+let sup = null;        // current support (rebuilt by renderAll)
+
+const stoneArr = () => [...stones.keys()].map(k => k.split(",").map(Number));
+const $ = id => document.getElementById(id);
+
+/* ---------- boards ---------- */
+
+const b1 = figBoard($("svg1"), BOARD, { cellSize: 16 });
+const b3 = figBoard($("svg3"), BOARD, { cellSize: 16 });
+const b4 = figBoard($("svg4"), BOARD, { cellSize: 16 });
+for (const b of [b1, b3, b4]) b.overlay.setAttribute("class", "ovl");
+
+// dotted placement-zone marker on fig 1 (approximate hex outline)
+{
+  const pts = DIRS.map(([dq, dr]) => {
+    const [x, y] = b1.center(dq * ZONE, dr * ZONE);
+    return (x * 1.21).toFixed(1) + "," + (y * 1.21).toFixed(1);
+  });
+  b1.svg.appendChild(svgEl("polygon", { points: pts.join(" "), class: "zone" }));
+}
+
+function paintSupport(b) {
+  const { index, legalCount, stoneCount } = sup;
+  for (const [k, p] of b.polys) {
+    let cls = "c-off";
+    if (index.has(k)) {
+      const row = index.get(k);
+      cls = row < legalCount ? "c-legal"
+          : row < legalCount + stoneCount ? "c-stone" : "c-halo";
+    }
+    p.setAttribute("class", cls);
+  }
+  b.clearStones();
+  for (const [k, o] of stones) {
+    const [q, r] = k.split(",").map(Number);
+    b.setStone(q, r, o);
+  }
+}
+
+function cycle(q, r) {
+  const k = key(q, r), cur = stones.get(k);
+  if (cur === undefined) stones.set(k, 0);
+  else if (cur === 0) stones.set(k, 1);
+  else stones.delete(k);
+}
+
+const cellOf = e => {
+  const t = e.target.closest("polygon");
+  return (t && t.dataset.q !== undefined) ? [+t.dataset.q, +t.dataset.r] : null;
+};
+
+/* ---------- fig 1: the support set ---------- */
+
+const HOVER_HINT = "hover a cell for its layer, node row, and distance-to-stone.";
+
+function renderFig1() {
+  paintSupport(b1);
+  const N = sup.coords.length;
+  $("ro1k").textContent = "N = " + N + " nodes = " + sup.legalCount + " legal + "
+    + sup.stoneCount + " stones + " + sup.haloCount + " halo";
+  $("ro1t").textContent = "node order [legal | stones | halo], each segment ascending (q, r) — "
+    + "the policy head emits one logit per node, so the first " + sup.legalCount
+    + " logits are exactly the legal moves.";
+  const bar = [["obLegal", "legal", sup.legalCount],
+               ["obStone", "stones", sup.stoneCount],
+               ["obHalo", "halo", sup.haloCount]];
+  for (const [id, name, n] of bar) {
+    const el = $(id);
+    el.style.flexGrow = Math.max(n, 1);
+    el.textContent = name + " · " + n;
+  }
+}
+
+function ro1Hover(q, r) {
+  const k = key(q, r);
+  let msg;
+  if (!sup.index.has(k)) {
+    msg = "(" + q + "," + r + ") · off the support — the network never sees this cell";
+  } else {
+    const row = sup.index.get(k);
+    const seg = row < sup.legalCount ? "legal prefix"
+      : row < sup.legalCount + sup.stoneCount ? "stones segment" : "halo segment";
+    const who = stones.has(k) ? (stones.get(k) === 0 ? "p0 stone" : "p1 stone")
+      : (seg === "halo segment" ? "halo cell" : "legal cell");
+    msg = "(" + q + "," + r + ") · " + who + " · node row " + row + " of "
+      + sup.coords.length + " (" + seg + ") · dist to stone " + sup.dist[row];
+  }
+  $("ro1c").textContent = msg;
+}
+
+b1.svg.addEventListener("click", e => {
+  const c = cellOf(e);
+  if (!c) return;
+  if (hexDist(c[0], c[1]) > ZONE) {
+    $("ro1c").textContent = "(" + c[0] + "," + c[1] + ") is outside the demo's placement zone "
+      + "(dist ≤ " + ZONE + " keeps the whole support on screen)";
+    return;
+  }
+  cycle(c[0], c[1]);
+  renderAll();
+});
+b1.svg.addEventListener("mousemove", e => { const c = cellOf(e); if (c) ro1Hover(c[0], c[1]); });
+b1.svg.addEventListener("mouseleave", () => { $("ro1c").textContent = HOVER_HINT; });
+$("resetBtn").addEventListener("click", () => { resetStones(); probe = [3, -3]; renderAll(); });
+
+/* ---------- fig 3: the window explorer ---------- */
+
+function drawWindows(cell) {
+  b3.clearOverlay();
+  const [pq, pr] = cell;
+  const res = scanWindows(stones, pq, pr, me);
+  const S = b3.s;
+  const ownColor = me === 0 ? C_P0 : C_P1;
+  const oppColor = me === 0 ? C_P1 : C_P0;
+  for (let ai = 0; ai < 3; ai++) {
+    if (axisSel !== 3 && axisSel !== ai) continue;
+    const [dq, dr] = AXES[ai];
+    const [ux, uy] = b3.center(dq, dr);            // pixel step along the axis
+    const len = Math.hypot(ux, uy);
+    const px = -uy / len, py = ux / len;           // unit perpendicular
+    const exX = ux / len * 0.38 * S, exY = uy / len * 0.38 * S;
+    res.axes[ai].windows.forEach((w, i) => {
+      const off = (i - 2.5) * 3.4;                 // stack the 6 colinear windows
+      const [x1, y1] = b3.center(w.cells[0][0], w.cells[0][1]);
+      const [x2, y2] = b3.center(w.cells[5][0], w.cells[5][1]);
+      let color, dash = null, op = 0.95, wd = 2.4;
+      if (w.cleanOwn && w.cleanOpp) { color = C_BOTH; op = 0.7; wd = 2; }
+      else if (w.cleanOwn) color = ownColor;
+      else if (w.cleanOpp) color = oppColor;
+      else { color = C_DEAD; dash = "3 4"; op = 0.8; wd = 2; }
+      const l = svgEl("line", {
+        x1: (x1 - exX + px * off).toFixed(1), y1: (y1 - exY + py * off).toFixed(1),
+        x2: (x2 + exX + px * off).toFixed(1), y2: (y2 + exY + py * off).toFixed(1),
+        stroke: color, "stroke-width": wd, "stroke-linecap": "round", opacity: op,
+      });
+      if (dash) l.setAttribute("stroke-dasharray", dash);
+      b3.overlay.appendChild(l);
+    });
+  }
+  const [cx, cy] = b3.center(pq, pr);
+  b3.overlay.appendChild(svgEl("polygon", { points: hexPts(cx, cy, S * 0.94), class: "probe" }));
+  return res;
+}
+
+function ro3Update(cell, res) {
+  $("ro3k").textContent = "windows @ (" + cell[0] + "," + cell[1] + ") · "
+    + (me === 0 ? "p0 (blue)" : "p1 (red)") + " to move · own = "
+    + (me === 0 ? "blue" : "red")
+    + (axisSel === 3 ? "" : " · drawing " + res.axes[axisSel].name + " only");
+  const lines = res.axes.map(ax =>
+    ax.name.padEnd(3)
+    + " own  line " + ax.ownLine + "/5  live " + ax.ownLive + "/6  l3 " + ax.ownLiveK[0]
+    + "  l4 " + ax.ownLiveK[1] + "  l5 " + ax.ownLiveK[2]
+    + "   |  opp  line " + ax.oppLine + "/5  live " + ax.oppLive + "/6  l3 " + ax.oppLiveK[0]
+    + "  l4 " + ax.oppLiveK[1] + "  l5 " + ax.oppLiveK[2]);
+  lines.push("fork  own " + res.ownFork + "/3  opp " + res.oppFork + "/3   (axes with raw line >= 3)");
+  $("ro3t").textContent = lines.join("\n");
+}
+
+function renderFig3() {
+  paintSupport(b3);
+  const res = drawWindows(probe);
+  ro3Update(probe, res);
+}
+
+let hover3 = null;
+b3.svg.addEventListener("click", e => {
+  const c = cellOf(e);
+  if (!c) return;
+  if (edit3) {
+    if (hexDist(c[0], c[1]) <= ZONE) { cycle(c[0], c[1]); renderAll(); }
+    return;
+  }
+  if (!sup.index.has(key(c[0], c[1]))) {
+    $("ro3k").textContent = "(" + c[0] + "," + c[1] + ") is off the support — "
+      + "the featurizer only computes windows for support cells";
+    return;
+  }
+  probe = c;
+  renderFig3();
+  renderFig4();
+});
+b3.svg.addEventListener("mousemove", e => {
+  if (edit3) return;
+  const c = cellOf(e);
+  if (!c) return;
+  const k = key(c[0], c[1]);
+  if (!sup.index.has(k) || hover3 === k) return;
+  hover3 = k;
+  ro3Update(c, drawWindows(c));
+});
+b3.svg.addEventListener("mouseleave", () => { hover3 = null; renderFig3(); });
+
+for (const btn of document.querySelectorAll("#fig-windows .ax")) {
+  btn.addEventListener("click", () => {
+    axisSel = btn.dataset.ax === "all" ? 3 : +btn.dataset.ax;
+    for (const b of document.querySelectorAll("#fig-windows .ax"))
+      b.classList.toggle("sel", b === btn);
+    renderFig3();
+  });
+}
+
+$("editBtn").addEventListener("click", () => {
+  edit3 = !edit3;
+  $("editBtn").classList.toggle("on", edit3);
+  $("editBtn").setAttribute("aria-pressed", String(edit3));
+  $("editBtn").textContent = edit3 ? "editing — click to place" : "edit stones";
+});
+
+/* ---------- fig 4: the rays ---------- */
+
+const RAY_NAMES = ["Q+", "Q-", "R+", "R-", "QR+", "QR-"];
+
+function renderFig4() {
+  paintSupport(b4);
+  b4.clearOverlay();
+  const [pq, pr] = probe;
+  const rays = walkRays(stones, sup.index, pq, pr, me);
+  const S = b4.s;
+  const [sx, sy] = b4.center(pq, pr);
+  for (const ray of rays) {
+    if (ray.side !== raySide) continue;
+    const [dq, dr] = AXES[ray.axis];
+    const [ax, ay] = b4.center(dq, dr);
+    const stepX = ax * ray.sign, stepY = ay * ray.sign;
+    const stepLen = Math.hypot(stepX, stepY);
+    const nx = stepX / stepLen, ny = stepY / stepLen;
+    if (ray.length > 0) {
+      const [ex, ey] = b4.center(pq + dq * ray.sign * ray.length, pr + dr * ray.sign * ray.length);
+      b4.overlay.appendChild(svgEl("line", {
+        x1: (sx + nx * S * 0.55).toFixed(1), y1: (sy + ny * S * 0.55).toFixed(1),
+        x2: ex.toFixed(1), y2: ey.toFixed(1),
+        stroke: "#8f99a4", "stroke-width": 2, opacity: 0.85,
+      }));
+    }
+    for (const [cq, cr] of ray.cells) {
+      const [x, y] = b4.center(cq, cr);
+      b4.overlay.appendChild(svgEl("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: 3.2, fill: "#cfd6de" }));
+    }
+    if (ray.blockedBy === "blocker") {
+      // the enemy blocker is INCLUDED in the walk — it stays lit, then stops it
+      const last = ray.cells[ray.cells.length - 1];
+      const [x, y] = b4.center(last[0], last[1]);
+      const anti = ray.side === 0 ? 1 - me : me;
+      b4.overlay.appendChild(svgEl("circle", {
+        cx: x.toFixed(1), cy: y.toFixed(1), r: S * 0.66, fill: "none",
+        stroke: anti === 0 ? C_P0 : C_P1, "stroke-width": 2,
+      }));
+    }
+    if (ray.blockedBy === "edge") {
+      // perpendicular tick between the last walked cell and the off-support cell
+      const mx = sx + stepX * (ray.length + 0.5), my = sy + stepY * (ray.length + 0.5);
+      b4.overlay.appendChild(svgEl("line", {
+        x1: (mx + ny * 6).toFixed(1), y1: (my - nx * 6).toFixed(1),
+        x2: (mx - ny * 6).toFixed(1), y2: (my + nx * 6).toFixed(1),
+        stroke: "#79848f", "stroke-width": 2,
+      }));
+    }
+    const lx = sx + stepX * (ray.length + 1.0), ly = sy + stepY * (ray.length + 1.0);
+    b4.overlay.appendChild(svgEl("text", {
+      x: lx.toFixed(1), y: ly.toFixed(1), "text-anchor": "middle", dy: "0.35em",
+      "font-size": 10,
+    })).textContent = ray.length;
+  }
+  b4.overlay.appendChild(svgEl("polygon", { points: hexPts(sx, sy, S * 0.94), class: "probe" }));
+
+  $("ro4k").textContent = "rays @ (" + pq + "," + pr + ") · showing "
+    + (raySide === 0 ? "own" : "opp") + "-side visibility · "
+    + (me === 0 ? "p0 (blue)" : "p1 (red)") + " to move";
+  const fmt = side => rays.filter(r => r.side === side).map((r, i) =>
+    RAY_NAMES[i].padEnd(3) + " " + r.length
+    + (r.blockedBy === "blocker" ? "b" : r.blockedBy === "edge" ? "e" : " ")).join("  ");
+  const flat = "[" + rays.map(r => r.length).join(",") + "]";
+  $("ro4t").textContent =
+    (raySide === 0 ? "> " : "  ") + "own  " + fmt(0) + "\n"
+    + (raySide === 1 ? "> " : "  ") + "opp  " + fmt(1) + "\n"
+    + "  raylen = " + flat + "   (flat order side*6 + axis*2 + dir)\n"
+    + "  suffix: b = enemy blocker (included), e = support edge, none = full reach 5";
+}
+
+b4.svg.addEventListener("click", e => {
+  const c = cellOf(e);
+  if (!c) return;
+  if (!sup.index.has(key(c[0], c[1]))) {
+    $("ro4k").textContent = "(" + c[0] + "," + c[1] + ") is off the support — rays exist only for support cells";
+    return;
+  }
+  probe = c;
+  renderFig3();
+  renderFig4();
+});
+
+for (const btn of document.querySelectorAll("#fig-rays .rsb")) {
+  btn.addEventListener("click", () => {
+    raySide = +btn.dataset.rs;
+    for (const b of document.querySelectorAll("#fig-rays .rsb"))
+      b.classList.toggle("sel", b === btn);
+    renderFig4();
+  });
+}
+
+/* ---------- side-to-move (shared by figs 3 & 4) ---------- */
+
+function setMe(m) {
+  me = m;
+  for (const b of document.querySelectorAll(".meb"))
+    b.classList.toggle("sel", +b.dataset.me === m);
+  $("swOwn").style.background = m === 0 ? C_P0 : C_P1;
+  $("swOpp").style.background = m === 0 ? C_P1 : C_P0;
+  if (sup) { renderFig3(); renderFig4(); }
+}
+for (const b of document.querySelectorAll(".meb"))
+  b.addEventListener("click", () => setMe(+b.dataset.me));
+
+/* ---------- top-level render ---------- */
+
+function renderAll() {
+  sup = buildSupport(stoneArr());
+  if (!sup.index.has(key(probe[0], probe[1]))) probe = sup.coords[0].slice();
+  renderFig1();
+  renderFig3();
+  renderFig4();
+}
+
+setMe(0);
+renderAll();
+</script>
+
+</body>
+</html>

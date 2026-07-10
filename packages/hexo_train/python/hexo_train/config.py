@@ -1,14 +1,15 @@
 """Training config loading and normalization.
 
-This file is the boundary between user-authored TOML and the rest of the
+This file is the boundary between user-authored YAML/TOML and the rest of the
 training code. Everything outside this module should read typed config objects
-instead of pulling values directly out of nested dictionaries. Every config in
-configs/ is TOML (e.g. configs/shrimp_main_7.toml, the live run).
+instead of pulling values directly out of nested dictionaries. In practice
+every config in configs/ is TOML (e.g. configs/hexfield_main_9.toml, the live
+run); the YAML path is advertised by the CLI but has no caller.
 
 The typed sections here cover only the orchestration skeleton. Model-owned
 settings ride through opaquely as `ModelConfig.config` ([model.config] in the
 TOML) and are parsed by the plugin's own config module (e.g.
-packages/dense_cnn_restnet/python/dense_cnn_restnet/config.py); model-neutral
+packages/hexfield/python/hexfield/config.py); model-neutral
 extras like [shared.game] stay reachable via `TrainingConfig.raw` /
 `RunContext.section()`.
 
@@ -39,13 +40,14 @@ ConfigMap = Mapping[str, Any]
 class ModelConfig:
     """Model plugin selection plus opaque model-owned config.
 
-    `hexo_train` uses `name` and `module` only to find the plugin. The nested
-    `config` mapping is passed through to the plugin without interpreting model
-    architecture, tensor, or optimizer semantics.
+    `hexo_train` uses `name`, `module`, and `entry_point` only to find the
+    plugin. The nested `config` mapping is passed through to the plugin without
+    interpreting model architecture, tensor, or optimizer semantics.
     """
 
     name: str
     module: str | None = None
+    entry_point: str | None = None
     config: ConfigMap = field(default_factory=dict)
 
 
@@ -144,7 +146,7 @@ class TrainingConfig:
 
 
 def load_training_config(config_path: str | Path) -> TrainingConfig:
-    """Load a TOML file and return a normalized training config."""
+    """Load a YAML or TOML file and return a normalized training config."""
 
     path = Path(config_path)
     raw = _load_raw_config(path)
@@ -189,6 +191,7 @@ def normalize_training_config(raw: ConfigMap, *, base_dir: Path) -> TrainingConf
     model = ModelConfig(
         name=model_name,
         module=_optional_str(model_section.get("module")),
+        entry_point=_optional_str(model_section.get("entry_point")),
         config=dict(model_config),
     )
     run = RunConfig(
@@ -255,6 +258,20 @@ def _load_raw_config(path: Path) -> ConfigMap:
     if suffix == ".toml":
         with path.open("rb") as handle:
             return tomllib.load(handle)
+    # UNUSED(2026-06-12): no .yaml/.yml training config exists anywhere in
+    # configs/, tests/, or scripts/ (repo-wide grep); every launcher and
+    # generated smoke config emits TOML. Kept because the CLI advertises YAML
+    # support and PyYAML is declared in pyproject.toml for this branch.
+    if suffix in {".yaml", ".yml"}:
+        try:
+            import yaml
+        except ImportError as exc:  # pragma: no cover - depends on environment.
+            raise RuntimeError("YAML training configs require PyYAML.") from exc
+        with path.open("r", encoding="utf-8") as handle:
+            loaded = yaml.safe_load(handle) or {}
+        if not isinstance(loaded, Mapping):
+            raise ValueError("YAML training config must load to a mapping.")
+        return loaded
     raise ValueError(f"Unsupported training config format: {path.suffix}")
 
 

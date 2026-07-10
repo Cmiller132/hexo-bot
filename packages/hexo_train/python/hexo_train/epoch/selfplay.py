@@ -1,11 +1,12 @@
 """Self-play generation for one training epoch.
 
 This file is the handoff from training orchestration to model-owned execution.
-The shrimp plugin implements `generate_selfplay()` and runs its own game loop
-(packages/shrimp/python/shrimp/selfplay.py, which drives the shared Rust
-MCTS and writes NPZ shards under the run dir), so the first dispatch branch
-below is the only one that executes in any configured run. The placeholder
-branch is retained scaffolding for a plugin that does not own self-play.
+All four registered plugins implement `generate_selfplay()` and run their own
+game loops (e.g. packages/dense_cnn_restnet/python/dense_cnn_restnet/selfplay.py
+for the active lineage, which drives the shared Rust MCTS and writes NPZ shards
+under the run dir), so the first dispatch branch below is the only one that
+executes in any configured run. The `build_selfplay_request` and placeholder
+branches are retained scaffolding from before plugins owned self-play.
 
 Called once per epoch by hexo_train/epoch/loop.py (`run_epoch`).
 """
@@ -29,7 +30,8 @@ def generate_selfplay(
     Resolution order:
 
     1. Prefer a plugin's `generate_selfplay()` hook when it exists.
-    2. Otherwise return a clear placeholder payload.
+    2. Otherwise let a plugin build a structured request for future runner use.
+    3. Otherwise return a clear placeholder payload.
 
     The result is stored on `components.shared.selfplay_result` so the sample
     finalizer can see what self-play produced or planned.
@@ -47,6 +49,24 @@ def generate_selfplay(
             epoch=epoch,
             games_per_epoch=games_per_epoch,
         )
+    # UNUSED(2026-06-12): no plugin implements build_selfplay_request — repo-wide
+    # grep (packages/, tests/, scripts/ excl. archive) finds only this dispatch.
+    # All four registered plugins implement generate_selfplay, so the branch
+    # above always wins; this and the placeholder branch below are unreachable
+    # for every configured model.
+    elif hasattr(plugin, "build_selfplay_request"):
+        # Transitional path: useful while runner wiring is not complete but a
+        # plugin can already describe the self-play work it needs.
+        result = {
+            "status": "planned",
+            "request": plugin.build_selfplay_request(
+                ctx=ctx,
+                components=components,
+                epoch=epoch,
+                games_per_epoch=games_per_epoch,
+            ),
+            "note": "Future implementation should call hexo_runner self-play.",
+        }
     else:
         # Last-resort placeholder keeps the pipeline shape executable while
         # making the missing runner/model integration explicit in diagnostics.

@@ -148,10 +148,10 @@ def _start_epoch(components: TrainingComponents) -> int:
     """Derive the first epoch to run from the loaded checkpoint state.
 
     LOAD-BEARING resume contract: a plugin checkpoint loader (e.g.
-    packages/shrimp/python/shrimp/checkpoints.py) returns
+    packages/dense_cnn_restnet/python/dense_cnn_restnet/checkpoints.py) returns
     ``{"status": "loaded", "epoch": N}`` for a full resume, and this helper
-    fast-forwards the loop to epoch N+1 — this is how a halted run restarts
-    from its latest checkpoint. Any other shape (weights-only initialize,
+    fast-forwards the loop to epoch N+1 — this is how the main_4 run restarted
+    from main_3's ckpt5 at epoch 6. Any other shape (weights-only initialize,
     missing/odd epoch field, no loader) starts from epoch 1. The shape is a
     duck-typed dict convention, not a typed contract; keep both sides in sync.
     """

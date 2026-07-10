@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Build the three native crates (hexo_engine, hexo_utils, shrimp) with
-# maturin develop --release into the active venv ($HEXO_VENV, default .venv at
-# repo root). --release is mandatory: a debug featurizer/search crate is ~10x
-# slower.
+# Build the four native crates (hexo_engine, hexo_utils, shrimp, hexfield_eq)
+# with maturin develop --release into the active venv ($HEXO_VENV, default
+# .venv at repo root). --release is mandatory: a debug featurizer/search crate
+# is ~10x slower.
 #
 # hexo_engine and hexo_utils resolve from the venv site-packages after install.
-# shrimp is imported from the source tree via PYTHONPATH (never pip-installed;
-# see README), so its compiled extension is mirrored next to the Python package.
+# shrimp and hexfield_eq are imported from the source tree via PYTHONPATH
+# (never pip-installed; see README), so their compiled extensions are mirrored
+# next to the Python packages.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,19 +24,22 @@ fi
 # shellcheck disable=SC1091
 source "$HEXO_VENV/bin/activate"
 
-for crate in hexo_engine hexo_utils shrimp; do
+for crate in hexo_engine hexo_utils shrimp hexfield_eq; do
   echo "=== building $crate ==="
   maturin develop --release -m "$ROOT/packages/$crate/Cargo.toml"
 done
 
-# Mirror the shrimp extension into the source tree so PYTHONPATH imports find
-# it (maturin installs it into the venv, but shrimp is imported from-tree).
+# Mirror the shrimp and hexfield_eq extensions into the source tree so
+# PYTHONPATH imports find them (maturin installs them into the venv, but both
+# packages are imported from-tree).
 SITE="$("$HEXO_VENV/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
-SO=$(ls "$SITE"/shrimp/_rust*.so 2>/dev/null | head -1)
-if [ -n "${SO:-}" ]; then
-  cp "$SO" "$ROOT/packages/shrimp/python/shrimp/"
-  echo "mirrored $(basename "$SO") into packages/shrimp/python/shrimp/"
-else
-  echo "WARN: could not locate the built shrimp _rust extension in $SITE" >&2
-fi
-ls -la "$ROOT"/packages/shrimp/python/shrimp/_rust*.so
+for pkg in shrimp hexfield_eq; do
+  SO=$(ls "$SITE/$pkg"/_rust*.so 2>/dev/null | head -1)
+  if [ -n "${SO:-}" ]; then
+    cp "$SO" "$ROOT/packages/$pkg/python/$pkg/"
+    echo "mirrored $(basename "$SO") into packages/$pkg/python/$pkg/"
+  else
+    echo "WARN: could not locate the built $pkg _rust extension in $SITE" >&2
+  fi
+  ls -la "$ROOT/packages/$pkg/python/$pkg/"_rust*.so || true
+done

@@ -2,833 +2,1054 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Shrimp — how it works — the training</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hexfield_eq &mdash; the training</title>
+<meta name="description" content="How hexfield_eq trains: what one training row stores, the tapered replay window, nine loss heads with fixed weights, AdamW with adaptive clipping, and how strength is measured with paired pentanomial evaluation.">
 <link rel="stylesheet" href="learn.css">
 <style>
-/* tiny token fallback so the page renders standalone if learn.css is missing;
- * values duplicate learn.css :root and are harmlessly overridden by it */
-:root{
-  --bg:#101317;--tile:#161b21;--line:#242c35;--line-soft:#1c232b;
-  --text:#d4dbe3;--muted:#79848f;--dim:#4c565f;
-  --accent:#e8e2d6;--accent-dim:#57534a;
-  --p0:#4f93ff;--p0-soft:#7fb1ff;--p1:#ff5650;--p1-soft:#ff8781;
-  --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
-  --sans:ui-sans-serif,system-ui,"Segoe UI",sans-serif;
-}
-body{background:var(--bg);color:var(--text);font-family:var(--sans)}
-
-/* ---- page-local figure styles (SVG internals only) ---- */
+/* ---- page-local styles (tokens from learn.css) ---- */
 .fig svg text{font-family:var(--mono)}
-.axis-t{font-size:10px;fill:var(--dim);letter-spacing:.08em}
-.lab-t{font-size:10.5px;fill:var(--muted);letter-spacing:.1em}
-.lab-t.on{fill:var(--accent)}
-.tick-t{font-size:9.5px;fill:var(--dim)}
-/* fig 1 — epoch wheel */
-.wh-stage{cursor:pointer;outline:none}
-.wh-arc{fill:none;stroke:var(--line);stroke-width:24;transition:stroke .15s ease}
-.wh-stage:hover .wh-arc,.wh-stage:focus-visible .wh-arc{stroke:var(--accent-dim)}
-.wh-stage.on .wh-arc{stroke:var(--accent-dim)}
-.wh-stage:focus-visible .wh-arc{stroke:var(--accent)}
-.wh-name{font-size:11px;letter-spacing:.14em;fill:var(--text);text-transform:uppercase}
-.wh-tick{font-size:9.5px;fill:var(--muted)}
-.wh-prog{fill:none;stroke:var(--accent);stroke-width:3}
-.wh-dot{fill:var(--accent)}
-/* fig 2 — targets */
-.hx-cell{fill:#12171d;stroke:var(--line-soft);stroke-width:1}
-.hx-p0{fill:url(#gradS0);stroke:#2b5cad;stroke-width:1}
-.hx-p1{fill:url(#gradS1);stroke:#9c3733;stroke-width:1}
-.hx-cand{fill:none;stroke:var(--accent);stroke-width:1.4}
-.hx-cl{font-size:9px;fill:var(--accent)}
-.bar-prior{fill:var(--dim)}
-.bar-pi{fill:var(--p0)}
-.oc-strip{fill:var(--tile);stroke:var(--line-soft)}
-.oc-bin{fill:var(--p0-soft)}
-/* fig 3 — window */
-.wn-bar{fill:#1a2027;stroke:var(--line-soft);stroke-width:.5}
-.wn-in{fill:var(--accent-dim)}
-.wn-part{fill:var(--accent-dim);opacity:.45}
-/* fig 4 — rating curve */
-.rc-band{fill:var(--p0);opacity:.10}
-.rc-line{fill:none;stroke:var(--p0);stroke-width:1.5}
-.rc-pt{fill:var(--bg);stroke:var(--p0-soft);stroke-width:1.5;cursor:pointer;outline:none}
-.rc-pt:hover,.rc-pt:focus-visible{fill:var(--p0-soft)}
-.rc-pt:focus-visible{stroke:var(--accent)}
-.rc-zero{stroke:var(--line);stroke-dasharray:4 4}
+.ax{font-size:10px;fill:var(--dim);letter-spacing:.08em}
+.tick{font-size:9.5px;fill:var(--dim)}
+.gridln{stroke:var(--line-soft);stroke-width:1}
+.axline{stroke:var(--line);stroke-width:1}
+.curve{stroke:var(--text);stroke-width:1.6;fill:none}
+.refline{stroke:var(--accent-dim);stroke-dasharray:5 4;stroke-width:1;fill:none}
+.refline.dim{stroke:var(--dim)}
+.reflab{font-size:9.5px;fill:var(--muted)}
+.mark{fill:var(--accent)}
+.markln{stroke:var(--accent-dim);stroke-dasharray:3 3;stroke-width:1}
+
+/* fig 1 — row anatomy */
+.rowanat{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;padding:14px}
+.ra-h{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);margin:0 0 8px;padding-bottom:5px;border-bottom:1px solid var(--line-soft);
+}
+.rf{
+  display:block;width:100%;text-align:left;
+  border:1px solid var(--line);background:#12171d;
+  padding:7px 10px;margin-bottom:8px;
+  transition:border-color .15s ease,background .15s ease,opacity .15s ease;
+}
+.rf:hover,.rf:focus-visible{border-color:var(--accent-dim);background:#161c24}
+.rf .rf-n{font-family:var(--mono);font-size:11px;color:var(--text);display:block}
+.rf .rf-d{font-family:var(--mono);font-size:9.5px;color:var(--dim);display:block;margin-top:1px}
+.rf .rf-tag{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--p1-soft);display:block;margin-top:3px;
+}
+#fig-row.capped .rf.maskcap{opacity:.35}
+#fig-row.capped .rf.maskcap:hover,#fig-row.capped .rf.maskcap:focus-visible{opacity:.7}
+.shardflow{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:0 14px 14px;
+  font-family:var(--mono);font-size:10.5px;color:var(--muted);
+}
+.sf-box{border:1px solid var(--line);background:#12171d;padding:5px 10px;white-space:nowrap}
+.sf-arrow{color:var(--dim)}
+
+/* fig 3 — loss table + panels */
+.tbl-scroll{overflow-x:auto;padding:14px 14px 6px}
+table.spec{border-collapse:collapse;width:100%;min-width:560px;font-size:13px}
+table.spec th{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--dim);text-align:left;font-weight:400;
+  padding:6px 12px 6px 0;border-bottom:1px solid var(--line);
+}
+table.spec td{
+  padding:6px 12px 6px 0;border-bottom:1px solid var(--line-soft);
+  color:var(--muted);vertical-align:top;
+}
+table.spec td:first-child{font-family:var(--mono);font-size:12px;color:var(--text);white-space:nowrap}
+table.spec td:last-child{font-family:var(--mono);color:var(--text);white-space:nowrap}
+table.spec tr[data-i]{cursor:default}
+table.spec tr[data-i]:hover td,table.spec tr[data-i]:focus-visible td{background:#1a2027}
+table.spec tr[tabindex]{outline:none}
+.panel-h{
+  font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);padding:14px 14px 0;
+}
+.wb-lab{font-size:10.5px;fill:var(--muted)}
+.wb-val{font-size:10px;fill:var(--dim)}
+.wb-bar{fill:#33404f;transition:fill .15s ease}
+.wb-g:hover .wb-bar,.wb-g.on .wb-bar{fill:var(--accent-dim)}
+
+/* fig 3 — surprise demo */
+.sdemo{padding:8px 14px 4px;display:flex;flex-direction:column;gap:6px}
+.sd-row{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.sd-l{width:42px;color:var(--dim);flex:none}
+.sd-s{width:78px;flex:none}
+.sd-bar{flex:1;height:10px;background:#12171d;border:1px solid var(--line-soft)}
+.sd-bar i{display:block;height:100%;background:var(--accent-dim);transition:width .15s ease}
+.sd-row.capped .sd-bar i{background:var(--accent)}
+.sd-w{width:70px;flex:none;text-align:right;color:var(--text)}
+.sd-note{font-family:var(--mono);font-size:10px;color:var(--dim);padding:6px 14px 12px}
+
+/* fig 3 — two-hot */
+.th-bar{fill:#232c37}
+.th-bar.on{fill:var(--accent)}
+
+/* fig 4 — optimization grid */
+.optgrid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  gap:1px;background:var(--line-soft);border-bottom:1px solid var(--line-soft);
+}
+.og-cell{background:#141a20;padding:10px 14px}
+.og-n{font-family:var(--mono);font-size:13px;color:var(--text);line-height:1.4}
+.og-l{
+  font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--dim);margin-top:2px;
+}
+
+/* fig 5 — pair diagram */
+.pr-box{fill:#171c23;stroke:var(--line)}
+.pr-t{font-size:11px;fill:var(--text);letter-spacing:.12em;text-transform:uppercase}
+.pr-s{font-size:9.5px;fill:var(--dim)}
+.pr-res{font-size:10px;fill:var(--muted)}
+.pedge{stroke:var(--dim);stroke-width:1;fill:none}
+.pb-bar{fill:#232c37;transition:fill .15s ease}
+.pb-bar.on{fill:var(--accent)}
+.pb-lab{font-size:10px;fill:var(--muted)}
+.pb-lab.on{fill:var(--accent)}
+.seat0{fill:var(--p0)}
+.seat1{fill:var(--p1)}
+
+/* further reading */
+.reading{list-style:none;padding-left:0}
+.reading li{margin-bottom:8px}
+.reading code{white-space:normal;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
 
-<!-- Stone gradients (same defs as the play board's index.html). Document-level
-     holder: gradients inside a display:none SVG do not resolve, and url() refs
-     do not cross documents — every figure SVG on this page shares these. -->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <defs>
-    <linearGradient id="gradS0" x1="0.22" y1="0" x2="0.78" y2="1">
-      <stop offset="0" stop-color="#7db4ff"/>
-      <stop offset="0.45" stop-color="#4f93ff"/>
-      <stop offset="1" stop-color="#2f62c4"/>
-    </linearGradient>
-    <linearGradient id="gradS1" x1="0.22" y1="0" x2="0.78" y2="1">
-      <stop offset="0" stop-color="#ff8a80"/>
-      <stop offset="0.45" stop-color="#f0524c"/>
-      <stop offset="1" stop-color="#b93732"/>
-    </linearGradient>
-  </defs>
-</svg>
-
 <header class="learn-header">
-  <a class="wordmark" href="../index.html">shrimp</a>
+  <a class="wordmark" href="../">hexo</a>
   <nav class="learn-nav" aria-label="How it works">
-    <a href="index.html">Overview</a>
+    <a href="./">Overview</a>
+    <a href="position.html">The position</a>
+    <a href="symmetry.html">The symmetry</a>
     <a href="network.html">The network</a>
+    <a href="walkthrough.html">End to end</a>
     <a href="search.html">The search</a>
+    <a href="systems.html">The serving</a>
     <a href="training.html" class="current" aria-current="page">The training</a>
-    <a href="results.html">The results</a>
-    <a href="systems.html">The systems</a>
-    <a href="lab.html">Lab</a>
   </nav>
 </header>
 
 <main class="learn-main">
-  <h1>The training <span class="h-dim">— learning from its own games</span></h1>
-  <p class="lede">
-    Shrimp trains only on its own games. Each epoch it plays a batch of
-    games against itself, records what its search concluded at every
-    decision, and trains the network to predict those conclusions and the
-    games' final outcomes. Every few epochs a standalone evaluator measures
-    whether the network got stronger.
-  </p>
 
-  <!-- All numbers below are the live run config: configs/shrimp_main_7.toml.
-       games_per_epoch=256 (L189), search_visits=1024 (L38), pcr_full_proportion=0.33
-       (L39), train_samples_per_epoch=96000 (L138), multi_stage games_budget=128 /
-       every_n_epochs=5 (L153-154). D6_SIZE=12: hexo_utils/encoding/symmetry.py:22. -->
-  <div class="numstrip" role="list" aria-label="Training numbers at a glance">
-    <div class="ns-cell" role="listitem"><div class="ns-n">256</div><div class="ns-l">games / epoch</div></div>
-    <div class="ns-cell" role="listitem"><div class="ns-n">1024 <small>/ 192</small></div><div class="ns-l">visits full / fast</div></div>
-    <div class="ns-cell" role="listitem"><div class="ns-n">96,000</div><div class="ns-l">rows trained / epoch</div></div>
-    <div class="ns-cell" role="listitem"><div class="ns-n">12</div><div class="ns-l">board symmetries</div></div>
-    <div class="ns-cell" role="listitem"><div class="ns-n">128 <small>@ ep%5</small></div><div class="ns-l">eval games</div></div>
+<h1>The training <span class="h-dim">&mdash; targets, losses, and how strength is measured</span></h1>
+
+<p class="lede">
+The trainer&rsquo;s whole job is to make the network agree with its own search.
+Every searched decision in self-play writes one training row &mdash; the facts
+of the position plus everything the search concluded about it. Each epoch, a
+tapered window of recent rows is expanded back into tensors and the network
+takes AdamW steps against nine loss heads summed with fixed weights. Strength
+is measured outside the loop: paired seat-swapped games against a fixed
+roster, scored pentanomially, feeding a rolling Bradley&ndash;Terry pool that
+observes but never gates.
+</p>
+
+<h2 id="rows"><span class="sec-no">01</span>one row per decision</h2>
+
+<p>
+A training row stores <em>facts</em>, not tensors. The position is recorded as
+its placement history and rebuilt at training time &mdash; the 46 feature
+planes are never stored, so a featurizer fix or retune applies retroactively
+to every row ever written. Around those facts sit the targets: the
+search&rsquo;s improved policy &pi;&prime;, the game outcome, short-horizon
+value averages, the opponent&rsquo;s reply, and a measure of how much the
+search disagreed with the raw network.
+</p>
+
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §9.1 (row contents, atomic shard writes, 256-ply
+     cap masking); column names from
+     packages/hexfield_eq/python/hexfield_eq/window.py SCALAR_COLS / BLOCK_COLS /
+     CSR_GROUPS (hist_qr/hist_owner/hist_pidx, gumbel_act/gumbel_w, pol_act/pol_w,
+     prior_logit, q_pol_q, opp_act/opp_w, stvalue + stvalue_mask, moves_left,
+     value, outcome_valid, policy_surprise); torn-npz / commit-marker sidecar
+     semantics per window.py build_window_split comment; game cap 256 plies per
+     HEXFIELD_EQ_EXPLAINER.md §11; π' = softmax(logits + σ(Q)) per
+     configs/hexfield_eq_main_2.toml policy_target = "gumbel" comment -->
+<figure class="fig fig-wide" id="fig-row">
+  <figcaption>fig 1 &middot; <b>one training row</b> &middot; hover or tab through the fields &middot; toggle how the game ended</figcaption>
+
+  <div class="rowanat" id="rowAnatomy">
+    <div class="ra-group">
+      <div class="ra-h">the position &mdash; facts</div>
+      <button type="button" class="rf" data-k="placement history"
+        data-info="(q, r, owner, placement index) per stone — columns hist_qr / hist_owner / hist_pidx. The position is reconstructed from this at training time; feature planes are never stored, so featurizer changes apply retroactively to old rows.">
+        <span class="rf-n">placement history</span>
+        <span class="rf-d">(q, r, owner, idx) &times; L &middot; planes never stored</span>
+      </button>
+    </div>
+
+    <div class="ra-group">
+      <div class="ra-h">policy targets</div>
+      <button type="button" class="rf" data-k="&pi;&prime; — improved policy"
+        data-info="The search's improved policy (Gumbel completed-Q: softmax(logits + σ(Q))), stored on its own support (gumbel_act / gumbel_w). The primary target for the policy and soft_policy heads.">
+        <span class="rf-n">&pi;&prime; &middot; improved policy</span>
+        <span class="rf-d">policy + soft_policy target</span>
+      </button>
+      <button type="button" class="rf" data-k="visit distribution"
+        data-info="The raw visit counts over root children (pol_act / pol_w). Kept as the fallback target when a row carries no π′ (gumbel_present = 0) and as a diagnostic.">
+        <span class="rf-n">visit distribution</span>
+        <span class="rf-d">fallback / diagnostic</span>
+      </button>
+      <button type="button" class="rf" data-k="raw root logits"
+        data-info="The network's raw policy logits at the root (prior_logit, aligned to the visit support). With the visit distribution these define the stored policy surprise KL(visit ‖ prior).">
+        <span class="rf-n">raw root logits</span>
+        <span class="rf-d">the net&rsquo;s prior at the root</span>
+      </button>
+      <button type="button" class="rf maskcap" data-k="per-child Q"
+        data-info="One search Q value per visited root child (q_pol_q) — the target for the cell_q head (65-bin CE per legal cell). Outcome-dependent, so masked when the game hit the 256-ply cap.">
+        <span class="rf-n">per-child Q</span>
+        <span class="rf-d">cell_q target</span>
+        <span class="rf-tag">masked at 256-ply cap</span>
+      </button>
+    </div>
+
+    <div class="ra-group">
+      <div class="ra-h">outcome targets</div>
+      <button type="button" class="rf maskcap" data-k="outcome z"
+        data-info="±1 from the row player's perspective — the value head's target, encoded as a two-hot over 65 bins. Masked (outcome_valid = 0) when the game hit the 256-ply cap without a winner.">
+        <span class="rf-n">outcome z</span>
+        <span class="rf-d">&plusmn;1, row player&rsquo;s view</span>
+        <span class="rf-tag">masked at 256-ply cap</span>
+      </button>
+      <button type="button" class="rf maskcap" data-k="short-term values"
+        data-info="Exponentially-weighted averages of future root values at horizons 2, 6, 16 decisions (stvalue + stvalue_mask) — targets for the three stvalue heads. Masked on capped games.">
+        <span class="rf-n">short-term value EMAs</span>
+        <span class="rf-d">horizons 2 / 6 / 16</span>
+        <span class="rf-tag">masked at 256-ply cap</span>
+      </button>
+      <button type="button" class="rf maskcap" data-k="moves-left"
+        data-info="Decisions remaining until the game ended — the moves_left head's target (65-bin CE, cap 209). Meaningless on a capped game, so masked.">
+        <span class="rf-n">moves-left</span>
+        <span class="rf-d">decisions remaining</span>
+        <span class="rf-tag">masked at 256-ply cap</span>
+      </button>
+    </div>
+
+    <div class="ra-group">
+      <div class="ra-h">context &amp; weighting</div>
+      <button type="button" class="rf" data-k="next opponent policy"
+        data-info="The π′ of the NEXT searched decision — the opponent's reply distribution (opp_act / opp_w), target for the opp_policy head.">
+        <span class="rf-n">next opponent &pi;&prime;</span>
+        <span class="rf-d">opp_policy target</span>
+      </button>
+      <button type="button" class="rf" data-k="policy surprise"
+        data-info="KL(visit ‖ prior) — how much the search disagreed with the raw net at this decision (policy_surprise). Not a head: it becomes the row's policy-CE weight, concentrating gradient on mispredicted positions.">
+        <span class="rf-n">policy surprise</span>
+        <span class="rf-d">KL(visit&thinsp;&#8214;&thinsp;prior) &rarr; CE weight</span>
+      </button>
+    </div>
   </div>
 
-  <h2 id="selfplay"><span class="sec-no">01</span>Generating experience</h2>
-  <!-- Epoch order: hexo_train/epoch/loop.py:107-113 (selfplay -> finalize ->
-       select window -> symmetries -> train -> checkpoint -> eval). -->
-  <p>
-    Training runs as a fixed loop. Each epoch: <b>self-play</b> generates 256
-    fresh games from the current checkpoint, the <b>replay window</b> is
-    re-selected over everything played so far, the net <b>trains</b> for a
-    single pass over a sample of that window, a <b>checkpoint</b> is saved
-    (every epoch, unconditionally), and an <b>evaluation</b> stage runs every
-    fifth epoch. The loop then repeats with the updated net.
-  </p>
-  <p>
-    Purely greedy self-play would collapse into a handful of repeated games,
-    so three mechanisms shape the data:
-  </p>
-  <ul>
-    <!-- PCR = playout cap randomization: selfplay.py:467 "Fast
-         (playout-cap-randomized) decisions"; full rows carry policy targets,
-         fast rows are written value-only (policy_valid=0): selfplay.py:245-258,
-         372-376. Fast plays the greedy T=0 LCB pick: config toml L41-45. -->
-    <li><b>Playout-cap randomization (PCR).</b> A random ~33% of decisions
-      get the full 1024-visit search; those become the rows the policy learns
-      from. The rest run a 192-visit search, are played greedily
-      (temperature 0), and are recorded as
-      <em>value-only</em> rows. The lower cost yields more games and more
-      diverse final outcomes for the value head, without diluting the policy
-      targets with shallow searches.</li>
-    <!-- Opening exploration: policy_init_fraction=0.25, avg 4 plies, max 8,
-         T=1.4 (toml L68-71); play temperature 1.0 halving per 10 plies,
-         floor 0.15 (toml L72-74, config.py temperature_by_ply). -->
-    <li><b>Opening randomization.</b> A quarter of games open with a few plies
-      (average 4, at most 8) sampled straight from the net's prior at a high
-      temperature, skipping search entirely; those init rows are never
-      trained on. After that, moves are sampled with a play temperature that
-      starts at 1.0 and halves every 10 plies down to a floor of 0.15, so
-      play is exploratory early and near-deterministic late.</li>
-    <!-- gumbel_draw_temperature=1.5 widens ONLY the candidate draw (toml
-         L100-103, config.py:104-108). -->
-    <li><b>A widened candidate draw.</b> The Gumbel root sampler picks its 32
-      root candidates from a softened version of the prior
-      (draw&nbsp;temperature&nbsp;1.5). Only the <em>draw</em> is softened; the
-      ranking, the played move, and the exported target all use raw logits.
-      The search therefore occasionally examines moves the prior underrates,
-      which corrects the prior's blind spots.</li>
-  </ul>
-  <!-- Two-stones-per-turn: features.py:80-93 (record_phase/record_player) —
-       P0 places one opening stone, then two placements per turn
-       (FirstStone/SecondStone); each placement is one recorded decision.
-       Artifacts: selfplay.py:287-310 (.hxr) and 372-385 (game_KEY.npz + json
-       sidecar as commit marker, selfplay.py:865-870). -->
-  <p>
-    Each placement (the opening single stone, then two per turn) is searched
-    and recorded as its own decision, with a phase feature (first or second
-    stone of the turn) so the net always knows which half of a turn it is
-    choosing. Every finished game leaves two artifacts: a compact per-game
-    <code>.npz</code> training shard (committed by a JSON sidecar, so a
-    power-cut mid-write never corrupts the buffer) and an entry in the
-    epoch's <code>.hxr</code> game record for replay and analysis.
-  </p>
+  <div class="shardflow" aria-label="Shard storage: one shard per game, written atomically">
+    <span>game ends</span>
+    <span class="sf-arrow">&rarr;</span>
+    <span class="sf-box">game_&lt;key&gt;.npz &middot; data</span>
+    <span class="sf-arrow">&rarr;</span>
+    <span class="sf-box">game_&lt;key&gt;.json &middot; commit marker</span>
+    <span class="sf-arrow">&rarr;</span>
+    <span>one shard / game &middot; atomic: data first, sidecar last &middot; a torn shard is skipped loudly, never trained on</span>
+  </div>
 
-  <figure class="fig fig-wide" id="fig-wheel">
-    <figcaption>Fig 1 — <b>the epoch loop</b> · hover or focus a stage; run animates one full cycle</figcaption>
-    <div class="fig-body">
-      <svg id="wheelSvg" viewBox="0 0 720 330" role="img" aria-label="The five-stage epoch loop: self-play, window selection, training, checkpoint, evaluation"></svg>
-    </div>
-    <div class="fig-controls">
-      <button id="wheelRun" aria-pressed="false">run one cycle</button>
-      <span class="spacer"></span>
-      <span class="val" id="wheelEp">epoch n</span>
-    </div>
-    <div class="fig-readout" aria-live="polite" id="wheelRO">
-      <span class="ro-k">the loop</span>
-      <span class="ro-t">Five stages, repeated ~200 times. Hover a stage for what it does.</span>
-    </div>
-  </figure>
+  <div class="fig-controls">
+    <label>game ending</label>
+    <button type="button" id="btnCompleted" class="sel">completed game</button>
+    <button type="button" id="btnCapped">hit the 256-ply cap</button>
+  </div>
 
-  <h2 id="targets"><span class="sec-no">02</span>Training targets</h2>
-  <p>
-    Every full-search row stores several targets. The two primary ones:
-  </p>
-  <ul>
-    <!-- π' target: config.py:82-84 (π'=softmax(logits+σ(completedQ)),
-         σ(q)=(c_visit+max_b N(b))·c_scale·q), c_visit=50 (toml L93),
-         export-only softening gumbel_target_c_scale=0.35 (toml L98),
-         min_visits=1 (toml L104). Per-row fallback to visit target:
-         losses.py:244-257. policy_target="gumbel": toml L144. -->
-    <li><b>The improved policy π′.</b> The Gumbel-AlphaZero improved policy:
-      <span class="eq" style="display:block">π′ = softmax( logits + σ(completed&nbsp;Q) ),&nbsp;&nbsp;σ(q) = (c<sub>visit</sub> + max<sub>b</sub>&nbsp;N(b)) · c<sub>scale</sub> · q</span>
-      This is the prior's logits adjusted by each candidate's search-estimated
-      value.
-      Candidates need at least 1 visit to enter the target's support, and the
-      exported target uses a softened c<sub>scale</sub> of 0.35 (the search
-      itself ranks with 1.0), because the raw target proved too sharp
-      as a training signal. Rows without a π′ target fall back to the
-      plain visit-count distribution, per row.</li>
-    <!-- Hard z: selfplay.py:6-8 "finalizes targets (hard z ...)";
-         samples.py:63-66 (+1/-1 from mover's perspective). Binning:
-         losses.py:63-82 scalar_to_binned_target, VALUE_BINS=65
-         (constants.py:74), adjacent-bin two-hot; decode = softmax
-         expectation (losses.py:47-51). -->
-    <li><b>The outcome z.</b> The game's final result, +1 or −1 from the
-      mover's perspective, attached to every row of the game. The value head
-      outputs a distribution over 65 support points
-      spanning [−1,&nbsp;+1], trained with cross-entropy against a "two-hot"
-      target that splits its mass between the two bins adjacent to z, and
-      decoded at play time as the softmax expectation. Truncated games mask
-      the outcome heads and still train the policy heads.</li>
-  </ul>
-  <!-- STV horizons (2,6,16): samples.py:20, decay (m−1)/(m+1)
-       (samples.py:122-154). moves_left: samples.py:206, cap 209
-       (constants.py:75), normalized samples.py:346-347. Loss weights: toml
-       L122-128. Soft policy = sqrt-softened target: batching.py:162-174.
-       Surprise reweight: KL(visit||prior) selfplay.py:180-187, uniform
-       fraction .5 / max 8 (toml L129-130). -->
-  <p>
-    Auxiliary targets regularize the trunk:
-    <b>short-term values</b> at horizons of 2, 6 and 16 turns (exponential
-    averages of future search values, decay (m−1)/(m+1)), a less noisy,
-    nearer-term signal than z; a <b>moves-left</b> head (placements remaining
-    until the game ends, capped at 209 and binned the same way); the <b>opponent's reply
-    policy</b>; a per-move <b>Q head</b>; and a square-root-softened copy of
-    π′ for a soft-policy head. In this run they are weighted 1.0 (policy),
-    1.0 (value), 0.25 (opponent policy), 0.1 (short-term), 0.2 (moves-left),
-    0.1 (Q), 1.0 (soft). Rows where the search disagreed most
-    with the prior, measured as KL(visits‖prior), get up to 8× weight in
-    the policy loss.
-  </p>
-  <p class="note">
-    <b>The loop.</b> The policy head distills the <em>search</em> and the
-    value head distills the <em>outcome</em>. What 1024 visits of search
-    concluded in one generation becomes the next generation's zero-visit
-    prior, and the next generation's search starts from that stronger prior.
-    This cycle, repeated a few hundred times, is the training method.
-  </p>
+  <div class="fig-readout" id="rowReadout" aria-live="polite">
+    <span class="ro-k">one training row</span>
+    <span class="ro-t">hover or tab through the fields. every searched decision writes one row; one shard per game.</span>
+  </div>
+</figure>
 
-  <figure class="fig fig-wide" id="fig-targets">
-    <figcaption>Fig 2 — <b>one recorded position, three targets</b> · illustrative numbers, real mechanism</figcaption>
-    <div class="fig-body">
-      <svg id="tgtSvg" viewBox="0 0 880 360" role="img" aria-label="A recorded position with the net prior, the search's improved policy, and the game outcome"></svg>
-    </div>
-    <div class="fig-controls">
-      <button id="tgtPrev" aria-label="previous position">‹ ply</button>
-      <input type="range" id="tgtSlider" min="0" max="5" value="0" step="1" aria-label="position scrubber">
-      <button id="tgtNext" aria-label="next position">ply ›</button>
-      <span class="spacer"></span>
-      <span class="val" id="tgtVal">ply 3</span>
-    </div>
-    <div class="fig-readout" aria-live="polite" id="tgtRO"></div>
-  </figure>
+<p>
+At training time rows are expanded back into tensors in Rust
+(<code>expand_backend = "rust"</code>): rebuild the support from the placement
+history, recompute all 46 planes and 12 ray lengths, and project the policy
+targets onto the legal prefix. No symmetry transform is applied &mdash; the
+network is equivariant by construction, so a rotated copy of a position
+teaches it nothing new.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §9.3; configs/hexfield_eq_main_2.toml
+     expand_backend = "rust" -->
+</p>
 
-  <h2 id="replay"><span class="sec-no">03</span>The shuffle window</h2>
-  <p>
-    Shards accumulate across
-    epochs, and each epoch trains on a <b>window</b> over the most recent
-    rows, KataGo-style. If the run has produced T usable rows in total, the
-    window covers the newest
-  </p>
-  <!-- Exact formula: window.py:624-642 compute_katago_window_rows, params
-       from toml L132-136 (min_rows=20000, expand_window_per_row=0.8,
-       taper_window_exponent=0.65, taper_window_scale=20000). Called at
-       trainer.py:281-288 with max(_, min_rows) clamp. -->
-  <p class="eq">W(T) = 20,000 + 0.8 · ( x<sup>0.65</sup> − c<sup>0.65</sup> ) / ( 0.65 · c<sup>−0.35</sup> ),&nbsp;&nbsp; x = T − 20,000 + c,&nbsp; c = 20,000</p>
-  <p>
-    rows, a power-law taper. Early on the window grows nearly one-for-one
-    with new data (0.8 new window rows per new row); by a million rows the
-    growth rate has tapered to about 0.2, so the window keeps sliding forward
-    but covers an ever-smaller <em>fraction</em> of history. The cut is made
-    in whole per-game shards, newest first. If the window exceeds 600,000
-    rows, files are uniformly thinned back toward that target; from what
-    survives, 96,000 rows are drawn for exactly one training pass. No row
-    repeats within an epoch, and a reuse governor caps training at 8 samples
-    per newly generated row, bounding how often stale data is revisited.
-    <!-- select_recent_window whole-shard cut: window.py:657-675; keep_prob:
-         window.py:645-654 with shuffle_keep_target_rows=600000 (toml L133);
-         train_samples_per_epoch=96000 (toml L138); single pass, no repeat:
-         trainer.py:9-19; governor max_train_bucket_per_new_data=8 (toml L139).
-         Sampling within the window is uniform (no per-row freshness weights);
-         recency preference comes from the sliding cut itself. -->
-    Within the window, sampling is uniform; recency preference comes from the
-    sliding cut rather than per-row weights.
-  </p>
-  <p>
-    The window balances two failure modes. Training only on the newest games
-    is unstable: the data distribution shifts every epoch and openings that
-    stop appearing are forgotten. Training on all history is stale: old games
-    were played by a much weaker player. The taper sits between the two.
-  </p>
-  <!-- D6: 12 elements (6 rotations × 2 reflections): hexo_utils/encoding/
-       symmetry.py:22 D6_SIZE=12; trainer.py:71,480-482 draws one per row per
-       epoch deterministically from (seed, epoch). Not 8 — square-board 8x
-       augmentation doesn't apply; hex boards have the order-12 dihedral group. -->
-  <p>
-    At train time every sampled row is also re-expressed under one of the hex
-    board's <b>12 symmetries</b> (6 rotations × 2 reflections, the dihedral
-    group D6). The symmetry is
-    drawn deterministically per row per epoch, so a row that survives in the
-    window for 20 epochs is seen in up to 12 different orientations, a 12×
-    data multiplier with no storage cost. The transform applies to every
-    stored coordinate at once — stones, policy target, threat cells — so a
-    re-expressed row is the <em>same</em> training example: the policy target
-    rides the coordinate change.
-  </p>
+<h2 id="window"><span class="sec-no">02</span>the replay window</h2>
 
-  <figure class="fig fig-wide" id="fig-window">
-    <figcaption>Fig 3 — <b>the window over epoch shards</b> · drag the epoch slider; shading = rows inside the window (real formula)</figcaption>
-    <div class="fig-body">
-      <svg id="wnSvg" viewBox="0 0 660 250" role="img" aria-label="Epoch shards as bars with the training window shaded"></svg>
-    </div>
-    <div class="fig-controls">
-      <label for="wnSlider">epoch</label>
-      <input type="range" id="wnSlider" min="2" max="80" value="30" step="1" aria-label="current epoch">
-      <span class="val" id="wnVal"></span>
-    </div>
-    <div class="fig-readout" aria-live="polite" id="wnRO"></div>
-  </figure>
+<p>
+Each epoch trains on up to 56,000 rows drawn from a window over recent games.
+The window is not fixed-size: it grows sublinearly with the total number of
+rows the run has ever generated &mdash; a power-law taper with exponent 0.65
+and a 7,000-row floor &mdash; takes newest shards first, and down-samples
+uniformly toward a 210,000-row keep target. Early in a run the net trains on
+almost everything it has; later, the window keeps growing but ever more
+slowly, balancing freshness against variety.
+</p>
 
-  <h2 id="eval"><span class="sec-no">04</span>Evaluation</h2>
-  <!-- Multistage eval: toml L151-159 (128 games, every 5 epochs, 512 visits,
-       sealbot_share=.25 but sealbot_enabled=false L168, bracket_size=1 L169,
-       permanent_anchors=[] L175, sprt disabled L162, verdict_reference_lag=5
-       L158, pool at diagnostics/eval_pool.json L159). Paired + pentanomial:
-       multistage_eval.py:29-36, eval_stats.py:95-176. Informational, not
-       gating: evaluation.py:73-79 "it does not gate, halt, or promote";
-       config.py:338-341 eval_gating_enabled=False (not set in toml).
-       Zero-point: config.py:184-186, 206-210 — SealBot pinned at 0 Elo when
-       enabled. The recorded run had it enabled (sealbot edges in
-       learn/data/eval_history.json, share 0.25 = 32 of 128 games, unpaired);
-       the shipped public config sets sealbot_enabled=false (external build),
-       in which case the pool floats relative to its anchors.
-       Resolution ~100-120 Elo/epoch: config.py:189-192. -->
-  <p>
-    Loss curves do not measure strength directly, because the loss
-    target moves every epoch. Every fifth epoch a standalone
-    evaluator plays the fresh checkpoint through a <b>128-game budget</b> at
-    512 visits against a small roster of frozen opponents: a rung from a
-    fixed log-spaced grid of past epochs plus a reference checkpoint lagged
-    five epochs back. Checkpoint matches are <em>paired</em>: both games of a
-    pair share an opening (temperature-sampled, then
-    seat-swapped), so both players face the same starts and opening luck
-    cancels out of the comparison. Each pair scores
-    <b>pentanomially</b> (0, ½, 1, 1½ or 2 points), which accounts
-    for the correlation between a pair's two games, and every edge is pooled
-    into a persisted <b>Bradley-Terry</b> rating fit across all checkpoints
-    evaluated so far. A single 128-game epoch only resolves ~100–120 Elo;
-    the pooled fit tightens as evidence accumulates across epochs.
-  </p>
-  <p>
-    An external minimax bot (SealBot) serves as a cross-lineage reference
-    pinned at 0 Elo, fixing the scale's zero point; this run took a quarter
-    of each eval budget as unpaired SealBot games, and the ratings on
-    <a href="results.html">the results</a> page are anchored that way. The
-    shipped config disables SealBot by default (it is a separate build), in
-    which case ratings float relative to the run's own anchor checkpoints.
-    Either way the numbers are positions within one pool: differences between
-    epochs are meaningful; the absolute values are not.
-  </p>
-  <p class="note">
-    <b>Informational verdict.</b> The evaluator emits a
-    PROMOTE / REGRESS / INCONCLUSIVE verdict, and nothing consumes it. Every
-    epoch's checkpoint becomes the next epoch's self-play engine regardless.
-    With steady learning-rate training a genuine
-    regression shows up as a trend rather than a single bad epoch, and gating
-    on a measurement with ~50 Elo of noise would mostly veto good
-    checkpoints. The verdict is for the people monitoring the run. The
-    run&rsquo;s rating history, from this same eval pipeline, is on
-    <a href="results.html">the results</a> page.
-  </p>
+<!-- src: the plotted rule is packages/hexfield_eq/python/hexfield_eq/window.py
+     compute_katago_window_rows verbatim (offset = taper_window_scale; window =
+     ((x^0.65 − offset^0.65) / (0.65 · offset^(0.65−1))) · per_row + min_rows,
+     truncated, clamped to min_rows) with keep_prob = min(keep, used)/used;
+     parameters from configs/hexfield_eq_main_2.toml [model.config.training]:
+     shuffle_min_rows = 7000, shuffle_keep_target_rows = 210000,
+     shuffle_taper_window_exponent = 0.65, shuffle_taper_window_scale = 7000.0,
+     shuffle_expand_window_per_row = 0.8, train_samples_per_epoch = 56000;
+     newest-shards-first per window.py select_recent_window; key-derived ordering
+     per window.py _shard_generation; HEXFIELD_EQ_EXPLAINER.md §9.2 -->
+<figure class="fig fig-wide" id="fig-window">
+  <figcaption>fig 2 &middot; <b>the replay window</b> &middot; the real rule from window.py &middot; drag the slider</figcaption>
+  <svg id="winplot" viewBox="0 0 860 340" role="img" aria-label="Window size in rows plotted against total rows generated: a power-law taper curve with reference lines at the 210,000-row keep target and the 56,000-row epoch draw"></svg>
+  <div class="fig-controls">
+    <label for="winSlider">total rows generated</label>
+    <input type="range" id="winSlider" min="0" max="3000000" step="5000" value="500000">
+    <span class="val" id="winVal">500,000</span>
+  </div>
+  <div class="fig-readout" id="winReadout" aria-live="polite">
+    <span class="ro-k">replay window</span>
+    <span class="ro-t">&nbsp;</span>
+  </div>
+</figure>
 
-  <figure class="fig fig-wide" id="fig-rating">
-    <figcaption>Fig 4 — <b>pooled rating over a run</b> · synthetic-but-plausible data, real mechanism · hover or focus a point (the real curve is on the results page)</figcaption>
-    <div class="fig-body">
-      <svg id="rcSvg" viewBox="0 0 900 300" role="img" aria-label="Rating versus epoch with an uncertainty band; each point is one evaluation epoch"></svg>
-    </div>
-    <div class="fig-readout" aria-live="polite" id="rcRO">
-      <span class="ro-k">rating curve</span>
-      <span class="ro-t">Each point pools that epoch's 128-game eval into the Bradley-Terry fit. Band = ±1 SE of the pooled rating.</span>
-    </div>
-  </figure>
+<p>
+Two details keep this machinery honest. <b>Determinism:</b> shard ordering
+derives from game keys, not file timestamps, so a resumed run selects exactly
+the same window &mdash; the producing epoch is parsed out of the key itself.
+<b>The reuse governor:</b> a counter persisted in the checkpoint credits 8
+training-row-units for every newly generated self-play row and debits the rows
+actually trained; when the buffer goes stale, the trainer throttles rather
+than grinding over the same lagging data &mdash; it cannot over-fit a buffer
+that self-play has stopped refreshing.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §9.2; window.py _shard_generation (key-derived,
+     "Does not use mtime"); trainer.py _update_train_bucket + train_state
+     serialized into the checkpoint meta; configs/hexfield_eq_main_2.toml
+     max_train_bucket_per_new_data = 8.0 -->
+</p>
 
-  <h2 id="close"><span class="sec-no">05</span>Summary</h2>
-  <p>
-    The net plays 256 games against itself, recording what its search
-    concluded at every full-strength decision. It then trains on a tapered
-    window of recent experience, learning to predict the search's improved
-    policy and the games' eventual outcomes in a single forward pass. The new
-    checkpoint becomes the player for the next epoch's games, so
-    every generation's search distills into the next generation's prior.
-    Every fifth epoch, paired matches against earlier checkpoints measure
-    progress; the result does not gate the loop.
-  </p>
-  <p>
-    <a href="index.html">The overview</a> shows how the parts fit together.
-    <a href="results.html">The results</a> page shows this run's measured
-    rating over epochs.
-  </p>
+<h2 id="losses"><span class="sec-no">03</span>nine heads, one sum</h2>
+
+<p>
+The total loss is a fixed-weight sum over nine heads. Policy heads learn the
+search&rsquo;s conclusions; the value family learns outcomes at four time
+scales; two auxiliary heads (opponent reply, per-cell Q) shape the trunk&rsquo;s
+representation. Scalar targets are never regressed directly &mdash; every
+scalar head predicts a distribution over 65 bins on [&minus;1,&nbsp;1].
+</p>
+
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §9.4 (table verbatim); weights confirmed in
+     configs/hexfield_eq_main_2.toml [model.config.training]: policy_weight = 1.0,
+     value_weight = 1.0, soft_policy_weight = 0.5, opp_policy_weight = 0.25,
+     short_term_value_weight = 0.1, moves_left_weight = 0.2, q_head_weight = 0.1;
+     surprise formula 0.5 + 0.5·n·sᵢ/Σs clamped at 8 per §9.4 with
+     policy_surprise_uniform_fraction = 0.5, policy_surprise_max_weight = 8.0,
+     batch_rows = 256; legal-prefix CE + off-prefix hard error per losses.py
+     ("policy target mass off the legal prefix is a hard error"); two-hot 65-bin
+     encoding and softmax-expectation decode per losses.py value_bins /
+     expectation + §9.4 -->
+<figure class="fig fig-wide" id="fig-losses">
+  <figcaption>fig 3 &middot; <b>nine heads, one sum</b> &middot; hover a row or bar &middot; sliders drive the surprise + two-hot demos</figcaption>
+
+  <div class="tbl-scroll">
+    <table class="spec" id="lossTable">
+      <thead>
+        <tr><th>head</th><th>target</th><th>loss</th><th>weight</th></tr>
+      </thead>
+      <tbody>
+        <tr tabindex="0" data-i="0"><td>policy</td><td>&pi;&prime; over the legal prefix</td><td>soft CE, surprise-weighted</td><td>1.0</td></tr>
+        <tr tabindex="0" data-i="1"><td>value</td><td>outcome z</td><td>CE vs two-hot 65-bin target</td><td>1.0</td></tr>
+        <tr tabindex="0" data-i="2"><td>soft_policy</td><td>&pi;&prime; at temperature 2</td><td>soft CE</td><td>0.5</td></tr>
+        <tr tabindex="0" data-i="3"><td>opp_policy</td><td>next opponent &pi;&prime;</td><td>soft CE</td><td>0.25</td></tr>
+        <tr tabindex="0" data-i="4" data-hl="4,5,6" data-k="stvalue 2, 6, 16 · weight 0.1 each" data-info="targets: EMAs of future root values at horizons 2, 6 and 16 decisions · 65-bin CE each · masked on capped games"><td>stvalue 2, 6, 16</td><td>future-value EMA</td><td>65-bin CE, masked</td><td>0.1 each</td></tr>
+        <tr tabindex="0" data-i="7"><td>moves_left</td><td>decisions remaining</td><td>65-bin CE, masked</td><td>0.2</td></tr>
+        <tr tabindex="0" data-i="8"><td>cell_q</td><td>per-child search Q</td><td>65-bin CE per legal cell</td><td>0.1</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="padding:0 14px 14px">
+    <svg id="wbars" viewBox="0 0 700 234" role="img" aria-label="Horizontal bar chart of the nine loss weights: policy 1.0, value 1.0, soft_policy 0.5, opp_policy 0.25, three stvalue heads at 0.1, moves_left 0.2, cell_q 0.1"></svg>
+  </div>
+
+  <div class="panel-h">surprise weighting &mdash; w<sub>i</sub> = min(8, 0.5 + 0.5 &middot; n &middot; s<sub>i</sub> / &Sigma;s)</div>
+  <div class="fig-controls">
+    <label for="surpSlider">row f surprise s</label>
+    <input type="range" id="surpSlider" min="0" max="12" step="0.05" value="1.9">
+    <span class="val" id="surpVal">1.90</span>
+  </div>
+  <div class="sdemo" id="surpDemo"></div>
+  <div class="sd-note" id="surpNote"></div>
+
+  <div class="panel-h">two-hot scalar encoding &mdash; 65 bins on [&minus;1, 1]</div>
+  <div class="fig-controls">
+    <label for="thSlider">scalar target</label>
+    <input type="range" id="thSlider" min="-1" max="1" step="0.01" value="0.3">
+    <span class="val" id="thVal">+0.30</span>
+  </div>
+  <div style="padding:0 14px 6px">
+    <svg id="twohot" viewBox="0 0 700 140" role="img" aria-label="Strip of 65 bins on minus one to plus one; a scalar target places its mass on the two adjacent bin centers, split by proximity"></svg>
+  </div>
+
+  <div class="fig-readout" id="lossReadout" aria-live="polite">
+    <span class="ro-k">nine heads</span>
+    <span class="ro-t">total loss = &Sigma; w&#8341; L&#8341; with the fixed weights above. hover a table row or bar for detail.</span>
+  </div>
+</figure>
+
+<p>
+<b>Structural legality.</b> The policy CE is computed over each row&rsquo;s
+legal prefix directly &mdash; the support ordering makes the first
+<code>legal_count</code> outputs <em>be</em> the legal moves, so there is no
+mask to apply. Target mass off the prefix is a hard error that raises, not a
+masked zero: a target disagreeing with the legality slice means the row and
+the rebuilt position have drifted, and the trainer refuses to average over it.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §9.4; losses.py raises
+     "policy target mass off the legal prefix is a hard error" -->
+</p>
+
+<p>
+<b>Two-hot targets.</b> A scalar target (outcome, short-term value, moves-left,
+cell Q) becomes a distribution: its mass is split between the two adjacent bin
+centers in proportion to proximity, and the head trains with plain CE. At
+decode time the prediction is read back as the softmax expectation over bin
+centers &mdash; the encode&ndash;decode round trip is exact, and the head is
+free to express uncertainty as spread rather than being forced to a point
+estimate.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §9.4; losses.py value_bins / expectation -->
+</p>
+
+<h2 id="optim"><span class="sec-no">04</span>optimization</h2>
+
+<p>
+The optimizer recipe is compact, with one genuinely unusual entry: the
+gradient clip is <em>adaptive</em>. The tied trunk concentrates gradient
+&mdash; each conv&rsquo;s 84 free weight blocks receive gradient through every
+one of the gathers that assemble the dense kernel &mdash; so its global
+gradient norm runs hotter than an untied net&rsquo;s, and a fixed clip
+threshold tuned on untied-net intuition would silently miscalibrate. Instead
+the clip tracks 1.75&times; an EMA of the pre-clip norm (a static 5.0 while
+the EMA warms up), following the net&rsquo;s own scale.
+</p>
+
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §9.5–9.6; configs/hexfield_eq_main_2.toml
+     [model.config.training]: learning_rate = 5e-4, lr_final = 1e-4,
+     lr_schedule = "cosine", lr_warmup_steps = 400, lr_decay_epochs = 60,
+     weight_decay = 1e-4 (matrix-only per §9.5), adaptive_clip = true,
+     clip_c = 1.75, grad_clip = 5.0, batch_rows = 256,
+     train_samples_per_epoch = 56000 (≈219 optimizer steps/epoch);
+     the plotted LR function is trainer.py scheduled_lr verbatim — warmup in
+     OPTIMIZER STEPS: base·(step+1)/400; decay in EPOCHS:
+     final + (base−final)·0.5·(1+cos(π·min(1, epoch/60))), hold after;
+     micro-buckets under a B·Npad² pair budget with step-global denominators per
+     trainer.py ("step-global denominators make the step gradient independent of
+     the bucket split, modulo fp reassociation"); fp16 autocast + fp32 loss
+     arithmetic per §9.5; warm start per §9.6 + config initialize_from
+     (main_2 A5 prefit, 2400 steps, weights repackaged, fresh optimizer) -->
+<figure class="fig fig-wide" id="fig-optim">
+  <figcaption>fig 4 &middot; <b>optimization</b> &middot; the numbers, and the real lr schedule &middot; drag to inspect</figcaption>
+
+  <div class="optgrid">
+    <div class="og-cell"><div class="og-n">AdamW 5e-4 &rarr; 1e-4</div><div class="og-l">cosine decay over 60 epochs, then hold</div></div>
+    <div class="og-cell"><div class="og-n">400 steps</div><div class="og-l">linear warmup &middot; in optimizer steps</div></div>
+    <div class="og-cell"><div class="og-n">1e-4 &middot; matrix-only</div><div class="og-l">weight decay &middot; none on gains / biases</div></div>
+    <div class="og-cell"><div class="og-n">clip 1.75&times; EMA</div><div class="og-l">adaptive &middot; static 5.0 during EMA warmup</div></div>
+    <div class="og-cell"><div class="og-n">fp16 + fp32</div><div class="og-l">autocast fwd / bwd &middot; fp32 loss arithmetic</div></div>
+    <div class="og-cell"><div class="og-n">256 rows &rarr; buckets</div><div class="og-l">micro-buckets under a B&middot;Npad&sup2; budget</div></div>
+    <div class="og-cell"><div class="og-n">step-global &Sigma;</div><div class="og-l">gradient independent of the bucket split</div></div>
+    <div class="og-cell"><div class="og-n">2,400-step BC prefit</div><div class="og-l">warm start &middot; weights only, fresh optimizer</div></div>
+  </div>
+
+  <svg id="lrplot" viewBox="0 0 860 300" role="img" aria-label="Learning rate against epoch: linear warmup over the first 400 optimizer steps to 5e-4, then a per-epoch cosine decay reaching 1e-4 at epoch 60 and holding"></svg>
+
+  <div class="fig-controls">
+    <label for="lrSlider">epoch</label>
+    <input type="range" id="lrSlider" min="0" max="80" step="0.1" value="10">
+    <span class="val" id="lrVal">10.0</span>
+  </div>
+  <div class="fig-readout" id="lrReadout" aria-live="polite">
+    <span class="ro-k">lr schedule</span>
+    <span class="ro-t">&nbsp;</span>
+  </div>
+</figure>
+
+<p>
+Batches of 256 rows never run as one tensor: positions vary in size, so the
+batch is split into micro-buckets under a <code>B&middot;Npad&sup2;</code>
+budget &mdash; a few fat buckets of similar-sized positions instead of one
+padded monolith. Losses across buckets share step-global denominators, so the
+optimizer step&rsquo;s gradient is mathematically independent of how the batch
+was split (up to floating-point reassociation). The run itself warm-starts
+from a 2,400-step behavioral-cloning prefit &mdash; the same architecture
+briefly trained to imitate a fixed game corpus, loaded weights-only with a
+fresh optimizer &mdash; skipping the slowest opening-competence epochs of
+self-play.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §9.5–9.6; trainer.py pair-budget microbuckets
+     + step_global_denominators; configs/hexfield_eq_main_2.toml initialize_from -->
+</p>
+
+<h2 id="eval"><span class="sec-no">05</span>paired games, pentanomial scoring</h2>
+
+<p>
+Strength is measured directly, every 5 epochs, from a 192-game budget. Games
+run at 512 visits, greedy after an 8-ply temperature-1.0 opening. The
+measurement problem is that shared openings correlate results &mdash; so the
+unit of statistics is not the game but the <em>pair</em>: both games share one
+sampled opening line (the leader searches its opening, the follower replays
+it) and swap seats, so a pair differs only by who holds which side. Hexo has
+no draws, so a completed pair scores 0, 1, or 2 candidate wins; a pair with
+one truncated game scores 0.5 or 1.5. Results land in a five-bucket
+(&ldquo;pentanomial&rdquo;) histogram whose <em>pair-level</em> variance
+absorbs the opening-induced correlation &mdash; treating the two games as
+independent would understate the variance and quote confidence intervals
+narrower than the truth.
+</p>
+
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §10 intro + §10.1;
+     configs/hexfield_eq_main_2.toml [model.config.multi_stage_eval]
+     games_budget = 192, every_n_epochs = 5, full_search_visits = 512 -->
+<figure class="fig fig-wide" id="fig-pair">
+  <figcaption>fig 5 &middot; <b>one evaluation pair</b> &middot; choose each game&rsquo;s result &middot; the pair is the unit of statistics</figcaption>
+
+  <svg id="pairfig" viewBox="0 0 700 312" role="img" aria-label="Two games share one sampled opening line and swap seats; the pair's candidate-win score falls into one of five pentanomial buckets">
+    <rect class="pr-box" x="225" y="14" width="250" height="52"/>
+    <text class="pr-t" x="350" y="36" text-anchor="middle">shared opening line</text>
+    <text class="pr-s" x="350" y="52" text-anchor="middle">8 plies &middot; T 1.0 &middot; leader searches, follower replays</text>
+
+    <path class="pedge" d="M300 66 L185 100"/>
+    <path class="pedge" d="M400 66 L515 100"/>
+
+    <g id="gameA">
+      <rect class="pr-box" x="55" y="102" width="260" height="78"/>
+      <text class="pr-t" x="185" y="126" text-anchor="middle">game a</text>
+      <circle class="seat0" cx="105" cy="148" r="7"/>
+      <text class="pr-s" x="118" y="152" text-anchor="start">candidate</text>
+      <circle class="seat1" cx="205" cy="148" r="7"/>
+      <text class="pr-s" x="218" y="152" text-anchor="start">opponent</text>
+      <text class="pr-res" x="185" y="171" text-anchor="middle" id="gaRes">candidate wins &middot; +1</text>
+    </g>
+
+    <g id="gameB">
+      <rect class="pr-box" x="385" y="102" width="260" height="78"/>
+      <text class="pr-t" x="515" y="126" text-anchor="middle">game b &middot; seats swapped</text>
+      <circle class="seat1" cx="435" cy="148" r="7"/>
+      <text class="pr-s" x="448" y="152" text-anchor="start">candidate</text>
+      <circle class="seat0" cx="535" cy="148" r="7"/>
+      <text class="pr-s" x="548" y="152" text-anchor="start">opponent</text>
+      <text class="pr-res" x="515" y="171" text-anchor="middle" id="gbRes">candidate wins &middot; +1</text>
+    </g>
+
+    <path class="pedge" d="M185 180 L305 218"/>
+    <path class="pedge" d="M515 180 L395 218"/>
+
+    <g id="pentHist"></g>
+    <text class="pr-s" x="350" y="306" text-anchor="middle">pair score &middot; candidate wins per pair (five buckets &mdash; sketch heights illustrative)</text>
+  </svg>
+
+  <div class="fig-controls">
+    <label>game a</label>
+    <button type="button" data-g="a" data-v="win" class="sel">candidate wins</button>
+    <button type="button" data-g="a" data-v="loss">opponent wins</button>
+    <button type="button" data-g="a" data-v="trunc">truncated</button>
+    <span class="spacer"></span>
+    <label>game b</label>
+    <button type="button" data-g="b" data-v="win" class="sel">candidate wins</button>
+    <button type="button" data-g="b" data-v="loss">opponent wins</button>
+    <button type="button" data-g="b" data-v="trunc">truncated</button>
+  </div>
+  <div class="fig-readout" id="pairReadout" aria-live="polite">
+    <span class="ro-k">pair score 2</span>
+    <span class="ro-t">&nbsp;</span>
+  </div>
+</figure>
+
+<h2 id="roster"><span class="sec-no">06</span>the roster, and reading the numbers</h2>
+
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §10.2 (table verbatim, SealBot rationale +
+     half weight); configs/hexfield_eq_main_2.toml [model.config.multi_stage_eval]:
+     strix_share = 0.3333 / sealbot_share = 0.1667 of games_budget = 192
+     (64 / 32 games), strix_weight = 1.0, strix_sims = 512, strix_m = 16,
+     bracket_size = 2, verdict_reference_lag = 5 -->
+<figure class="fig" id="fig-roster">
+  <figcaption>fig 6 &middot; <b>the roster</b> &middot; 192 games every 5 epochs, split four ways</figcaption>
+  <div class="tbl-scroll">
+    <table class="spec">
+      <thead>
+        <tr><th>opponent</th><th>what it is</th><th>games</th><th>protocol</th><th>role</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Strix</td><td>third-party GNN bot (HeXONet) under its own Gumbel MCTS, 512 sims, fixed checkpoint</td><td>64 (32 pairs)</td><td>paired</td><td>the pinned 0-Elo anchor</td></tr>
+        <tr><td>SealBot</td><td>external C++ minimax, 50 ms/decision</td><td>32</td><td>unpaired, binomial</td><td>cross-lineage calibrator</td></tr>
+        <tr><td>Self-bracket</td><td>own checkpoints at grid epochs {5, 10, 20, 40, 80, 160}, nearest 2</td><td>~96 shared</td><td>paired</td><td>progress curve</td></tr>
+        <tr><td>Champion</td><td>own most recent checkpoint &ge;5 epochs back</td><td>with brackets</td><td>paired</td><td>per-epoch verdict target</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="fig-readout">
+    <span class="ro-k">why sealbot is unpaired</span>
+    <span class="ro-t">its time-limited depth varies with machine load &mdash; a seat-swapped pair would not be a matched comparison &mdash; so it plays unpaired binomial games and enters the rating pool at half weight for the same reason.</span>
+  </div>
+</figure>
+
+<p>
+All results feed a rolling Bradley&ndash;Terry pool anchored at
+Strix&nbsp;=&nbsp;0 Elo. The candidate-vs-champion verdict is single-epoch by
+construction &mdash; roughly &plusmn;130 Elo of standard error &mdash; and it
+never tightens: it is a gross-regression tripwire, not a progress meter. The
+fixed-anchor curves (Strix, SealBot, the brackets &mdash; the same label every
+epoch) pool information across epochs, and <em>they</em> are the actual
+measure of progress.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §10.3 -->
+</p>
+
+<div class="note">
+<b>Evaluation cannot gate, promote, or halt training</b> &mdash; this is
+asserted in the eval path, not merely left as convention. The one feedback
+loop is the <b>head audit</b>: every epoch the moves-left head is scored
+against recent games (rank-correlation and near-end error gates); on failure,
+the search lever that consumes it is disabled until the head recovers. The
+model keeps training either way &mdash; only the search stops trusting a head
+that has gone bad.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §10.3 -->
+</div>
+
+<h2 id="further"><span class="sec-no">07</span>further reading</h2>
+
+<ul class="reading">
+  <li><code>docs/HEXFIELD_EQ_EXPLAINER.md</code> &mdash; the full explainer these pages are built from; &sect;9&ndash;10 cover training and evaluation.</li>
+  <li><code>docs/DERIVATION_D6_EQUIVARIANT_ATTENTION.md</code> &mdash; the complete mathematics behind the equivariance constraint.</li>
+  <li><code>docs/SPEC_RAYTAP_CONV.md</code> &mdash; exact definitions of the input features and the ray-tap convolution.</li>
+  <li><code>configs/hexfield_eq_main_2.toml</code> &mdash; the production run&rsquo;s configuration; every training and evaluation number on this page appears in it.</li>
+</ul>
+
 </main>
 
 <footer class="learn-footer">
   <div class="foot-row">
-    <a href="search.html" rel="prev">‹ The search</a>
+    <a href="systems.html">&larr; prev &middot; the serving</a>
     <span class="foot-spacer"></span>
-    <a href="results.html" rel="next">The results ›</a>
+    <a href="./">back to overview &rarr;</a>
   </div>
 </footer>
 
 <script>
-(function(){
-'use strict';
-var NS='http://www.w3.org/2000/svg';
-function el(name,attrs,parent){
-  var n=document.createElementNS(NS,name);
-  if(attrs)for(var k in attrs)n.setAttribute(k,attrs[k]);
-  if(parent)parent.appendChild(n);
-  return n;
-}
-function txt(node,s){node.textContent=s;return node;}
-var REDUCED=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-// tiny deterministic LCG so every load renders identical "random" data
-function lcg(seed){var s=seed>>>0;return function(){s=(1664525*s+1013904223)>>>0;return s/4294967296;};}
+(function () {
+  "use strict";
 
-/* ================= FIG 1 — epoch-loop wheel ================= */
-(function(){
-  var svg=document.getElementById('wheelSvg');
-  var ro=document.getElementById('wheelRO');
-  var runBtn=document.getElementById('wheelRun');
-  var epLab=document.getElementById('wheelEp');
-  var CX=226,CY=165,R=108;
-  var STAGES=[
-    {name:'self-play',tick:'256 games · ~25k rows',
-     desc:'Play 256 games from the current checkpoint. ~33% of decisions get the full 1024-visit search (policy rows); the rest get 192 visits (value-only rows). Writes one .npz shard per game plus the epoch .hxr record.'},
-    {name:'window',tick:'power-law taper',
-     desc:'Re-scan the shard manifest and cut the training window: the newest W(T) rows by the KataGo-style taper, whole shards, newest first. Uniform thinning if the window tops 600k rows.'},
-    {name:'train',tick:'96k rows · ~375 steps',
-     desc:'One pass over 96,000 sampled rows, each under a fresh D6 symmetry. AdamW at lr 5e-4, batch 256 rows, adaptive grad-clip. No row repeats within the epoch.'},
-    {name:'checkpoint',tick:'every epoch',
-     desc:'Save epoch_NNNNNN.pt unconditionally. This checkpoint is the self-play engine for the next epoch; no gate or promotion decision applies.'},
-    {name:'evaluate',tick:'128 games · every 5th',
-     desc:'Every fifth epoch: a 128-game budget at 512 visits vs frozen opponents (paired checkpoint matches scored pentanomially, plus unpaired SealBot games when enabled), pooled into the Bradley-Terry rating fit. Informational only.'}
-  ];
-  var N=STAGES.length,GAP=9,SEG=360/N;
-  function pol(deg,r){var a=(deg-90)*Math.PI/180;return[CX+r*Math.cos(a),CY+r*Math.sin(a)];}
-  function arc(a0,a1,r){
-    var p0=pol(a0,r),p1=pol(a1,r),large=(a1-a0)>180?1:0;
-    return 'M'+p0[0].toFixed(1)+' '+p0[1].toFixed(1)+' A'+r+' '+r+' 0 '+large+' 1 '+p1[0].toFixed(1)+' '+p1[1].toFixed(1);
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs) {
+    var e = document.createElementNS(SVG_NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
   }
-  var groups=[];
-  STAGES.forEach(function(st,i){
-    var a0=i*SEG+GAP/2,a1=(i+1)*SEG-GAP/2;
-    var g=el('g',{class:'wh-stage',tabindex:'0',role:'button',
-      'aria-label':st.name+' · '+st.tick},svg);
-    // transparent wide stroke: tap-sized hit area for the arc (no visual change)
-    el('path',{d:arc(a0,a1,R),fill:'none',stroke:'transparent','stroke-width':'48'},g);
-    el('path',{class:'wh-arc',d:arc(a0,a1,R)},g);
-    var mid=(a0+a1)/2,lp=pol(mid,R+34);
-    var anchor=Math.cos((mid-90)*Math.PI/180)>0.35?'start':(Math.cos((mid-90)*Math.PI/180)<-0.35?'end':'middle');
-    txt(el('text',{class:'wh-name',x:lp[0],y:lp[1],'text-anchor':anchor},g),st.name);
-    txt(el('text',{class:'wh-tick',x:lp[0],y:lp[1]+13,'text-anchor':anchor},g),st.tick);
-    function show(){setRO(st.name,st.desc);groups.forEach(function(x){x.g.classList.remove('on');});g.classList.add('on');}
-    g.addEventListener('mouseenter',show);
-    g.addEventListener('focus',show);
-    g.addEventListener('click',show);
-    g.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();show();}});
-    groups.push({g:g,a0:a0,a1:a1,st:st});
-  });
-  // center label + loop arrow hint
-  txt(el('text',{class:'lab-t',x:CX,y:CY-6,'text-anchor':'middle'},svg),'one epoch');
-  txt(el('text',{class:'tick-t',x:CX,y:CY+12,'text-anchor':'middle'},svg),'↻ repeat ×200');
-  // right-hand static legend of the data artifacts
-  var lx=470;
-  txt(el('text',{class:'lab-t on',x:lx,y:52},svg),'ARTIFACTS PER EPOCH');
-  [['samples/epoch_NNNNNN/game_K.npz','one shard per game + .json commit marker'],
-   ['selfplay/epoch_NNNNNN.hxr','full game records for replay & analysis'],
-   ['checkpoints/epoch_NNNNNN.pt','the next generation’s self-play engine'],
-   ['diagnostics/eval_pool.json','the persisted Bradley-Terry rating pool']
-  ].forEach(function(row,i){
-    txt(el('text',{class:'wh-tick',x:lx,y:84+i*52,style:'fill:var(--text)'},svg),row[0]);
-    txt(el('text',{class:'tick-t',x:lx,y:100+i*52},svg),row[1]);
-  });
-  var prog=el('path',{class:'wh-prog',d:'',visibility:'hidden'},svg);
-  var dot=el('circle',{class:'wh-dot',r:'4',visibility:'hidden'},svg);
-  function setRO(k,t){ro.innerHTML='';var a=document.createElement('span');a.className='ro-k';a.textContent=k;
-    var b=document.createElement('span');b.className='ro-t';b.textContent=t;ro.appendChild(a);ro.appendChild(b);}
-  // run animation: one full cycle (~10s), pausable; reduced-motion steps instead
-  var raf=null,t0=null,tAcc=0,DUR=10000,epoch=1,stepIdx=-1;
-  function setStage(i){
-    groups.forEach(function(x,j){x.g.classList.toggle('on',j===i);});
-    setRO(STAGES[i].name,STAGES[i].desc);
+  function txt(node, s) { node.textContent = s; return node; }
+  function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
+  function readout(id, defK, defT) {
+    var ro = document.getElementById(id);
+    var k = ro.querySelector(".ro-k"), t = ro.querySelector(".ro-t");
+    return {
+      set: function (kk, tt) { k.textContent = kk; t.textContent = tt; },
+      reset: function () { k.textContent = defK; t.textContent = defT; }
+    };
   }
-  function frame(ts){
-    if(t0===null)t0=ts;
-    var t=(tAcc+(ts-t0))/DUR;
-    if(t>=1){stop(true);return;}
-    var deg=t*360, i=Math.min(N-1,Math.floor(deg/SEG));
-    var g=groups[i];
-    var a=Math.max(g.a0,Math.min(deg,g.a1));
-    prog.setAttribute('d',arc(g.a0,Math.max(g.a0+0.5,a),R));
-    var dp=pol(deg,R);dot.setAttribute('cx',dp[0]);dot.setAttribute('cy',dp[1]);
-    if(i!==stepIdx){stepIdx=i;setStage(i);}
-    raf=requestAnimationFrame(frame);
-  }
-  function stop(done){
-    if(raf){cancelAnimationFrame(raf);raf=null;}
-    if(done){tAcc=0;epoch++;epLab.textContent='epoch n+'+(epoch-1);
-      prog.setAttribute('visibility','hidden');dot.setAttribute('visibility','hidden');
-      setRO('cycle complete','Checkpoint saved; the loop repeats with the updated net.');}
-    else{tAcc+=performance.now()-t0;}
-    t0=null;runBtn.setAttribute('aria-pressed','false');runBtn.classList.remove('on');
-  }
-  runBtn.addEventListener('click',function(){
-    if(REDUCED){ // step one stage per activation instead of animating
-      stepIdx=(stepIdx+1)%N;setStage(stepIdx);
-      if(stepIdx===N-1){epoch++;epLab.textContent='epoch n+'+(epoch-1);}
-      return;
-    }
-    if(raf){stop(false);return;}
-    prog.setAttribute('visibility','visible');dot.setAttribute('visibility','visible');
-    runBtn.setAttribute('aria-pressed','true');runBtn.classList.add('on');
-    raf=requestAnimationFrame(frame);
-  });
-  document.addEventListener('visibilitychange',function(){if(document.hidden&&raf)stop(false);});
-})();
 
-/* ============ shared hex-board helpers (figs 2 & 3) ============ */
-function hexCells(rad){
-  var out=[];
-  for(var q=-rad;q<=rad;q++)for(var r=-rad;r<=rad;r++)
-    if(Math.abs(q+r)<=rad)out.push([q,r]);
-  return out;
-}
-function hexXY(q,r,size){ // pointy-top axial
-  return [size*Math.sqrt(3)*(q+r/2), size*1.5*r];
-}
-function hexPath(cx,cy,s){
-  var p='';
-  for(var i=0;i<6;i++){
-    var a=Math.PI/180*(60*i-30);
-    p+=(i?'L':'M')+(cx+s*Math.cos(a)).toFixed(1)+' '+(cy+s*Math.sin(a)).toFixed(1);
-  }
-  return p+'Z';
-}
-// hexo turn structure (features.py record_player): ordinal 0 -> P0 opening
-// stone, then two placements per turn, alternating players.
-function moverOf(n){return n===0?0:(((Math.floor((n-1)/2))%2===0)?1:0);}
-
-/* ================= FIG 2 — targets triptych ================= */
-(function(){
-  var svg=document.getElementById('tgtSvg');
-  var ro=document.getElementById('tgtRO');
-  var slider=document.getElementById('tgtSlider');
-  var val=document.getElementById('tgtVal');
-  var RAD=4,SZ=15,BCX=150,BCY=168;
-  var cells=hexCells(RAD);
-  // deterministic stone order (a plausible-looking scattered game)
-  var rnd=lcg(20260703);
-  var order=cells.slice();
-  for(var i=order.length-1;i>0;i--){var j=Math.floor(rnd()*(i+1));var t=order[i];order[i]=order[j];order[j]=t;}
-  // 6 canned decision points; winner of this canned game: P0.
-  // prior vs pi-prime values are illustrative; the MECHANISM (sharpening,
-  // occasional overturn, hard z per mover) matches the real pipeline.
-  var PLIES=[
-    {ply:3, prior:[.22,.18,.16,.15,.15,.14], pi:[.34,.23,.14,.12,.09,.08], stv:[.04,.06,.10],
-     note:'Opening. The prior is diffuse; 1024 visits sharpen it only mildly, since many moves are close in value.'},
-    {ply:9, prior:[.30,.25,.15,.12,.10,.08], pi:[.55,.21,.10,.07,.04,.03], stv:[.08,.13,.21],
-     note:'The search agrees with the prior’s top pick and concentrates mass on it.'},
-    {ply:12,prior:[.35,.24,.14,.12,.08,.07], pi:[.10,.08,.62,.11,.05,.04], stv:[.11,.19,.30],
-     note:'Overturned: search found C better than the prior’s favourite A. KL(visits‖prior) is high, so this row is up-weighted (up to 8×) in the policy loss.'},
-    {ply:24,prior:[.41,.22,.14,.10,.07,.06], pi:[.66,.15,.09,.05,.03,.02], stv:[.18,.28,.44],
-     note:'Middlegame. The value trend (short-term horizons 2/6/16) is drifting toward the eventual winner.'},
-    {ply:33,prior:[.55,.18,.10,.08,.05,.04], pi:[.80,.09,.05,.03,.02,.01], stv:[.35,.52,.71],
-     note:'The prior, trained on earlier generations of this signal, is already close to the search’s answer.'},
-    {ply:44,prior:[.62,.14,.09,.07,.04,.04], pi:[.93,.03,.02,.01,.005,.005], stv:[.62,.78,.90],
-     note:'Near-forced late move: π′ is almost one-hot and z is no longer in doubt.'}
-  ];
-  var LET=['A','B','C','D','E','F'];
-  var boardG=el('g',{},svg);
-  var panelG=el('g',{},svg);
-  // static panel headers
-  txt(el('text',{class:'lab-t',x:300,y:34},svg),'NET PRIOR p');
-  txt(el('text',{class:'lab-t',x:490,y:34},svg),'SEARCH TARGET π′');
-  txt(el('text',{class:'lab-t',x:680,y:34},svg),'OUTCOME z (65-bin)');
-  txt(el('text',{class:'tick-t',x:300,y:48},svg),'what the net guessed');
-  txt(el('text',{class:'tick-t',x:490,y:48},svg),'what it trains toward');
-  txt(el('text',{class:'tick-t',x:680,y:48},svg),'+ short-term horizons 2/6/16');
-  function render(k){
-    var d=PLIES[k];
-    boardG.innerHTML='';panelG.innerHTML='';
-    var mover=moverOf(d.ply);
-    var z=(mover===0)?1:-1; // canned winner: P0
-    // board: first d.ply stones in the fixed order, owner by real turn structure
-    var stones={};
-    for(var n=0;n<d.ply;n++)stones[order[n][0]+','+order[n][1]]=moverOf(n);
-    var cand=order.slice(d.ply,d.ply+6);
-    cells.forEach(function(c){
-      var xy=hexXY(c[0],c[1],SZ);
-      el('path',{class:'hx-cell',d:hexPath(BCX+xy[0],BCY+xy[1],SZ-1)},boardG);
-    });
-    cells.forEach(function(c){
-      var o=stones[c[0]+','+c[1]];
-      if(o===undefined)return;
-      var xy=hexXY(c[0],c[1],SZ);
-      el('path',{class:o?'hx-p1':'hx-p0',d:hexPath(BCX+xy[0],BCY+xy[1],SZ*0.77)},boardG);
-    });
-    cand.forEach(function(c,i){
-      var xy=hexXY(c[0],c[1],SZ);
-      el('path',{class:'hx-cand',d:hexPath(BCX+xy[0],BCY+xy[1],SZ-2)},boardG);
-      txt(el('text',{class:'hx-cl',x:BCX+xy[0],y:BCY+xy[1]+3.5,'text-anchor':'middle'},boardG),LET[i]);
-    });
-    txt(el('text',{class:'tick-t',x:BCX,y:320,'text-anchor':'middle'},boardG),
-      'ply '+d.ply+' · '+(mover===0?'blue':'red')+' to place · candidates A–F');
-    // bars
-    var y0=70,bh=18,gap=14,bw=150;
-    for(var i2=0;i2<6;i2++){
-      var y=y0+i2*(bh+gap);
-      txt(el('text',{class:'tick-t',x:284,y:y+13,'text-anchor':'end'},panelG),LET[i2]);
-      el('rect',{class:'bar-prior',x:300,y:y,width:Math.max(1,d.prior[i2]*bw),height:bh},panelG);
-      txt(el('text',{class:'tick-t',x:305+d.prior[i2]*bw,y:y+13},panelG),(d.prior[i2]*100).toFixed(0)+'%');
-      el('rect',{class:'bar-pi',x:490,y:y,width:Math.max(1,d.pi[i2]*bw),height:bh},panelG);
-      txt(el('text',{class:'tick-t',x:495+d.pi[i2]*bw,y:y+13},panelG),(d.pi[i2]*100).toFixed(0)+'%');
+  /* ================= fig 1 — row anatomy ================= */
+  (function () {
+    var DEF_K = "one training row";
+    var DEF_T = "hover or tab through the fields. every searched decision writes one row; one shard per game.";
+    var ro = readout("rowReadout", DEF_K, DEF_T);
+    var fields = document.querySelectorAll("#rowAnatomy .rf");
+    for (var i = 0; i < fields.length; i++) {
+      (function (f) {
+        var show = function () { ro.set(f.dataset.k, f.dataset.info); };
+        var hide = function () { ro.reset(); };
+        f.addEventListener("mouseenter", show);
+        f.addEventListener("mouseleave", hide);
+        f.addEventListener("focus", show);
+        f.addEventListener("blur", hide);
+      })(fields[i]);
     }
-    // outcome axis with 65-bin strip + two-hot for stv_16
-    var ax0=680,ax1=860,ay=110;
-    el('rect',{class:'oc-strip',x:ax0,y:ay-8,width:ax1-ax0,height:16},panelG);
-    for(var b=0;b<=8;b++){
-      var bx=ax0+(ax1-ax0)*b/8;
-      el('line',{x1:bx,y1:ay+8,x2:bx,y2:ay+12,stroke:'var(--line)'},panelG);
-    }
-    txt(el('text',{class:'tick-t',x:ax0,y:ay+26,'text-anchor':'middle'},panelG),'−1');
-    txt(el('text',{class:'tick-t',x:(ax0+ax1)/2,y:ay+26,'text-anchor':'middle'},panelG),'0');
-    txt(el('text',{class:'tick-t',x:ax1,y:ay+26,'text-anchor':'middle'},panelG),'+1');
-    function axx(v){return ax0+(v+1)/2*(ax1-ax0);}
-    // z marker (hard ±1 -> end bin one-hot)
-    el('rect',{fill:'var(--accent)',x:axx(z)-2,y:ay-8,width:4,height:16},panelG);
-    txt(el('text',{class:'tick-t',x:axx(z),y:ay-14,'text-anchor':'middle',style:'fill:var(--accent)'},panelG),'z='+(z>0?'+1':'−1'));
-    // stv markers, signed to the mover's perspective; two-hot bins for stv_16
-    var s16=d.stv[2]*z;
-    var pos=(s16+1)*32, lo=Math.floor(pos), hi=Math.ceil(pos), wHi=pos-lo;
-    [lo,hi].forEach(function(bin,bi){
-      var w=bi===0?(1-wHi):wHi;
-      if(w<=0)return;
-      var bx=ax0+(ax1-ax0)*bin/64;
-      el('rect',{class:'oc-bin',x:bx-1.4,y:ay-8,width:2.8,height:16,opacity:(0.35+0.65*w).toFixed(2)},panelG);
-    });
-    d.stv.forEach(function(sv,si){
-      var v=sv*z, ly=ay+52+si*13;
-      el('circle',{fill:'var(--p0-soft)',cx:axx(v),cy:ay+40,r:3},panelG);
-      el('line',{x1:axx(v),y1:ay+43,x2:axx(v),y2:ly-8,stroke:'var(--line)'},panelG);
-      txt(el('text',{class:'tick-t',x:axx(v),y:ly,'text-anchor':'middle'},panelG),'stv'+[2,6,16][si]);
-    });
-    txt(el('text',{class:'tick-t',x:ax0,y:ay+84},panelG),'strip: value support, 65 bins.');
-    txt(el('text',{class:'tick-t',x:ax0,y:ay+98},panelG),'blue ticks = stv₁₆ two-hot target');
-    txt(el('text',{class:'tick-t',x:ax0,y:ay+112},panelG),'(mass split between adjacent bins).');
-    val.textContent='ply '+d.ply;
-    ro.innerHTML='';
-    var a=document.createElement('span');a.className='ro-k';
-    a.textContent='ply '+d.ply+' · '+(mover===0?'P0 (blue)':'P1 (red)')+' to move · z = '+(z>0?'+1':'−1')+' (P0 won this game)';
-    var b2=document.createElement('span');b2.className='ro-t';b2.textContent=d.note;
-    ro.appendChild(a);ro.appendChild(b2);
-  }
-  slider.addEventListener('input',function(){render(+slider.value);});
-  document.getElementById('tgtPrev').addEventListener('click',function(){slider.value=Math.max(0,+slider.value-1);render(+slider.value);});
-  document.getElementById('tgtNext').addEventListener('click',function(){slider.value=Math.min(5,+slider.value+1);render(+slider.value);});
-  render(0);
-})();
-
-/* ================= FIG 3 — shuffle window ================= */
-(function(){
-  var svg=document.getElementById('wnSvg');
-  var ro=document.getElementById('wnRO');
-  var slider=document.getElementById('wnSlider');
-  var val=document.getElementById('wnVal');
-  var MAXE=80;
-  // per-epoch rows: ~25k with deterministic wobble (illustrative scale; the
-  // real count varies with game length). Window math below is the REAL
-  // formula from window.py compute_katago_window_rows + trainer clamp.
-  var rnd=lcg(7);
-  var rows=[];
-  for(var e=0;e<MAXE;e++)rows.push(Math.round(22000+7000*rnd()));
-  var MIN=20000,C=20000,EXP=0.65,PER=0.8,KEEP=600000,SAMP=96000;
-  function windowRows(T){
-    if(T<=MIN)return MIN;
-    var x=T-MIN+C;
-    var unscaled=Math.pow(x,EXP)-Math.pow(C,EXP);
-    var scaled=unscaled/(EXP*Math.pow(C,EXP-1));
-    return Math.max(Math.floor(scaled*PER+MIN),MIN);
-  }
-  function fmt(n){return n.toLocaleString('en-US');}
-  function render(E){
-    svg.innerHTML='';
-    var total=0;for(var i=0;i<E;i++)total+=rows[i];
-    var W=Math.min(windowRows(total),total);
-    // newest-first whole-epoch coverage (real cut is per-game shards;
-    // epoch bars are the drawable granularity here)
-    var acc=0,cover=new Array(E).fill(0),span=0;
-    for(var i2=E-1;i2>=0;i2--){
-      if(acc>=W)break;
-      var take=Math.min(rows[i2],W-acc);
-      cover[i2]=take/rows[i2];acc+=take;span++;
-    }
-    var used=acc;
-    var kp=used<=0?1:Math.min(KEEP,used)/used;
-    var x0=36,x1=648,y1=196,maxH=150;
-    var bw=(x1-x0)/MAXE;
-    var maxR=Math.max.apply(null,rows);
-    for(var b=0;b<E;b++){
-      var h=rows[b]/maxR*maxH, bx=x0+b*bw, by=y1-h;
-      el('rect',{class:'wn-bar',x:bx,y:by,width:Math.max(1,bw-1.2),height:h},svg);
-      if(cover[b]>0){
-        var ch=h*cover[b];
-        el('rect',{class:cover[b]>=1?'wn-in':'wn-part',x:bx,y:y1-ch,width:Math.max(1,bw-1.2),height:ch},svg);
+    var fig = document.getElementById("fig-row");
+    var bDone = document.getElementById("btnCompleted");
+    var bCap = document.getElementById("btnCapped");
+    function setCap(on) {
+      fig.classList.toggle("capped", on);
+      bCap.classList.toggle("sel", on);
+      bDone.classList.toggle("sel", !on);
+      if (on) {
+        ro.set("game hit the 256-ply cap",
+          "no winner, so every outcome-dependent target is masked — outcome z, short-term values, moves-left, per-child Q. the row still trains the policy heads: π′ is valid whoever eventually wins.");
+      } else {
+        ro.set("completed game",
+          "all targets live. outcome z is ±1 from the row player's perspective; the short-term EMAs and moves-left come from the game's actual continuation.");
       }
     }
-    el('line',{x1:x0,y1:y1,x2:x1,y2:y1,stroke:'var(--line)'},svg);
-    [1,20,40,60,80].forEach(function(t){
-      if(t>MAXE)return;
-      var tx=x0+(t-0.5)*bw;
-      txt(el('text',{class:'tick-t',x:tx,y:y1+16,'text-anchor':'middle'},svg),'ep'+t);
-    });
-    txt(el('text',{class:'tick-t',x:x0,y:26},svg),'rows per epoch (~25k, illustrative scale) · shaded = inside the training window (real formula)');
-    // window bracket
-    if(span>0){
-      var wx0=x0+(E-span)*bw, wx1=x0+E*bw;
-      el('line',{x1:wx0,y1:y1+28,x2:wx1,y2:y1+28,stroke:'var(--accent)'},svg);
-      el('line',{x1:wx0,y1:y1+24,x2:wx0,y2:y1+32,stroke:'var(--accent)'},svg);
-      el('line',{x1:wx1,y1:y1+24,x2:wx1,y2:y1+32,stroke:'var(--accent)'},svg);
-      txt(el('text',{class:'tick-t',x:(wx0+wx1)/2,y:y1+44,'text-anchor':'middle',style:'fill:var(--accent)'},svg),
-        'window ≈ '+fmt(W)+' rows · '+span+' epochs deep');
-    }
-    val.textContent='ep '+E+' · T='+fmt(total);
-    ro.innerHTML='';
-    var a=document.createElement('span');a.className='ro-k';
-    a.textContent='epoch '+E+' · T = '+fmt(total)+' rows ever · W(T) = '+fmt(W)+' ('+Math.round(100*W/Math.max(total,1))+'% of history)';
-    var b2=document.createElement('span');b2.className='ro-t';
-    b2.textContent='Window spans the newest '+span+' epochs (whole shards, newest first). keep_prob = '+kp.toFixed(2)+
-      (kp<1?' (thinned toward 600k)':' (under the 600k target, no thinning)')+
-      ' · '+fmt(Math.min(SAMP,Math.round(used*kp)))+' rows sampled uniformly for one pass.';
-    ro.appendChild(a);ro.appendChild(b2);
-  }
-  slider.addEventListener('input',function(){render(+slider.value);});
-  render(+slider.value);
-})();
+    bDone.addEventListener("click", function () { setCap(false); });
+    bCap.addEventListener("click", function () { setCap(true); });
+  })();
 
-/* ================= FIG 4 — rating curve ================= */
-(function(){
-  var svg=document.getElementById('rcSvg');
-  var ro=document.getElementById('rcRO');
-  // SYNTHETIC but plausible: pooled BT rating vs epoch. Eval runs every 5th
-  // epoch (main_7); band = pooled-rating SE shrinking as the pool grows.
-  var rnd=lcg(41);
-  var pts=[];
-  for(var e=5;e<=75;e+=5){
-    var base=620*(1-Math.exp(-e/28));
-    var wob=(rnd()-0.5)*44;
-    var se=22+55*Math.exp(-e/30);
-    pts.push({e:e,r:base+wob,se:se});
-  }
-  // one soft dip for realism
-  pts[8].r-=38;
-  var X0=56,X1=870,Y0=26,Y1=246;
-  var rMax=760;
-  function px(e){return X0+(e-5)/(75-5)*(X1-X0);}
-  function py(r){return Y1-(r/rMax)*(Y1-Y0);}
-  // axes
-  el('line',{x1:X0,y1:Y1,x2:X1,y2:Y1,stroke:'var(--line)'},svg);
-  el('line',{class:'rc-zero',x1:X0,y1:py(0),x2:X1,y2:py(0)},svg);
-  [0,200,400,600].forEach(function(r){
-    txt(el('text',{class:'tick-t',x:X0-8,y:py(r)+3,'text-anchor':'end'},svg),'+'+r);
-    el('line',{x1:X0-4,y1:py(r),x2:X0,y2:py(r),stroke:'var(--line)'},svg);
-  });
-  [10,20,30,40,50,60,70].forEach(function(e){
-    txt(el('text',{class:'tick-t',x:px(e),y:Y1+16,'text-anchor':'middle'},svg),'ep'+e);
-  });
-  txt(el('text',{class:'tick-t',x:X0,y:Y1+34},svg),'pooled Bradley-Terry rating (this run pins SealBot at 0) · band = ±1 SE · synthetic data, real mechanism');
-  // band
-  var up='',dn='';
-  pts.forEach(function(p,i){up+=(i?'L':'M')+px(p.e).toFixed(1)+' '+py(p.r+p.se).toFixed(1);});
-  for(var i=pts.length-1;i>=0;i--){var p=pts[i];dn+='L'+px(p.e).toFixed(1)+' '+py(p.r-p.se).toFixed(1);}
-  el('path',{class:'rc-band',d:up+dn+'Z'},svg);
-  var ln='';
-  pts.forEach(function(p,i){ln+=(i?'L':'M')+px(p.e).toFixed(1)+' '+py(p.r).toFixed(1);});
-  el('path',{class:'rc-line',d:ln},svg);
-  // points + per-epoch synthetic records
-  var VER=['PROMOTE','INCONCLUSIVE','REGRESS'];
-  pts.forEach(function(p,i){
-    var prev=i>0?pts[i-1].r:0;
-    var d=p.r-prev;
-    var verdict=d>p.se?VER[0]:(d<-p.se*0.8?VER[2]:VER[1]);
-    var pairs=64; // 128 paired games = 64 pairs
-    var wr=1/(1+Math.pow(10,-d/400));
-    var w=Math.round(pairs*wr*0.72),l=Math.round(pairs*(1-wr)*0.72),dr=pairs-w-l;
-    var lagged=Math.max(5,p.e-5);
-    var rec='ep '+p.e+' · rating +'+Math.round(p.r)+' ± '+Math.round(p.se)+
-      ' · 128-game eval @512 visits vs ep'+lagged+' + bracket rung'+
-      ' · pairs W/D/L '+w+'/'+dr+'/'+l+' · verdict '+verdict+' (informational; nothing gates)';
-    // transparent halo under the point: a tap-sized hit target (no visual change)
-    var hit=el('circle',{cx:px(p.e),cy:py(p.r),r:14,fill:'transparent',
-      style:'cursor:pointer'},svg);
-    var c=el('circle',{class:'rc-pt',cx:px(p.e),cy:py(p.r),r:5,tabindex:'0',role:'button',
-      'aria-label':rec},svg);
-    function show(){
-      ro.innerHTML='';
-      var a=document.createElement('span');a.className='ro-k';
-      a.textContent='epoch '+p.e+' · +'+Math.round(p.r)+' ± '+Math.round(p.se)+' · '+verdict;
-      var b=document.createElement('span');b.className='ro-t';
-      b.textContent='a 128-game eval at 512 visits (paired: shared openings, seat-swapped) vs the ep'+lagged+
-        ' reference and a log-grid rung · pentanomial pairs W/D/L '+w+'/'+dr+'/'+l+
-        ' · pooled into eval_pool.json. Verdict is informational; the checkpoint ships regardless.';
-      ro.appendChild(a);ro.appendChild(b);
+  /* ================= fig 2 — replay window ================= */
+  (function () {
+    // Real rule: window.py compute_katago_window_rows + config values
+    // (min 7000, scale 7000, exponent 0.65, per-row 0.8, keep 210000).
+    var MIN = 7000, SCALE = 7000, EXP = 0.65, PER = 0.8;
+    var KEEP = 210000, EPOCH_DRAW = 56000;
+    function windowRows(total) {
+      if (total <= MIN) return MIN;
+      var x = total - MIN + SCALE;
+      var unscaled = Math.pow(x, EXP) - Math.pow(SCALE, EXP);
+      var scaled = unscaled / (EXP * Math.pow(SCALE, EXP - 1));
+      return Math.max(MIN, Math.trunc(scaled * PER + MIN));
     }
-    c.addEventListener('mouseenter',show);
-    c.addEventListener('focus',show);
-    c.addEventListener('click',show);
-    c.addEventListener('keydown',function(ev){if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();show();}});
-    hit.addEventListener('mouseenter',show);
-    hit.addEventListener('click',show);
-  });
-})();
+
+    var svg = document.getElementById("winplot");
+    var W = 860, H = 340, L = 78, R = 24, T = 20, B = 46;
+    var XMAX = 3000000, YMAX = 480000;
+    function sx(v) { return L + (W - L - R) * v / XMAX; }
+    function sy(v) { return H - B - (H - T - B) * v / YMAX; }
+
+    var i;
+    for (i = 100000; i <= 400000; i += 100000) {
+      svg.appendChild(el("line", { "class": "gridln", x1: L, y1: sy(i), x2: W - R, y2: sy(i) }));
+      svg.appendChild(txt(el("text", { "class": "tick", x: L - 8, y: sy(i) + 3, "text-anchor": "end" }), (i / 1000) + "k"));
+    }
+    for (i = 0; i <= 3000000; i += 500000) {
+      var lab = i === 0 ? "0" : (i / 1000000) + "M";
+      svg.appendChild(el("line", { "class": "gridln", x1: sx(i), y1: H - B, x2: sx(i), y2: H - B + 4 }));
+      svg.appendChild(txt(el("text", { "class": "tick", x: sx(i), y: H - B + 16, "text-anchor": "middle" }), lab));
+    }
+    svg.appendChild(el("line", { "class": "axline", x1: L, y1: T, x2: L, y2: H - B }));
+    svg.appendChild(el("line", { "class": "axline", x1: L, y1: H - B, x2: W - R, y2: H - B }));
+    svg.appendChild(txt(el("text", { "class": "ax", x: (L + W - R) / 2, y: H - 10, "text-anchor": "middle" }), "total rows generated"));
+    svg.appendChild(txt(el("text", { "class": "ax", x: 16, y: T - 6, "text-anchor": "start" }), "rows in window"));
+
+    svg.appendChild(el("line", { "class": "refline", x1: L, y1: sy(KEEP), x2: W - R, y2: sy(KEEP) }));
+    svg.appendChild(txt(el("text", { "class": "reflab", x: W - R - 6, y: sy(KEEP) - 6, "text-anchor": "end" }), "keep target 210,000 · uniform down-sample"));
+    svg.appendChild(el("line", { "class": "refline dim", x1: L, y1: sy(EPOCH_DRAW), x2: W - R, y2: sy(EPOCH_DRAW) }));
+    svg.appendChild(txt(el("text", { "class": "reflab", x: W - R - 6, y: sy(EPOCH_DRAW) - 6, "text-anchor": "end" }), "≤56,000 trained / epoch"));
+
+    var d = "";
+    for (i = 0; i <= 300; i++) {
+      var xv = XMAX * i / 300;
+      d += (i === 0 ? "M" : "L") + sx(xv).toFixed(1) + " " + sy(windowRows(xv)).toFixed(1);
+    }
+    svg.appendChild(el("path", { "class": "curve", d: d }));
+
+    var guide = el("line", { "class": "markln", x1: 0, y1: T, x2: 0, y2: H - B });
+    var dot = el("circle", { "class": "mark", r: 4.5, cx: 0, cy: 0 });
+    svg.appendChild(guide); svg.appendChild(dot);
+
+    var ro = readout("winReadout", "replay window", "");
+    var slider = document.getElementById("winSlider");
+    var val = document.getElementById("winVal");
+    function update() {
+      var total = +slider.value;
+      var w = windowRows(total);
+      var kp = Math.min(1, KEEP / w);
+      var kept = Math.min(w, KEEP);
+      guide.setAttribute("x1", sx(total)); guide.setAttribute("x2", sx(total));
+      dot.setAttribute("cx", sx(total)); dot.setAttribute("cy", sy(w));
+      val.textContent = fmt(total);
+      ro.set("window " + fmt(w) + " rows",
+        "at " + fmt(total) + " total rows: keep prob " + kp.toFixed(2) +
+        " → ~" + fmt(kept) + " rows kept · epoch trains ≤" + fmt(EPOCH_DRAW) +
+        " of them · newest shards first, whole shards, ordered by game key (not mtime).");
+    }
+    slider.addEventListener("input", update);
+    update();
+  })();
+
+  /* ================= fig 3 — losses ================= */
+  (function () {
+    var HEADS = [
+      ["policy", 1.0, "target π′ over the legal prefix · soft CE, surprise-weighted · the head the search is directly improving"],
+      ["value", 1.0, "target outcome z (±1) · CE against a two-hot 65-bin distribution · masked on capped games"],
+      ["soft_policy", 0.5, "target π′ at temperature 2 · soft CE · keeps low-probability moves from collapsing"],
+      ["opp_policy", 0.25, "target: the NEXT searched decision's π′ — the opponent's reply · soft CE"],
+      ["stvalue 2", 0.1, "target: EMA of future root values, horizon 2 decisions · 65-bin CE · masked on capped games"],
+      ["stvalue 6", 0.1, "target: EMA of future root values, horizon 6 decisions · 65-bin CE · masked on capped games"],
+      ["stvalue 16", 0.1, "target: EMA of future root values, horizon 16 decisions · 65-bin CE · masked on capped games"],
+      ["moves_left", 0.2, "target: decisions remaining (cap 209) · 65-bin CE · masked on capped games · audited every epoch (§06)"],
+      ["cell_q", 0.1, "target: per-child search Q, one 65-bin CE per legal cell · masked on capped games"]
+    ];
+    var DEF_K = "nine heads";
+    var DEF_T = "total loss = Σ wₕ Lₕ with the fixed weights above. hover a table row or bar for detail.";
+    var ro = readout("lossReadout", DEF_K, DEF_T);
+
+    var svg = document.getElementById("wbars");
+    var W = 700, LEFT = 128, ROW = 24, TOP = 14;
+    var span = W - LEFT - 56;
+    var groups = [];
+    for (var i = 0; i < HEADS.length; i++) {
+      var y = TOP + i * ROW;
+      var g = el("g", { "class": "wb-g" });
+      g.appendChild(txt(el("text", { "class": "wb-lab", x: LEFT - 10, y: y + 11, "text-anchor": "end" }), HEADS[i][0]));
+      g.appendChild(el("rect", { "class": "wb-bar", x: LEFT, y: y, width: (span * HEADS[i][1]).toFixed(1), height: 14 }));
+      g.appendChild(txt(el("text", { "class": "wb-val", x: LEFT + span * HEADS[i][1] + 8, y: y + 11 }), HEADS[i][1].toFixed(2)));
+      svg.appendChild(g);
+      groups.push(g);
+    }
+    function bindHead(node, idx) {
+      var hl = (node.dataset && node.dataset.hl)
+        ? node.dataset.hl.split(",").map(Number) : [idx];
+      var kk = (node.dataset && node.dataset.k) || (HEADS[idx][0] + " · weight " + HEADS[idx][1]);
+      var tt = (node.dataset && node.dataset.info) || HEADS[idx][2];
+      var show = function () {
+        for (var h = 0; h < hl.length; h++) groups[hl[h]].classList.add("on");
+        ro.set(kk, tt);
+      };
+      var hide = function () {
+        for (var h = 0; h < hl.length; h++) groups[hl[h]].classList.remove("on");
+        ro.reset();
+      };
+      node.addEventListener("mouseenter", show);
+      node.addEventListener("mouseleave", hide);
+      node.addEventListener("focus", show);
+      node.addEventListener("blur", hide);
+    }
+    for (i = 0; i < groups.length; i++) bindHead(groups[i], i);
+    var rows = document.querySelectorAll("#lossTable tbody tr");
+    for (i = 0; i < rows.length; i++) bindHead(rows[i], +rows[i].dataset.i);
+
+    /* ---- surprise weighting demo ----
+     * w_i = min(8, 0.5 + 0.5 * n * s_i / Σs), n = 256 (batch_rows).
+     * 6 visible example rows + 250 background rows at s = 0.05 (illustrative
+     * s values; the formula, n and the cap are the real ones). */
+    var N = 256, HIDDEN_N = 250, HIDDEN_S = 0.05, CAP = 8;
+    var baseS = [0.01, 0.05, 0.12, 0.35, 0.80];
+    var names = ["row a", "row b", "row c", "row d", "row e", "row f"];
+    var demo = document.getElementById("surpDemo");
+    var sdRows = [];
+    for (i = 0; i < 6; i++) {
+      var div = document.createElement("div");
+      div.className = "sd-row";
+      div.innerHTML = '<span class="sd-l"></span><span class="sd-s"></span>' +
+        '<div class="sd-bar"><i></i></div><span class="sd-w"></span>';
+      div.querySelector(".sd-l").textContent = names[i];
+      demo.appendChild(div);
+      sdRows.push(div);
+    }
+    var sSlider = document.getElementById("surpSlider");
+    var sVal = document.getElementById("surpVal");
+    var sNote = document.getElementById("surpNote");
+    function updSurprise() {
+      var sf = +sSlider.value;
+      var s = baseS.concat([sf]);
+      var sum = HIDDEN_N * HIDDEN_S;
+      var j;
+      for (j = 0; j < 6; j++) sum += s[j];
+      var capped = 0;
+      for (j = 0; j < 6; j++) {
+        var w = Math.min(CAP, 0.5 + 0.5 * N * s[j] / sum);
+        var r = sdRows[j];
+        r.querySelector(".sd-s").textContent = "s = " + s[j].toFixed(2);
+        r.querySelector(".sd-bar i").style.width = (w / CAP * 100).toFixed(1) + "%";
+        r.querySelector(".sd-w").textContent = "w " + w.toFixed(2) + "×";
+        var isCap = w >= CAP - 1e-9;
+        r.classList.toggle("capped", isCap);
+        if (isCap) capped++;
+      }
+      sVal.textContent = sf.toFixed(2);
+      sNote.textContent = "example surprise values (illustrative); the formula, n = 256 and the 8× cap are real. " +
+        "250 background rows sit at s = 0.05 · Σs = " + sum.toFixed(2) +
+        (capped ? " · " + capped + " row" + (capped > 1 ? "s" : "") + " clamped at the 8× cap" : "");
+    }
+    sSlider.addEventListener("input", updSurprise);
+    updSurprise();
+
+    /* ---- two-hot demo ---- */
+    var th = document.getElementById("twohot");
+    var TW = 700, TL = 20, TR = 20, BASE = 104, HMAX = 78;
+    var slot = (TW - TL - TR) / 65;
+    var bars = [];
+    for (i = 0; i < 65; i++) {
+      var b = el("rect", { "class": "th-bar", x: (TL + i * slot + 0.8).toFixed(2), y: BASE - 2, width: (slot - 1.6).toFixed(2), height: 2 });
+      th.appendChild(b);
+      bars.push(b);
+    }
+    th.appendChild(el("line", { "class": "axline", x1: TL, y1: BASE, x2: TW - TR, y2: BASE }));
+    var lblAt = [[0, "−1"], [32, "0"], [64, "+1"]];
+    for (i = 0; i < 3; i++) {
+      th.appendChild(txt(el("text", { "class": "tick", x: TL + (lblAt[i][0] + 0.5) * slot, y: BASE + 16, "text-anchor": "middle" }), lblAt[i][1]));
+    }
+    th.appendChild(txt(el("text", { "class": "ax", x: TL, y: 14, "text-anchor": "start" }), "65 bin centers · mass split between the target's two neighbors"));
+
+    var tSlider = document.getElementById("thSlider");
+    var tVal = document.getElementById("thVal");
+    function sgn3(v) { return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(3); }
+    function sgn2(v) { return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2); }
+    function updTwoHot() {
+      var z = +tSlider.value;
+      var pos = (z + 1) * 32;
+      var lo = Math.floor(pos);
+      if (lo >= 64) lo = 64;
+      var frac = pos - lo;
+      var hi = Math.min(64, lo + 1);
+      for (var j = 0; j < 65; j++) {
+        var m = j === lo ? 1 - frac : (j === hi && hi !== lo ? frac : 0);
+        bars[j].setAttribute("height", (2 + m * HMAX).toFixed(1));
+        bars[j].setAttribute("y", (BASE - 2 - m * HMAX).toFixed(1));
+        bars[j].setAttribute("class", m > 0 ? "th-bar on" : "th-bar");
+      }
+      tVal.textContent = sgn2(z);
+      var cLo = lo / 32 - 1, cHi = hi / 32 - 1;
+      ro.set("two-hot · z = " + sgn2(z),
+        (hi === lo || frac === 0)
+          ? "bin " + lo + " (center " + sgn3(cLo) + ") takes all the mass · decoded softmax expectation = " + sgn3(z)
+          : "bins " + lo + " & " + hi + " (centers " + sgn3(cLo) + " / " + sgn3(cHi) + ") · masses " +
+            (1 - frac).toFixed(2) + " / " + frac.toFixed(2) +
+            " · decoded softmax expectation = " + sgn3(z) + " — the round trip is exact.");
+    }
+    tSlider.addEventListener("input", updTwoHot);
+    updTwoHot();
+  })();
+
+  /* ================= fig 4 — LR schedule ================= */
+  (function () {
+    // trainer.py scheduled_lr, verbatim semantics: warmup in optimizer steps,
+    // decay in (integer) epochs. ~218.75 steps/epoch = 56000 rows / 256 per batch.
+    var BASE = 5e-4, FINAL = 1e-4, WSTEPS = 400, DEPOCH = 60;
+    var SPE = 56000 / 256;
+    function lrAt(epochFloat) {
+      var step = Math.floor(epochFloat * SPE);
+      if (step < WSTEPS) return BASE * (step + 1) / WSTEPS;
+      var p = Math.min(1, Math.max(0, Math.floor(epochFloat) / DEPOCH));
+      var cos = 0.5 * (1 + Math.cos(Math.PI * p));
+      return FINAL + (BASE - FINAL) * cos;
+    }
+
+    var svg = document.getElementById("lrplot");
+    var W = 860, H = 300, L = 78, R = 24, T = 18, B = 46;
+    var XMAX = 80, YMAX = 5.4e-4;
+    function sx(v) { return L + (W - L - R) * v / XMAX; }
+    function sy(v) { return H - B - (H - T - B) * v / YMAX; }
+
+    var i;
+    for (i = 1; i <= 5; i++) {
+      svg.appendChild(el("line", { "class": "gridln", x1: L, y1: sy(i * 1e-4), x2: W - R, y2: sy(i * 1e-4) }));
+      svg.appendChild(txt(el("text", { "class": "tick", x: L - 8, y: sy(i * 1e-4) + 3, "text-anchor": "end" }), i + "e-4"));
+    }
+    for (i = 0; i <= 80; i += 10) {
+      svg.appendChild(el("line", { "class": "gridln", x1: sx(i), y1: H - B, x2: sx(i), y2: H - B + 4 }));
+      svg.appendChild(txt(el("text", { "class": "tick", x: sx(i), y: H - B + 16, "text-anchor": "middle" }), "" + i));
+    }
+    svg.appendChild(el("line", { "class": "axline", x1: L, y1: T, x2: L, y2: H - B }));
+    svg.appendChild(el("line", { "class": "axline", x1: L, y1: H - B, x2: W - R, y2: H - B }));
+    svg.appendChild(txt(el("text", { "class": "ax", x: (L + W - R) / 2, y: H - 10, "text-anchor": "middle" }), "epoch"));
+
+    var wEnd = WSTEPS / SPE;
+    svg.appendChild(el("line", { "class": "refline dim", x1: sx(wEnd), y1: T + 22, x2: sx(wEnd), y2: H - B }));
+    svg.appendChild(txt(el("text", { "class": "reflab", x: sx(wEnd) + 6, y: T + 34 }), "warmup ends · step 400"));
+    svg.appendChild(el("line", { "class": "refline dim", x1: sx(60), y1: T + 22, x2: sx(60), y2: H - B }));
+    svg.appendChild(txt(el("text", { "class": "reflab", x: sx(60) + 6, y: T + 34 }), "hold 1e-4 after epoch 60"));
+
+    var d = "";
+    var STEP = 0.02;
+    var n = Math.round(XMAX / STEP);
+    for (i = 0; i <= n; i++) {
+      var e = i * STEP;
+      d += (i === 0 ? "M" : "L") + sx(e).toFixed(1) + " " + sy(lrAt(e)).toFixed(1);
+    }
+    svg.appendChild(el("path", { "class": "curve", d: d }));
+
+    var guide = el("line", { "class": "markln", x1: 0, y1: T, x2: 0, y2: H - B });
+    var dot = el("circle", { "class": "mark", r: 4.5, cx: 0, cy: 0 });
+    svg.appendChild(guide); svg.appendChild(dot);
+
+    var ro = readout("lrReadout", "lr schedule", "");
+    var slider = document.getElementById("lrSlider");
+    var val = document.getElementById("lrVal");
+    function update() {
+      var e = +slider.value;
+      var lr = lrAt(e);
+      var step = Math.floor(e * SPE);
+      guide.setAttribute("x1", sx(e)); guide.setAttribute("x2", sx(e));
+      dot.setAttribute("cx", sx(e)); dot.setAttribute("cy", sy(lr));
+      val.textContent = e.toFixed(1);
+      var phase = step < WSTEPS
+        ? "linear warmup in optimizer steps (" + (step + 1) + "/400)"
+        : (Math.floor(e) >= DEPOCH
+          ? "holding lr_final after epoch 60"
+          : "cosine decay, p = " + (Math.floor(e) / DEPOCH).toFixed(3) + " (stepped per epoch)");
+      ro.set("epoch " + e.toFixed(1) + " · lr " + (lr * 1e4).toFixed(2) + "e-4",
+        "≈ optimizer step " + fmt(step) + " (≈219 steps/epoch = 56,000 rows ÷ 256/batch) · " + phase + ".");
+    }
+    slider.addEventListener("input", update);
+    update();
+  })();
+
+  /* ================= fig 5 — evaluation pair ================= */
+  (function () {
+    var hist = document.getElementById("pentHist");
+    var CENTER = 350, BW = 56, GAP = 20, BASE = 284, HMAX = 46;
+    var sketch = [0.28, 0.12, 1.0, 0.18, 0.5]; // illustrative shape only
+    var labels = ["0", "0.5", "1", "1.5", "2"];
+    var bars = [], labs = [];
+    for (var i = 0; i < 5; i++) {
+      var x = CENTER + (i - 2) * (BW + GAP) - BW / 2;
+      var h = 6 + sketch[i] * HMAX;
+      var b = el("rect", { "class": "pb-bar", x: x, y: BASE - h, width: BW, height: h });
+      hist.appendChild(b);
+      var l = txt(el("text", { "class": "pb-lab", x: x + BW / 2, y: BASE + 14, "text-anchor": "middle" }), labels[i]);
+      hist.appendChild(l);
+      bars.push(b); labs.push(l);
+    }
+
+    var state = { a: "win", b: "win" };
+    var ro = readout("pairReadout", "pair score 2", "");
+    var gaRes = document.getElementById("gaRes");
+    var gbRes = document.getElementById("gbRes");
+    var btns = document.querySelectorAll("#fig-pair .fig-controls button");
+
+    function resText(v) {
+      return v === "win" ? "candidate wins · +1"
+        : v === "loss" ? "opponent wins · +0"
+        : "truncated · +0.5";
+    }
+    function update() {
+      var contrib = { win: 1, loss: 0, trunc: 0.5 };
+      var score = contrib[state.a] + contrib[state.b];
+      var idx = Math.round(score * 2);
+      for (var j = 0; j < 5; j++) {
+        bars[j].setAttribute("class", j === idx ? "pb-bar on" : "pb-bar");
+        labs[j].setAttribute("class", j === idx ? "pb-lab on" : "pb-lab");
+      }
+      gaRes.textContent = resText(state.a);
+      gbRes.textContent = resText(state.b);
+      var nTrunc = (state.a === "trunc" ? 1 : 0) + (state.b === "trunc" ? 1 : 0);
+      var note;
+      if (nTrunc === 0) {
+        note = "no draws in hexo, so a completed pair scores 0, 1 or 2 candidate wins. " +
+          (score === 1 ? "a split pair — the opening favored one seat; seat-swapping cancels it out." :
+            "both seats went the same way — evidence about strength, not the opening.");
+      } else if (nTrunc === 1) {
+        note = "one truncated game contributes 0.5, so the pair scores 0.5 or 1.5 — the half-buckets exist only for truncation.";
+      } else {
+        note = "both games truncated — each contributes 0.5.";
+      }
+      ro.set("pair score " + score + " · bucket “" + labels[idx] + "”",
+        note + " the PAIR is the unit of statistics: pair-level variance absorbs the correlation the shared opening induces.");
+    }
+    for (i = 0; i < btns.length; i++) {
+      (function (b) {
+        b.addEventListener("click", function () {
+          state[b.dataset.g] = b.dataset.v;
+          for (var j = 0; j < btns.length; j++) {
+            if (btns[j].dataset.g === b.dataset.g) btns[j].classList.toggle("sel", btns[j] === b);
+          }
+          update();
+        });
+      })(btns[i]);
+    }
+    update();
+  })();
+
 })();
 </script>
+
 </body>
 </html>

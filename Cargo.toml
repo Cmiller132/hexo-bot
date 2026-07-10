@@ -3,6 +3,7 @@ members = [
     "packages/hexo_engine",
     "packages/hexo_utils",
     "packages/shrimp",
+    "packages/hexfield_eq",
 ]
 resolver = "2"
 

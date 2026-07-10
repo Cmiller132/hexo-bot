@@ -4,9 +4,19 @@ Model packages provide the model-specific pieces: architecture construction,
 sample decoding, losses, checkpoint interpretation, and epoch-time behavior.
 `hexo_train` only finds the plugin and calls agreed-upon lifecycle methods.
 
-Plugin lookup uses an explicit Python module path from config: the shipped
-configs set `[model].module = "shrimp.plugin"`, and the module exposes either
-a `get_plugin()` factory or a `plugin` object.
+Plugin lookup supports three development/deployment modes:
+
+1. explicit Python module path from config;
+2. explicit entry point name from config;
+3. model name lookup through the `hexo_train.models` entry point group.
+
+Registered plugins (entry-point group `hexo_train.models`) include
+`hexfield_eq` (packages/hexfield_eq/pyproject.toml) alongside the parked
+`dense_cnn_restnet`, `dense_cnn`/`hexgt`, and `hexgnn` plugins. In practice
+the active bots select their plugin via mode 1 (explicit module path):
+`[model].module = "hexfield.plugin"` in configs/hexfield_main_9.toml and
+`"hexfield_eq.plugin"` in configs/hexfield_eq_main_1.toml, bypassing entry
+points entirely.
 
 Note: `ModelPlugin` covers only the two construction hooks. The full
 duck-typed contract a real plugin/trainer implements is wider — optional
@@ -18,6 +28,7 @@ hasattr checks in pipeline.py and epoch/*.py rather than this Protocol.
 from __future__ import annotations
 
 from importlib import import_module
+from importlib.metadata import entry_points
 from typing import Any, Protocol, runtime_checkable
 
 from .config import ModelConfig
@@ -49,11 +60,13 @@ class ModelPlugin(Protocol):
 
 
 def load_model_plugin(config: ModelConfig) -> ModelPlugin:
-    """Load a model plugin from its explicit config module path."""
+    """Load a model plugin by explicit module, entry point, or plugin name."""
 
-    if not config.module:
-        raise ValueError("Training config must define [model].module.")
-    return _load_from_module(config.module)
+    if config.module:
+        return _load_from_module(config.module)
+    if config.entry_point:
+        return _load_from_entry_point(config.entry_point)
+    return _load_by_name(config.name)
 
 
 def _load_from_module(module_name: str) -> ModelPlugin:
@@ -67,3 +80,38 @@ def _load_from_module(module_name: str) -> ModelPlugin:
     raise AttributeError(
         f"Model module {module_name!r} must expose get_plugin() or plugin."
     )
+
+
+def _load_from_entry_point(entry_point_name: str) -> ModelPlugin:
+    """Load a plugin from the supported Python entry point groups."""
+
+    for group in _entry_point_groups():
+        for entry_point in entry_points(group=group):
+            if entry_point.name == entry_point_name:
+                return _coerce_loaded_plugin(entry_point.load())
+    raise LookupError(f"No Hexo model entry point named {entry_point_name!r}.")
+
+
+def _load_by_name(model_name: str) -> ModelPlugin:
+    """Resolve a model name through installed entry points."""
+
+    for group in _entry_point_groups():
+        for entry_point in entry_points(group=group):
+            if entry_point.name == model_name:
+                return _coerce_loaded_plugin(entry_point.load())
+
+    raise LookupError(f"No Hexo model entry point named {model_name!r}.")
+
+
+def _entry_point_groups() -> tuple[str, ...]:
+    """Return the entry point groups that may provide Hexo training models."""
+
+    return (
+        "hexo_train.models",
+    )
+
+
+def _coerce_loaded_plugin(loaded: Any) -> ModelPlugin:
+    """Accept either a plugin instance or a callable that returns one."""
+
+    return loaded() if callable(loaded) else loaded

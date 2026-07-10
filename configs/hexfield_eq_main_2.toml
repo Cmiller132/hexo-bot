@@ -1,0 +1,188 @@
+# hexfield_eq_main_2 — SECOND self-play run: the ray-tap wave-1 winner arch
+# (A5: 46-plane v2 features, HEXFIELD_EQ_RAYTAP=both, L-free CCACCACA layout —
+# docs/RAYTAP_RESULTS_WAVE1.md). Training/search regime copied UNCHANGED from
+# hexfield_eq_main_1 so the architecture is the only variable vs that run.
+#
+# ARCHITECTURE ENV = scripts/prefit_env/hexfield_eq_raytap_a5.env, sourced by
+# scripts/_hexfield_eq_launch_soak_main2.sh:
+#   HEXFIELD_EQ_CHANNELS=192  HEXFIELD_EQ_GROUP_ORDER=12  HEXFIELD_EQ_C_ORBIT=16
+#   HEXFIELD_EQ_ATTENTION_HEADS=3  HEXFIELD_EQ_SUPPORT_RADIUS=4
+#   HEXFIELD_EQ_TRUNK=CCACCACA  HEXFIELD_EQ_REG_LANE=1  HEXFIELD_EQ_REG_TOK_READ=0
+#   HEXFIELD_EQ_FEATURE_VERSION=2  HEXFIELD_EQ_RAYTAP=both
+# The checkpoint meta (model.arch_meta) is the authoritative self-description;
+# these envs pick the default build and MUST match the prefit arch exactly.
+#
+# CODE ROOT: the raytap-phase-r worktree (ROOT env in the launch script) — the
+# main tree predates feature-v2/ray-tap and cannot build this net. Do NOT
+# remove the worktree while the run lives; consolidating the branch into a
+# durable home is the follow-up.
+# KNOWN LIMITATION: the dashboard debug worker (main-tree code) cannot load v2
+# checkpoints until that consolidation (its env-seed fix lives on
+# quotient-phase-b: debug_infer FEATURE_VERSION seeding).
+#
+# SEARCH/TARGET REGIME: unchanged from main_1 (Gumbel completedQ sharp-target,
+# 256 visits, 100% PCR, de-contaminated search: 0 Dirichlet / 0 forced
+# playouts / constant c_puct).
+#
+# EVAL RE-ANCHOR: same D4 shape as main_1 — a 46-plane process cannot serve the
+# 25-plane main_1 checkpoints (stem shape strict-load), so permanent_anchors
+# stays [] and the pool pins on Strix + SealBot + this run's own self-anchors.
+
+[model]
+name = "hexfield_eq"
+module = "hexfield_eq.plugin"
+
+[model.config]
+device = "cuda"
+
+[model.config.selfplay]
+search_visits = 256
+# 100% PCR: every turn is a full move with a written Gumbel-target row.
+pcr_full_proportion = 1.0
+pcr_fast_visits = 192
+pcr_fast_temperature = 0.0
+active_games = 256
+# vbs 96: the fast-profile sweep value from main_1 (2026-07-09).
+virtual_batch_size = 96
+flush_target = 1024
+active_root_limit = 256
+max_game_plies = 256
+tss_enabled = true
+cache_max_states = 262144
+nucleus_f64 = true
+lcb_z = 1.6
+clean_root_prior_cache = true
+
+# ---- Search c_puct (constant; visit-scaling neutralized, main_11 regime) ----
+c_puct = 1.5
+visit_scaled_c_puct = true
+c_scale = 0.0
+c_base = 500.0
+# De-contaminated target search: zero root Dirichlet, zero forced playouts.
+root_dirichlet_noise_fraction = 0.0
+root_dirichlet_total_alpha = 10.83
+dirichlet_shaped = true
+fpu_reduction = 0.2
+root_fpu_reduction = 0.0
+forced_playout_k = 0.0
+pruned_dynamic_cpuct = true
+lazy_widening = true
+new_child_fpu = true
+widening_policy_mass = 0.95
+widening_max_children = 96
+widening_min_children = 2
+temperature = 1.0
+temperature_floor = 0.15
+temperature_halflife_plies = 20.0
+root_policy_temperature = 1.05
+policy_init_fraction = 0.35
+policy_init_avg_plies = 4.0
+policy_init_max_plies = 8
+policy_init_temperature = 1.4
+ml_two_sided = false
+ml_final_pick_band = 0.08
+export_root_prior_logits = true
+
+# ---- Gumbel AlphaZero (main_11 target regime; m=16 fits 256 visits exactly) ----
+gumbel_root_enabled = true
+gumbel_sequential_halving = true
+gumbel_nonroot_select = true
+gumbel_target_enabled = true
+gumbel_c_visit = 50.0
+gumbel_c_scale = 1.0
+gumbel_m = 16
+gumbel_target_min_visits = 1
+gumbel_play_prune = true
+
+[model.config.training]
+batch_rows = 256
+learning_rate = 5e-4
+weight_decay = 1e-4
+grad_clip = 5.0
+adaptive_clip = true
+clip_c = 1.75
+clip_ema_decay = 0.99
+clip_warmup_steps = 50
+policy_weight = 1.0
+value_weight = 1.0
+opp_policy_weight = 0.25
+short_term_value_weight = 0.1
+moves_left_weight = 0.2
+q_head_weight = 0.1
+soft_policy_weight = 0.5
+policy_surprise_uniform_fraction = 0.5
+policy_surprise_max_weight = 8.0
+warmup_steps = 0
+# LR schedule as main_1: warmup 400 steps, cosine to lr_final by epoch 60, hold.
+lr_schedule = "cosine"
+lr_warmup_steps = 400
+lr_final = 1e-4
+lr_decay_epochs = 60
+shuffle_min_rows = 7000
+shuffle_keep_target_rows = 210000
+shuffle_taper_window_exponent = 0.65
+shuffle_expand_window_per_row = 0.8
+shuffle_taper_window_scale = 7000.0
+validation_fraction = 0.0
+train_samples_per_epoch = 56000
+max_train_bucket_per_new_data = 8.0
+max_train_bucket_size = 500000.0
+no_repeat_files = false
+expand_backend = "rust"
+expand_workers = 0
+# The Gumbel completedQ improved-policy target (pi' = softmax(logits + sigma(Q))).
+policy_target = "gumbel"
+
+[model.config.evaluation]
+games_per_epoch = 16
+eval_visits = 128
+eval_every = 5
+
+[model.config.multi_stage_eval]
+enabled = true
+games_budget = 192
+every_n_epochs = 5
+full_search_visits = 512
+eval_virtual_batch_size = 32
+sealbot_share = 0.1667
+strix_share = 0.3333
+strix_weight = 1.0
+verdict_reference_lag = 5
+pool_path = "diagnostics/eval_pool.json"
+
+[model.config.multi_stage_eval.sprt]
+enabled = false
+
+[model.config.multi_stage_eval.opponents]
+sealbot_enabled = true
+strix_enabled = true
+strix_ckpt = "/mnt/e/Hexo-BotTrainer/anchors/strix/checkpoint_00237000.pt"
+strix_sims = 512
+strix_m = 16
+strix_device = "cuda"
+strix_label = "strix"
+bracket_size = 2
+# NO cross-feature-width permanent anchors (see header).
+permanent_anchors = []
+radius8_opponents = []
+
+[run]
+name = "hexfield_eq_main_2"
+output_dir = "/mnt/e/Hexo-BotTrainer/runs/hexfield_eq_main_2"
+seed = 1
+
+[loop]
+epochs = 200
+
+[selfplay]
+games_per_epoch = 256
+update_checkpoint_pointer = false
+
+[train]
+passes_per_epoch = 1
+
+[checkpoint]
+# WARM START from the main_2 A5 prefit (2400 steps, RAW weights repackaged as
+# {"meta", "model"} by eq_ladder_runner --repackage; tolerant non-strict load).
+initialize_from = "/mnt/e/Hexo-BotTrainer/runs/hexfield_eq_main2_prefit/a5/soak_init.pt"
+save_name = "latest"

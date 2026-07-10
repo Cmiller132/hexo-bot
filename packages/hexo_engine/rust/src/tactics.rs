@@ -411,6 +411,28 @@ impl WindowStore {
         !self.live_threats.is_empty()
     }
 
+    /// Build a window store from a flat placement list, without a full
+    /// `HexoState`.
+    ///
+    /// Replays each `(coord, player)` through the same incremental update the
+    /// engine uses during play, so the resulting store is bit-identical to one
+    /// produced by `Board::place` over the same sequence (same `masks_by_key`
+    /// and `live_threats`). The read API (`entry`/`entries`/`threats`/
+    /// `has_threats`) is therefore identical to a played-out store.
+    ///
+    /// Intended for the train-time feature-expand kernel, which owns raw
+    /// placement facts (history rows) but no `HexoState`, so it cannot reach the
+    /// board's incremental store. Placements must be pairwise-distinct cells (as
+    /// any real game history is); a repeated cell trips the same
+    /// double-occupancy `debug_assert` as normal play.
+    pub fn from_placements(placements: &[(HexCoord, Player)]) -> Self {
+        let mut store = Self::new();
+        for &(coord, player) in placements {
+            store.update_for_placement_with_delta(coord, player);
+        }
+        store
+    }
+
     /// Update the 18 windows affected by one newly placed stone.
     #[cfg(test)]
     pub(crate) fn update_for_placement(&mut self, coord: HexCoord, player: Player) -> WindowUpdate {

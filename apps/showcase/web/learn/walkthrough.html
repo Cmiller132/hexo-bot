@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hexfield_eq &mdash; end to end</title>
+<meta name="description" content="One real self-play position — 40 stones, 402 support nodes — traced through every stage of the hexfield_eq pipeline with its true tensor shapes: facts, support, features, batching, stem, trunk, heads, search.">
+<link rel="stylesheet" href="learn.css">
+<style>
+/* ---- walkthrough page: one board, eight stages ---- */
+.wk-cols{display:flex;gap:22px;padding:16px 16px 12px;align-items:flex-start}
+.wk-board{flex:1 1 400px;min-width:250px}
+.wk-board svg{max-width:430px;margin:0 auto}
+.wk-panel{flex:1 1 330px;min-width:250px}
+@media (max-width:840px){.wk-cols{flex-direction:column}.wk-panel{min-width:0;width:100%}}
+
+.pane{display:none}
+.pane.on{display:block}
+.pn-t{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin:2px 0 8px}
+.pn-d{font-size:12.5px;color:var(--muted);line-height:1.6;margin-top:10px;max-width:52ch}
+.pn-d b{color:var(--text);font-weight:600}
+.pn-d a{color:var(--text)}
+.lg{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--muted);margin:4px 0}
+.sw{width:10px;height:10px;flex:none;border:1px solid var(--line)}
+.pnrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
+.pnrow[hidden]{display:none}
+.pnbtn{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line);padding:4px 10px;transition:color .15s ease,border-color .15s ease,background .15s ease}
+.pnbtn:hover:not(:disabled){color:var(--accent);border-color:var(--accent-dim)}
+.pnbtn.sel{color:var(--accent);background:#1a2027;box-shadow:inset 0 0 0 1px var(--accent-dim)}
+.pnbtn:disabled{opacity:.35;cursor:default}
+.wk-panel input[type=range]{flex:1;min-width:70px;-webkit-appearance:none;appearance:none;height:3px;background:var(--line);outline:none;cursor:pointer}
+.wk-panel input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:10px;height:10px;border-radius:0;border:none;background:var(--accent)}
+.wk-panel input[type=range]::-moz-range-thumb{width:10px;height:10px;border-radius:0;border:none;background:var(--accent)}
+.val2{font-family:var(--mono);font-size:11px;color:var(--accent);white-space:nowrap}
+
+/* live tensor-shape caption strip */
+.stage-cap{font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--text);padding:9px 14px;border-top:1px solid var(--line-soft);display:flex;gap:12px;align-items:baseline}
+.stage-cap .cap-no{color:var(--dim);font-size:10px;letter-spacing:.14em;text-transform:uppercase;flex:none;white-space:nowrap}
+#walkfig figcaption + .fig-controls{border-top:none;border-bottom:1px solid var(--line-soft)}
+
+/* jump chips under each section heading */
+.stage-jump{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;text-decoration:none;border:1px solid var(--line);padding:4px 10px;display:inline-block;margin:0 0 14px;color:var(--muted);transition:color .15s ease,border-color .15s ease}
+.stage-jump:hover{color:var(--accent);border-color:var(--accent-dim);text-decoration:none}
+
+/* ---- the one board, restyled per stage ---- */
+svg.eqb polygon{fill:#12171e;stroke:var(--line-soft);stroke-width:.5;transition:fill .3s ease,fill-opacity .3s ease}
+svg.eqb .stone{stroke:#0b0e12;stroke-width:.7;transition:opacity .3s ease;pointer-events:none}
+svg.eqb .stone.p0{fill:var(--p0)}
+svg.eqb .stone.p1{fill:var(--p1)}
+svg.eqb .tokens,svg.eqb .fx,svg.eqb .hfx,svg.eqb .fsr{pointer-events:none}
+
+/* stage 01 · facts: only the stones exist */
+svg.eqb.st-facts polygon{fill:transparent;stroke:#151b22}
+svg.eqb .fsr{opacity:0;transition:opacity .3s ease}
+svg.eqb.st-facts .fsr{opacity:1}
+svg.eqb .fsr circle{fill:none;stroke:var(--accent);stroke-width:1.2;stroke-dasharray:3 2}
+
+/* stage 02 · support: BFS reveal, delay rides each cell's BFS distance */
+svg.eqb.st-support polygon{transition:fill .35s ease calc(var(--d,0)*.16s),stroke .35s ease calc(var(--d,0)*.16s)}
+svg.eqb.st-support polygon.seg-legal{fill:rgba(79,147,255,.15);stroke:rgba(79,147,255,.28)}
+svg.eqb.st-support polygon.seg-stone{fill:#242c36}
+svg.eqb.st-support polygon.seg-halo{fill:rgba(232,226,214,.08);stroke:#3d454f;stroke-dasharray:1.6 1.6}
+svg.eqb.st-support .stone{opacity:.95;transition:opacity .3s ease}
+svg.eqb.st-support.bfs-pre polygon{fill:#12171e!important;stroke:var(--line-soft)!important;stroke-dasharray:none!important;transition:none!important}
+svg.eqb.st-support.bfs-pre .stone{opacity:0!important;transition:none!important}
+
+/* stage 03 · features: per-cell heat set inline from feats/raylen */
+svg.eqb.st-features polygon{stroke:#1a212a}
+svg.eqb.st-features .stone{opacity:.3}
+
+/* stage 04 · batching: the 402 live rows, uniformly lit */
+svg.eqb.st-batching polygon{fill:rgba(79,147,255,.13);stroke:#232b35}
+svg.eqb.st-batching .stone{opacity:.3}
+
+/* stage 05 · stem: click a cell to open its fiber */
+svg.eqb.st-stem polygon{fill:#151b23;cursor:pointer}
+svg.eqb.st-stem polygon:hover{fill:#242d38}
+svg.eqb.st-stem polygon.fsel{fill:rgba(232,226,214,.35);stroke:var(--accent)}
+svg.eqb.st-stem .stone{opacity:.25}
+
+/* stage 06 · trunk: C = probe rays + pulse, A = whole-board glow */
+svg.eqb.st-trunk polygon{fill:#171e27;cursor:pointer}
+svg.eqb.st-trunk polygon:hover{stroke:var(--accent-dim)}
+svg.eqb.st-trunk.blk-a polygon{fill:#26303d;animation:wkglow 3s ease-in-out infinite;animation-delay:calc(var(--d,0)*-.35s)}
+svg.eqb.st-trunk .stone{opacity:.25}
+svg.eqb .tokens{opacity:0;transition:opacity .3s ease}
+svg.eqb.st-trunk .tokens,svg.eqb.st-heads .tokens{opacity:1}
+svg.eqb .tokens circle{fill:#1d242d;stroke:var(--accent-dim);stroke-width:1}
+svg.eqb.st-trunk .tokens circle{animation:wktok 2.4s ease-in-out infinite}
+svg.eqb .tokens text{fill:var(--muted);font-family:var(--mono);font-size:8px;text-anchor:middle}
+
+/* stage 07 · heads: the legal prefix vs the tail */
+svg.eqb.st-heads polygon.seg-legal{fill:rgba(232,226,214,.15);stroke:#4a463d}
+svg.eqb.st-heads .stone{opacity:.45}
+
+/* stage 08 · search: 16 illustrative root candidates */
+svg.eqb.st-search polygon.seg-legal{fill:rgba(79,147,255,.06)}
+svg.eqb.st-search polygon.cand{fill:var(--accent);fill-opacity:.55;stroke:var(--accent)}
+svg.eqb.st-search .stone{opacity:.35}
+
+/* overlay effects */
+svg.eqb .fx .probe{fill:none;stroke:var(--accent);stroke-width:1.2}
+svg.eqb .fx .pulse{fill:none;stroke:var(--accent);stroke-width:1;animation:wkpulse 1.9s ease-out infinite}
+svg.eqb .fx .raydot{fill:var(--accent)}
+svg.eqb .fx .edge{stroke:var(--accent);stroke-width:.7;opacity:.45;stroke-dasharray:3 3;animation:wkdash 1s linear infinite}
+svg.eqb .fx .candring{fill:none;stroke:var(--accent);stroke-width:.9}
+svg.eqb .hfx line{stroke:var(--accent);stroke-width:1.1;opacity:.9}
+svg.eqb .hfx circle{fill:var(--accent)}
+@keyframes wkpulse{0%{r:7;opacity:.8}100%{r:30;opacity:0}}
+@keyframes wkglow{0%,100%{fill-opacity:.35}50%{fill-opacity:.9}}
+@keyframes wkdash{to{stroke-dashoffset:-12}}
+@keyframes wktok{0%,100%{stroke:var(--accent-dim)}50%{stroke:var(--accent)}}
+
+/* fiber grid (stage 05) */
+#fiber rect{stroke:#0e1318;stroke-width:.5;fill:var(--accent)}
+#fiber text{font-family:var(--mono);font-size:8px;fill:var(--dim)}
+
+/* pad bar (stage 04) + logit strip (stage 07) */
+.bar-txt{font-family:var(--mono);font-size:9px;fill:var(--muted)}
+.bar-txt.dim{fill:var(--dim)}
+.btick{stroke:var(--dim);stroke-width:1}
+.bbr{fill:none;stroke:var(--dim)}
+.bl{fill:rgba(79,147,255,.32)}
+.bs{fill:#3a434e}
+.bh{fill:rgba(232,226,214,.16)}
+.ll{fill:rgba(232,226,214,.28)}
+.bp{stroke:#2e3742;fill:url(#wkhatch)}
+.hatchln{stroke:#39434f;stroke-width:2}
+
+@media (prefers-reduced-motion:reduce){
+  svg.eqb *,svg.eqb polygon{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+
+<header class="learn-header">
+  <a class="wordmark" href="../">hexo</a>
+  <nav class="learn-nav" aria-label="How it works">
+    <a href="./">Overview</a>
+    <a href="position.html">The position</a>
+    <a href="symmetry.html">The symmetry</a>
+    <a href="network.html">The network</a>
+    <a href="walkthrough.html" class="current" aria-current="page">End to end</a>
+    <a href="search.html">The search</a>
+    <a href="systems.html">The serving</a>
+    <a href="training.html">The training</a>
+  </nav>
+</header>
+
+<main class="learn-main">
+
+<h1>End to end <span class="h-dim">&mdash; one position, through the whole pipeline</span></h1>
+
+<p class="lede">
+This page replays one real position from the run&rsquo;s own self-play history
+&mdash; the ply-40 decision of a recorded game: 40 stones down, player 0
+placing the second stone of its turn, in a game that ran 119 decisions &mdash;
+through every stage of the pipeline, over the same 402-node support. The
+board in fig&nbsp;1 never changes; only what each stage <em>sees in it</em>
+does. Step through the eight stages and watch the tensor shapes in the
+caption strip: every count on this page comes from running this position
+through the production featurizer.
+</p>
+
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §6 (ply-40 decision, 119 decisions, N=402=288+40+74);
+     data/eq_walkthrough.json source: shard game_24000000.npz, epoch 24, turn_index 40 -->
+<div class="note">
+The numbers are real, the weights are not shown: this site ships no trained
+checkpoint, so panels that would need learned values (the stage-05 fiber, the
+stage-08 candidate set) use fixed illustrative stand-ins and say so. The
+position itself &mdash; records, support layers, features, ray lengths, and
+every shape &mdash; is exported verbatim from the production featurizer to
+<code>data/eq_walkthrough.json</code>.
+</div>
+
+<figure class="fig fig-wide" id="walkfig">
+  <figcaption>fig 1 &middot; <b>one position, end to end</b> &middot; pick a stage &middot; hover the board</figcaption>
+
+  <div class="fig-controls" id="stageNav">
+    <button type="button" data-stage="0" disabled>01 facts</button>
+    <button type="button" data-stage="1" disabled>02 support</button>
+    <button type="button" data-stage="2" disabled>03 features</button>
+    <button type="button" data-stage="3" disabled>04 batching</button>
+    <button type="button" data-stage="4" disabled>05 stem</button>
+    <button type="button" data-stage="5" disabled>06 trunk</button>
+    <button type="button" data-stage="6" disabled>07 heads</button>
+    <button type="button" data-stage="7" disabled>08 search</button>
+    <span class="spacer"></span>
+    <button type="button" id="stPrev" disabled>&larr; prev</button>
+    <button type="button" id="stNext" disabled>next &rarr;</button>
+  </div>
+
+  <div class="fig-body wk-cols">
+    <div class="wk-board">
+      <svg id="board" class="eqb st-facts" role="img"
+           aria-label="The walkthrough position: 402 support cells, 40 stones, restyled by the selected pipeline stage"></svg>
+    </div>
+
+    <div class="wk-panel">
+
+      <!-- 01 facts -->
+      <div class="pane" id="pane0">
+        <div class="pn-t">the stored record</div>
+        <!-- src: data/eq_walkthrough.json records (40 of [q, r, owner, placement_index]),
+             phase "SecondStone", first_stone [8, -8], current_player 0 -->
+        <div class="lg"><span class="sw" style="background:var(--p0)"></span>player 0 &middot; 20 stones &middot; to move</div>
+        <div class="lg"><span class="sw" style="background:var(--p1)"></span>player 1 &middot; 20 stones</div>
+        <div class="lg"><span class="sw" style="border:1px dashed var(--accent)"></span>this turn&rsquo;s first stone &middot; (8,&thinsp;&minus;8)</div>
+        <p class="pn-d">
+          Phase is <b>SecondStone</b>: player 0 already placed one stone this
+          turn (the dashed ring) and is choosing the second. Hover any stone
+          for its record &mdash; four integers. Nothing else about this
+          position is ever stored or transmitted; every panel that follows is
+          derived from these 40 rows.
+        </p>
+      </div>
+
+      <!-- 02 support -->
+      <div class="pane" id="pane1">
+        <div class="pn-t">support layers &middot; one BFS pass</div>
+        <!-- src: data/eq_walkthrough.json legal_count=288, stone_count=40, halo_count=74;
+             HEXFIELD_EQ_EXPLAINER.md §2 (BFS, order, legal-prefix property) -->
+        <div class="lg"><span class="sw" style="background:rgba(79,147,255,.35)"></span>legal &middot; 288 &middot; rows 0&ndash;287</div>
+        <div class="lg"><span class="sw" style="background:#39424d"></span>stones &middot; 40 &middot; rows 288&ndash;327</div>
+        <div class="lg"><span class="sw" style="background:rgba(232,226,214,.22)"></span>halo &middot; 74 &middot; rows 328&ndash;401</div>
+        <div class="pnrow"><button type="button" class="pnbtn" id="bfsReplay">replay bfs</button></div>
+        <p class="pn-d">
+          One multi-source BFS out from the stones builds all three layers and
+          each cell&rsquo;s distance-to-stone in a single pass. Rows are
+          ordered <b>[legal&nbsp;|&nbsp;stones&nbsp;|&nbsp;halo]</b>, each
+          segment sorted by coordinate &mdash; legal-first is what makes the
+          policy head&rsquo;s first 288 outputs <em>be</em> the legal moves
+          (stage 07).
+        </p>
+      </div>
+
+      <!-- 03 features -->
+      <div class="pane" id="pane2">
+        <div class="pn-t">plane heatmap</div>
+        <div class="pnrow">
+          <button type="button" class="pnbtn sel" id="mFeats">feats (402, 46)</button>
+          <button type="button" class="pnbtn" id="mRay">raylen (402, 12)</button>
+        </div>
+        <div class="pnrow" id="featCtl">
+          <button type="button" class="pnbtn" id="plPrev">&larr;</button>
+          <input type="range" id="plSlider" min="0" max="45" step="1" value="17" aria-label="feature plane">
+          <button type="button" class="pnbtn" id="plNext">&rarr;</button>
+        </div>
+        <div class="pnrow" id="rayCtl" hidden>
+          <button type="button" class="pnbtn" id="slPrev">&larr;</button>
+          <input type="range" id="slSlider" min="0" max="11" step="1" value="0" aria-label="ray-length slot">
+          <button type="button" class="pnbtn" id="slNext">&rarr;</button>
+        </div>
+        <div class="pnrow"><span class="val2" id="plName"></span></div>
+        <p class="pn-d" id="plDesc"></p>
+        <div class="lg"><span class="sw" style="background:rgba(79,147,255,.6)"></span>own = player 0, to move</div>
+        <div class="lg"><span class="sw" style="background:rgba(255,86,80,.6)"></span>opp = player 1</div>
+        <div class="lg"><span class="sw" style="background:rgba(232,226,214,.55)"></span>neutral / global</div>
+      </div>
+
+      <!-- 04 batching -->
+      <div class="pane" id="pane3">
+        <div class="pn-t">one padding group &middot; Npad = 448</div>
+        <!-- src: HEXFIELD_EQ_EXPLAINER.md §6.4 (Npad=448, quantized to 64) and §8 (padding groups);
+             pad rows: 448 - 402 = 46 -->
+        <svg viewBox="-14 0 476 88" role="img" aria-label="448 batch rows: 402 live support rows then 46 dead padding rows">
+          <defs>
+            <pattern id="wkhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <line x1="0" y1="0" x2="0" y2="6" class="hatchln"/>
+            </pattern>
+          </defs>
+          <text class="bar-txt dim" x="0" y="16" text-anchor="middle">0</text>
+          <text class="bar-txt dim" x="288" y="16" text-anchor="middle">288</text>
+          <text class="bar-txt dim" x="328" y="16" text-anchor="end">328</text>
+          <text class="bar-txt dim" x="402" y="16" text-anchor="middle">402</text>
+          <text class="bar-txt dim" x="448" y="16" text-anchor="middle">448</text>
+          <line class="btick" x1="0" y1="20" x2="0" y2="30"/>
+          <line class="btick" x1="288" y1="20" x2="288" y2="30"/>
+          <line class="btick" x1="328" y1="20" x2="328" y2="30"/>
+          <line class="btick" x1="402" y1="20" x2="402" y2="30"/>
+          <line class="btick" x1="448" y1="20" x2="448" y2="30"/>
+          <rect class="bl" x="0" y="30" width="288" height="18"/>
+          <rect class="bs" x="288" y="30" width="40" height="18"/>
+          <rect class="bh" x="328" y="30" width="74" height="18"/>
+          <rect class="bp" x="402" y="30" width="46" height="18"/>
+          <path class="bbr" d="M0 56 v4 H402 v-4"/>
+          <text class="bar-txt" x="201" y="74" text-anchor="middle">402 live rows &middot; mask 1</text>
+          <path class="bbr" d="M406 56 v4 H448 v-4"/>
+          <text class="bar-txt" x="427" y="74" text-anchor="middle">46 pad &middot; mask 0</text>
+        </svg>
+        <p class="pn-d">
+          During search this position rides in a group with other leaf
+          positions, padded to a shared node count quantized to multiples of
+          64: here <b>Npad&nbsp;=&nbsp;448</b>, so 46 dead rows join the 402
+          live ones. The boolean mask is re-applied after every
+          parameter-carrying op &mdash; padding never leaks into live cells.
+        </p>
+      </div>
+
+      <!-- 05 stem -->
+      <div class="pane" id="pane4">
+        <div class="pn-t">one cell&rsquo;s fiber &middot; 12 slots &times; 16 channels</div>
+        <svg id="fiber" viewBox="0 0 258 172" role="img" aria-label="A 12 by 16 grid: the selected cell's 192-channel fiber, one row per group element slot"></svg>
+        <div class="pnrow"><span class="val2" id="fiberCell"></span></div>
+        <!-- illustrative: no trained weights ship with this site -->
+        <p class="pn-d">
+          <b>Illustrative values</b> &mdash; no trained weights exist here;
+          the grid shows the <em>structure</em>, not a real activation. The
+          stem lifts the 46 typed planes into this fiber: one slot per group
+          element (rows r0&ndash;r5 rotations, m0&ndash;m5 reflections), 16
+          free orbit channels each. A board symmetry permutes the 12 rows and
+          moves the cell &mdash; nothing else.
+        </p>
+      </div>
+
+      <!-- 06 trunk -->
+      <div class="pane" id="pane5">
+        <div class="pn-t">trunk &middot; C C A C C A C A</div>
+        <div class="pnrow" id="blkBtns"></div>
+        <p class="pn-d" id="blkDesc"></p>
+        <p class="pn-d">Click any cell to move the probe.</p>
+      </div>
+
+      <!-- 07 heads -->
+      <div class="pane" id="pane6">
+        <div class="pn-t">policy: one logit per node</div>
+        <!-- src: HEXFIELD_EQ_EXPLAINER.md §6.7: (402,) logits, first 288 are the legal moves;
+             value read: 6 tokens + pooled cells + pre-norm token mean -> 512-wide -> 65 bins -->
+        <svg viewBox="-14 0 476 92" role="img" aria-label="The 402 policy logits as a strip: the first 288 are the legal moves; rows 288 to 401 are never read as moves">
+          <path class="bbr" d="M0 26 v-5 H288 v5"/>
+          <text class="bar-txt" x="144" y="12" text-anchor="middle">first 288 &middot; softmax &rarr; the search prior</text>
+          <rect class="ll" x="0" y="32" width="288" height="16"/>
+          <rect class="bs" x="288" y="32" width="40" height="16"/>
+          <rect class="bh" x="328" y="32" width="74" height="16"/>
+          <line class="btick" x1="288" y1="28" x2="288" y2="52"/>
+          <text class="bar-txt dim" x="0" y="66" text-anchor="middle">0</text>
+          <text class="bar-txt dim" x="288" y="66" text-anchor="middle">288</text>
+          <text class="bar-txt dim" x="402" y="66" text-anchor="middle">402</text>
+          <text class="bar-txt dim" x="462" y="80" text-anchor="end">rows 288&ndash;401 &middot; stones + halo &middot; computed, never read as moves</text>
+        </svg>
+        <p class="pn-d">
+          The <b>legal-prefix slice</b>: because rows were ordered legal-first
+          in stage 02, taking the first 288 logits <em>is</em> the legality
+          mask &mdash; no coordinate matching, nothing to drift. The value
+          head reads all 6 tokens + the pooled cells + the pre-final-norm
+          token mean (512-wide), emits 65 bin logits on [&minus;1,&thinsp;1],
+          and decodes by softmax expectation.
+        </p>
+      </div>
+
+      <!-- 08 search -->
+      <div class="pane" id="pane7">
+        <div class="pn-t">into the tree</div>
+        <!-- src: HEXFIELD_EQ_EXPLAINER.md §6.8, §7.2 (m=16 Gumbel candidates, 256 visits, target is pi-prime) -->
+        <p class="pn-d">
+          The prior and value enter the tree at this leaf. At the root, one
+          Gumbel draw per legal move picks the top <b>m&nbsp;=&nbsp;16</b>
+          candidates by g(a)&nbsp;+&nbsp;logits(a) &mdash; the marked cells
+          are an <b>illustrative</b> candidate set (no trained prior exists
+          here). Sequential Halving spends the 256-visit budget; values back
+          up the path; the improved policy &pi;&prime; becomes the training
+          target, not the visit histogram.
+        </p>
+        <p class="pn-d">
+          How the candidates are ranked, halved, and recorded is
+          <a href="search.html">the search page</a>.
+        </p>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="stage-cap">
+    <span class="cap-no" id="capNo">loading</span>
+    <span class="cap-t" id="capText">fetching data/eq_walkthrough.json &hellip;</span>
+  </div>
+
+  <div class="fig-readout" id="ro" aria-live="polite">
+    <span class="ro-k">end to end</span>
+    <span class="ro-t">loading the walkthrough position&hellip;</span>
+  </div>
+</figure>
+
+<h2 id="facts"><span class="sec-no">01</span>facts</h2>
+<a class="stage-jump" href="#walkfig" data-stage="0">show stage 01 in fig 1 &uarr;</a>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §6.1; data/eq_walkthrough.json records, phase, first_stone -->
+<p>
+The position is 40 records of <code>(q, r, owner, placement_index)</code>
+plus the phase and this turn&rsquo;s first stone. That is all that is ever
+stored or transmitted &mdash; training rows keep the placement history, the
+serve wire rebuilds everything from it, and feature planes are never written
+to disk. Here the phase is <em>SecondStone</em>: player 0&rsquo;s first stone
+of the turn just landed at (8,&thinsp;&minus;8), and the decision being
+traced is where its second stone goes.
+</p>
+
+<h2 id="support"><span class="sec-no">02</span>support</h2>
+<a class="stage-jump" href="#walkfig" data-stage="1">show stage 02 in fig 1 &uarr;</a>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §2, §6.2; data/eq_walkthrough.json n_nodes=402,
+     legal_count=288, stone_count=40, halo_count=74, coords (402 x 2), nbr (402 x 6) -->
+<p>
+One BFS outward from the 40 stones produces the support set: every empty
+cell within hex-distance 4 of a stone (288 legal cells), the stones
+themselves, and the one-cell halo shell (74 cells) that gives edge
+convolutions neighbours to read &mdash; <b>N&nbsp;=&nbsp;402</b> nodes in
+<code>[legal | stones | halo]</code> order. Two aligned arrays carry the
+geometry: <code>coords (402, 2)</code> axial coordinates and
+<code>nbr (402, 6)</code> neighbour row-indices (missing neighbour &rarr; a
+sentinel that reads as a zero row). The legal-first ordering is a load-bearing
+choice: it is what stage 07 slices.
+</p>
+
+<h2 id="features"><span class="sec-no">03</span>features</h2>
+<a class="stage-jump" href="#walkfig" data-stage="2">show stage 03 in fig 1 &uarr;</a>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §3, §6.3: 402 x 3 x 6 = 7,236 windows, 402 x 12 = 4,824 rays,
+     about one third of feats entries nonzero (measured 32.5% in eq_walkthrough.json);
+     plane indices from packages/hexfield_eq/python/hexfield_eq/constants.py -->
+<p>
+The featurizer scans all 6 length-6 windows through every cell on every win
+axis &mdash; 402&nbsp;&times;&nbsp;3&nbsp;&times;&nbsp;6 =
+<b>7,236 windows</b> &mdash; and walks 402&nbsp;&times;&nbsp;12 =
+<b>4,824 rays</b>, producing <code>feats (402, 46)</code> (about a third of
+the entries are non-zero in this position) and <code>raylen (402, 12)</code>.
+The 46 planes are 11 base scalars, 10 graded window quantities &times; 3
+axes, 2 fork counts, and 3 global scalars; every &ldquo;own&rdquo; plane is
+relative to the side to move &mdash; player 0 here, so own tints blue in
+fig&nbsp;1. Ray lengths never enter the planes: they feed the trunk
+convolutions&rsquo; visibility masks in stage 06.
+</p>
+
+<h2 id="batching"><span class="sec-no">04</span>batching</h2>
+<a class="stage-jump" href="#walkfig" data-stage="3">show stage 04 in fig 1 &uarr;</a>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §6.4 (Npad = 448, tensors (B,448,46/6/2/12), (B,448) mask), §8 -->
+<p>
+Positions reach the GPU in padding groups sharing one node count, quantized
+to multiples of 64: this position&rsquo;s group pads to
+<b>Npad&nbsp;=&nbsp;448</b>, giving batch tensors
+<code>(B, 448, 46)</code>, <code>(B, 448, 6)</code>,
+<code>(B, 448, 2)</code>, <code>(B, 448, 12)</code> and a
+<code>(B, 448)</code> boolean mask &mdash; 402 live rows, 46 dead ones. Fixed
+shapes buy few, replayable GPU launches; the waste is capped and the mask
+keeps it out of the math. How groups are packed is
+<a href="systems.html">the serving page</a>.
+</p>
+
+<h2 id="stem"><span class="sec-no">05</span>stem</h2>
+<a class="stage-jump" href="#walkfig" data-stage="4">show stage 05 in fig 1 &uarr;</a>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §6.5, §4.4 (12 slots x 16 orbit channels), §5.1 -->
+<p>
+The stem &mdash; a tied 7-tap conv, group-norm, ReLU &mdash; lifts
+<code>(402, 46)</code> to <code>(402, 192)</code>. From here on, each
+cell&rsquo;s 192 channels are structured as a <b>12-slot &times; 16-channel
+fiber</b>: one slot per lattice symmetry, 16 freely-learned orbit channels
+per slot. Rotate the board and the slots permute inside every cell while the
+cells move &mdash; the regular representation that makes every later weight
+constraint a pure index-gather. The full story is
+<a href="symmetry.html">the symmetry page</a>.
+</p>
+
+<h2 id="trunk"><span class="sec-no">06</span>trunk</h2>
+<a class="stage-jump" href="#walkfig" data-stage="5">show stage 06 in fig 1 &uarr;</a>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §6.6: C = two ray-tap convs, 7 gathers/cell, register refresh
+     from all 402 cells; A = [6 tokens ; 402 cells] = 408 rows, (3, 408, 408) bias from 237 rows;
+     shapes fixed at cells (402, 192), tokens (6, 192) -->
+<p>
+The stream passes <code>C C A C C A C A</code>. Each <b>C</b> block runs two
+ray-tap convolutions &mdash; 7 gathers per cell: the center plus a
+blocker-aware, distance-weighted aggregate of up to 5 cells down each of the
+6 directions &mdash; then a register refresh lets the 6 summary tokens
+<em>count</em> over all 402 cells with sigmoid-gated unnormalized sums. Each
+<b>A</b> block self-attends the joint sequence
+<code>[6 tokens ; 402 cells]</code> = 408 rows under a
+<code>(3, 408, 408)</code> position bias gathered from 237 learned rows.
+Through all eight blocks the shapes never change: cells
+<code>(402, 192)</code>, tokens <code>(6, 192)</code>. Mechanism details are
+on <a href="network.html">the network page</a>.
+</p>
+
+<h2 id="heads"><span class="sec-no">07</span>heads</h2>
+<a class="stage-jump" href="#walkfig" data-stage="6">show stage 07 in fig 1 &uarr;</a>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §6.7, §5.5 -->
+<p>
+After the final norm, the policy head emits one logit per node:
+<code>(402,)</code>, of which the <b>first 288 are the legal moves</b> &mdash;
+the payoff of stage 02&rsquo;s ordering. Softmaxed over that prefix, they are
+the search prior. The value head reads all 6 tokens, the masked mean of the
+cells, and the pre-final-norm token mean (so raw register counts survive the
+norm) &mdash; a 512-wide read &rarr; 65 bins on [&minus;1,&thinsp;1] &rarr; a
+scalar by softmax expectation.
+</p>
+
+<h2 id="search"><span class="sec-no">08</span>search</h2>
+<a class="stage-jump" href="#walkfig" data-stage="7">show stage 08 in fig 1 &uarr;</a>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §6.8, §7 (m = 16, 256 visits, pi-prime as target) -->
+<p>
+The prior and value enter the tree at this leaf. At the root the prior seeds
+the <b>16 Gumbel candidates</b>; values back up the path that led here. After
+256 visits the search emits the improved policy &pi;&prime; as the training
+target and samples the move to play. That loop &mdash; Gumbel-Top-m,
+Sequential Halving, completed-Q &mdash; is
+<a href="search.html">the search page</a>; what happens to &pi;&prime; next is
+<a href="training.html">the training page</a>.
+</p>
+
+</main>
+
+<footer class="learn-footer">
+  <div class="foot-row">
+    <a href="network.html">&larr; prev &middot; the network</a>
+    <span class="foot-spacer"></span>
+    <a href="search.html">next &middot; the search &rarr;</a>
+  </div>
+</footer>
+
+<script type="module">
+import { key, AXES, AXIS_NAMES, figBoard, svgEl, loadData } from "./eq.js?v=1";
+
+"use strict";
+const $ = id => document.getElementById(id);
+const svg = $("board");
+const roK = $("ro").querySelector(".ro-k");
+const roT = $("ro").querySelector(".ro-t");
+const capNo = $("capNo"), capText = $("capText");
+const ro = (k, t) => { roK.textContent = k; roT.textContent = t; };
+
+const LAYOUT = "CCACCACA";
+const STAGES = [
+  { cls: "st-facts", no: "stage 01 · facts",
+    cap: "40 records of (q, r, owner, placement_index) + phase + first_stone — all that is ever stored",
+    hint: "hover a stone for its record · the dashed ring is this turn’s first stone" },
+  { cls: "st-support", no: "stage 02 · support",
+    cap: "N = 402 = 288 legal + 40 stones + 74 halo · order [legal | stones | halo] · coords (402, 2) · nbr (402, 6)",
+    hint: "hover a cell for its row, segment, and BFS distance" },
+  { cls: "st-features", no: "stage 03 · features",
+    cap: "7,236 windows scanned, 4,824 rays walked → feats (402, 46), ~⅓ nonzero + raylen (402, 12)",
+    hint: "pick a plane, hover a cell for its value · own = blue (player 0 to move), opp = red" },
+  { cls: "st-batching", no: "stage 04 · batching",
+    cap: "padding group: Npad = 448 (quantized to 64) → (B, 448, 46) · (B, 448, 6) · (B, 448, 2) · (B, 448, 12) + (B, 448) mask",
+    hint: "402 live rows + 46 dead pad rows — the mask keeps padding out of every op" },
+  { cls: "st-stem", no: "stage 05 · stem",
+    cap: "(402, 46) → (402, 192): each cell now carries a 12-slot × 16-channel fiber",
+    hint: "click any cell to open its fiber — values illustrative, structure exact" },
+  { cls: "st-trunk", no: "stage 06 · trunk",
+    cap: "", // set per block
+    hint: "step through the 8 blocks · click a cell to move the probe" },
+  { cls: "st-heads", no: "stage 07 · heads",
+    cap: "policy (402,) — the first 288 logits are the legal moves · value: 6 tokens + pooled cells + pre-norm token mean → 512-wide → 65 bins → softmax expectation",
+    hint: "hover a cell: its support row is its logit’s position in the strip" },
+  { cls: "st-search", no: "stage 08 · search",
+    cap: "the prior seeds m = 16 Gumbel candidates at the root · values back up · after 256 visits π′ is the training target",
+    hint: "marked cells: an illustrative root candidate set among the 288 legal moves" },
+];
+
+/* Plane names/indices hardcoded from packages/hexfield_eq/python/hexfield_eq/constants.py
+ * (feature version 2, 46 planes) and the explainer §3 tables. side: 0 own / 1 opp / 2 neutral. */
+const SIDE_RGB = ["79,147,255", "255,86,80", "232,226,214"];
+const PLANES = [
+  ["own_stone", 0, "occupancy — stones of the side to move (player 0 here)"],
+  ["opp_stone", 1, "occupancy — opponent stones"],
+  ["empty", 2, "1 − stones"],
+  ["legal", 2, "1 on the legal prefix — the 288 playable cells"],
+  ["phase_second", 2, "this move is the turn’s second placement — 1 everywhere here"],
+  ["first_stone", 2, "where this turn’s first stone landed — exactly one cell, (8, −8)"],
+  ["player_colour", 2, "1 everywhere when player 0 is to move"],
+  ["own_recency", 0, "1/(1+age) of each own stone’s placement"],
+  ["opp_recency", 1, "1/(1+age) of each opponent stone’s placement"],
+  ["dist_to_stone", 2, "BFS distance to the nearest stone / 8 — halo reads 0.625"],
+  ["opp_last_turn", 1, "the opponent’s most recent full turn — 2 cells"],
+];
+const QUANTS = [
+  ["own_line", 0, "max stones in a clean-for-own window along %A (/5)"],
+  ["opp_line", 1, "max stones in a clean-for-opp window along %A (/5)"],
+  ["own_live", 0, "count of clean-for-own windows along %A (/6)"],
+  ["opp_live", 1, "count of clean-for-opp windows along %A (/6)"],
+  ["own_live3", 0, "clean-for-own windows along %A holding ≥3 own stones (/6)"],
+  ["opp_live3", 1, "clean-for-opp windows along %A holding ≥3 opp stones (/6)"],
+  ["own_live4", 0, "clean-for-own windows along %A holding ≥4 own stones (/6)"],
+  ["opp_live4", 1, "clean-for-opp windows along %A holding ≥4 opp stones (/6)"],
+  ["own_live5", 0, "clean-for-own windows along %A holding ≥5 own stones (/6)"],
+  ["opp_live5", 1, "clean-for-opp windows along %A holding ≥5 opp stones (/6)"],
+];
+for (const [n, s, d] of QUANTS)
+  for (let a = 0; a < 3; a++)
+    PLANES.push([n + "_" + AXIS_NAMES[a].toLowerCase(), s, d.replace("%A", AXIS_NAMES[a])]);
+PLANES.push(
+  ["own_fork", 0, "axes (of 3) whose raw own line count reaches 3 (/3)"],
+  ["opp_fork", 1, "axes (of 3) whose raw opp line count reaches 3 (/3)"],
+  ["ply", 2, "placements made, clamped at 96, /96 — 40/96 ≈ 0.4167 everywhere"],
+  ["dist_centroid", 2, "distance from the stone centroid / (2 × spread), capped at 1"],
+  ["spread", 2, "the stones’ max distance from their centroid, clamped at 16, /16"],
+);
+
+const slotLabel = s => (s < 6 ? "own" : "opp") + "·" + AXIS_NAMES[(s % 6) >> 1] + (s % 2 ? "−" : "+");
+const rawHint = (p, v) => {
+  const n = PLANES[p][0];
+  if (/_line_/.test(n)) return Math.round(v * 5) + " stones in the best clean window";
+  if (/live\d?_/.test(n) || /_live_/.test(n)) return Math.round(v * 6) + "/6 windows";
+  if (/fork/.test(n)) return Math.round(v * 3) + "/3 axes";
+  return "";
+};
+
+const state = { stage: 0, mode: "feats", plane: 17, slot: 0, block: 0, probe: -1, fiberRow: -1, heatOn: false };
+let D = null, board = null, polyRow = [], fx = null, hfx = null, recAt = new Map();
+let candRows = [], selPoly = null;
+
+loadData("eq_walkthrough.json").then(init).catch(err => {
+  capNo.textContent = "error";
+  capText.textContent = "could not load data/eq_walkthrough.json — " + err.message;
+  ro("error", "the walkthrough needs its data file; serve this page over http.");
+});
+
+function init(data) {
+  D = data;
+  board = figBoard(svg, D.coords, { cellSize: 9, pad: 14 });
+
+  // segment classes + BFS-distance delay var on every polygon
+  const seg = i => i < D.legal_count ? "seg-legal" : i < D.legal_count + D.stone_count ? "seg-stone" : "seg-halo";
+  polyRow = D.coords.map(([q, r], i) => {
+    const p = board.polys.get(key(q, r));
+    p.classList.add(seg(i));
+    p.dataset.row = i;
+    p.style.setProperty("--d", D.dist[i]);
+    return p;
+  });
+
+  // stones + record lookup
+  for (const [q, r, owner, idx] of D.records) {
+    board.setStone(q, r, owner);
+    recAt.set(key(q, r), [q, r, owner, idx]);
+  }
+
+  // extend the viewBox upward for the 6 token dots
+  const vb = svg.viewBox.baseVal;
+  svg.setAttribute("viewBox", `${vb.x} ${(vb.y - 30).toFixed(1)} ${vb.width} ${(vb.height + 30).toFixed(1)}`);
+  const tg = svgEl("g", { class: "tokens" });
+  const midX = vb.x + vb.width / 2, topY = vb.y - 18;
+  for (let i = 0; i < 6; i++) {
+    const cx = midX + (i - 2.5) * 26;
+    tg.appendChild(svgEl("circle", { cx, cy: topY, r: 5 }));
+    const t = svgEl("text", { x: cx, y: topY + 14 });
+    t.textContent = "t" + i;
+    tg.appendChild(t);
+  }
+  svg.appendChild(tg);
+
+  // first-stone marker (stage 01)
+  const fsg = svgEl("g", { class: "fsr" });
+  const [fq, fr] = D.first_stone;
+  const [fx0, fy0] = board.center(fq, fr);
+  fsg.appendChild(svgEl("circle", { cx: fx0, cy: fy0, r: board.s * 1.05 }));
+  svg.appendChild(fsg);
+
+  // effect layers (managed here, board.overlay stays unused)
+  fx = svgEl("g", { class: "fx" });
+  hfx = svgEl("g", { class: "hfx" });
+  svg.appendChild(fx);
+  svg.appendChild(hfx);
+
+  // probe cell: the dist-1 legal cell nearest the stone centroid
+  let cq = 0, cr = 0;
+  for (const [q, r] of D.records) { cq += q / 40; cr += r / 40; }
+  const hexDist = (q, r) => (Math.abs(q) + Math.abs(r) + Math.abs(q + r)) / 2;
+  let best = 1e9;
+  for (let i = 0; i < D.legal_count; i++) {
+    if (D.dist[i] !== 1) continue;
+    const d = hexDist(D.coords[i][0] - cq, D.coords[i][1] - cr);
+    if (d < best) { best = d; state.probe = i; }
+  }
+  state.fiberRow = state.probe;
+
+  // 16 illustrative root candidates: evenly strided over the dist-1 legal cells
+  const adj = [];
+  for (let i = 0; i < D.legal_count; i++) if (D.dist[i] === 1) adj.push(i);
+  const stride = Math.floor(adj.length / 16);
+  for (let j = 0; j < 16; j++) candRows.push(adj[j * stride]);
+  for (const rI of candRows) polyRow[rI].classList.add("cand");
+
+  buildBlockButtons();
+  wire();
+  for (const b of document.querySelectorAll("#stageNav button")) b.disabled = false;
+  setStage(0);
+}
+
+/* ---------- stage switching ---------- */
+
+function fxClear() { while (fx.firstChild) fx.firstChild.remove(); hfxClear(); }
+function hfxClear() { while (hfx.firstChild) hfx.firstChild.remove(); }
+
+function clearHeat() {
+  if (!state.heatOn) return;
+  for (const p of polyRow) { p.style.fill = ""; p.style.fillOpacity = ""; }
+  state.heatOn = false;
+}
+
+function setStage(i) {
+  state.stage = i;
+  const m = STAGES[i];
+  clearHeat();
+  fxClear();
+  svg.setAttribute("class", "eqb " + m.cls +
+    (i === 5 ? (LAYOUT[state.block] === "A" ? " blk-a" : " blk-c") : ""));
+  if (i === 1) runBfs();
+  if (i === 2) applyHeat();
+  if (i === 4) { renderFiber(state.fiberRow); markSel(state.fiberRow); } else { markSel(-1); }
+  if (i === 5) renderTrunkFx();
+  if (i === 7) drawCandRings();
+  for (const b of document.querySelectorAll("#stageNav button[data-stage]"))
+    b.classList.toggle("sel", +b.dataset.stage === i);
+  $("stPrev").disabled = i === 0;
+  $("stNext").disabled = i === 7;
+  document.querySelectorAll(".pane").forEach((p, j) => p.classList.toggle("on", j === i));
+  updateCap();
+  ro(m.no, m.hint);
+  if (i === 2) updatePlaneUI();
+}
+
+function updateCap() {
+  const m = STAGES[state.stage];
+  capNo.textContent = m.no;
+  if (state.stage === 5) {
+    const c = LAYOUT[state.block];
+    capText.textContent = "block " + (state.block + 1) + "/8 · " + c + " — " +
+      (c === "C"
+        ? "two ray-tap convs (7 gathers/cell: center + 6 five-cell ray aggregates) + register refresh from all 402 cells · cells (402, 192) · tokens (6, 192)"
+        : "[6 tokens ; 402 cells] = 408 rows self-attend · bias (3, 408, 408) gathered from 237 rows · shapes unchanged");
+  } else {
+    capText.textContent = m.cap;
+  }
+}
+
+/* ---------- stage 02: BFS reveal ---------- */
+
+function runBfs() {
+  svg.classList.add("bfs-pre");
+  void svg.getBoundingClientRect();
+  requestAnimationFrame(() => requestAnimationFrame(() => svg.classList.remove("bfs-pre")));
+}
+
+/* ---------- stage 03: heatmap ---------- */
+
+function applyHeat() {
+  const feats = state.mode === "feats";
+  const side = feats ? PLANES[state.plane][1] : (state.slot < 6 ? 0 : 1);
+  const rgb = SIDE_RGB[side];
+  for (let i = 0; i < polyRow.length; i++) {
+    const v = feats ? D.feats[i][state.plane] : D.raylen[i][state.slot] / 5;
+    polyRow[i].style.fill = "rgb(" + rgb + ")";
+    polyRow[i].style.fillOpacity = v <= 0 ? .04 : (.12 + .82 * Math.min(v, 1));
+  }
+  state.heatOn = true;
+}
+
+function updatePlaneUI() {
+  if (state.mode === "feats") {
+    const [n, , d] = PLANES[state.plane];
+    $("plName").textContent = "plane " + state.plane + " · " + n;
+    $("plDesc").textContent = d;
+    $("plSlider").value = state.plane;
+  } else {
+    $("plName").textContent = "slot " + state.slot + " · " + slotLabel(state.slot);
+    $("plDesc").textContent = "attendable walk from each cell — passes " +
+      (state.slot < 6 ? "own (player 0)" : "opp (player 1)") +
+      " stones and empties, sees and stops at an enemy blocker, stops at the support edge · values 0–5, tinted /5";
+    $("slSlider").value = state.slot;
+  }
+}
+
+/* ---------- stage 05: fiber ---------- */
+
+const hash = (a, b, c) => {
+  const x = Math.sin(a * 12.9898 + b * 78.233 + c * 37.719) * 43758.5453;
+  return x - Math.floor(x);
+};
+
+function renderFiber(row) {
+  const f = $("fiber");
+  while (f.firstChild) f.firstChild.remove();
+  const labels = ["r0", "r1", "r2", "r3", "r4", "r5", "m0", "m1", "m2", "m3", "m4", "m5"];
+  for (let s = 0; s < 12; s++) {
+    const t = svgEl("text", { x: 22, y: 8 + s * 13 + 9.5, "text-anchor": "end" });
+    t.textContent = labels[s];
+    f.appendChild(t);
+    for (let c = 0; c < 16; c++) {
+      const v = Math.max(0, hash(row, s, c) * 1.6 - 0.6); // post-ReLU-looking, illustrative
+      f.appendChild(svgEl("rect", {
+        x: 28 + c * 14, y: 8 + s * 13, width: 13, height: 12,
+        "fill-opacity": (0.06 + 0.9 * v).toFixed(2),
+      }));
+    }
+  }
+  const [q, r] = D.coords[row];
+  $("fiberCell").textContent = "cell (" + q + ", " + r + ") · row " + row + " · 12 × 16 = 192 channels · illustrative";
+}
+
+function markSel(row) {
+  if (selPoly) selPoly.classList.remove("fsel");
+  selPoly = row >= 0 ? polyRow[row] : null;
+  if (selPoly) selPoly.classList.add("fsel");
+}
+
+/* ---------- stage 06: trunk ---------- */
+
+function buildBlockButtons() {
+  const holder = $("blkBtns");
+  for (let i = 0; i < 8; i++) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "pnbtn";
+    b.textContent = (i + 1) + LAYOUT[i];
+    b.addEventListener("click", () => setBlock(i));
+    holder.appendChild(b);
+  }
+}
+
+function setBlock(i) {
+  state.block = i;
+  document.querySelectorAll("#blkBtns .pnbtn").forEach((b, j) => b.classList.toggle("sel", j === i));
+  if (state.stage === 5) {
+    svg.classList.toggle("blk-a", LAYOUT[i] === "A");
+    svg.classList.toggle("blk-c", LAYOUT[i] === "C");
+    renderTrunkFx();
+    updateCap();
+  }
+  $("blkDesc").textContent = LAYOUT[i] === "C"
+    ? "C block — a residual pair of ray-tap convs. Each conv gathers 7 taps per cell: the center, plus a visibility-masked, distance-weighted aggregate of up to 5 cells down each of the 6 directions (the probe’s dots follow its real own-side ray lengths; within each 16-channel orbit the first 8 channels use own-side visibility, the last 8 opp-side). At the block exit the register refresh adds a sigmoid-gated, unnormalized sum over all 402 cells into each token — the lane that can count."
+    : "A block — the joint sequence [6 tokens ; 402 cells] = 408 rows self-attends: 3 heads of 64, one per win axis, every score offset by the relative-position bias, a (3, 408, 408) tensor gathered from this block’s 237-row table. One hop gives every cell the whole board and the tokens.";
+}
+
+function renderTrunkFx() {
+  fxClear();
+  const p = state.probe;
+  const [pq, pr] = D.coords[p];
+  const [px, py] = board.center(pq, pr);
+  fx.appendChild(svgEl("circle", { class: "probe", cx: px, cy: py, r: board.s * 1.05 }));
+  fx.appendChild(svgEl("circle", { class: "pulse", cx: px, cy: py, r: 7 }));
+  const late = svgEl("circle", { class: "pulse", cx: px, cy: py, r: 7 });
+  late.style.animationDelay = "-.95s";
+  fx.appendChild(late);
+
+  const vb = svg.viewBox.baseVal;
+  const tokX = i => vb.x + vb.width / 2 + (i - 2.5) * 26;
+  const tokY = vb.y + 12;
+
+  if (LAYOUT[state.block] === "C") {
+    // the 6 own-side rays from the probe, dots fading with distance (the α weighting)
+    for (let s = 0; s < 6; s++) {
+      const [dq, dr] = AXES[s >> 1], sign = s % 2 ? -1 : 1;
+      const len = D.raylen[p][s]; // own-side slots 0..5, flat order axis*2+dir
+      for (let k = 1; k <= len; k++) {
+        const [x, y] = board.center(pq + sign * dq * k, pr + sign * dr * k);
+        fx.appendChild(svgEl("circle", {
+          class: "raydot", cx: x, cy: y, r: (3.2 - k * .35).toFixed(2),
+          opacity: (0.95 - k * .13).toFixed(2),
+        }));
+      }
+    }
+    // register refresh: gated sums from the cells into the 6 tokens
+    for (let i = 0; i < 6; i++) {
+      const rI = D.legal_count + i * 7; // a spread of stone rows
+      const [x, y] = board.center(D.coords[rI][0], D.coords[rI][1]);
+      fx.appendChild(svgEl("line", { class: "edge", x1: x, y1: y, x2: tokX(i), y2: tokY }));
+    }
+  } else {
+    // one attention hop: probe ↔ tokens and a sample of far cells
+    for (let i = 0; i < 6; i++)
+      fx.appendChild(svgEl("line", { class: "edge", x1: px, y1: py, x2: tokX(i), y2: tokY }));
+    for (const rI of [10, 60, 110, 170, 230, 300, 340, 380]) {
+      const [x, y] = board.center(D.coords[rI][0], D.coords[rI][1]);
+      fx.appendChild(svgEl("line", { class: "edge", x1: px, y1: py, x2: x, y2: y }));
+    }
+  }
+}
+
+/* ---------- stage 08: candidates ---------- */
+
+function drawCandRings() {
+  for (const rI of candRows) {
+    const [x, y] = board.center(D.coords[rI][0], D.coords[rI][1]);
+    fx.appendChild(svgEl("circle", { class: "candring", cx: x, cy: y, r: board.s * .95 }));
+  }
+}
+
+/* ---------- hover readouts ---------- */
+
+function segName(i) {
+  return i < D.legal_count ? "legal" : i < D.legal_count + D.stone_count ? "stone" : "halo";
+}
+
+function hover(row) {
+  const [q, r] = D.coords[row];
+  const at = "(" + q + ", " + r + ")";
+  switch (state.stage) {
+    case 0: {
+      const rec = recAt.get(key(q, r));
+      if (rec) {
+        const fs = q === D.first_stone[0] && r === D.first_stone[1];
+        ro("stone " + rec[3] + " of 40", "(q, r, owner, placement_index) = (" + q + ", " + r + ", " +
+          rec[2] + ", " + rec[3] + ")" + (fs ? " · this turn’s first stone" : ""));
+      } else {
+        ro("empty " + at, "not stored — only the 40 stone records exist; this cell is derived in stage 02.");
+      }
+      break;
+    }
+    case 1: {
+      const nOn = D.nbr[row].filter(x => x >= 0).length;
+      ro("row " + row + " of 402 · " + segName(row),
+        at + " · BFS dist " + D.dist[row] + " · nbr: " + nOn + "/6 neighbours on support" +
+        (nOn < 6 ? " (missing → sentinel zero row)" : ""));
+      break;
+    }
+    case 2: {
+      if (state.mode === "feats") {
+        const v = D.feats[row][state.plane];
+        const raw = rawHint(state.plane, v);
+        ro("row " + row + " · " + at,
+          PLANES[state.plane][0] + " = " + v + (raw && v > 0 ? " — " + raw : ""));
+      } else {
+        const len = D.raylen[row][state.slot];
+        drawRay(row);
+        ro("row " + row + " · " + at, "raylen[" + slotLabel(state.slot) + "] = " + len + " of 5");
+      }
+      break;
+    }
+    case 3:
+      ro("row " + row + " · live", at + " · mask = 1 · rows 402–447 of this group are padding, mask = 0");
+      break;
+    case 4:
+      ro("cell " + at + " · row " + row, "click to open this cell’s 12 × 16 fiber.");
+      break;
+    case 5:
+      ro("cell " + at + " · row " + row, "cells stay (402, 192), tokens (6, 192) through every block · click to move the probe here.");
+      break;
+    case 6:
+      ro("row " + row + " → logit " + row,
+        row < D.legal_count
+          ? at + " · inside the legal prefix — this logit is move " + at + "’s prior weight."
+          : at + " · " + segName(row) + " — past the 288 prefix; computed but never read as a move.");
+      break;
+    case 7:
+      ro(polyRow[row].classList.contains("cand") ? "candidate (illustrative)" : "row " + row,
+        polyRow[row].classList.contains("cand")
+          ? at + " · one of the m = 16 root candidates seeded by g(a) + logits(a)."
+          : row < D.legal_count
+            ? at + " · legal but outside the candidate set — Sequential Halving never visits it."
+            : at + " · not a legal move — no logit past the prefix enters the root.");
+      break;
+  }
+}
+
+function drawRay(row) {
+  hfxClear();
+  const s6 = state.slot % 6, axis = s6 >> 1, sign = s6 % 2 ? -1 : 1;
+  const [dq, dr] = AXES[axis];
+  const [q, r] = D.coords[row];
+  const len = D.raylen[row][state.slot];
+  const [x0, y0] = board.center(q, r);
+  if (len > 0) {
+    const [x1, y1] = board.center(q + sign * dq * len, r + sign * dr * len);
+    hfx.appendChild(svgEl("line", { x1: x0, y1: y0, x2: x1, y2: y1 }));
+    hfx.appendChild(svgEl("circle", { cx: x1, cy: y1, r: 2.6 }));
+  }
+  hfx.appendChild(svgEl("circle", { cx: x0, cy: y0, r: 2 }));
+}
+
+/* ---------- wiring ---------- */
+
+function wire() {
+  document.querySelectorAll("#stageNav button[data-stage]").forEach(b =>
+    b.addEventListener("click", () => setStage(+b.dataset.stage)));
+  $("stPrev").addEventListener("click", () => setStage(Math.max(0, state.stage - 1)));
+  $("stNext").addEventListener("click", () => setStage(Math.min(7, state.stage + 1)));
+
+  document.querySelectorAll("a.stage-jump").forEach(a =>
+    a.addEventListener("click", e => {
+      e.preventDefault();
+      setStage(+a.dataset.stage);
+      $("walkfig").scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+
+  $("bfsReplay").addEventListener("click", runBfs);
+
+  const setMode = m => {
+    state.mode = m;
+    $("mFeats").classList.toggle("sel", m === "feats");
+    $("mRay").classList.toggle("sel", m === "raylen");
+    $("featCtl").hidden = m !== "feats";
+    $("rayCtl").hidden = m !== "raylen";
+    hfxClear();
+    updatePlaneUI();
+    applyHeat();
+  };
+  $("mFeats").addEventListener("click", () => setMode("feats"));
+  $("mRay").addEventListener("click", () => setMode("raylen"));
+
+  const setPlane = p => { state.plane = (p + 46) % 46; updatePlaneUI(); applyHeat(); };
+  $("plSlider").addEventListener("input", e => setPlane(+e.target.value));
+  $("plPrev").addEventListener("click", () => setPlane(state.plane - 1));
+  $("plNext").addEventListener("click", () => setPlane(state.plane + 1));
+  const setSlot = s => { state.slot = (s + 12) % 12; hfxClear(); updatePlaneUI(); applyHeat(); };
+  $("slSlider").addEventListener("input", e => setSlot(+e.target.value));
+  $("slPrev").addEventListener("click", () => setSlot(state.slot - 1));
+  $("slNext").addEventListener("click", () => setSlot(state.slot + 1));
+
+  setBlock(0);
+
+  svg.addEventListener("pointerover", e => {
+    const t = e.target.closest("polygon");
+    if (t && t.dataset.row != null) hover(+t.dataset.row);
+  });
+  svg.addEventListener("pointerout", e => {
+    const t = e.target.closest("polygon");
+    if (!t) return;
+    hfxClear();
+    const m = STAGES[state.stage];
+    ro(m.no, m.hint);
+  });
+  svg.addEventListener("click", e => {
+    const t = e.target.closest("polygon");
+    if (!t || t.dataset.row == null) return;
+    const row = +t.dataset.row;
+    if (state.stage === 4) { state.fiberRow = row; renderFiber(row); markSel(row); }
+    if (state.stage === 5) { state.probe = row; renderTrunkFx(); }
+  });
+}
+</script>
+
+</body>
+</html>

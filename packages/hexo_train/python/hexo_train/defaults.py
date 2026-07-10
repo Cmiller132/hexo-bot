@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from hexo_utils.samples import LegalPolicyTargetHelper, ScalarValueTargetHelper
+
 from .artifacts import CheckpointStore
 from .components import DefaultTrainingComponents, SharedComponents
 from .context import RunContext
@@ -28,6 +30,14 @@ def build_shared_components(ctx: RunContext) -> SharedComponents:
 
     checkpoint_store = CheckpointStore(ctx.checkpoint_dir)
     defaults = DefaultTrainingComponents(
+        # UNUSED(2026-06-12): the two target helpers are merged into
+        # ModelComponents by components.build_model_components, but repo-wide
+        # grep finds no plugin or trainer that ever reads
+        # components.model.scalar_value_target / legal_policy_target back —
+        # every model package builds its own targets. Wired but functionally
+        # inert; kept so the default container stays complete.
+        scalar_value_target=ScalarValueTargetHelper(),
+        legal_policy_target=LegalPolicyTargetHelper(),
         symmetry_selector=D6SymmetrySelector(),
         checkpoint_store=checkpoint_store,
         diagnostics=ctx.diagnostics,

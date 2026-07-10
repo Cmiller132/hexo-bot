@@ -12,10 +12,9 @@ callers can pass normal pipeline objects without manual serialization code.
 External readers (file-format contract, no Python import): the dashboard's
 live training status (packages/hexo_frontend/python/hexo_frontend/web.py)
 tails `events.jsonl`, and model plugins route their own diagnostics — e.g.
-dense_cnn.selfplay.epoch_*.json from the restnet plugin — through
-`write_json` into the same directory, where the dashboard history views and
-the babysit scripts (scripts/_wf_r4_health.py, scripts/_wf_r4_m4_gates.py)
-read them. Keep event/file naming stable for those consumers.
+hexfield.selfplay.epoch_*.json from the hexfield plugin — through
+`write_json` into the same directory, where the dashboard history views read
+them. Keep event/file naming stable for those consumers.
 """
 
 from __future__ import annotations

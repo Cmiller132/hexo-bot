@@ -365,7 +365,7 @@ so it loads through the same dashboard and eval loaders as the original.
 
 ## 4. Package map
 
-Six packages: three carry a Rust crate (built by `scripts/build_native.sh`);
+Seven packages: four carry a Rust crate (built by `scripts/build_native.sh`);
 three are pure Python.
 
 | Package | Role | Language |
@@ -374,8 +374,17 @@ three are pure Python.
 | [`packages/hexo_utils`](packages/hexo_utils) | Shared low-level contracts: the `.hxr` game-record codec, a deterministic `state_hash`, and the D6 symmetry transport contract | Rust + Python |
 | [`packages/hexo_runner`](packages/hexo_runner) | Model-agnostic game execution: player contracts, the single-game match loop, `.hxr` records, and the SealBot subprocess adapter | Python |
 | [`packages/hexo_train`](packages/hexo_train) | Config-driven training orchestration: loads a TOML config, discovers the model plugin, runs the epoch loop (selfplay → train → checkpoint → eval) | Python |
-| [`packages/shrimp`](packages/shrimp) | **The model.** PyTorch net (hex convolutions + attention), Rust Gumbel/PUCT search, Triton kernels, self-play/eval, replay, and the training plugin | Rust + Python |
+| [`packages/shrimp`](packages/shrimp) | **The shipped model.** PyTorch net (hex convolutions + attention), Rust Gumbel/PUCT search, Triton kernels, self-play/eval, replay, and the training plugin | Rust + Python |
+| [`packages/hexfield_eq`](packages/hexfield_eq) | **The D6-equivariant model.** Exactly symmetry-equivariant net (12-slot regular-representation fiber, tied weights, ray-tap convs, counting register lane), its own Rust Gumbel search + featurizer, and the training plugin. No trained weights ship yet. | Rust + Python |
 | [`packages/hexo_frontend`](packages/hexo_frontend) | Web dashboard (stdlib HTTP server): Match arena, run History, and a Debug workbench backed by a CPU-only torch worker | Python |
+
+`hexfield_eq` is architecture-gated by environment variables the same way
+shrimp is (§7): the production configuration is
+`configs/hexfield_eq_main_2.toml` plus
+`scripts/prefit_env/hexfield_eq_raytap_a5.env` (46 feature planes + 12 ray
+lengths, trunk `CCACCACA`, 627,343 parameters). How it works, end to end:
+[`docs/HEXFIELD_EQ_EXPLAINER.md`](docs/HEXFIELD_EQ_EXPLAINER.md) — the same
+material the showcase's "How it works" pages present interactively.
 
 ---
 

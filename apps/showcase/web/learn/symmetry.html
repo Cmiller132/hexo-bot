@@ -1,0 +1,1023 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hexfield_eq &mdash; the symmetry</title>
+<meta name="description" content="How hexfield_eq is exactly equivariant under all 12 symmetries of the hexagonal lattice: the guarantee, the 12-slot fiber, weight tying, win-axis heads, and the jointly-tied position bias.">
+<link rel="stylesheet" href="learn.css">
+<style>
+/* page-local styles — reuse learn.css tokens; axis/head colors are page-local */
+:root{
+  --axq:#e3b558;   /* win axis Q  (and head Q)  */
+  --axr:#63c48e;   /* win axis R  (and head R)  */
+  --axqr:#b98fe6;  /* win axis QR (and head QR) */
+}
+svg.eqboard polygon{fill:#11161c;stroke:var(--line-soft);stroke-width:1}
+svg.eqboard .stone.p0{fill:var(--p0)}
+svg.eqboard .stone.p1{fill:var(--p1)}
+
+/* fig 1 — symmetries acting on a position */
+.f1-body{display:flex;justify-content:center;padding:14px}
+.f1-body svg{max-width:420px}
+.axline{stroke-width:2;opacity:.8;transition:stroke .3s ease}
+.axlab{font-family:var(--mono);font-size:13px;transition:fill .3s ease}
+
+/* fig 2 — the guarantee, two boards */
+.two-boards{display:flex;gap:22px;justify-content:center;flex-wrap:wrap;padding:14px}
+.tb{flex:0 1 300px;min-width:220px}
+.tb .tb-l{
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);text-align:center;margin-bottom:6px;
+}
+.tb .tb-s{font-family:var(--mono);font-size:9.5px;color:var(--dim);text-align:center;margin-top:6px}
+
+/* fig 3 — typed input strip (static) */
+.f3-body{padding:14px;overflow-x:auto}
+.f3-body svg{min-width:560px;max-width:720px;margin:0 auto}
+.f3t{font-family:var(--mono);font-size:10px;fill:var(--muted)}
+.f3t.dim{fill:var(--dim)}
+.f3brk{stroke:var(--dim);stroke-width:1;fill:none}
+
+/* fig 4 — the fiber */
+.fib-body{padding:14px;display:flex;justify-content:center}
+.fib-wrap{display:flex;gap:8px}
+.fib-head{
+  font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--dim);height:16px;
+}
+.fib-gutter{display:flex;flex-direction:column}
+.fib-gutter span{
+  height:23px;line-height:22px;width:30px;text-align:right;padding-right:4px;
+  font-family:var(--mono);font-size:10px;color:var(--dim);
+}
+.fib-rows{position:relative;width:299px}
+.fib-row{
+  position:absolute;top:0;left:0;height:22px;display:flex;gap:1px;align-items:center;
+  transition:transform .4s ease;will-change:transform;
+}
+.fib-row .fr-l{
+  width:26px;font-family:var(--mono);font-size:10px;color:var(--text);
+}
+.fib-row i{display:block;width:16px;height:18px}
+
+/* fig 5 — weight tying tiles */
+.tie-tiles{display:flex;flex-wrap:wrap;gap:16px;justify-content:center;padding:14px}
+.tie-tile .tt-l{
+  font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--dim);margin-bottom:4px;text-align:center;
+}
+.tt-g{display:grid;grid-template-columns:repeat(12,9px);grid-auto-rows:9px;gap:1px}
+.tie-c{display:block;cursor:pointer;transition:background .3s ease,opacity .15s ease}
+.tie-tiles.has-hl .tie-c{opacity:.16}
+.tie-c.hl{opacity:1;box-shadow:0 0 0 1px var(--accent)}
+
+/* fig 6 — head cosets (static) */
+.coset-strip{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;padding:14px 14px 8px}
+.coset-strip span{
+  font-family:var(--mono);font-size:11px;padding:5px 9px;
+  border:1px solid var(--line);border-bottom-width:3px;color:var(--text);
+}
+.coset-legend{
+  padding:2px 14px 14px;display:flex;flex-direction:column;gap:4px;
+  font-family:var(--mono);font-size:10.5px;color:var(--muted);
+  align-items:center;text-align:center;
+}
+.coset-legend i{display:inline-block;width:9px;height:9px;margin-right:6px;vertical-align:baseline}
+
+/* fig 7 — joint bias table + offset disk */
+.bias-flex{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start;justify-content:center;padding:14px}
+.bias-left{flex:0 1 340px;min-width:230px}
+.bias-left svg polygon{cursor:pointer}
+.bias-left svg polygon:hover{stroke:var(--accent-dim)}
+#f7d polygon.axis{fill:#161d25}
+#f7d polygon.orb{fill:#33414f}
+#f7d polygon.pick{fill:var(--accent-dim);stroke:var(--accent)}
+.bias-leg{
+  margin-top:10px;display:flex;flex-wrap:wrap;gap:4px 14px;justify-content:center;
+  font-family:var(--mono);font-size:9.5px;color:var(--dim);
+}
+.bias-leg i{display:inline-block;width:8px;height:8px;margin-right:5px}
+.bias-right{display:flex;gap:16px}
+.bstrip .bs-r{font-family:var(--mono);font-size:9px;color:var(--dim);margin-bottom:4px}
+.bs-h{
+  display:grid;grid-template-columns:6px repeat(3,15px);gap:0 1px;
+  font-family:var(--mono);font-size:8.5px;color:var(--dim);margin-bottom:2px;
+}
+.bs-h span{text-align:center}
+.bs-g{display:grid;grid-template-columns:6px repeat(3,15px);grid-auto-rows:6px;gap:0 1px}
+.b-k{display:block}
+.b-c{display:block;cursor:pointer;transition:opacity .15s ease}
+.bias-right.has-sel .b-c{opacity:.18}
+.b-c.sel{opacity:1;box-shadow:0 0 0 1px var(--accent)}
+.b-c.rowsel{opacity:1;box-shadow:0 0 0 1px var(--text)}
+
+/* fig 8 — group-pool read (static) */
+.f8-body{padding:14px;display:flex;justify-content:center}
+.f8-body svg{max-width:560px}
+
+.ctl-div{width:1px;height:18px;background:var(--line)}
+</style>
+</head>
+<body>
+
+<header class="learn-header">
+  <a class="wordmark" href="../">hexo</a>
+  <nav class="learn-nav" aria-label="How it works">
+    <a href="./">Overview</a>
+    <a href="position.html">The position</a>
+    <a href="symmetry.html" class="current" aria-current="page">The symmetry</a>
+    <a href="network.html">The network</a>
+    <a href="walkthrough.html">End to end</a>
+    <a href="search.html">The search</a>
+    <a href="systems.html">The serving</a>
+    <a href="training.html">The training</a>
+  </nav>
+</header>
+
+<main class="learn-main">
+
+<h1>The symmetry <span class="h-dim">&mdash; the defining property</span></h1>
+
+<p class="lede">
+Every layer of hexfield_eq satisfies one constraint: transform the board by any
+of the 12 symmetries of the hexagonal lattice and the network&rsquo;s output
+transforms with it &mdash; exactly, for every position and every weight the net
+will ever hold. This page walks that constraint through the model: the 12
+symmetries and the guarantee they define; the idea that makes the guarantee
+cheap &mdash; each cell&rsquo;s 192 trunk channels organized as <em>12
+permuting slots of 16</em>; and what the constraint costs each layer type:
+convolutions keep 84 of a nominal 1008 weight blocks, attention heads are
+pinned one-per-win-axis, and the position-bias table collapses to 81 free
+values. Every group table on this page is the one the production model is
+built from.
+</p>
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §4 (all numbers restated below with their own citations);
+     group tables exported from python/hexfield_eq/geometry.py + equivariant.py
+     into data/eq_group_tables.json -->
+
+<h2 id="d6"><span class="sec-no">01</span>the 12 symmetries</h2>
+
+<p>
+The hex lattice about the origin has the dihedral symmetry group
+<b>D6</b>: six rotations by multiples of 60&deg; and six reflections. In axial
+coordinates the generators are
+</p>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §4.1; geometry.py rot60/reflect (ported as eq.js applyD6) -->
+
+<pre><code>rot60:   (q, r) &rarr; (&minus;r, q + r)
+reflect: (q, r) &rarr; (q, &minus;q &minus; r)</code></pre>
+
+<p>
+This page names the elements <code>e, r1&hellip;r5</code> (rotations by
+0&deg;&ndash;300&deg;) and <code>s0&hellip;s5</code> (rotate after reflecting,
+<code>sk = rot<sup>k</sup>&#8728;reflect</code>) &mdash; the order the exported
+group tables use. Two induced actions matter to the architecture:
+</p>
+
+<ul>
+  <li>the three <b>win axes</b> {Q, R, QR} permute among themselves &mdash; a
+      60&deg; rotation 3-cycles them, a reflection transposes two and fixes
+      one (and the 180&deg; rotation fixes all three, reversing each);</li>
+  <li>the six <b>directions</b> around a cell permute &mdash; rotations
+      advance the 6-cycle, reflections reverse it.</li>
+</ul>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §4.1; data/eq_group_tables.json axis_perms
+     (axis_perms[3] = [0,1,2]: r3 fixes each axis), tap_perms -->
+
+<figure class="fig" id="fig-d6">
+  <figcaption>fig 1 &middot; <b>the 12 symmetries</b> &middot; click an element &mdash; the position transforms, the axis labels permute</figcaption>
+  <div class="f1-body">
+    <svg id="f1b" class="eqboard" role="img" aria-label="A hex board with an asymmetric stone pattern and the three win axis lines; the selected symmetry transforms both"></svg>
+  </div>
+  <div class="fig-controls" id="f1btns"></div>
+  <div class="fig-readout" id="f1ro" aria-live="polite">
+    <span class="ro-k"></span>
+    <span class="ro-t"></span>
+  </div>
+  <!-- src: coordinate matrices + axis permutations from data/eq_group_tables.json
+       coord_mats / axis_perms; stone transform is eq.js applyD6 (geometry.py port).
+       The stone pattern itself is an arbitrary asymmetric example. -->
+</figure>
+
+<h2 id="guarantee"><span class="sec-no">02</span>the guarantee</h2>
+
+<p>
+For every symmetry <code>g</code> and every position:
+</p>
+
+<div class="eq">f(g&middot;board) = g&middot;f(board)</div>
+
+<p>
+The policy over the transformed board is exactly the transformed policy; the
+value is exactly unchanged. Three consequences. The training pipeline applies
+<b>no symmetry augmentation</b> &mdash; the property holds by construction,
+not statistically. Symmetric positions evaluate identically up to
+floating-point rounding. And no stored parameter is spent representing a
+rotated copy of a pattern another parameter already represents. The rest of
+this page is the constraint each layer type satisfies to make that equation
+hold.
+</p>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §4.2 -->
+
+<figure class="fig" id="fig-guarantee">
+  <figcaption>fig 2 &middot; <b>the equivariance guarantee</b> &middot; illustrative policy &mdash; the transport of it is exact</figcaption>
+  <div class="two-boards">
+    <div class="tb">
+      <div class="tb-l">board</div>
+      <svg id="f2l" class="eqboard" role="img" aria-label="Base position with an illustrative policy heat over the empty cells"></svg>
+      <div class="tb-s">f(board) &mdash; illustrative policy heat</div>
+    </div>
+    <div class="tb">
+      <div class="tb-l">g&middot;board</div>
+      <svg id="f2r" class="eqboard" role="img" aria-label="The transformed position; its policy heat is always the transported left heat"></svg>
+      <div class="tb-s">f(g&middot;board) = g&middot;f(board), always</div>
+    </div>
+  </div>
+  <div class="fig-controls" id="f2btns"></div>
+  <div class="fig-readout" id="f2ro" aria-live="polite">
+    <span class="ro-k"></span>
+    <span class="ro-t"></span>
+  </div>
+  <!-- src: guarantee + consequences HEXFIELD_EQ_EXPLAINER.md §4.2. The heat values are a
+       fixed illustrative example (no trained weights exist for these pages); the transport
+       of the heat under g is exact and is the point of the figure. -->
+</figure>
+
+<h2 id="typed"><span class="sec-no">03</span>typed input</h2>
+
+<p>
+The symmetry story starts at the input. Under a symmetry, the 16 scalar planes
+(0&ndash;10, 41&ndash;45) stay in place &mdash; their values move with the
+cells but the planes don&rsquo;t trade roles. The 30 axis planes
+(11&ndash;40) do trade roles: rotating the board 60&deg; maps the
+&ldquo;own_line along Q&rdquo; plane onto &ldquo;own_line along R&rdquo;. Each
+of the 10 graded window quantities carries its {Q, R, QR} values as a
+contiguous triple, and each triple carries the 3-element axis permutation of
+fig&nbsp;1. The input representation is therefore <b>16 fixed planes + 10
+permuting triples</b> &mdash; the type the stem (&sect;08) lifts into the
+trunk.
+</p>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §4.3; plane layout §3.1–3.3 (11 base scalars 0–10,
+     30 axis planes 11–40 with each quantity's three axis values contiguous,
+     2 fork 41–42, 3 global 43–45; 16 = 11 + 2 + 3) -->
+
+<figure class="fig" id="fig-typed">
+  <figcaption>fig 3 &middot; <b>typed input</b> &middot; 46 planes = 16 fixed + 10 axis triples</figcaption>
+  <div class="f3-body">
+    <svg id="f3s" viewBox="0 0 672 136" role="img" aria-label="The 46 input planes: scalars 0 to 10 fixed, planes 11 to 40 as ten colored Q/R/QR triples, fork and global planes fixed"></svg>
+  </div>
+  <!-- src: HEXFIELD_EQ_EXPLAINER.md §3.1–3.3, §4.3 -->
+</figure>
+
+<h2 id="fiber"><span class="sec-no">04</span>the fiber &mdash; 12 slots &times; 16 channels</h2>
+
+<p>
+Each cell&rsquo;s 192-channel trunk vector is organized as <b>12 fiber slots
+of 16 orbit channels</b> &mdash; one slot per group element. A symmetry
+<code>g</code> acts on the trunk&rsquo;s feature field in two coupled ways:
+</p>
+
+<ol>
+  <li>cells move to their transformed coordinates (fig&nbsp;1), and</li>
+  <li>inside every cell&rsquo;s vector, the 12 slots <b>permute</b> &mdash;
+      slot <code>h</code>&rsquo;s 16 numbers move to slot
+      <code>g&middot;h</code>.</li>
+</ol>
+
+<p>
+This is the <em>regular representation</em> of D6. Because the action is a
+pure permutation &mdash; no sign flips, no mixing &mdash; every weight
+constraint on this page reduces to an index-gather. The 16 orbit channels are
+the free learned capacity; the 12 slots are its symmetry-indexed copies.
+</p>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §4.4; data/eq_group_tables.json slot_perms,
+     constants.channels = 192 = group_order 12 × c_orbit 16 -->
+
+<div class="note">
+This is the single hardest idea in the model, and the one the picture below
+teaches fastest. Watch the row <em>labels</em>: the 16 numbers that lived in
+slot <code>e</code> don&rsquo;t change &mdash; they just move to whichever slot
+the group multiplication sends them to. Rotations shuffle rotations among
+themselves and reflections among themselves; a reflection trades the two
+halves.
+</div>
+
+<figure class="fig" id="fig-fiber">
+  <figcaption>fig 4 &middot; <b>the fiber</b> &middot; one cell&rsquo;s 192 numbers &mdash; apply an element and watch the 12 rows permute</figcaption>
+  <div class="fib-body">
+    <div class="fib-wrap">
+      <div class="fib-gutter" id="f4gut" aria-hidden="true"><span class="fib-head">slot</span></div>
+      <div>
+        <div class="fib-head">16 orbit channels &rarr;</div>
+        <div class="fib-rows" id="f4rows" role="img" aria-label="A 12 by 16 grid of colored cells; rows are fiber slots labeled by group element and permute when a symmetry is applied"></div>
+      </div>
+    </div>
+  </div>
+  <div class="fig-controls" id="f4btns">
+    <button id="f4rot">rot60 &#8728;</button>
+    <button id="f4ref">reflect &#8728;</button>
+    <span class="ctl-div" aria-hidden="true"></span>
+  </div>
+  <div class="fig-readout" id="f4ro" aria-live="polite">
+    <span class="ro-k"></span>
+    <span class="ro-t"></span>
+  </div>
+  <!-- src: slot permutations from data/eq_group_tables.json slot_perms / mult
+       (regular representation: slot h → slot g·h); "pure permutation — no sign
+       flips, no mixing" HEXFIELD_EQ_EXPLAINER.md §4.4 -->
+</figure>
+
+<h2 id="tying"><span class="sec-no">05</span>weight tying</h2>
+
+<p>
+<b>Convolutions.</b> The 7-tap hex conv (center + 6 direction taps, each tap
+its own 192&times;192 matrix &mdash; direction-typed, because line direction
+is the content of the game) must satisfy, for every <code>g</code> and tap
+<code>t</code>:
+</p>
+
+<div class="eq">W[g&middot;t] = M(g) &middot; W[t] &middot; M(g)&#8315;&sup1;</div>
+
+<p>
+where <code>g&middot;t</code> is the permuted tap and <code>M(g)</code> the
+slot permutation of fig&nbsp;4. Solving this leaves <b>84 free 16&times;16
+blocks</b> per conv &mdash; the module stores exactly those (as
+<code>w_base</code>) and materializes the dense <code>(7, 192, 192)</code>
+weight each forward through a precomputed index-gather. The GPU kernels
+consume the dense weight and are unaware of the tie; under inference the
+materialized weights are cached and regenerate only when the parameters
+change, so the tie costs essentially nothing at serve time. The conv bias is
+slot-constant: one 16-vector broadcast over the 12 slots.
+</p>
+
+<p>
+<b>1&times;1 linears</b> (attention projections, MLPs, token reads) are the
+center-tap special case: <b>12 free 16&times;16 blocks</b> each. <b>Norms</b>
+are already almost free: LayerNorm&rsquo;s mean/variance over all 192 channels
+is permutation-invariant, and the affine is tied &mdash; one
+(&gamma;,&nbsp;&beta;) pair per orbit channel, broadcast over the slots;
+LayerScale&rsquo;s per-channel scale is tied identically.
+</p>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §4.5 (constraint, 84 free blocks, w_base, dense
+     (7,192,192) index-gather, inference caching, slot-constant bias, 12 blocks per 1×1,
+     tied norms); data/eq_group_tables.json conv_free_blocks = 84,
+     linear_free_blocks = 12, conv_tie_classes / linear_tie_classes -->
+
+<figure class="fig fig-wide" id="fig-tying">
+  <figcaption>fig 5 &middot; <b>weight tying</b> &middot; 7 taps &times; 12&times;12 blocks &middot; toggle the constraint &middot; hover a block for its tie class</figcaption>
+  <div class="fig-body">
+    <div class="tie-tiles" id="f5t" role="img" aria-label="Seven tiles of 12 by 12 weight blocks, one per conv tap, colored by tie class"></div>
+  </div>
+  <div class="fig-controls">
+    <button id="f5tog" class="on">constraint: on</button>
+    <span class="val" id="f5n">84 free 16&times;16 blocks</span>
+    <span class="spacer"></span>
+    <label>rows = slot-out &middot; cols = slot-in &middot; tap order = center, then the 6 directions</label>
+  </div>
+  <div class="fig-readout" id="f5ro" aria-live="polite">
+    <span class="ro-k"></span>
+    <span class="ro-t"></span>
+  </div>
+  <!-- src: tie classes from data/eq_group_tables.json conv_tie_classes (7×12×12,
+       84 classes of 12 blocks each; 7×144 = 1008 nominal); tap order = center + DIRS
+       (constants.py DIRECTIONS); 1×1 case linear_tie_classes (12 classes) -->
+</figure>
+
+<h2 id="heads"><span class="sec-no">06</span>heads = win axes</h2>
+
+<p>
+The attention reshape splits 192 channels into
+<code>heads &times; head_dim</code>. Because the slots permute under symmetry,
+a head&rsquo;s channels land in <em>another head&rsquo;s</em> channels &mdash;
+consistent only if the head partition follows the group structure. The
+partition used is the three cosets of the order-4 subgroup that preserves the
+Q axis: <b>3 heads of dimension 64, one per win axis</b> (4 slots &times; 16
+channels each), permuted by the symmetries exactly as the axes are. The head
+count is structural &mdash; the build rejects any other value.
+</p>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §4.6; data/eq_group_tables.json cosets =
+     [[e,r3,s1,s4],[r1,r4,s2,s5],[r2,r5,s0,s3]], coset_of_slot;
+     coset k = the elements mapping axis Q to axis k (axis_perms) -->
+
+<figure class="fig" id="fig-heads">
+  <figcaption>fig 6 &middot; <b>heads = win axes</b> &middot; the 12 slots partition into 3 cosets of 4</figcaption>
+  <div class="coset-strip" id="f6s"></div>
+  <div class="coset-legend" id="f6l"></div>
+  <!-- src: data/eq_group_tables.json cosets / coset_of_slot; heads 3 × 64 structural
+       (HEXFIELD_EQ_EXPLAINER.md §4.6) -->
+</figure>
+
+<h2 id="bias"><span class="sec-no">07</span>the joint bias table</h2>
+
+<p>
+Attention adds a learned bias per query/key pair, indexed by their coordinate
+offset through a fixed row map: <b>217 rows</b> for every exact offset within
+distance 8, <b>8&nbsp;+&nbsp;8 ring rows</b> for distances 9&ndash;16 split
+into on-win-axis and off-axis, <b>1 far row</b>, and <b>3 token rows</b>
+(token&harr;cell, cell&harr;token, token&harr;token) &mdash; 237 rows, 3 head
+columns.
+</p>
+
+<p>
+The symmetry constraint ties this table <b>jointly across (offset-row, head)
+pairs</b>: a symmetry moves the offset to a new row <em>and</em> the head to a
+new head simultaneously, so the free parameters are the orbits of that joint
+action &mdash; <b>81 free values per attention block</b>, gathered into the
+full 237&times;3 table each forward. Head diversity survives exactly where
+geometry permits: an offset on no reflection axis keeps 3 independent head
+values; an offset on a mirror line keeps 2 (on a win axis, its own head stays
+free and the other two are tied; midway between axes, the two swapped heads
+tie); the zero offset, the ring rows, the far row and the token rows keep 1
+(all heads equal). Of the 217 exact rows, 144 keep 3, 72 keep 2 (48 on win
+axes + 24 mid-edge), and 1 &mdash; the zero offset &mdash; keeps 1.
+</p>
+<!-- src: row map + joint tie + 81 free values + diversity rule
+     HEXFIELD_EQ_EXPLAINER.md §4.7; data/eq_group_tables.json bias
+     (rows 237, exact_rows 217, disk_radius 8, ring_min 9 / ring_max 16,
+     on_axis_base 217, off_axis_base 225, far_row 233, free_values 81);
+     per-row counts 144 / 72 (48 + 24) / 1 computed from bias.joint_classes
+     + bias.disk -->
+
+<figure class="fig fig-wide" id="fig-bias">
+  <figcaption>fig 7 &middot; <b>the joint bias table</b> &middot; 237 rows &times; 3 heads, 81 free values &middot; click an entry or a disk offset</figcaption>
+  <div class="bias-flex">
+    <div class="bias-left">
+      <svg id="f7d" class="eqboard" role="img" aria-label="The radius-8 offset disk; clicking an offset selects its bias row and highlights the offset's orbit"></svg>
+      <div class="bias-leg" id="f7leg"></div>
+    </div>
+    <div class="bias-right" id="f7t" role="img" aria-label="The 237 by 3 bias table drawn as three strips of rows, colored by tied class"></div>
+  </div>
+  <div class="fig-readout" id="f7ro" aria-live="polite">
+    <span class="ro-k"></span>
+    <span class="ro-t"></span>
+  </div>
+  <!-- src: data/eq_group_tables.json bias.disk (offset → row), bias.joint_classes
+       (237×3 class ids, 81 classes); orbit highlight via eq.js applyD6 -->
+</figure>
+
+<h2 id="reads"><span class="sec-no">08</span>tokens, reads, and the stem</h2>
+
+<ul>
+  <li><b>Summary tokens</b> &mdash; the 6 global scratchpad vectors riding in
+      the attention sequence &mdash; carry the invariant type: a learned
+      <code>6 &times; 16</code> parameter broadcast identically across all 12
+      slots, so symmetries fix them.</li>
+  <li><b>Output reads.</b> A policy logit must be an invariant scalar attached
+      to a moving cell; the value must be fully invariant. Both use
+      <b>group-pooling</b>: average the 12 slots, leaving an invariant vector
+      of one value per orbit channel. To avoid a 16-wide bottleneck, reads are
+      widened first by a tied expansion &mdash; &times;4 before pooling for
+      the scalar heads (64-wide pooled blocks), &times;2 for the per-cell
+      heads (32-wide).</li>
+  <li><b>The stem</b> maps the typed 46-plane input (fig&nbsp;3) into the
+      regular fiber. Scalar planes may only write slot-constant weight
+      columns; each axis triple lifts along the coset structure of
+      fig&nbsp;6. Implemented as a free weight passed through a <em>Reynolds
+      projection</em> &mdash; averaging over all 12 symmetry-conjugates
+      &mdash; which projects onto the constraint-satisfying subspace.</li>
+</ul>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §4.8 -->
+
+<figure class="fig" id="fig-pool">
+  <figcaption>fig 8 &middot; <b>group-pool read</b> &middot; averaging the 12 slots leaves an invariant vector</figcaption>
+  <div class="f8-body">
+    <svg id="f8s" viewBox="0 0 560 196" role="img" aria-label="A 12 by 16 fiber collapsing by slot-mean into one invariant 16-vector, then widened reads for the heads"></svg>
+  </div>
+  <!-- src: HEXFIELD_EQ_EXPLAINER.md §4.8 (group-pool, ×4 / ×2 widening) -->
+</figure>
+
+<div class="note">
+<b>Where this goes next.</b> <a href="network.html">The network</a> assembles
+these constrained pieces into the CCACCACA trunk &mdash; ray-tap convolutions,
+win-axis attention, the counting register lane.
+<a href="walkthrough.html">End to end</a> runs a real position through all of
+it. The full mathematics behind this page &mdash; why the regular
+representation, the coset construction, the bias-orbit computation &mdash; is
+<code>docs/DERIVATION_D6_EQUIVARIANT_ATTENTION.md</code>.
+</div>
+
+</main>
+
+<footer class="learn-footer">
+  <div class="foot-row">
+    <a href="position.html">&larr; prev &middot; the position</a>
+    <span class="foot-spacer"></span>
+    <a href="network.html">next &middot; the network &rarr;</a>
+  </div>
+</footer>
+
+<script type="module">
+import { figBoard, disk, applyD6, key, svgEl, axialX, axialY, AXES, AXIS_NAMES,
+         hexDist, loadData } from "./eq.js?v=1";
+
+const G = ["e","r1","r2","r3","r4","r5","s0","s1","s2","s3","s4","s5"];
+const AXC = ["var(--axq)","var(--axr)","var(--axqr)"];
+const $ = id => document.getElementById(id);
+
+// eq.js applyD6 composes exactly like geometry.py apply_d6 (reflect first,
+// then rotate g−6 times for g ≥ 6), so it matches the exported tables'
+// element indexing (coord_mats, column-vector action) directly.
+const applyG = (g, q, r) => applyD6(g, q, r);
+
+function roSet(id, k, t) {
+  const e = $(id);
+  e.querySelector(".ro-k").textContent = k;
+  e.querySelector(".ro-t").textContent = t;
+}
+
+// 12 element buttons into a container; returns setSel(g).
+function gButtons(container, onPick) {
+  const btns = G.map((name, g) => {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.addEventListener("click", () => onPick(g));
+    container.appendChild(b);
+    return b;
+  });
+  return sel => btns.forEach((b, g) => b.classList.toggle("sel", g === sel));
+}
+
+// categorical color hash — enough spread for 84 / 81 classes
+const cc = n => `hsl(${(n * 137.508) % 360} 52% ${34 + ((n * 97) % 23)}%)`;
+
+/* ---------- fig 1 · the 12 symmetries ---------- */
+function fig1(T) {
+  const B = figBoard($("f1b"), disk(4), { cellSize: 16, pad: 46 });
+  // asymmetric example pattern (no g fixes it)
+  const STONES = [[1,0,0],[2,-1,0],[0,2,0],[-1,0,1],[1,1,1],[3,-2,1]];
+  const lines = [], labels = [];
+  for (let a = 0; a < 3; a++) {
+    const [dq, dr] = AXES[a], L = 4.75, LL = 5.55;
+    const ln = svgEl("line", {
+      x1: axialX(-L*dq, -L*dr, B.s), y1: axialY(-L*dq, -L*dr, B.s),
+      x2: axialX( L*dq,  L*dr, B.s), y2: axialY( L*dq,  L*dr, B.s),
+      class: "axline",
+    });
+    B.overlay.appendChild(ln); lines.push(ln);
+    const tx = svgEl("text", {
+      x: axialX(LL*dq, LL*dr, B.s), y: axialY(LL*dq, LL*dr, B.s) + 4,
+      class: "axlab", "text-anchor": "middle",
+    });
+    B.overlay.appendChild(tx); labels.push(tx);
+  }
+  function kindText(g, ap) {
+    if (g === 0) return "identity — the position and all three axes are fixed";
+    if (g === 3) return "rotation by 180° — each win axis maps to itself, direction reversed";
+    if (g < 6)  return `rotation by ${g * 60}° — 3-cycles the win axes`;
+    const fixed = [0,1,2].find(a => ap[a] === a);
+    const sw = [0,1,2].filter(a => ap[a] !== a).map(a => AXIS_NAMES[a]);
+    return `reflection — swaps ${sw[0]}↔${sw[1]}, fixes ${AXIS_NAMES[fixed]}`;
+  }
+  function setG(g) {
+    B.clearStones();
+    for (const [q, r, o] of STONES) {
+      const [tq, tr] = applyG(g, q, r);
+      B.setStone(tq, tr, o);
+    }
+    const ap = T.axis_perms[g];
+    for (let a = 0; a < 3; a++) {
+      const l = ap[a]; // axis a now lies along geometric line l — its color and label travel
+      lines[l].style.stroke = AXC[a];
+      labels[l].textContent = AXIS_NAMES[a];
+      labels[l].style.fill = AXC[a];
+    }
+    const m = T.coord_mats[g];
+    roSet("f1ro", `g = ${G[g]}`,
+      `M = [ ${m[0][0]} ${m[0][1]} / ${m[1][0]} ${m[1][1]} ] · axes: ` +
+      `Q→${AXIS_NAMES[ap[0]]} R→${AXIS_NAMES[ap[1]]} QR→${AXIS_NAMES[ap[2]]} — ${kindText(g, ap)}`);
+    setSel(g);
+  }
+  const setSel = gButtons($("f1btns"), setG);
+  setG(0);
+}
+
+/* ---------- fig 2 · the guarantee ---------- */
+function fig2(T) {
+  const L = figBoard($("f2l"), disk(4), { cellSize: 14, pad: 22 });
+  const R = figBoard($("f2r"), disk(4), { cellSize: 14, pad: 22 });
+  // p0 to move with three in a row along Q, one end blocked — the illustrative
+  // policy peaks on the open extension. Fixed example; not a trained output.
+  const ST = [[0,0,0],[1,0,0],[2,0,0],[-1,0,1],[1,-2,1],[0,2,1]];
+  const HEAT = [[3,0,1],[4,0,.55],[2,-1,.32],[3,-1,.26],[1,1,.22],
+                [2,1,.16],[1,-1,.14],[0,1,.12],[2,-2,.10]];
+  const base = [17,22,28], acc = [232,226,214];
+  const hfill = v => `rgb(${base.map((b,i) => Math.round(b+(acc[i]-b)*v*.95)).join(",")})`;
+  function paint(B, g) {
+    B.clearStones();
+    for (const p of B.polys.values()) p.style.fill = "";
+    for (const [q, r, v] of HEAT) {
+      const [tq, tr] = applyG(g, q, r);
+      B.polys.get(key(tq, tr)).style.fill = hfill(v);
+    }
+    for (const [q, r, o] of ST) {
+      const [tq, tr] = applyG(g, q, r);
+      B.setStone(tq, tr, o);
+    }
+  }
+  function setG(g) {
+    paint(R, g);
+    roSet("f2ro", `f(g·board) = g·f(board) · g = ${G[g]}`,
+      "the right board's heat is the left heat transported by g — exact by construction, " +
+      "for every position and every weight the net will ever have. no symmetry augmentation " +
+      "in training; no parameter stores a rotated copy of a pattern. the value is identical " +
+      "on both boards.");
+    setSel(g);
+  }
+  const setSel = gButtons($("f2btns"), setG);
+  paint(L, 0);
+  setG(0);
+}
+
+/* ---------- fig 3 · typed input (static) ---------- */
+function fig3() {
+  const svg = $("f3s");
+  const W = 14, CW = 12, H = 30, y = 58, x0 = 13;
+  for (let i = 0; i < 46; i++) {
+    const fixed = i <= 10 || i >= 41;
+    svg.appendChild(svgEl("rect", {
+      x: x0 + i * W, y, width: CW, height: H,
+      fill: fixed ? "#39434f" : AXC[(i - 11) % 3],
+    }));
+  }
+  for (let t = 0; t < 10; t++) {
+    svg.appendChild(svgEl("rect", {
+      x: x0 + (11 + 3 * t) * W - 2, y: y - 3, width: 2 * W + CW + 4, height: H + 6,
+      fill: "none", stroke: "var(--dim)", "stroke-width": 1,
+    }));
+  }
+  const brk = (a, b, ty) => svg.appendChild(svgEl("path", {
+    class: "f3brk",
+    d: `M${x0 + a * W} ${ty + 6} V${ty} H${x0 + b * W + CW} V${ty + 6}`,
+  }));
+  brk(0, 10, 40); brk(11, 40, 26); brk(41, 45, 40);
+  const txt = (x, ty, s, anchor = "middle", cls = "f3t") => {
+    const t = svgEl("text", { x, y: ty, class: cls, "text-anchor": anchor });
+    t.textContent = s; svg.appendChild(t);
+  };
+  txt(x0 + 5.5 * W, 34, "fixed ×11 · scalars 0–10");
+  txt(x0 + 25.5 * W + CW / 2, 20, "10 triples × {Q R QR} · planes 11–40 — permute under symmetry");
+  txt(x0 + 45 * W + CW, 34, "fixed ×5 · fork + global", "end");
+  // ticks
+  [[0,"0"],[10,"10"],[11,"11"],[40,"40"],[41,"41"],[45,"45"]].forEach(([i, s]) =>
+    txt(x0 + i * W + CW / 2, y + H + 14, s, "middle", "f3t dim"));
+  // legend
+  const ly = 128;
+  ["Q", "R", "QR"].forEach((n, a) => {
+    svg.appendChild(svgEl("rect", { x: 240 + a * 56, y: ly - 9, width: 9, height: 9, fill: AXC[a] }));
+    txt(254 + a * 56, ly, n, "start");
+  });
+}
+
+/* ---------- fig 4 · the fiber ---------- */
+function fig4(T) {
+  const gut = $("f4gut"), wrap = $("f4rows");
+  const ROWH = 23;
+  wrap.style.height = (12 * ROWH - 1) + "px";
+  for (let h = 0; h < 12; h++) {
+    const s = document.createElement("span");
+    s.textContent = G[h];
+    gut.appendChild(s);
+  }
+  const hue = h => h < 6 ? h * 30 : 180 + (h - 6) * 30;
+  const rows = [];
+  for (let h = 0; h < 12; h++) {
+    const row = document.createElement("div");
+    row.className = "fib-row";
+    const lab = document.createElement("span");
+    lab.className = "fr-l";
+    lab.textContent = G[h];
+    lab.style.color = `hsl(${hue(h)} 55% 62%)`;
+    row.appendChild(lab);
+    for (let c = 0; c < 16; c++) {
+      const i = document.createElement("i");
+      i.style.background = `hsl(${hue(h)} 50% ${26 + c * 2.4}%)`;
+      row.appendChild(i);
+    }
+    wrap.appendChild(row);
+    rows.push(row);
+  }
+  let s = 0;
+  function cycleStr(perm) {
+    if (perm.every((x, h) => x === h)) return "identity — all 12 slots fixed";
+    const seen = Array(12).fill(false), cycles = [], fixed = [];
+    for (let h = 0; h < 12; h++) {
+      if (seen[h]) continue;
+      seen[h] = true;
+      const c = [h];
+      let x = perm[h];
+      while (x !== h) { seen[x] = true; c.push(x); x = perm[x]; }
+      if (c.length > 1) cycles.push("(" + c.map(i => G[i]).join(" ") + ")");
+      else fixed.push(G[h]);
+    }
+    return cycles.join("") + (fixed.length ? ` · fixed: ${fixed.join(" ")}` : "");
+  }
+  function update() {
+    const perm = T.mult[s]; // slot h → slot s·h
+    for (let h = 0; h < 12; h++)
+      rows[h].style.transform = `translateY(${perm[h] * ROWH}px)`;
+    setSel(s);
+    roSet("f4ro", `current element: ${G[s]}`,
+      `slot permutation h → ${G[s]}·h : ${cycleStr(perm)} — a pure permutation of the rows: ` +
+      "no sign flips, no mixing. the 16 orbit channels are the free capacity; " +
+      "the 12 slots are its symmetry-indexed copies.");
+  }
+  const setSel = gButtons($("f4btns"), g => { s = g; update(); });
+  $("f4rot").addEventListener("click", () => { s = T.mult[1][s]; update(); });
+  $("f4ref").addEventListener("click", () => { s = T.mult[6][s]; update(); });
+  update();
+}
+
+/* ---------- fig 5 · weight tying ---------- */
+function fig5(T) {
+  const tiles = $("f5t");
+  const TAP = ["center", "(1,0)", "(0,1)", "(−1,1)", "(−1,0)", "(0,−1)", "(1,−1)"];
+  const classEls = Array.from({ length: 84 }, () => []);
+  const cells = [];
+  for (let t = 0; t < 7; t++) {
+    const tile = document.createElement("div");
+    tile.className = "tie-tile";
+    const lab = document.createElement("div");
+    lab.className = "tt-l";
+    lab.textContent = `t${t} · ${TAP[t]}`;
+    tile.appendChild(lab);
+    const grid = document.createElement("div");
+    grid.className = "tt-g";
+    for (let i = 0; i < 12; i++) {
+      for (let j = 0; j < 12; j++) {
+        const el = document.createElement("span");
+        el.className = "tie-c";
+        const cls = T.conv_tie_classes[t][i][j];
+        el.dataset.t = t; el.dataset.i = i; el.dataset.j = j; el.dataset.c = cls;
+        el.dataset.u = t * 144 + i * 12 + j;
+        classEls[cls].push(el);
+        cells.push(el);
+        grid.appendChild(el);
+      }
+    }
+    tile.appendChild(grid);
+    tiles.appendChild(tile);
+  }
+  let tied = true;
+  function colorize() {
+    for (const el of cells)
+      el.style.background = cc(tied ? +el.dataset.c : (+el.dataset.u * 11) % 1009);
+    $("f5n").textContent = tied
+      ? "84 free 16×16 blocks"
+      : "1008 free 16×16 blocks (7 × 12×12)";
+  }
+  const tog = $("f5tog");
+  tog.addEventListener("click", () => {
+    tied = !tied;
+    tog.classList.toggle("on", tied);
+    tog.textContent = tied ? "constraint: on" : "constraint: off";
+    colorize();
+  });
+  const DEF_K = "hover a block";
+  const DEF_T = "each free block has 12 tied copies across the 7 taps: W[g·t] = M(g)·W[t]·M(g)⁻¹. " +
+    "the dense (7, 192, 192) weight is materialized per forward by index-gather and cached " +
+    "under inference. 1×1 linears are the center-tap special case: 12 free blocks.";
+  let hl = null;
+  function clearHl() {
+    if (hl != null) for (const el of classEls[hl]) el.classList.remove("hl");
+    hl = null;
+    tiles.classList.remove("has-hl");
+    roSet("f5ro", DEF_K, DEF_T);
+  }
+  function show(el) {
+    if (hl != null) for (const e of classEls[hl]) e.classList.remove("hl");
+    hl = +el.dataset.c;
+    for (const e of classEls[hl]) e.classList.add("hl");
+    tiles.classList.add("has-hl");
+    const t = +el.dataset.t, i = +el.dataset.i, j = +el.dataset.j;
+    roSet("f5ro", `tap t${t} ${TAP[t]} · block (out ${G[i]}, in ${G[j]})`,
+      `tie class ${hl} of 84 — this 16×16 block + its 11 tied copies are one stored ` +
+      "free block; the highlighted 12 are generated from it by the slot permutations.");
+  }
+  tiles.addEventListener("mouseover", e => {
+    const el = e.target.closest(".tie-c");
+    if (el) show(el);
+  });
+  tiles.addEventListener("mouseleave", clearHl);
+  tiles.addEventListener("click", e => {
+    const el = e.target.closest(".tie-c");
+    if (el) show(el);
+  });
+  colorize();
+  roSet("f5ro", DEF_K, DEF_T);
+}
+
+/* ---------- fig 6 · head cosets (static, from data) ---------- */
+function fig6(T) {
+  const strip = $("f6s"), leg = $("f6l");
+  for (let h = 0; h < 12; h++) {
+    const s = document.createElement("span");
+    s.textContent = G[h];
+    const c = T.coset_of_slot[h];
+    s.style.borderBottomColor = AXC[c];
+    s.style.background = "#171c23";
+    strip.appendChild(s);
+  }
+  const why = ["the order-4 subgroup preserving axis Q",
+               "its coset sending Q to R",
+               "its coset sending Q to QR"];
+  T.cosets.forEach((cs, c) => {
+    const d = document.createElement("div");
+    d.innerHTML = `<i style="background:${AXC[c]}"></i>head ${AXIS_NAMES[c]} · 64 = 4 slots × 16 · ` +
+      `{ ${cs.map(h => G[h]).join(" ")} } — ${why[c]}`;
+    leg.appendChild(d);
+  });
+}
+
+/* ---------- fig 7 · the joint bias table + offset disk ---------- */
+function fig7(T) {
+  const B = T.bias, JC = B.joint_classes;
+  const board = figBoard($("f7d"), disk(8), { cellSize: 10, pad: 14 });
+  const row2off = Array(B.exact_rows);
+  const off2row = new Map();
+  for (const [dq, dr, row] of B.disk) {
+    row2off[row] = [dq, dr];
+    off2row.set(key(dq, dr), row);
+    // faint tint on the three win axes — the geometry the row map splits on
+    if ((dq || dr) && (dr === 0 || dq === 0 || dq + dr === 0))
+      board.polys.get(key(dq, dr)).classList.add("axis");
+  }
+  const KIND = [
+    { c: "#39424e", n: "exact 0–216" },
+    { c: "#7d6a45", n: "ring on-axis 217–224" },
+    { c: "#45607d", n: "ring off-axis 225–232" },
+    { c: "#7d4545", n: "far 233" },
+    { c: "#6a457d", n: "tokens 234–236" },
+  ];
+  const kindOf = row => row < 217 ? 0 : row < 225 ? 1 : row < 233 ? 2 : row === 233 ? 3 : 4;
+  for (const k of KIND) {
+    const d = document.createElement("span");
+    d.innerHTML = `<i style="background:${k.c}"></i>${k.n}`;
+    $("f7leg").appendChild(d);
+  }
+  // three strips of rows
+  const right = $("f7t");
+  const rowEls = Array.from({ length: 237 }, () => []);
+  const clsEls = Array.from({ length: 81 }, () => []);
+  [[0, 80], [80, 160], [160, 237]].forEach(([a, b]) => {
+    const strip = document.createElement("div");
+    strip.className = "bstrip";
+    const rr = document.createElement("div");
+    rr.className = "bs-r";
+    rr.textContent = `rows ${a}–${b - 1}`;
+    strip.appendChild(rr);
+    const hh = document.createElement("div");
+    hh.className = "bs-h";
+    hh.innerHTML = "<i></i><span>Q</span><span>R</span><span>QR</span>";
+    strip.appendChild(hh);
+    const grid = document.createElement("div");
+    grid.className = "bs-g";
+    for (let row = a; row < b; row++) {
+      const g = document.createElement("span");
+      g.className = "b-k";
+      g.style.background = KIND[kindOf(row)].c;
+      grid.appendChild(g);
+      for (let h = 0; h < 3; h++) {
+        const el = document.createElement("span");
+        el.className = "b-c";
+        el.dataset.row = row; el.dataset.h = h;
+        el.style.background = cc(JC[row][h]);
+        rowEls[row].push(el);
+        clsEls[JC[row][h]].push(el);
+        grid.appendChild(el);
+      }
+    }
+    strip.appendChild(grid);
+    right.appendChild(strip);
+  });
+  function kindText(row) {
+    if (row < 217) {
+      const [dq, dr] = row2off[row];
+      return `exact offset (${dq}, ${dr}) · distance ${hexDist(dq, dr)}`;
+    }
+    if (row < 225) return `ring row · on-win-axis · distance ${9 + row - 217}`;
+    if (row < 233) return `ring row · off-axis · distance ${9 + row - 225}`;
+    if (row === 233) return "far row · distance > 16";
+    return ["token→cell row", "cell→token row", "token↔token row"][row - 234];
+  }
+  function whyText(row) {
+    const n = new Set(JC[row]).size;
+    if (row >= 234) return "1 free value — symmetries fix the tokens, so all heads share";
+    if (row >= 217) return "1 free value — ring rows keep only on/off-axis geometry; all heads share";
+    if (n === 1) return "1 free value — every symmetry fixes the zero offset; all heads equal";
+    if (n === 3) return "3 free values — this offset lies on no mirror line";
+    const free = [0, 1, 2].find(h =>
+      JC[row][h] !== JC[row][(h + 1) % 3] && JC[row][h] !== JC[row][(h + 2) % 3]);
+    const tied = [0, 1, 2].filter(h => h !== free).map(h => AXIS_NAMES[h]);
+    const [dq, dr] = row2off[row];
+    const ax = dr === 0 ? 0 : dq === 0 ? 1 : dq + dr === 0 ? 2 : null;
+    return `2 free values — ${ax != null ? `on the ${AXIS_NAMES[ax]} win axis` :
+      "midway between win axes, on a mirror line"}: head ${AXIS_NAMES[free]} keeps its own ` +
+      `value, heads ${tied.join(" and ")} are tied`;
+  }
+  function clearSel() {
+    right.querySelectorAll(".sel,.rowsel").forEach(el => el.classList.remove("sel", "rowsel"));
+    right.classList.remove("has-sel");
+    board.svg.querySelectorAll(".orb,.pick").forEach(p => p.classList.remove("orb", "pick"));
+  }
+  function diskOrbit(dq, dr) {
+    for (let g = 0; g < 12; g++) {
+      const [tq, tr] = applyD6(g, dq, dr);
+      const p = board.polys.get(key(tq, tr));
+      if (p) p.classList.add("orb");
+    }
+    board.polys.get(key(dq, dr)).classList.add("pick");
+  }
+  function readout(row, h) {
+    roSet("f7ro",
+      `row ${row}${h != null ? ` · head ${AXIS_NAMES[h]}` : ""} · ${kindText(row)}`,
+      `classes [${JC[row].join(" ")}] · ${whyText(row)}. ` +
+      (h != null ? `${clsEls[JC[row][h]].length} entries share class ${JC[row][h]} — ` +
+        "one stored value, gathered into all of them each forward." :
+        "81 free values per attention block fill the whole 237×3 table."));
+  }
+  function selectEntry(row, h) {
+    clearSel();
+    for (const el of clsEls[JC[row][h]]) el.classList.add("sel");
+    right.classList.add("has-sel");
+    if (row < 217) diskOrbit(...row2off[row]);
+    readout(row, h);
+  }
+  function selectRow(row) {
+    clearSel();
+    for (const el of rowEls[row]) el.classList.add("rowsel");
+    right.classList.add("has-sel");
+    if (row < 217) diskOrbit(...row2off[row]);
+    readout(row, null);
+  }
+  right.addEventListener("click", e => {
+    const el = e.target.closest(".b-c");
+    if (el) selectEntry(+el.dataset.row, +el.dataset.h);
+  });
+  right.addEventListener("mouseover", e => {
+    const el = e.target.closest(".b-c");
+    if (el) readout(+el.dataset.row, +el.dataset.h);
+  });
+  board.svg.addEventListener("click", e => {
+    const p = e.target.closest("polygon");
+    if (!p) return;
+    const row = off2row.get(key(+p.dataset.q, +p.dataset.r));
+    if (row != null) selectRow(row);
+  });
+  roSet("f7ro", "81 free values × 3 attention blocks",
+    "click a table entry: everything constrained equal to it lights up, sweeping across rows " +
+    "and head columns. click a disk offset: its row is selected and its 12-element orbit " +
+    "lights up on the disk.");
+}
+
+/* ---------- fig 8 · group-pool read (static) ---------- */
+function fig8() {
+  const svg = $("f8s");
+  const hue = h => h < 6 ? h * 30 : 180 + (h - 6) * 30;
+  const x0 = 96, y0 = 16, cw = 10, ch = 7;
+  for (let h = 0; h < 12; h++)
+    for (let c = 0; c < 16; c++)
+      svg.appendChild(svgEl("rect", {
+        x: x0 + c * (cw + 1), y: y0 + h * (ch + 1), width: cw, height: ch,
+        fill: `hsl(${hue(h)} 45% ${26 + c * 2.2}%)`,
+      }));
+  const midY = y0 + 6 * (ch + 1);
+  const px = x0 + 16 * (cw + 1) + 66;
+  for (let c = 0; c < 16; c++)
+    svg.appendChild(svgEl("rect", {
+      x: px + c * (cw + 1), y: midY - ch / 2, width: cw, height: ch,
+      fill: `hsl(210 8% ${34 + c * 2.2}%)`,
+    }));
+  svg.appendChild(svgEl("path", {
+    d: `M${x0 + 16 * (cw + 1) + 10} ${midY} H${px - 12}`,
+    stroke: "var(--accent)", "stroke-width": 1, fill: "none",
+  }));
+  svg.appendChild(svgEl("path", {
+    d: `M${px - 17} ${midY - 4} L${px - 11} ${midY} L${px - 17} ${midY + 4} Z`,
+    fill: "var(--accent)",
+  }));
+  const txt = (x, y, s, anchor = "middle", cls = "f3t") => {
+    const t = svgEl("text", { x, y, class: cls, "text-anchor": anchor });
+    t.textContent = s; svg.appendChild(t);
+  };
+  txt(x0 - 10, midY + 3, "12 slots", "end", "f3t dim");
+  txt(x0 + 8 * (cw + 1), y0 + 12 * (ch + 1) + 14, "one cell's fiber (12 × 16)", "middle", "f3t dim");
+  txt((x0 + 16 * (cw + 1) + px) / 2, midY - 10, "mean", "middle");
+  txt(px + 8 * (cw + 1) - 5, midY + 20, "invariant 16-vector", "middle", "f3t dim");
+  txt(280, 158, "scalar heads: widen ×4 (tied) → pool → 64-wide read", "middle");
+  txt(280, 176, "per-cell heads: widen ×2 → pool → 32-wide read", "middle");
+}
+
+loadData("eq_group_tables.json").then(T => {
+  fig1(T); fig2(T); fig4(T); fig5(T); fig6(T); fig7(T);
+}).catch(err => {
+  console.error(err);
+  ["f1ro", "f2ro", "f4ro", "f5ro", "f7ro"].forEach(id =>
+    roSet(id, "data unavailable", "could not load data/eq_group_tables.json — " + err.message));
+});
+fig3();
+fig8();
+</script>
+
+</body>
+</html>

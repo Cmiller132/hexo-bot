@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "hexfield_eq"
+version = "0.1.0"
+description = "hexfield_eq — D6-equivariant rewrite lineage of hexfield (docs/PLAN_D6_EQUIVARIANT_REWRITE.md). Phase 0 = isolated scaffold copy; own cdylib, own maturin crate."
+requires-python = ">=3.11"
+# Runtime deps (torch, hexo_engine, hexo_train, ...) are ambient via the dev
+# environment / PYTHONPATH — NOT pip-resolved here, so `maturin develop` in the
+# isolated hexfield-dev venv never tries to fetch them. Build in the
+# hexfield-dev venv (never the live hexgt-build), then mirror the .so into the
+# tree — mirrors scripts/_rebuild_hexfield.sh for the hexfield_eq crate.
+dependencies = [
+    "numpy",
+]
+
+# Registers the plugin under the group hexo_train discovers, so name/entry-point
+# resolution (`load_model_plugin(ModelConfig(name="hexfield_eq"))`) works once
+# the package metadata is installed. PYTHONPATH-only use also works via the
+# config's `module = "hexfield_eq.plugin"` (module-path resolution).
+[project.entry-points."hexo_train.models"]
+hexfield_eq = "hexfield_eq.plugin:get_plugin"
+
+[tool.maturin]
+python-source = "python"
+module-name = "hexfield_eq._rust"
+features = ["python"]

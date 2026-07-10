@@ -3,63 +3,68 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Shrimp &mdash; how it works</title>
-<meta name="description" content="How Shrimp works: an AlphaZero-family agent for Hexo with a graph-style network, Gumbel MCTS, and self-play training.">
+<title>hexfield_eq &mdash; how it works</title>
+<meta name="description" content="How hexfield_eq works: a D6-equivariant AlphaZero-family agent for Hexo — support-set input, tied weights, ray-tap convolutions, a counting register lane, and Gumbel search.">
 <link rel="stylesheet" href="learn.css">
 </head>
 <body>
 
 <header class="learn-header">
-  <a class="wordmark" href="../">shrimp</a>
+  <a class="wordmark" href="../">hexo</a>
   <nav class="learn-nav" aria-label="How it works">
     <a href="./" class="current" aria-current="page">Overview</a>
+    <a href="position.html">The position</a>
+    <a href="symmetry.html">The symmetry</a>
     <a href="network.html">The network</a>
+    <a href="walkthrough.html">End to end</a>
     <a href="search.html">The search</a>
+    <a href="systems.html">The serving</a>
     <a href="training.html">The training</a>
-    <a href="results.html">The results</a>
-    <a href="systems.html">The systems</a>
-    <a href="lab.html">Lab</a>
   </nav>
 </header>
 
 <main class="learn-main">
 
-<h1>Shrimp <span class="h-dim">&mdash; how it works</span></h1>
+<h1>hexfield_eq <span class="h-dim">&mdash; how it works</span></h1>
 
 <p class="lede">
-The bot you&rsquo;re playing is Shrimp, an AlphaZero-family agent. One neural
+hexfield_eq is an AlphaZero-family agent for Hexo with one defining property:
+the network is <em>exactly equivariant</em> under all 12 symmetries of the
+hexagonal lattice. Rotate or reflect the board and the policy rotates with it
+and the value is unchanged &mdash; not statistically, but by construction, for
+every position and every weight the net will ever have. One 627k-parameter
 network reads a position and returns a <em>policy</em> (a distribution over
 legal moves) and a <em>value</em> (who is winning); a Gumbel Monte-Carlo tree
-search uses that network to look ahead and returns a move stronger than the raw
-policy; and the network is trained entirely on its own games to imitate what
-the search found. The loop uses no human game database; an optional
-behavioral-cloning warm start can precede it. This page is an overview, and the
-remaining pages describe each part.
+search uses that network to look ahead; and the network trains entirely on its
+own games. These pages explain each part, with the interactive figures built
+from the same code and data the production system runs.
 </p>
 
 <h2 id="loop"><span class="sec-no">01</span>the loop</h2>
 
 <p>
-Everything below runs as one repeating cycle, one epoch at a time. Self-play
-generates games with the current network; the trainer samples recent games and
-nudges the network toward the search&rsquo;s conclusions; the improved network
-is checkpointed and served back to self-play. Evaluation runs outside the loop
-and its verdict is informational: it measures strength against a pool of frozen
-opponents and does not gate or roll back a checkpoint.
+Everything runs as one repeating cycle, one epoch at a time. Self-play
+generates games with the current network; every searched decision writes one
+training row; the trainer samples a window of recent rows and nudges the
+network toward the search&rsquo;s conclusions; the improved network is
+checkpointed and served back to self-play. Evaluation runs outside the loop
+and observes &mdash; it measures strength against a fixed roster and never
+gates, promotes, or halts training.
 </p>
 
 <figure class="fig fig-wide" id="system-map">
-  <figcaption>fig 1 &middot; <b>the Shrimp system</b> &middot; hover or focus a node for detail &middot; click to open its page</figcaption>
+  <figcaption>fig 1 &middot; <b>the hexfield_eq system</b> &middot; hover or focus a node for detail &middot; click to open its page</figcaption>
 
-  <!-- Node subtitles and readout numbers below are sourced from:
-       active_games = 192, search_visits = 1024, pcr_fast_visits = 192,
-       pcr_full_proportion = 0.33, gumbel_m = 32   (configs/shrimp_main_7.toml)
-       params 8,128,812                            (models/MODEL_CARD.md)
-       .npz shards + .hxr records under selfplay/  (README.md, "run directory")
-       eval: games_budget = 128, full_search_visits = 512, every_n_epochs = 5
-                                                   (configs/shrimp_main_7.toml [model.config.multi_stage_eval])
-       informational eval verdict                  (docs/SHRIMP.md, "Checkpoint and eval") -->
-  <svg class="sysmap" viewBox="0 0 860 378" role="group" aria-label="System map: self-play, replay window, training, checkpoint, evaluation, and the serving path between search and network">
+  <!-- Node subtitles and readout numbers sourced from:
+       active_games = 256, search_visits = 256, gumbel_m = 16
+                                    (configs/hexfield_eq_main_2.toml [model.config.selfplay])
+       params 627,343               (HexfieldNet under scripts/prefit_env/hexfield_eq_raytap_a5.env)
+       train_samples_per_epoch = 56000, batch_rows = 256
+                                    (configs/hexfield_eq_main_2.toml [model.config.training])
+       eval: games_budget = 192, eval_visits = 512, every_n_epochs = 5
+                                    (configs/hexfield_eq_main_2.toml [model.config.multi_stage_eval])
+       eval never gates             (docs/HEXFIELD_EQ_EXPLAINER.md §10.3) -->
+  <svg class="sysmap" viewBox="0 0 860 378" role="group" aria-label="System map: self-play, training rows, training, checkpoint, evaluation, and the serving path between search and network">
     <defs>
       <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
         <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
@@ -68,57 +73,57 @@ opponents and does not gate or roll back a checkpoint.
 
     <!-- return edge: checkpoint -> next epoch's self-play -->
     <path class="edge" d="M735 58 V22 H105 V50" marker-end="url(#ah)"/>
-    <text class="elab" x="420" y="15" text-anchor="middle">weights &mdash; checkpoints/latest.pt &rarr; next epoch&rsquo;s self-play</text>
+    <text class="elab" x="420" y="15" text-anchor="middle">weights &rarr; next epoch&rsquo;s self-play</text>
 
     <!-- forward edges -->
     <path class="edge" d="M180 89 H232" marker-end="url(#ah)"/>
-    <text class="elab" x="210" y="137" text-anchor="middle">.hxr games &middot; .npz shards</text>
+    <text class="elab" x="210" y="137" text-anchor="middle">one row / decision</text>
     <path class="edge" d="M390 89 H442" marker-end="url(#ah)"/>
-    <text class="elab" x="420" y="137" text-anchor="middle">sampled rows</text>
+    <text class="elab" x="420" y="137" text-anchor="middle">sampled window</text>
     <path class="edge" d="M600 89 H652" marker-end="url(#ah)"/>
     <text class="elab" x="630" y="137" text-anchor="middle">weights (.pt)</text>
 
     <!-- eval branch -->
     <path class="edge" d="M735 120 V202" marker-end="url(#ah)"/>
-    <text class="elab dim" x="744" y="166" text-anchor="start">candidate .pt</text>
+    <text class="elab dim" x="744" y="166" text-anchor="start">every 5 epochs</text>
 
     <!-- self-play <-> serving inset connector -->
     <path class="edge soft" d="M105 120 V186"/>
 
     <!-- main loop nodes -->
-    <a class="map-node" href="training.html#selfplay" tabindex="0" data-k="self-play"
-       data-info="The continuous batched scheduler keeps 192 games in flight against the current net. A third of moves get the full 1024-visit search and become training targets; the rest get a 192-visit search (playout cap randomization).">
+    <a class="map-node" href="training.html#rows" tabindex="0" data-k="self-play"
+       data-info="256 games in flight against one GPU. Every searched decision gets 256 visits of Gumbel AlphaZero search; leaf positions from all games are batched through a shared queue. 35% of games open with a few prior-sampled plies that produce no training rows.">
       <rect x="30" y="58" width="150" height="62"/>
       <text class="nt" x="105" y="86" text-anchor="middle">self-play</text>
-      <text class="ns" x="105" y="104" text-anchor="middle">192 games in flight</text>
+      <text class="ns" x="105" y="104" text-anchor="middle">256 games in flight</text>
     </a>
 
-    <a class="map-node" href="training.html#replay" tabindex="0" data-k="replay window"
-       data-info="Each finished game is written as a compact .npz shard plus a .hxr game record. The trainer samples from a KataGo-style shuffle window over recent shards. Only completed games are included, so every value label is a final outcome.">
+    <a class="map-node" href="training.html#rows" tabindex="0" data-k="training rows"
+       data-info="One row per searched decision: the placement history (the position is rebuilt from it — feature planes are never stored) plus the search's improved policy π′, the outcome, short-term values, moves-left, the opponent's reply policy, and a policy-surprise weight. One shard per game, written atomically.">
       <rect x="240" y="58" width="150" height="62"/>
-      <text class="nt" x="315" y="86" text-anchor="middle">replay window</text>
-      <text class="ns" x="315" y="104" text-anchor="middle">moving shuffle window</text>
+      <text class="nt" x="315" y="86" text-anchor="middle">training rows</text>
+      <text class="ns" x="315" y="104" text-anchor="middle">facts + search targets</text>
     </a>
 
-    <a class="map-node" href="training.html#targets" tabindex="0" data-k="training"
-       data-info="Rows are expanded to dense tensors in Rust with a random D6 hex-symmetry transform, then the net takes AdamW steps: policy toward the search's improved distribution, value toward the game outcome, plus auxiliary heads (opponent policy, short-term value, moves-left, per-cell Q, soft policy).">
+    <a class="map-node" href="training.html#losses" tabindex="0" data-k="training"
+       data-info="A tapered window over recent games is expanded back to tensors in Rust and the net takes AdamW steps against nine loss heads. No symmetry augmentation — the network is equivariant by construction, so a rotated copy of a position teaches it nothing new.">
       <rect x="450" y="58" width="150" height="62"/>
       <text class="nt" x="525" y="86" text-anchor="middle">training</text>
-      <text class="ns" x="525" y="104" text-anchor="middle">AdamW &middot; D6 augment</text>
+      <text class="ns" x="525" y="104" text-anchor="middle">AdamW &middot; 9 heads</text>
     </a>
 
     <a class="map-node" href="training.html#eval" tabindex="0" data-k="checkpoint"
-       data-info="One .pt checkpoint per epoch; the next epoch's self-play serves it. A checkpoint loads only into a net built with the same geometry (c=192, trunk CCACCACCACCACCA, 3 heads, support radius 4).">
+       data-info="One .pt checkpoint per epoch; the next epoch's self-play serves it. A checkpoint loads only into a net built with the same geometry (192 channels = 12 slots × 16, trunk CCACCACA, 3 heads, support radius 4).">
       <rect x="660" y="58" width="150" height="62"/>
       <text class="nt" x="735" y="86" text-anchor="middle">checkpoint</text>
       <text class="ns" x="735" y="104" text-anchor="middle">one .pt per epoch</text>
     </a>
 
     <a class="map-node" href="training.html#eval" tabindex="0" data-k="evaluation"
-       data-info="Every 5 epochs: a 128-game budget at 512 visits against frozen opponents (anchor checkpoints, plus SealBot when enabled). Checkpoint openings are paired with sides swapped, scored pentanomially, and fed into a rolling Bradley-Terry/Elo pool. The verdict is informational and does not gate or roll back.">
+       data-info="Every 5 epochs: 192 games at 512 visits against a fixed roster — the Strix anchor, SealBot, a bracket of the run's own past checkpoints, and the reigning champion. Paired seat-swapped games, pentanomial scoring, a rolling Bradley–Terry pool. Observes only; cannot gate or roll back.">
       <rect x="660" y="210" width="150" height="62"/>
       <text class="nt" x="735" y="238" text-anchor="middle">evaluation</text>
-      <text class="ns" x="735" y="256" text-anchor="middle">informational &middot; elo pool</text>
+      <text class="ns" x="735" y="256" text-anchor="middle">observes &middot; never gates</text>
     </a>
 
     <!-- serving-path inset -->
@@ -131,19 +136,19 @@ opponents and does not gate or roll back a checkpoint.
     <text class="elab dim" x="225" y="308" text-anchor="middle">policy &middot; value</text>
 
     <a class="map-node" href="search.html#gumbel" tabindex="0" data-k="search"
-       data-info="Gumbel-Top-m root selection (m=32) with Sequential Halving over a PUCT tree. Threat-space search adds every live tactical cell to the root candidate set, and a shared batch queue feeds the GPU.">
+       data-info="Gumbel AlphaZero: 16 root candidates drawn with Gumbel noise, Sequential Halving spends the 256-visit budget, and a deterministic completed-Q rule steers the interior. The recorded training target is the improved policy π′, not the visit histogram.">
       <rect x="52" y="232" width="120" height="88"/>
       <text class="nt" x="112" y="268" text-anchor="middle">search</text>
       <text class="ns" x="112" y="286" text-anchor="middle">gumbel mcts</text>
-      <text class="ns" x="112" y="300" text-anchor="middle">m=32 &middot; 1024 visits</text>
+      <text class="ns" x="112" y="300" text-anchor="middle">m=16 &middot; 256 visits</text>
     </a>
 
-    <a class="map-node" href="network.html#support" tabindex="0" data-k="network"
-       data-info="ShrimpNet: a graph-style net over the variable-size support set, with 15 features per cell, direction-typed hex convolutions interleaved with global attention, and policy / value / auxiliary heads. 8,128,812 parameters.">
+    <a class="map-node" href="network.html" tabindex="0" data-k="network"
+       data-info="HexfieldNet: a D6-equivariant net over the variable-size support set — 46 features + 12 ray lengths per cell, ray-tap hex convolutions, three win-axis attention heads, a counting register lane, and 65-bin value output. 627,343 parameters that compute like a 4.3M-parameter untied net.">
       <rect x="278" y="232" width="120" height="88"/>
       <text class="nt" x="338" y="268" text-anchor="middle">network</text>
-      <text class="ns" x="338" y="286" text-anchor="middle">8.1M params</text>
-      <text class="ns" x="338" y="300" text-anchor="middle">conv + attention</text>
+      <text class="ns" x="338" y="286" text-anchor="middle">627k params</text>
+      <text class="ns" x="338" y="300" text-anchor="middle">D6-equivariant</text>
     </a>
   </svg>
 
@@ -156,91 +161,108 @@ opponents and does not gate or roll back a checkpoint.
 <h2 id="numbers"><span class="sec-no">02</span>numbers at a glance</h2>
 
 <p>
-The shipped recipe is <code>configs/shrimp_main_7.toml</code> plus four
-environment variables that fix the network geometry. Every figure below is read
-from the code or config.
+The production configuration is <code>configs/hexfield_eq_main_2.toml</code>
+plus the architecture environment of
+<code>scripts/prefit_env/hexfield_eq_raytap_a5.env</code>. Every number below
+is read from the code or config; the interactive figures on the other pages
+are generated from the same package.
 </p>
 
 <div class="numstrip">
-  <!-- src: models/MODEL_CARD.md "Parameters: 8,128,812 (~8.1 M)"; docs/SHRIMP.md -->
-  <div class="ns-cell"><div class="ns-n">8,128,812</div><div class="ns-l">parameters</div></div>
-  <!-- src: configs/shrimp_main_7.toml header SHRIMP_CHANNELS=192; constants.py CHANNELS -->
-  <div class="ns-cell"><div class="ns-n">192</div><div class="ns-l">trunk channels</div></div>
-  <!-- src: configs/shrimp_main_7.toml header SHRIMP_TRUNK=CCACCACCACCACCA (10 C + 5 A) -->
-  <div class="ns-cell"><div class="ns-n">15 <small>blocks &middot; CC&middot;A &times;5</small></div><div class="ns-l">trunk &middot; 10 conv + 5 attn</div></div>
-  <!-- src: constants.py HEAD_DIM = CHANNELS // ATTENTION_HEADS (192/3 = 64); config header "heads 3x64" -->
-  <div class="ns-cell"><div class="ns-n">3 &times; 64</div><div class="ns-l">attention heads &times; dim</div></div>
-  <!-- src: constants.py NUM_FEATURES = 15 -->
-  <div class="ns-cell"><div class="ns-n">15</div><div class="ns-l">input features / cell</div></div>
-  <!-- src: constants.py NUM_TOKENS = 8 -->
-  <div class="ns-cell"><div class="ns-n">8</div><div class="ns-l">summary tokens</div></div>
+  <!-- src: HexfieldNet parameter count under the production env; HEXFIELD_EQ_EXPLAINER.md §5.6 -->
+  <div class="ns-cell"><div class="ns-n">627,343</div><div class="ns-l">parameters</div></div>
+  <!-- src: constants.py CHANNELS = GROUP * C_ORBIT (12 × 16) -->
+  <div class="ns-cell"><div class="ns-n">192 <small>= 12 &times; 16</small></div><div class="ns-l">trunk &middot; slots &times; orbit ch</div></div>
+  <!-- src: HEXFIELD_EQ_TRUNK=CCACCACA -->
+  <div class="ns-cell"><div class="ns-n">CCACCACA</div><div class="ns-l">trunk &middot; 5 conv + 3 attn</div></div>
+  <!-- src: constants.py ATTENTION_HEADS = 3, structural (§4.6) -->
+  <div class="ns-cell"><div class="ns-n">3 &times; 64</div><div class="ns-l">heads &middot; one per win axis</div></div>
+  <!-- src: constants.py NUM_FEATURES = 46, RAYLEN_SLOTS = 12 -->
+  <div class="ns-cell"><div class="ns-n">46 <small>+ 12 rays</small></div><div class="ns-l">input features / cell</div></div>
+  <!-- src: constants.py NUM_TOKENS = 6 -->
+  <div class="ns-cell"><div class="ns-n">6</div><div class="ns-l">summary tokens</div></div>
   <!-- src: constants.py VALUE_BINS = 65 -->
-  <div class="ns-cell"><div class="ns-n">65</div><div class="ns-l">value bins</div></div>
-  <!-- src: README.md / models/MODEL_CARD.md SHRIMP_SUPPORT_RADIUS=4; constants.py LEGAL_RADIUS = 8 -->
+  <div class="ns-cell"><div class="ns-n">65</div><div class="ns-l">value bins on [&minus;1, 1]</div></div>
+  <!-- src: HEXFIELD_EQ_SUPPORT_RADIUS=4; constants.py LEGAL_RADIUS = 8 -->
   <div class="ns-cell"><div class="ns-n">4 <small>of legal 8</small></div><div class="ns-l">support radius</div></div>
-  <!-- src: configs/shrimp_main_7.toml gumbel_m = 32 -->
-  <div class="ns-cell"><div class="ns-n">32</div><div class="ns-l">gumbel root candidates</div></div>
-  <!-- src: configs/shrimp_main_7.toml search_visits = 1024, pcr_full_proportion = 0.33, pcr_fast_visits = 192 -->
-  <div class="ns-cell"><div class="ns-n">1024 <small>full &middot; 192 fast</small></div><div class="ns-l">self-play visits (33% full)</div></div>
-  <!-- src: configs/shrimp_main_7.toml active_games = 192 -->
-  <div class="ns-cell"><div class="ns-n">192</div><div class="ns-l">concurrent games</div></div>
-  <!-- src: configs/shrimp_main_7.toml [model.config.multi_stage_eval] games_budget = 128, full_search_visits = 512, every_n_epochs = 5 -->
-  <div class="ns-cell"><div class="ns-n">128 <small>@ 512 visits</small></div><div class="ns-l">eval games / 5 epochs</div></div>
+  <!-- src: configs/hexfield_eq_main_2.toml gumbel_m = 16 -->
+  <div class="ns-cell"><div class="ns-n">16</div><div class="ns-l">gumbel root candidates</div></div>
+  <!-- src: configs/hexfield_eq_main_2.toml search_visits = 256 -->
+  <div class="ns-cell"><div class="ns-n">256</div><div class="ns-l">self-play visits</div></div>
+  <!-- src: configs/hexfield_eq_main_2.toml active_games = 256 -->
+  <div class="ns-cell"><div class="ns-n">256</div><div class="ns-l">concurrent games</div></div>
+  <!-- src: configs/hexfield_eq_main_2.toml [model.config.multi_stage_eval] games_budget = 192, eval_visits = 512, every_n_epochs = 5 -->
+  <div class="ns-cell"><div class="ns-n">192 <small>@ 512 visits</small></div><div class="ns-l">eval games / 5 epochs</div></div>
 </div>
 
 <div class="note">
-Search budgets differ by role: self-play full searches use
-<b>1024 visits</b>, self-play fast moves <b>192</b>, and the evaluation
-arena <b>512</b>. A stronger net needs fewer visits for equal move
-quality, so these budgets are recalibrated as the run matures.
-<!-- src: configs/shrimp_main_7.toml search_visits/pcr_fast_visits/full_search_visits + header comment -->
+The parameter count is the point, not the punchline: an untied trunk of the
+same width would store ~4.3&thinsp;M trunk parameters alone. The 12-fold
+weight tie yields a ~7&times; smaller model that <b>computes like a full
+192-channel network</b> &mdash; dense weights exist at forward time, generated
+from the free parameter blocks.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §5.6 -->
 </div>
 
 <h2 id="unusual"><span class="sec-no">03</span>properties of the design</h2>
 
 <p>
-<b>Variable-size input.</b> The board is unbounded and a game can extend
-anywhere on the grid, so a fixed-size input plane is not usable. Shrimp
-builds a <span class="term" title="stones + legal cells + a one-cell halo">support set</span>
-(stones, legal moves, and a one-cell halo) and feeds the network a
-variable-size graph that grows and shrinks with the game. Cells are ordered
-legal-first, which gives the <em>legal-prefix property</em>: the policy
-head&rsquo;s first <code>legal_count</code> outputs are exactly the legal
-moves, so the network cannot score an illegal one.
-<a href="network.html#support">How the support set is built &rarr;</a>
+<b>Exact symmetry, zero augmentation.</b> For every lattice symmetry
+<code>g</code> and every position, <code>f(g&middot;board) =
+g&middot;f(board)</code> &mdash; the policy over the transformed board is
+exactly the transformed policy, the value exactly unchanged. Every layer type
+carries a constraint that makes this hold: convolutions keep 84 free weight
+blocks of a nominal 1008, attention heads are pinned one-per-win-axis, and the
+position-bias table collapses to 81 free values per block. The training
+pipeline applies no symmetry augmentation, and no parameter is spent
+representing a rotated copy of a pattern another parameter already knows.
+<a href="symmetry.html">How the constraint works &rarr;</a>
 </p>
 
 <p>
-<b>Global attention over an irregular point set.</b> Convolutions on this graph
-are direction-typed: the neighbour along each of the six hex axes gets its own
-weights, because the axis a line runs along determines its tactical meaning.
-A convolution spreads information one ring per block. Interleaved attention
-blocks give every cell a view of the whole position in a single step: all-pairs
-attention over the support cells plus 8 learned summary tokens, with a
-relative-position bias keyed on the exact hex offset between two cells (a
-217-offset disk, then ring buckets). A threat forming on the far side of the
-board is visible after one attention block.
-<!-- src: constants.py BIAS_EXACT_ROWS = 217, NUM_TOKENS = 8; docs/SHRIMP.md "Attention blocks" -->
-<a href="network.html#attention">How attention handles hex geometry &rarr;</a>
+<b>The board the net sees is built per position.</b> There is no padded grid:
+a <span class="term" title="stones + legal cells within distance 4 + a one-cell halo">support set</span>
+is rebuilt every position, ordered legal-first so the policy head&rsquo;s first
+<code>legal_count</code> outputs <em>are</em> the legal moves &mdash; the mask
+is a slice that cannot drift out of sync. Each cell carries 46 feature planes
+(graded line-and-openness readings of all 18 length-6 windows through it) and
+12 blocker-aware ray lengths.
+<a href="position.html">What the network reads &rarr;</a>
 </p>
 
 <p>
-<b>Gumbel-Top-m root selection.</b> The search draws
-<code>m&nbsp;=&nbsp;32</code> root candidates by adding Gumbel noise to the
-policy logits, then runs Sequential Halving so the visit budget concentrates on
-survivors. Sampling without replacement gives exploration coverage at the root,
-and the played move improves on the raw policy in expectation even at small
-budgets. The improved root distribution is the policy training target
-(<code>policy_target&nbsp;=&nbsp;"gumbel"</code>), and threat-space search
-force-includes tactical cells so the candidate draw cannot miss a
-win-in-one. <!-- src: configs/shrimp_main_7.toml gumbel_m = 32, policy_target = "gumbel", tss_enabled = true -->
-<a href="search.html#gumbel">How the search works &rarr;</a>
+<b>Convolutions that see down the line.</b> Each trunk convolution&rsquo;s six
+direction taps read a visibility-masked, distance-weighted span of up to 5
+cells down each direction &mdash; sight ends at the support edge and at (but
+including) an enemy blocker. Every conv layer has a full window-length
+receptive field along all three win axes, for ~80 extra parameters per conv.
+<a href="network.html#raytap">The ray-tap convolution &rarr;</a>
 </p>
 
 <p>
-<a href="results.html">The results</a> tracks this run&rsquo;s evaluation data
-epoch by epoch, and <a href="systems.html">the systems</a> covers the
-engineering that runs the loop.
+<b>A lane that can count.</b> Softmax attention computes weighted averages, so
+three simultaneous live-4 threats and one look alike. Six summary tokens are
+updated at every conv block&rsquo;s exit by sigmoid-gated <em>unnormalized
+sums</em> &mdash; a mechanism that literally counts matching cells &mdash; and
+the raw count magnitudes reach the value head directly.
+<a href="network.html#register">The register lane &rarr;</a>
+</p>
+
+<p>
+<b>Search that improves the policy, not just the move.</b> Root selection is
+Gumbel-Top-m (m&nbsp;=&nbsp;16) with Sequential Halving; the recorded training
+target is the improved policy &pi;&prime;, not the visit histogram (under
+Sequential Halving, visit counts are a schedule artifact). No Dirichlet noise,
+no forced playouts anywhere.
+<a href="search.html">How the search works &rarr;</a>
+</p>
+
+<p>
+<a href="walkthrough.html">End to end</a> traces one real self-play position
+through every stage with its true tensor shapes,
+<a href="systems.html">the serving</a> covers how one GPU feeds 256 concurrent
+searches, and <a href="training.html">the training</a> covers targets, losses,
+and how strength is measured.
 </p>
 
 </main>
@@ -248,7 +270,7 @@ engineering that runs the loop.
 <footer class="learn-footer">
   <div class="foot-row">
     <span class="foot-spacer"></span>
-    <a href="network.html">next &middot; the network &rarr;</a>
+    <a href="position.html">next &middot; the position &rarr;</a>
   </div>
 </footer>
 

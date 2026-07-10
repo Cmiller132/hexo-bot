@@ -1,0 +1,28 @@
+[package]
+name = "hexfield_eq"
+version.workspace = true
+edition.workspace = true
+
+# Own cdylib (`hexfield_eq._rust`) — deliberately NOT a #[path] submodule of
+# hexo_models._rust nor of hexfield, whose single-crate designs make every
+# rebuild change search semantics for that lineage. Building hexfield_eq can
+# never touch the live hexfield/hexo_models run .so (spec §5.1 packaging
+# discipline). This is the D6-equivariant rewrite lineage (Phase 0 scaffold =
+# a clean copy of hexfield; the equivariant trunk lands in later phases).
+
+[lib]
+name = "hexfield_eq"
+path = "rust/src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+[dependencies]
+hexo_engine.workspace = true
+hexo_utils.workspace = true
+half = "2"
+pyo3 = { workspace = true, optional = true }
+rand.workspace = true
+rayon.workspace = true

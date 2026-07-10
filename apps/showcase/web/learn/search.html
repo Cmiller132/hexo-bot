@@ -3,1084 +3,922 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Shrimp &mdash; how it works &mdash; the search</title>
-<meta name="description" content="Gumbel-Top-m root sampling, sequential halving, threat-space search, and the batched scheduler behind Shrimp's move search.">
-<!--
-  Accuracy sources (all claims verified against the implementation):
-  - packages/shrimp/rust/src/tree.rs        — Divergences (gumbel_* flags/defaults), init_gumbel_root,
-      seed_gumbel_round_caps, maybe_advance_gumbel_round, select_gumbel_root_edge,
-      select_gumbel_nonroot_edge, gumbel_sigma, gumbel_completed_q, GumbelRootState
-      (rounds_for = ceil(log2 m), budget_calibrated_m, GUMBEL_MIN_ROUND0_VISITS = 4)
-  - packages/shrimp/rust/src/search.rs      — run_continuous scheduler, select_continuous_pass
-      (per-slot in-flight cap = virtual_batch_size, drained-slot SH barrier), gumbel_target_policy,
-      select_action_with_lcb, lcb_pick / ml_final_pick, visit_policy (delta-visit histogram),
-      SEED_STREAM_GUMBEL, ACTIVE_ROOT_LIMIT = 512
-  - packages/shrimp/rust/src/threats_shared.rs — threat = active single-colour 6-window with count >= 4;
-      placements budget B (2 at FirstStone, 1 at Opening/SecondStone); hitting-set defense;
-      tactical_cells = own winning completions ∪ empties of every opponent >=4 window
-  - packages/shrimp/rust/src/cache.rs       — FIFO eval cache, EVAL_CACHE_MAX_STATES = 262,144,
-      keyed by state hash; Arc-shared evaluations
-  - configs/shrimp_main_7.toml [model.config.selfplay] — search_visits=1024, pcr_fast_visits=192,
-      virtual_batch_size=48, flush_target=1024, active_root_limit=192, lcb_z=1.6, tss_enabled=true,
-      gumbel_m=32, gumbel_c_visit=50.0, gumbel_c_scale=1.0, gumbel_target_c_scale=0.35,
-      gumbel_draw_temperature=1.5, gumbel_play_prune=true; [multi_stage_eval] full_search_visits=512,
-      eval_virtual_batch_size=32
-  - apps/showcase/server/showcase/bots.py     — SearchProfile: as-trained divergence overrides,
-      serve-side virtual batch = eval_virtual_batch_size (32), per-bot visit budgets from the catalogue
-  - data/search_compare.json — real 512-visit searches (quiet_midgame, seed 20260705, CPU, one
-      search per side via SearchProfile.search_one): shrimp_main_7 profile + ep70 net (Gumbel) vs
-      shrimp_main_5 profile + ep105 net (PUCT). learn_snapshots.py asserts the measured gumbel visit
-      histogram equals the SH schedule (m 32→16 calibrated, R=4, cum caps 8/24/56/120) at export.
-      Measured facts cited below: gumbel 16 moves visited, finalists 120/120, played (2,-2) q̂ .92;
-      puct 7 moves visited, leader (-1,0) 229 of 327 used, early-stopped (early_stop_ready:
-      remaining budget could not overtake the leader AND the LCB pick equalled the visit pick).
--->
-<style>
-/* Token fallback + minimal structural fallback. learn.css (shared, loaded after
-   this block) is the real stylesheet; everything here only has to keep the page
-   readable if it is absent. Figure internals are fully styled here since they
-   are page-specific. */
-:root{
-  --bg:#101317; --tile:#161b21; --line:#242c35; --line-soft:#1c232b;
-  --text:#d4dbe3; --muted:#79848f; --dim:#4c565f;
-  --accent:#e8e2d6; --accent-dim:#57534a;
-  --p0:#4f93ff; --p0-soft:#7fb1ff; --p1:#ff5650; --p1-soft:#ff8781;
-  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-}
-html{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.65}
-body{margin:0}
-.learn-header{border-bottom:1px solid var(--line);padding:14px 20px}
-.learn-nav{display:flex;gap:18px;flex-wrap:wrap;max-width:860px;margin:0 auto}
-.learn-nav a{color:var(--muted);text-decoration:none;font-size:.95rem}
-.learn-nav a:hover{color:var(--text)}
-.learn-nav a[aria-current="page"]{color:var(--accent)}
-.learn-main{max-width:860px;margin:0 auto;padding:32px 20px 64px}
-.learn-main h1{color:var(--accent);font-weight:600;letter-spacing:.01em}
-.learn-main h2{color:var(--accent);font-weight:600;margin-top:2.6em;border-top:1px solid var(--line-soft);padding-top:1.6em}
-.learn-main a{color:var(--p0-soft)}
-.learn-main code{font-family:var(--mono);font-size:.88em;color:var(--accent);background:var(--tile);border:1px solid var(--line-soft);border-radius:3px;padding:0 4px}
-.learn-footer{border-top:1px solid var(--line);padding:18px 20px}
-.learn-footer nav{max-width:860px;margin:0 auto;display:flex;justify-content:space-between}
-.learn-footer a{color:var(--muted);text-decoration:none}
-.learn-footer a:hover{color:var(--text)}
-.fig{background:var(--tile);border:1px solid var(--line);border-radius:6px;margin:1.8em 0;padding:16px}
-.fig svg{display:block;width:100%;height:auto}
-.fig-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-size:.85rem;color:var(--muted)}
-.fig-controls button{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:5px 12px;font:inherit;font-size:.85rem;cursor:pointer}
-.fig-controls button:hover{border-color:var(--dim)}
-.fig-controls button:focus-visible,.fig-controls input:focus-visible{outline:2px solid var(--p0);outline-offset:2px}
-.fig-controls label{display:inline-flex;gap:6px;align-items:center}
-.fig-controls input[type=range]{accent-color:var(--p0);width:110px}
-.fig-controls input[type=checkbox]{accent-color:var(--p0)}
-.fig-controls .readout{font-family:var(--mono);color:var(--accent);font-size:.8rem}
-.fig figcaption{color:var(--muted);font-size:.85rem;margin-top:10px;line-height:1.5}
-.fig .note{color:var(--dim);font-size:.75rem;font-family:var(--mono)}
-.eq{font-family:var(--mono);font-size:.9em;color:var(--accent);background:var(--tile);border:1px solid var(--line-soft);border-radius:4px;padding:8px 14px;margin:1em 0;overflow-x:auto;white-space:nowrap}
-/* gumbel-vs-puct compare figure */
-.cmp-flex{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
-.cmp-side{flex:1 1 280px;min-width:250px}
-.cmp-tag{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
-.cmp-table{margin-top:12px;overflow-x:auto}
-.cmp-table table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px;color:var(--muted)}
-.cmp-table th,.cmp-table td{border-top:1px solid var(--line-soft);padding:5px 10px;text-align:left;white-space:nowrap}
-.cmp-table th{color:var(--dim);font-weight:400;text-transform:uppercase;letter-spacing:.1em;font-size:9.5px}
-.cmp-table td.v{color:var(--accent)}
-.cmp-cell{cursor:pointer;outline:none}
-.cmp-cell:focus-visible{stroke:var(--accent);stroke-width:1.5}
-</style>
+<title>hexfield_eq &mdash; the search</title>
+<meta name="description" content="How hexfield_eq searches: Gumbel AlphaZero — a stone-per-edge tree, Gumbel-Top-m root candidates, Sequential Halving, deterministic interior selection, and the π′ training target.">
 <link rel="stylesheet" href="learn.css">
+<style>
+/* page-specific styles — tokens come from learn.css; nothing here leaks out */
+
+/* fig 1 — stone-per-edge tree */
+.tree-svg text{font-family:var(--mono)}
+.tree-svg .lvl{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;fill:var(--dim)}
+.tree-svg .edge{stroke:var(--line);stroke-width:1.2;fill:none}
+.tree-svg .edge.bk{stroke:var(--accent-dim);stroke-width:1.6}
+.tree-svg .estone{stroke:#0c0f13;stroke-width:1}
+.tree-svg .tnode{cursor:pointer;outline:none}
+.tree-svg .tnode circle.body{fill:#11161c;stroke-width:1.4;transition:stroke .15s ease,fill .15s ease}
+.tree-svg .tnode.p0 circle.body{stroke:var(--p0)}
+.tree-svg .tnode.p1 circle.body{stroke:var(--p1)}
+.tree-svg .tnode.term circle.body{stroke:var(--accent-dim);stroke-dasharray:3 2}
+.tree-svg .tnode:hover circle.body,.tree-svg .tnode:focus circle.body{fill:#1a2027}
+.tree-svg .tnode.term:hover circle.body,.tree-svg .tnode.term:focus circle.body{stroke:var(--accent)}
+.tree-svg .tnode .nlab{font-size:10px;fill:var(--text);text-anchor:middle}
+.tree-svg .sgn{font-size:10.5px;fill:var(--accent);text-anchor:start}
+.tree-svg .ann{font-size:9.5px;fill:var(--muted)}
+.tree-svg .ann.dim{fill:var(--dim)}
+.tree-svg .bkpath{cursor:pointer;outline:none}
+.tree-svg .bkpath:hover .edge.bk,.tree-svg .bkpath:focus .edge.bk{stroke:var(--accent)}
+
+/* fig 2 — sequential halving bars */
+.sh-status{
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--dim);padding:12px 14px 4px;
+}
+.sh-status b{color:var(--muted);font-weight:400}
+.sh-wrap{position:relative;height:196px;margin:8px 14px 30px}
+.sh-cand{
+  position:absolute;top:0;bottom:0;width:calc(100%/16 - 3px);
+  cursor:pointer;outline:none;
+  transition:left .45s ease,opacity .3s ease;
+}
+.sh-cand .sh-bar{
+  position:absolute;inset:0;
+  background:#11161c;border:1px solid var(--line-soft);
+  transition:border-color .15s ease;
+}
+.sh-cand .sh-fill{
+  position:absolute;left:0;right:0;bottom:0;height:0%;
+  background:linear-gradient(180deg,var(--p0-soft),var(--p0));
+  transition:height .4s ease,background .3s ease;
+}
+.sh-cand .sh-lab{
+  position:absolute;left:0;right:0;bottom:-20px;
+  font-family:var(--mono);font-size:10px;color:var(--dim);text-align:center;
+}
+.sh-cand:hover .sh-bar,.sh-cand:focus .sh-bar{border-color:var(--accent-dim)}
+.sh-cand:hover .sh-lab,.sh-cand:focus .sh-lab{color:var(--muted)}
+.sh-cand.dead{opacity:.38}
+.sh-cand.dead .sh-fill{background:#39424c}
+.sh-cand.win .sh-bar{border-color:var(--accent)}
+.sh-cand.win .sh-lab{color:var(--accent)}
+/* final visits-vs-π′ comparison */
+.sh-final{display:none;border-top:1px solid var(--line-soft);padding:12px 14px 6px}
+.sh-final.on{display:block}
+.sh-final .shf-title{
+  font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--dim);margin-bottom:8px;
+}
+.sh-final .shf-title .sw{display:inline-block;width:8px;height:8px;margin:0 4px 0 10px;vertical-align:-1px}
+.sh-final .shf-title .sw.v{background:#39424c}
+.sh-final .shf-title .sw.p{background:var(--accent)}
+.shf-row{display:flex;gap:3px;height:110px;align-items:flex-end;margin-bottom:22px;position:relative}
+.shf-slot{flex:1;position:relative;height:100%;cursor:pointer;outline:none}
+.shf-slot .b{position:absolute;bottom:0;width:44%}
+.shf-slot .b.v{left:2%;background:#39424c}
+.shf-slot .b.p{right:2%;background:var(--accent)}
+.shf-slot .l{
+  position:absolute;left:0;right:0;bottom:-18px;
+  font-family:var(--mono);font-size:9.5px;color:var(--dim);text-align:center;
+}
+.shf-slot:hover .l,.shf-slot:focus .l{color:var(--accent)}
+
+/* fig 3 — interior selection columns */
+.is-wrap{display:flex;gap:12px;align-items:flex-end;height:190px;margin:14px 14px 48px}
+.is-col{flex:1;position:relative;height:100%;cursor:pointer;outline:none}
+.is-col .frame{position:absolute;inset:0;background:#11161c;border:1px solid var(--line-soft);transition:border-color .15s ease}
+.is-col .fill{
+  position:absolute;left:0;right:0;bottom:0;height:0%;
+  background:linear-gradient(180deg,var(--p0-soft),var(--p0));
+  transition:height .25s ease;
+}
+.is-col .tick{position:absolute;left:-3px;right:-3px;border-top:2px solid var(--accent);opacity:.9}
+.is-col .lab{
+  position:absolute;left:0;right:0;bottom:-22px;
+  font-family:var(--mono);font-size:10px;color:var(--dim);text-align:center;white-space:nowrap;
+}
+.is-col .num{
+  position:absolute;left:0;right:0;bottom:-36px;
+  font-family:var(--mono);font-size:9px;color:var(--dim);text-align:center;white-space:nowrap;
+}
+.is-col.next .frame{border-color:var(--accent)}
+.is-col.next .lab{color:var(--accent)}
+.is-col:hover .frame,.is-col:focus .frame{border-color:var(--accent-dim)}
+
+/* fig 4 — temperature plot + annotation cards */
+.tp-svg text{font-family:var(--mono)}
+.tp-svg .axis{stroke:var(--line);stroke-width:1}
+.tp-svg .grid{stroke:var(--line-soft);stroke-width:1;stroke-dasharray:2 4}
+.tp-svg .floor{stroke:var(--accent-dim);stroke-width:1;stroke-dasharray:5 4}
+.tp-svg .curve{stroke:var(--p0);stroke-width:1.8;fill:none}
+.tp-svg .tick{font-size:9.5px;fill:var(--dim)}
+.tp-svg .plab{font-size:9.5px;fill:var(--muted)}
+.tp-svg .dot{fill:var(--accent);stroke:#0c0f13;stroke-width:1}
+.tp-svg .mark{fill:var(--p0-soft)}
+.anno-rows{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:8px;padding:2px 12px 12px;
+}
+.anno{
+  border:1px solid var(--line);padding:8px 10px;cursor:pointer;outline:none;
+  font-family:var(--mono);font-size:10px;letter-spacing:.05em;line-height:1.5;
+  color:var(--muted);
+  transition:border-color .15s ease,color .15s ease;
+}
+.anno b{
+  display:block;font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);font-weight:400;margin-bottom:2px;
+}
+.anno:hover,.anno:focus{border-color:var(--accent-dim);color:var(--text)}
+.anno:hover b,.anno:focus b{color:var(--accent)}
+</style>
 </head>
 <body>
 
-<!-- Stone gradients (same defs as the play board's index.html). Document-level
-     holder: gradients inside a display:none SVG do not resolve, and url() refs
-     do not cross documents — every figure SVG on this page shares these. -->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <defs>
-    <linearGradient id="gradS0" x1="0.22" y1="0" x2="0.78" y2="1">
-      <stop offset="0" stop-color="#7db4ff"/>
-      <stop offset="0.45" stop-color="#4f93ff"/>
-      <stop offset="1" stop-color="#2f62c4"/>
-    </linearGradient>
-    <linearGradient id="gradS1" x1="0.22" y1="0" x2="0.78" y2="1">
-      <stop offset="0" stop-color="#ff8a80"/>
-      <stop offset="0.45" stop-color="#f0524c"/>
-      <stop offset="1" stop-color="#b93732"/>
-    </linearGradient>
-  </defs>
-</svg>
-
 <header class="learn-header">
-  <a class="wordmark" href="../">shrimp</a>
+  <a class="wordmark" href="../">hexo</a>
   <nav class="learn-nav" aria-label="How it works">
-    <a href="index.html">Overview</a>
+    <a href="./">Overview</a>
+    <a href="position.html">The position</a>
+    <a href="symmetry.html">The symmetry</a>
     <a href="network.html">The network</a>
+    <a href="walkthrough.html">End to end</a>
     <a href="search.html" class="current" aria-current="page">The search</a>
+    <a href="systems.html">The serving</a>
     <a href="training.html">The training</a>
-    <a href="results.html">The results</a>
-    <a href="systems.html">The systems</a>
-    <a href="lab.html">Lab</a>
   </nav>
 </header>
 
 <main class="learn-main">
-  <h1>The search</h1>
 
-  <p>The <a href="network.html">network</a> evaluates a position in one forward pass: a policy over
-  moves and a value estimate. The search is a
-  <em>policy-improvement operator</em>: it spends a budget of look-aheads, corrects the network's
-  estimates with measured outcomes, and returns a move choice and a training target that improve on
-  the raw policy.</p>
+<h1>The search <span class="h-dim">&mdash; Gumbel AlphaZero</span></h1>
 
-  <!-- MCTS substrate + gumbel machinery: tree.rs Divergences::gumbel() builds on production();
-       PUCT paths still exist (Fast moves without a gumbel root, interior fallback), but the trained
-       config enables gumbel_root / gumbel_sequential_halving / gumbel_nonroot_select / gumbel_target.
-       Dirichlet noise / forced playouts: removed; configs/shrimp_main_7.toml:54-57. -->
-  <p>The engine is a Monte-Carlo tree search: a tree of
-  positions, edges with visit counts and running values, batched network evaluations at the leaves,
-  and PUCT-style selection machinery with first-play urgency and progressive widening. The trained
-  and served configuration is <strong>Gumbel AlphaZero</strong> (Danihelka et&nbsp;al.
-  2022) on that substrate: a Gumbel-Top-m sample picks the root candidates, sequential
-  halving splits the visit budget among them, and a deterministic visit-regularized rule selects at
-  interior nodes.</p>
+<p class="lede">
+The search is <b>Gumbel AlphaZero</b> (Danihelka et al., 2022), implemented in
+Rust; Python is only called to evaluate leaf batches. Self-play searches 256
+visits per decision. The design goal is different from classic PUCT: with a
+small visit budget, the search should produce a provably better <em>policy</em>
+&mdash; not just pick a move &mdash; and that improved policy &pi;&prime; is
+what the network trains on.
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §7 intro; configs/hexfield_eq_main_2.toml search_visits = 256 -->
+</p>
 
-  <h2 id="gumbel">Gumbel-Top-m at the root</h2>
+<h2 id="tree"><span class="sec-no">01</span>a tree of stones, not turns</h2>
 
-  <!-- init_gumbel_root: tree.rs — g(a)~Gumbel(0,1) per legal action, top-m by logit/τ + g(a);
-       τ = gumbel_draw_temperature = 1.5 divides the LOGIT ONLY in the draw comparator; SH ranking,
-       played move, and exported target read raw logits (tree.rs comments at the draw site).
-       gumbel_m = 32 (config), budget-calibrated (GUMBEL_MIN_ROUND0_VISITS = 4, floor of 2). -->
-  <p>An unbounded board can have hundreds of legal moves at the root, and a finite budget spread
-  over all of them would give each too few visits to measure. The root instead samples
-  <strong>m&nbsp;candidates without
-  replacement</strong> using the Gumbel-max trick: draw independent noise
-  <code>g(a)&nbsp;~&nbsp;Gumbel(0,1)</code> for every legal move and keep the top&nbsp;m by
-  <code>logit(a)/&tau;&nbsp;+&nbsp;g(a)</code>. This comparator is equivalent to sampling m
-  moves without replacement from <code>softmax(logits/&tau;)</code>: strong
-  moves are picked often, weak moves occasionally, and every move has nonzero
-  probability. The draw temperature <code>&tau;&nbsp;=&nbsp;1.5</code> applies to
-  <em>only this draw</em>:
-  it flattens the candidate sampling, while the halving scores, the played move, and the exported
-  training target all read the raw logits.</p>
+<p>
+A Hexo turn places two stones, but a tree edge is a <b>single stone</b>, not a
+turn. Each node stores its side-to-move; value backup flips sign by comparing
+the node&rsquo;s player to the leaf&rsquo;s player, so the two consecutive
+same-player plies of a turn back up correctly without any turn-level
+special-casing &mdash; the sign follows the player comparison, not depth
+parity. The engine checks for six-in-a-row after every stone, so a win on the
+first stone of a turn is a terminal node whose second stone never exists.
+Terminal nodes back up exact &plusmn;1, not a network value.
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §7.1 -->
+</p>
 
-  <p>Root exploration comes from the draw: the randomness is in
-  <em>which m moves enter the tournament</em>, and
-  the entire visit budget is then concentrated on those m, so every candidate receives enough
-  visits for its measured value to be informative. In the main training run
-  <code>m&nbsp;=&nbsp;32</code>;
-  when a search runs with a smaller budget (evaluation matches, the live site's smaller bots), m is
-  automatically reduced until every round-0 candidate can receive at least 4
-  visits, with a floor of 2 candidates.</p>
+<figure class="fig" id="fig-tree">
+  <figcaption>fig 1 &middot; <b>a tree edge is a single stone</b> &middot; hover or tab through nodes and the backup path</figcaption>
+  <!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §7.1 — edge = stone; sign flip by node-player vs leaf-player
+       comparison; win on first stone => terminal, second stone never exists; terminals back up exact ±1 -->
+  <svg class="tree-svg" viewBox="0 0 760 400" role="group"
+       aria-label="Four tree levels: two consecutive P0 levels, then two consecutive P1 levels; a terminal node at depth 1; a highlighted backup path with signs.">
+    <!-- depth labels -->
+    <text class="lvl" x="14" y="56">d0 &middot; p0 moves &middot; stone 1</text>
+    <text class="lvl" x="14" y="148">d1 &middot; p0 moves &middot; stone 2</text>
+    <text class="lvl" x="14" y="240">d2 &middot; p1 moves &middot; stone 1</text>
+    <text class="lvl" x="14" y="332">d3 &middot; p1 moves &middot; stone 2</text>
 
-  <figure class="fig" id="fig-gumbel">
-    <div class="fig-controls" role="group" aria-label="Gumbel draw controls">
-      <button id="g-draw" type="button">Draw g ~ Gumbel(0,1)</button>
-      <button id="g-draw100" type="button">Draw &times;100</button>
-      <button id="g-reset" type="button">Reset counts</button>
-      <label for="g-tau">&tau; <input type="range" id="g-tau" min="1" max="2.5" step="0.1" value="1.5"></label>
-      <span class="readout" id="g-tau-read">&tau; = 1.5</span>
-      <span class="readout" id="g-count">draws: 0</span>
-    </div>
-    <svg id="g-svg" viewBox="0 0 720 400" role="img" aria-label="Interactive bar chart: 20 candidate moves with network priors, Gumbel noise stacked on scaled logits, and the top 8 candidates highlighted after each draw"></svg>
-    <figcaption><strong>Sampling the root candidates.</strong> Top panel: the network prior
-    softmax(logits) over 20 illustrative moves; dashes mark softmax(logits/&tau;) and dots the
-    empirical frequency each move wins the <em>first</em> pick across repeated draws; the two
-    converge.
-    Bottom panel: one draw. Solid bars are logit/&tau;; the lighter segment stacked on each is that
-    draw's Gumbel noise (drawn downward when negative). The m&nbsp;=&nbsp;8 highest totals (outlined,
-    ticked) become this move's candidates. Raising &tau; shrinks the deterministic bars relative to
-    the noise: the draw flattens and low-prior moves are sampled more often. Illustrative logits;
-    m is 8 here for legibility, 32 in training.</figcaption>
-  </figure>
+    <!-- plain edges (each edge = one stone, dot colored by who placed it) -->
+    <path class="edge" d="M400 68 L250 128"/>
+    <path class="edge" d="M400 68 L560 128"/>
+    <path class="edge" d="M400 160 L330 220"/>
+    <path class="edge" d="M470 252 L530 312"/>
 
-  <h2 id="sh">Sequential halving</h2>
+    <!-- highlighted backup path: root -> B -> D -> leaf E -->
+    <g class="bkpath" tabindex="0" data-k="backup path"
+       data-info="Leaf E evaluates to v from its own side-to-move's view (P1). Walking up: D is P1's node, same player as the leaf, so it accumulates +v; B is P0's, so −v; the root is P0's, so −v again. Two consecutive −v on the two P0 levels — the sign follows the player comparison, never a turn counter.">
+      <path class="edge bk" d="M400 68 L400 128"/>
+      <path class="edge bk" d="M400 160 L470 220"/>
+      <path class="edge bk" d="M470 252 L410 312"/>
+      <text class="sgn" x="412" y="102">&minus;v</text>
+      <text class="sgn" x="452" y="196">&minus;v</text>
+      <text class="sgn" x="420" y="288">+v</text>
+    </g>
 
-  <!-- SH structure: tree.rs rounds_for = ceil(log2 m); seed_gumbel_round_caps: per-survivor
-       cumulative cap = entry_visits + floor(budget/(R·|A_r|)), min 1; barrier maybe_advance_gumbel_round
-       requires ALL survivors at cap (and a drained slot, search.rs:1519-1540); rank by
-       g(a)+logits(a)+σ(completedQ(a)); keep ceil(|A_r|/2); final survivor cap = u32::MAX.
-       σ: tree.rs gumbel_sigma = (c_visit + max_b N(b))·c_scale·q, c_visit=50, c_scale=1.0.
-       completedQ/v_mix: tree.rs gumbel_completed_q. -->
-  <p>The visit budget <code>n</code> for the move is then run as a knockout tournament over the m
-  candidates, in <code>R&nbsp;=&nbsp;&lceil;log&#8322;&nbsp;m&rceil;</code> rounds. Each round, every
-  surviving candidate receives an <em>equal</em> quota of
-  <code>&lfloor;n&nbsp;/&nbsp;(R&nbsp;&middot;&nbsp;|A&#7523;|)&rfloor;</code> fresh visits (at least
-  one). When all survivors have met their quota (the round cannot advance while any
-  evaluation is still in flight), they are ranked and the worse half is eliminated,
-  keeping <code>&lceil;|A&#7523;|/2&rceil;</code>, until one remains. The final survivor absorbs
-  whatever budget is left. The ranking score is</p>
+    <!-- edge stones: blue = placed by P0, red = placed by P1 -->
+    <circle class="estone" cx="325" cy="98" r="4" fill="var(--p0)"/>
+    <circle class="estone" cx="400" cy="98" r="4" fill="var(--p0)"/>
+    <circle class="estone" cx="480" cy="98" r="4" fill="var(--p0)"/>
+    <circle class="estone" cx="365" cy="190" r="4" fill="var(--p0)"/>
+    <circle class="estone" cx="435" cy="190" r="4" fill="var(--p0)"/>
+    <circle class="estone" cx="440" cy="282" r="4" fill="var(--p1)"/>
+    <circle class="estone" cx="500" cy="282" r="4" fill="var(--p1)"/>
 
-  <p class="eq">g(a) + logit(a) + &sigma;(q&#770;(a)) &nbsp;&nbsp;where&nbsp;&nbsp; &sigma;(q) = (c_visit + max&#8322; N(b)) &middot; c_scale &middot; q</p>
+    <!-- nodes: circle color = side to move at the node -->
+    <g class="tnode p0" tabindex="0" data-k="root &middot; d0 &middot; p0 to move"
+       data-info="The root. Side-to-move P0, first stone of its turn. Every node stores its player; a backup compares this stored player against the leaf's player to decide the sign of the contribution.">
+      <circle class="body" cx="400" cy="52" r="16"/><text class="nlab" x="400" y="56">R</text>
+    </g>
+    <g class="tnode p0" tabindex="0" data-k="node A &middot; d1 &middot; p0 to move again"
+       data-info="P0 placed one stone; the game hands P0 the move again for the turn's second stone. Two consecutive tree levels share the same side-to-move — the tree never models a 'turn', only stones.">
+      <circle class="body" cx="250" cy="144" r="16"/><text class="nlab" x="250" y="148">A</text>
+    </g>
+    <g class="tnode p0" tabindex="0" data-k="node B &middot; d1 &middot; p0 to move again"
+       data-info="Same as A: P0's first stone is placed, P0 moves again. A leaf value below is added with its sign flipped iff the node's player differs from the leaf's player — so B and the root (both P0) always receive the same sign.">
+      <circle class="body" cx="400" cy="144" r="16"/><text class="nlab" x="400" y="148">B</text>
+    </g>
+    <g class="tnode term" tabindex="0" data-k="terminal &middot; win on stone 1"
+       data-info="P0's first stone completed six-in-a-row. The engine checks after every stone, so this node is terminal — the second stone of the turn never exists as a tree level. It backs up exact ±1, not a network value.">
+      <circle class="body" cx="560" cy="144" r="16"/><text class="nlab" x="560" y="148">&plusmn;1</text>
+    </g>
+    <g class="tnode p1" tabindex="0" data-k="node C &middot; d2 &middot; p1 to move"
+       data-info="P0's second stone ended the turn; side-to-move flips to P1 for the first stone of its turn.">
+      <circle class="body" cx="330" cy="236" r="16"/><text class="nlab" x="330" y="240">C</text>
+    </g>
+    <g class="tnode p1" tabindex="0" data-k="node D &middot; d2 &middot; p1 to move"
+       data-info="P0's second stone ended the turn; P1 moves. On the highlighted backup, D's player (P1) equals the leaf's player, so D accumulates +v with no flip.">
+      <circle class="body" cx="470" cy="236" r="16"/><text class="nlab" x="470" y="240">D</text>
+    </g>
+    <g class="tnode p1" tabindex="0" data-k="leaf E &middot; d3 &middot; p1 to move again"
+       data-info="P1 placed its first stone; P1 moves again. The network evaluates this leaf to v from the side-to-move's (P1's) perspective; the backup walks the path comparing players: D gets +v, B gets −v, root gets −v.">
+      <circle class="body" cx="410" cy="328" r="16"/><text class="nlab" x="410" y="332">E</text>
+    </g>
+    <g class="tnode p1" tabindex="0" data-k="node F &middot; d3 &middot; p1 to move again"
+       data-info="Sibling of E: another candidate second stone for P1's turn.">
+      <circle class="body" cx="530" cy="328" r="16"/><text class="nlab" x="530" y="332">F</text>
+    </g>
 
-  <p>with <code>c_visit&nbsp;=&nbsp;50</code>, <code>c_scale&nbsp;=&nbsp;1.0</code>, and
-  <code>max&#8322;&nbsp;N(b)</code> the largest visit count any root move earned <em>this move</em>
-  (on a reused tree, inherited visits are subtracted out so stale counts cannot inflate &sigma;).
-  Here <code>q&#770;</code> is the <em>completed</em> Q: a candidate with visits reports its
-  measured average; one without visits gets an interpolation of the node's own value
-  estimate and the visit-weighted average of its searched siblings.
-  At around 20 visits the &sigma; multiplier is already &asymp;70, so
-  a small measured value difference outweighs any logit gap. The prior and the
-  noise decide which candidates <em>enter</em>; measured Q decides which <em>survive</em>.</p>
+    <!-- terminal annotation -->
+    <text class="ann" x="600" y="120">win on stone 1 &rarr; terminal</text>
+    <text class="ann dim" x="600" y="136">second stone never exists;</text>
+    <text class="ann dim" x="600" y="152">backs up exact &plusmn;1</text>
+    <!-- backup annotation -->
+    <text class="ann dim" x="470" y="380">leaf value v is from the leaf&rsquo;s side-to-move (p1) view</text>
+    <text class="ann" x="130" y="102">same sign twice &mdash; flip follows</text>
+    <text class="ann" x="130" y="118">player comparison, not depth</text>
+  </svg>
+  <div class="fig-readout" id="ro1" aria-live="polite">
+    <span class="ro-k">stone-per-edge tree</span>
+    <span class="ro-t">hover a node for its side-to-move, or the highlighted path for how the backup signs work.</span>
+  </div>
+</figure>
 
-  <p>The schedule spends the budget equally at first, then concentrates on moves that survive
-  ranking. A low-prior move with a strong measured Q only has to out-measure half the
-  field each round to keep earning visits.</p>
+<h2 id="gumbel"><span class="sec-no">02</span>the root: gumbel-top-m + sequential halving</h2>
 
-  <figure class="fig" id="fig-sh">
-    <div class="fig-controls" role="group" aria-label="Sequential halving controls">
-      <button id="sh-play" type="button">Play</button>
-      <button id="sh-step" type="button">Step round</button>
-      <button id="sh-reset" type="button">Reset</button>
-      <label><input type="radio" name="sh-preset" value="lucky" checked> lucky prior</label>
-      <label><input type="radio" name="sh-preset" value="gem"> hidden gem</label>
-      <span class="readout" id="sh-status">round 1/3 &middot; quota 21</span>
-    </div>
-    <svg id="sh-svg" viewBox="0 0 720 340" role="img" aria-label="Animated sequential-halving bracket: eight candidate columns accumulate visits round by round; the worse half grays out each round until one survivor is crowned"></svg>
-    <figcaption><strong>The tournament.</strong> Eight candidates (m&nbsp;=&nbsp;8 here for
-    legibility), budget n&nbsp;=&nbsp;512, so R&nbsp;=&nbsp;3 rounds with per-survivor quotas
-    21&nbsp;&rarr;&nbsp;42&nbsp;&rarr;&nbsp;85. Bars grow as visits land; each column shows its
-    running q&#770;. At each barrier the survivors are ranked by g&nbsp;+&nbsp;logit&nbsp;+&nbsp;&sigma;(q&#770;)
-    and the bottom half grays out. In <em>lucky prior</em>, the highest-prior move measures mediocre
-    and is dropped once &sigma; outweighs its logit head start. In <em>hidden gem</em>, a
-    seventh-ranked prior with a high true Q wins the bracket. Each reset redraws g and the
-    simulated evaluations: the elimination order varies run to run, while a real Q edge keeps
-    winning.</figcaption>
-  </figure>
+<p>
+One Gumbel noise value <code>g(a)</code> is drawn per legal root action, and
+the top <b>m&nbsp;=&nbsp;16</b> actions by <code>g(a)&nbsp;+&nbsp;logits(a)</code>
+become the candidates. The tactical-safety scan (&sect;04 below) force-includes
+any threat-participating cells that missed the cut, so the candidate set can
+exceed 16. <b>Sequential Halving</b> then spends the 256-visit budget:
+candidates get equal visits per round, and the worse half is eliminated each
+round &mdash; 4 rounds at m&nbsp;=&nbsp;16 &mdash; ranked by
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §7.2; configs/hexfield_eq_main_2.toml gumbel_m = 16,
+     search_visits = 256, tss_enabled = true -->
+</p>
 
-  <p>The bracket above is a simulation for legibility. Below is the <strong>measured</strong>
-  ladder: a real 512-visit search with the served shrimp_main_7 profile (ep70 net) on a quiet
-  middlegame position, replayed round by round. At this budget the configured m&nbsp;=&nbsp;32 is
-  calibrated down to <strong>16 candidates</strong> (32 would leave round 0 only 3 visits per
-  candidate, under the 4-visit floor), giving R&nbsp;=&nbsp;4 rounds with per-survivor quotas
-  8&nbsp;&rarr;&nbsp;16&nbsp;&rarr;&nbsp;32&nbsp;&rarr;&nbsp;64, cumulative caps
-  8&nbsp;/&nbsp;24&nbsp;/&nbsp;56&nbsp;/&nbsp;120. The measured final visit counts land exactly on
-  those tiers.</p>
+<div class="eq">g(a) + logits(a) + &sigma;(completedQ(a)),&ensp;&sigma;(q) = (50 + max<sub>b</sub> N(b)) &middot; q</div>
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §7.2; configs/hexfield_eq_main_2.toml gumbel_c_visit = 50.0, gumbel_c_scale = 1.0 -->
 
-  <figure class="fig" id="fig-ladder">
-    <div class="fig-controls" role="group" aria-label="Measured ladder controls">
-      <button id="L-play" type="button">Play</button>
-      <button id="L-step" type="button">Step round</button>
-      <button id="L-reset" type="button">Reset</button>
-      <span class="readout" id="L-status">loading&hellip;</span>
-    </div>
-    <svg id="L-svg" viewBox="0 0 720 372" role="img" aria-label="The measured sequential-halving ladder: sixteen real candidate moves accumulate visits round by round; half are eliminated at each barrier until the played move remains"></svg>
-    <figcaption><strong>The measured ladder</strong> (data/search_compare.json, shrimp_main_7 profile,
-    ep70 net, 512 visits, seed fixed). Candidates, logits, priors, final visit counts and q&#770;
-    are <em>measured</em>; the round boundaries and quotas are the SH schedule recomputed from the
-    algorithm at this budget, and the snapshot generator asserts the measured histogram matches it
-    exactly, which is what lets the rounds be replayed from final counts. Eliminations are read off
-    the final counts (a candidate eliminated after round r holds exactly that round's cumulative
-    cap). The q&#770; shown is the final measured value (the per-round trajectory is not recorded),
-    and the Gumbel noise g is internal to the engine and not exported. Columns are sorted by
-    logit; the played move is the LCB pick over the finalists.</figcaption>
-  </figure>
+<p>
+<code>completedQ</code> is the child&rsquo;s mean value where visited, and a
+visit-weighted blend of the node value and the visited children&rsquo;s
+prior-weighted average where not. The &sigma; transform is the heart of the
+scheme: as visits accumulate, the scale <code>50&nbsp;+&nbsp;max<sub>b</sub>&nbsp;N(b)</code>
+grows, and measured value counts for more and more against the fixed
+prior-plus-noise term the candidates started from.
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §7.2 -->
+</p>
 
-  <h2 id="compare">One budget, two searches</h2>
+<figure class="fig fig-wide" id="fig-sh">
+  <figcaption>fig 2 &middot; <b>sequential halving at the root</b> &middot; illustrative logits &amp; values &middot; draw gumbels, then step rounds</figcaption>
+  <!-- Real mechanics from HEXFIELD_EQ_EXPLAINER.md §7.2 / configs/hexfield_eq_main_2.toml:
+       m = 16 candidates, 256-visit budget, 4 rounds, worse half eliminated per round, ranking
+       g(a) + logits(a) + σ(completedQ(a)) with σ(q) = (50 + max_b N(b))·q, recorded target
+       π′ = softmax(logits + σ(completedQ)). Quota schedule is the equal per-round split:
+       256/4 = 64 visits per round → 16×4, 8×8, 4×16, 2×32 (finalists end at 4+8+16+32 = 60).
+       The logits vector, hidden true values, and the visit-shrinking value noise are ILLUSTRATIVE
+       (no trained weights exist); gumbels are real Gumbel(0) samples from a seeded PRNG. -->
+  <div class="sh-status" id="shStatus">&nbsp;</div>
+  <div class="sh-wrap" id="shWrap" role="group" aria-label="16 candidate bars filling with visits and being halved"></div>
+  <div class="sh-final" id="shFinal">
+    <div class="shf-title">after the last round &mdash;
+      <span class="sw v"></span>visit histogram N/256 (schedule artifact) &ensp;vs&ensp;
+      <span class="sw p"></span>&pi;&prime; = softmax(logits + &sigma;(completedQ)) &mdash; the recorded target</div>
+    <div class="shf-row" id="shfRow"></div>
+  </div>
+  <div class="fig-controls">
+    <button id="shDraw" type="button">draw gumbels</button>
+    <button id="shStep" type="button">step round</button>
+    <button id="shPlay" type="button">play all</button>
+    <button id="shReset" type="button">reset</button>
+    <span class="spacer"></span>
+    <span class="val" id="shSigma">&sigma; scale = 50 + 0 = 50</span>
+  </div>
+  <div class="fig-readout" id="ro2" aria-live="polite">
+    <span class="ro-k">sequential halving</span>
+    <span class="ro-t">bars fill with visits; order is the live ranking g + logits + &sigma;(q&#770;). hover a bar for its score components.</span>
+  </div>
+</figure>
 
-  <!-- All numbers here are measured values from data/search_compare.json (seed 20260705):
-       gumbel: 16 moves visited, counts {120x2, 56x2, 24x4, 8x8}, played (2,-2) q .9218, value .6858;
-       puct: 327 of 512 visits, 7 moves visited, leader (-1,0) n=229 q .733, early_stopped=true.
-       Early-stop semantics: search.rs early_stop_ready (see source note at the top of this file). -->
-  <p>The two eras structure the same budget differently, and the difference is visible on one
-  position. The figure below runs the real thing once per side, through the same
-  <code>SearchProfile</code> invocation the site serves bots with: the <strong>shrimp_main_7</strong>
-  profile (Gumbel root + sequential halving, ep70 net) and the <strong>shrimp_main_5</strong>
-  profile (PUCT root, that run's ep105 net), same quiet middlegame, 512 visits each. The Gumbel
-  side spreads its budget over the calibrated 16-candidate set in the schedule's tiers &mdash;
-  every candidate gets at least 8 measured visits, the two finalists 120 each &mdash; then picks
-  between well-measured finalists. The PUCT side grows one tree greedily from the prior: the leader
-  absorbs 229 visits, only 7 moves receive any at all, and the search stopped itself 185 visits
-  short of the budget once the remaining budget could not overtake the visit leader (and the LCB
-  pick agreed). Neither shape is free: SH buys a calibrated comparison across a candidate set,
-  PUCT buys depth on the line it already believes. The two sides also disagree on the move here;
-  note they are different networks as well as different searches, so this is a portrait of two
-  served bots, not a controlled search-only ablation.</p>
+<div class="note">
+The illustrative values are rigged the way real searches often are: the
+highest-logit candidate is <em>not</em> the best move. Watch the ranking
+re-sort as &sigma;(q&#770;) outgrows the prior &mdash; and note the end state:
+the finalists&rsquo; visit counts are equal by construction (the schedule gave
+them identical quotas), while &pi;&prime; concentrates on the winner. Under
+Sequential Halving, visit counts are a schedule artifact; the recorded
+training target is &pi;&prime;.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §7.4 "visit counts are a schedule artifact" -->
+</div>
 
-  <figure class="fig" id="fig-compare">
-    <div class="fig-controls">
-      <span class="readout" id="cmp-read">tap a shaded cell for its visit count, q&#770; and prior</span>
-    </div>
-    <div class="cmp-flex">
-      <div class="cmp-side">
-        <div class="cmp-tag" id="cmp-tag-g">gumbel + SH &middot; ep70</div>
-        <svg id="cmp-g" role="img" aria-label="Board with visit-count heat for the Gumbel search"></svg>
-      </div>
-      <div class="cmp-side">
-        <div class="cmp-tag" id="cmp-tag-p">puct &middot; main_5 ep105</div>
-        <svg id="cmp-p" role="img" aria-label="Board with visit-count heat for the PUCT search"></svg>
-      </div>
-    </div>
-    <div class="cmp-table" id="cmp-table"></div>
-    <figcaption><strong>Gumbel vs PUCT, 512 visits each, measured.</strong> Heat = fraction of that
-    side's visits on the cell; the ring marks the played move. The Gumbel heat is a 16-cell tier
-    pattern (the SH schedule); the PUCT heat is one dominant cell plus a handful of probes. Both
-    searches ran on CPU with the site's serve settings (virtual batch 32, temperature 0);
-    data/search_compare.json.</figcaption>
-  </figure>
+<h2 id="interior"><span class="sec-no">03</span>the interior: visit shares chase &pi;&prime;</h2>
 
-  <h2 id="tss">Threat-space search</h2>
+<p>
+Below the root, selection is deterministic &mdash; no noise is injected
+anywhere in the search. Each interior node computes its own improved policy
+<code>&pi;&prime; = softmax(logits + &sigma;(completedQ))</code> over its
+candidates and visits the action maximizing
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §7.3 -->
+</p>
 
-  <!-- threats_shared.rs: threat = active single-colour length-6 window with count >= 4;
-       B = placements_remaining (2 FirstStone, 1 Opening/SecondStone); own win-now = count-5 any B,
-       count-4 only B==2; defense = min hitting set over opponent windows' empties, forced loss if > B.
-       tactical_cells = own winning completions ∪ empties of every opponent >=4 window.
-       Force-include: tree.rs init_gumbel_root — "Tactical cells are added to the m budget, not
-       counted against it." Also injected at every node expansion (add_node_from_eval) and used as a
-       leaf verdict override + a played-move guard (search.rs select_continuous_leaves,
-       tactical_guard_weights). -->
-  <p>A sampled candidate set can fail to include the one move that blocks a four. A deterministic
-  tactical scanner runs alongside the search to close that gap. It scans the board's length-6
-  windows and flags any
-  <em>active</em> window (all one colour) holding 4 or more stones. From those windows it
-  derives the phase-aware
-  <strong>tactical set</strong>: the cells that complete an own win this turn, plus every empty cell
-  of every opponent threat window. Defense is computed as a hitting set: one stone in any
-  empty of a threat window neutralizes it, and if no <code>B</code>-stone hitting set covers all
-  opponent windows (B&nbsp;=&nbsp;2 on the turn's first stone, 1 otherwise), the position is scored
-  as a proven loss.</p>
+<div class="eq">&pi;&prime;(a) &minus; N(a) / (1 + &Sigma;<sub>b</sub> N(b))</div>
 
-  <p>At the root, every legal tactical cell is <strong>force-included in the candidate
-  set</strong>: appended in addition to the m budget, regardless of its logit+noise rank. The draw
-  therefore cannot miss the blocking move. The same scanner also
-  injects tactical cells as guaranteed children at every expanded node, overrides leaf values with
-  proven win/loss verdicts, and vetoes a proven-losing move at the final pick.</p>
+<p>
+&mdash; the action whose visit share lags its improved-policy share the most.
+Applied repeatedly, the rule is a derandomized sampler: the visit distribution
+tracks &pi;&prime; as closely as integer counts allow, with no explorative
+randomness needed. Leaves are selected up to <b>96 at a time per game</b>
+under a virtual-loss of 1.0 (each pending leaf counts as a visit until its
+evaluation returns), evaluated as one batch, then backed up.
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §7.3; configs/hexfield_eq_main_2.toml virtual_batch_size = 96 -->
+</p>
 
-  <figure class="fig" id="fig-tss">
-    <div class="fig-controls" role="group" aria-label="Threat-space search controls">
-      <button id="t-draw" type="button">Draw candidates</button>
-      <button id="t-draw25" type="button">Draw &times;25</button>
-      <label><input type="checkbox" id="t-toggle"> threat-space injection</label>
-      <span class="readout" id="t-stat">block in candidates: &ndash;</span>
-    </div>
-    <svg id="t-svg" viewBox="0 0 720 330" role="img" aria-label="Hex board with a four-in-a-row threat; drawn candidate cells are outlined, and with injection enabled the blocking cells are always included and marked"></svg>
-    <figcaption><strong>Tactical injection at the root.</strong> Red has four in a row in a live
-    6-window (one end already blocked); blue, to move, must play one of the two marked empties
-    (&#9651;) or lose. Each draw samples m&nbsp;=&nbsp;8 candidates (outlined) from an illustrative
-    policy over the empty cells. With injection <em>off</em>, repeated draws sometimes miss both
-    blocking cells; the counter tracks this. With injection <em>on</em>, the scanner's tactical
-    cells are always appended to the candidate set (solid red outline, "+TSS"), beyond the m
-    budget.</figcaption>
-  </figure>
+<figure class="fig" id="fig-int">
+  <figcaption>fig 3 &middot; <b>interior selection</b> &middot; illustrative &pi;&prime; over 5 children &middot; ticks mark &pi;&prime;, fills are visit shares</figcaption>
+  <!-- Rule from HEXFIELD_EQ_EXPLAINER.md §7.3: visit argmax_a π′(a) − N(a)/(1+Σ_b N(b)).
+       The π′ vector [.40 .26 .16 .11 .07] is ILLUSTRATIVE (it would come from
+       softmax(logits + σ(completedQ)) at the node; held fixed here). Batch button = 96,
+       the per-game leaf batch under virtual-loss 1.0 (virtual_batch_size = 96). -->
+  <div class="is-wrap" id="isWrap" role="group" aria-label="Five children: visit-share fill approaching a π′ target tick"></div>
+  <div class="fig-controls">
+    <button id="isV1" type="button">visit &times;1</button>
+    <button id="isV10" type="button">visit &times;10</button>
+    <button id="isV96" type="button">visit &times;96 &middot; one leaf batch</button>
+    <button id="isReset" type="button">reset</button>
+    <span class="spacer"></span>
+    <span class="val" id="isTotal">&Sigma;N = 0</span>
+  </div>
+  <div class="fig-readout" id="ro3" aria-live="polite">
+    <span class="ro-k">interior rule</span>
+    <span class="ro-t">the outlined child is the current argmax of &pi;&prime;(a) &minus; N(a)/(1+&Sigma;N). press visit and watch the shares converge.</span>
+  </div>
+</figure>
 
-  <h2 id="scheduler">The batched scheduler</h2>
+<div class="note">
+Nothing here is stochastic: no Dirichlet noise, no forced playouts, anywhere.
+Exploration comes from exactly three places &mdash; the root Gumbel draw, the
+play-time temperature (&sect;04), and the openings mix (&sect;05).
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §7.3; config root_dirichlet_noise_fraction = 0.0, forced_playout_k = 0.0 -->
+</div>
 
-  <!-- run_continuous (search.rs): one slot per game; select_continuous_pass caps per-slot in-flight
-       leaves at virtual_batch_size (48 selfplay / 32 serve via bots.py SearchProfile); leaves queue and
-       flush to the evaluator (flush_target = 1024 in training); virtual loss diversifies in-flight
-       descents; cache.rs FIFO eval cache 262,144 states keyed by state hash + duplicate merging;
-       tree reuse: advance_root promotes the played child, fresh gumbel draw per move (SEED_STREAM_GUMBEL,
-       mix_seed(base_seed, game_key, ply)); active_root_limit 192 (config) under hard cap 512. -->
-  <p>A single tree produces
-  leaf positions one at a time, and evaluating one position at a time leaves the device
-  mostly idle. Shrimp's driver is a <strong>continuous batched scheduler</strong>. Every active game
-  has a slot with its own tree; each pass, every slot descends its tree and emits leaf positions
-  until it has up to <code>virtual_batch_size</code> evaluations in flight (48 during training, 32
-  on this site). A <em>virtual loss</em> temporarily lowers each in-flight path's value so parallel
-  descents spread across different lines. All slots' leaves land in a shared queue, which
-  is flushed to the network as one large batch; results fan back, back up their trees, and the slots
-  immediately produce more work. Duplicate positions in a batch are evaluated once, and a bounded
-  FIFO cache (262,144 entries, keyed by a 64-bit hash of the position) means a re-visited position
-  costs a lookup instead of a forward pass.</p>
+<h2 id="move"><span class="sec-no">04</span>choosing the move &mdash; and what gets recorded</h2>
 
-  <p>When a move is played, the chosen child is
-  promoted to be the new root and keeps its whole subtree of visits. Each new move gets a fresh
-  Gumbel draw over the promoted root, and the halving quotas count only visits earned since
-  promotion, so reuse does not distort the tournament. The sequential-halving barrier fires only
-  when a slot has zero evaluations in flight, so rounds never advance
-  on partially backed-up statistics. Training runs 192 games per device this way; the public site
-  uses the same scheduler, so several visitors can each play a searched opponent on one
-  device.</p>
+<p>
+Two different outputs leave the root, and they are not the same thing. The
+recorded <b>training target</b> is &pi;&prime; at the root &mdash; the improved
+policy &mdash; not the visit histogram; the raw root logits are recorded
+alongside it. The <b>played move</b> is sampled from the root visit
+distribution under a temperature schedule
+<code>T(ply) = max(0.15, 0.5<sup>ply/20</sup>)</code>, with candidates
+eliminated in the first halving round removed from the sampling distribution.
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §7.4; configs/hexfield_eq_main_2.toml temperature = 1.0,
+     temperature_floor = 0.15, temperature_halflife_plies = 20.0, gumbel_play_prune = true,
+     export_root_prior_logits = true -->
+</p>
 
-  <figure class="fig" id="fig-sched">
-    <div class="fig-controls" role="group" aria-label="Scheduler animation controls">
-      <button id="s-play" type="button">Pause</button>
-      <label for="s-lanes">games <input type="range" id="s-lanes" min="1" max="8" step="1" value="4"></label>
-      <span class="readout" id="s-lanes-read">4 lanes</span>
-      <span class="readout" id="s-fill">batch fill: &ndash;</span>
-      <span class="readout" id="s-busy">evaluator busy: &ndash;</span>
-      <span class="note">illustrative timing, not measured</span>
-    </div>
-    <svg id="s-svg" viewBox="0 0 720 300" role="img" aria-label="Animated lane diagram: game lanes emit leaf evaluation requests into a shared batching queue, the evaluator consumes batches, and results fan back to the lanes"></svg>
-    <figcaption><strong>The batching loop.</strong> Each lane is one game's search slot, emitting
-    leaf requests (dots) into the shared queue whenever it has in-flight headroom. The evaluator
-    consumes the queue in batches and results fan back to their trees. Drag the slider: with one
-    lane the evaluator starves between requests; with more lanes batches fill and evaluator
-    utilization climbs, which is what lets one device serve many concurrent games. Timings are
-    illustrative.</figcaption>
-  </figure>
+<figure class="fig fig-wide" id="fig-temp">
+  <figcaption>fig 4 &middot; <b>the temperature schedule</b> &middot; T(ply) = max(0.15, 0.5<sup>ply/20</sup>) &middot; real function &middot; drag the slider or hover the plot</figcaption>
+  <!-- src: HEXFIELD_EQ_EXPLAINER.md §7.4; config temperature = 1.0, temperature_floor = 0.15,
+       temperature_halflife_plies = 20.0 → halflife at ply 20 (T = 0.5), floor 0.15 reached at
+       ply = 20·log2(1/0.15) ≈ 54.7. Annotation cards: root_policy_temperature = 1.05,
+       gumbel_play_prune = true, engine threat-scan guards, lcb_z = 1.6 + moves-left tie-break. -->
+  <svg class="tp-svg" id="tpSvg" viewBox="0 0 760 310" role="group"
+       aria-label="Line plot of the play temperature against ply: exponential decay with halflife 20 plies, clamped at a floor of 0.15 from about ply 55."></svg>
+  <div class="anno-rows">
+    <div class="anno" tabindex="0" data-k="root prior &middot; temperature 1.05"
+         data-info="Before the candidate draw, the raw policy logits are softened at a root prior temperature of 1.05 — a slight flattening of the net's prior, at the root only.">
+      <b>root prior</b>temperature 1.05 on the net&rsquo;s logits</div>
+    <div class="anno" tabindex="0" data-k="play prune &middot; first-round eliminations"
+         data-info="Candidates eliminated in the FIRST halving round are removed from the sampling distribution entirely — the temperature can revive a late elimination, but never a first-round one.">
+      <b>play prune</b>1st-round-eliminated moves never sampled</div>
+    <div class="anno" tabindex="0" data-k="guards &middot; engine threat scan"
+         data-info="Two guards run before selection: an immediate own win is played unconditionally, and moves that ignore an opponent's standing threat are zeroed out of the distribution. Both come from the engine's threat scan, not the network.">
+      <b>two guards</b>win played &middot; threat-ignoring moves zeroed</div>
+    <div class="anno" tabindex="0" data-k="evaluation games &middot; T = 0"
+         data-info="At temperature 0 — evaluation games — selection is a greedy lower-confidence-bound pick on Q: argmax of q − 1.6·σ/√n, with a decisiveness tie-break from the moves-left head.">
+      <b>eval &middot; t = 0</b>greedy LCB: q &minus; 1.6&middot;&sigma;/&radic;n</div>
+  </div>
+  <div class="fig-controls">
+    <label for="tpSlider">ply</label>
+    <input type="range" id="tpSlider" min="0" max="110" step="1" value="0">
+    <span class="val" id="tpVal">ply 0 &middot; T = 1.00</span>
+  </div>
+  <div class="fig-readout" id="ro4" aria-live="polite">
+    <span class="ro-k">temperature schedule</span>
+    <span class="ro-t">early plies sample near T = 1 for variety; by ply 55 the floor T = 0.15 makes play nearly greedy. hover the cards for the guards around sampling.</span>
+  </div>
+</figure>
 
-  <h2 id="played">Search outputs</h2>
+<h2 id="scheduler"><span class="sec-no">05</span>the continuous scheduler</h2>
 
-  <!-- Played move: search.rs select_action_with_lcb — T==0 with lcb_move_selection: LCB pick
-       (Q − z·σ/√n, z = lcb_z = 1.6, eligibility delta >= max(lcb_min_visits=8,
-       lcb_visit_fraction=0.1 · max delta)), fallback visit-argmax; TSS guard zeroes proven-losing
-       moves first; ml_final_pick decisiveness tie-break within ml_final_pick_band. At T>0 (opening
-       plies) the delta-visit histogram is sampled with gumbel_play_prune zeroing round-0 quota losers.
-       Target: gumbel_target_policy — π'(a) = softmax(logits + σ(completedQ)) with export-only
-       c_scale = gumbel_target_c_scale = 0.35. -->
-  <p>Every finished search produces two artifacts. The first is the <strong>played
-  move</strong>. At temperature zero (how this site plays), the pick starts from the argmax of this
-  move's visit histogram, then a lower-confidence-bound rule refines it: among moves with enough
-  fresh visits (at least 8, and at least 10% of the leader's), it plays the one with the best
-  <code>Q&nbsp;&minus;&nbsp;z&middot;&sigma;/&radic;n</code> at <code>z&nbsp;=&nbsp;1.6</code>.
-  This prefers a well-measured move over a lightly sampled one with a higher point estimate. A
-  decisiveness tie-break applies among near-equals, and the tactical guard vetoes any proven loser.
-  During training's few opening plies at T&nbsp;&gt;&nbsp;0, the histogram is sampled instead;
-  candidates that never survived a halving round are pruned first, since their visits came from
-  round quotas rather than survival. The second artifact is the <strong>training
-  target</strong>: the improved
-  policy <code>&pi;&prime;(a)&nbsp;=&nbsp;softmax(logits&nbsp;+&nbsp;&sigma;(completedQ))</code>, a
-  denser signal than visit counts alone. It is softened for export
-  (<code>c_scale&nbsp;=&nbsp;0.35</code>) so the network does not train on near-one-hot spikes.
-  <a href="training.html#targets">The training</a> describes how &pi;&prime; is used.</p>
+<p>
+256 games run concurrently against one GPU. Games drop pending leaves into a
+shared queue; at ~1024 pending &mdash; or when nothing can progress &mdash;
+the batch flushes to the evaluator. Duplicate positions are evaluated once per
+batch and cached across the run (a 262,144-state cache). Finished games are
+replaced immediately, so the queue never drains behind a stragglers&rsquo;
+tail. Games cap at 256 plies; there is no resignation.
+<!-- src: docs/HEXFIELD_EQ_EXPLAINER.md §7.5; configs/hexfield_eq_main_2.toml active_games = 256,
+     flush_target = 1024, cache_max_states = 262144, max_game_plies = 256 -->
+</p>
+
+<p>
+Openings supply the last exploration source: <b>35% of games</b> begin with a
+few plies &mdash; up to 8 &mdash; sampled directly from the raw prior at
+temperature 1.4, without search; those plies produce no training rows.
+<!-- src: HEXFIELD_EQ_EXPLAINER.md §7.3/§7.5; config policy_init_fraction = 0.35,
+     policy_init_max_plies = 8, policy_init_temperature = 1.4 -->
+</p>
+
+<figure class="fig fig-wide" id="fig-sched">
+  <figcaption>fig 5 &middot; <b>the continuous scheduler</b> &middot; hover or tab through the stages</figcaption>
+  <!-- src: HEXFIELD_EQ_EXPLAINER.md §7.5; configs/hexfield_eq_main_2.toml active_games = 256,
+       flush_target = 1024, cache_max_states = 262144, max_game_plies = 256,
+       policy_init_fraction = 0.35, policy_init_max_plies = 8, policy_init_temperature = 1.4 -->
+  <svg class="sysmap" viewBox="0 0 860 300" role="group"
+       aria-label="Pipeline: 256 games feed a shared leaf queue, which flushes about 1024 leaves through dedup and cache to the GPU evaluator; values and priors flow back.">
+    <defs>
+      <marker id="ah2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
+      </marker>
+    </defs>
+
+    <path class="edge" d="M190 103 H235" marker-end="url(#ah2)"/>
+    <text class="elab dim" x="212" y="94" text-anchor="middle">leaves</text>
+    <path class="edge" d="M400 103 H445" marker-end="url(#ah2)"/>
+    <text class="elab dim" x="422" y="94" text-anchor="middle">&asymp;1024</text>
+    <path class="edge" d="M610 103 H655" marker-end="url(#ah2)"/>
+    <text class="elab dim" x="632" y="94" text-anchor="middle">unique</text>
+    <path class="edge" d="M740 136 V178 H110 V140" marker-end="url(#ah2)"/>
+    <text class="elab" x="425" y="171" text-anchor="middle">values &middot; priors &rarr; backup, next selection</text>
+
+    <g class="map-node" tabindex="0" data-k="256 concurrent games"
+       data-info="256 self-play games in flight against one GPU. A finished game is replaced immediately by a fresh one, so the queue never drains behind a stragglers' tail. Games cap at 256 plies; there is no resignation.">
+      <rect x="30" y="70" width="160" height="66"/>
+      <text class="nt" x="110" y="98" text-anchor="middle">256 games</text>
+      <text class="ns" x="110" y="116" text-anchor="middle">replaced on finish</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="shared leaf queue"
+       data-info="Every game drops its pending leaves (up to 96 per game under virtual loss) into one shared queue. At about 1024 pending leaves — or earlier, whenever nothing can progress — the batch flushes to the evaluator.">
+      <rect x="240" y="70" width="160" height="66"/>
+      <text class="nt" x="320" y="98" text-anchor="middle">shared queue</text>
+      <text class="ns" x="320" y="116" text-anchor="middle">flush at &asymp;1024 pending</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="dedup + cache"
+       data-info="Duplicate positions inside a batch are evaluated once, and evaluations are cached across the whole run in a 262,144-state cache — transpositions and revisited openings cost nothing.">
+      <rect x="450" y="70" width="160" height="66"/>
+      <text class="nt" x="530" y="98" text-anchor="middle">dedup + cache</text>
+      <text class="ns" x="530" y="116" text-anchor="middle">262,144 states</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="gpu evaluator"
+       data-info="One flush becomes one batched forward pass (the serving page covers padding groups, fp16, and captured GPU graphs). Results fan back out to each game's pending leaves for backup.">
+      <rect x="660" y="70" width="160" height="66"/>
+      <text class="nt" x="740" y="98" text-anchor="middle">evaluator</text>
+      <text class="ns" x="740" y="116" text-anchor="middle">one flush &rarr; one forward</text>
+    </g>
+
+    <rect class="inset-frame" x="30" y="208" width="500" height="62"/>
+    <text class="inset-tag" x="44" y="230">openings &mdash; the third exploration source</text>
+    <g class="map-node" tabindex="0" data-k="openings &middot; 35% of games"
+       data-info="35% of games begin with up to 8 plies sampled directly from the raw prior at temperature 1.4, without any search. Those plies produce no training rows — they only diversify the positions the searched part of the game visits.">
+      <rect x="44" y="238" width="300" height="24"/>
+      <text class="ns" x="194" y="254" text-anchor="middle">&le;8 prior-sampled plies at T 1.4 &middot; no training rows</text>
+    </g>
+    <text class="elab dim" x="560" y="254" text-anchor="start">exploration = gumbel draw + play T + openings</text>
+  </svg>
+  <div class="fig-readout" id="ro5" aria-live="polite">
+    <span class="ro-k">continuous scheduler</span>
+    <span class="ro-t">hover a stage. the serving page covers what happens to a flush inside the GPU.</span>
+  </div>
+</figure>
+
+<p>
+That evaluator boundary is where the search hands off: how one GPU turns
+~1024-leaf flushes from 256 games into fixed-shape forward passes is
+<a href="systems.html">the serving</a>.
+</p>
 
 </main>
 
 <footer class="learn-footer">
-  <nav aria-label="Section pages">
-    <a class="prev" href="network.html">&larr; The network</a>
-    <a class="next" href="training.html">The training &rarr;</a>
-  </nav>
+  <div class="foot-row">
+    <a href="walkthrough.html">&larr; prev &middot; end to end</a>
+    <span class="foot-spacer"></span>
+    <a href="systems.html">next &middot; the serving &rarr;</a>
+  </div>
 </footer>
 
 <script>
-(function(){
-"use strict";
-var SVGNS="http://www.w3.org/2000/svg";
-function el(name,attrs,parent){var e=document.createElementNS(SVGNS,name);if(attrs)for(var k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
-function txt(x,y,s,attrs,parent){var a=attrs||{};a.x=x;a.y=y;var e=el("text",a,parent);e.textContent=s;return e;}
-function css(v,fb){return "var("+v+","+fb+")";}
-var C={line:css("--line","#242c35"),lineSoft:css("--line-soft","#1c232b"),text:css("--text","#d4dbe3"),
-  muted:css("--muted","#79848f"),dim:css("--dim","#4c565f"),accent:css("--accent","#e8e2d6"),
-  accentDim:css("--accent-dim","#57534a"),p0:css("--p0","#4f93ff"),p0s:css("--p0-soft","#7fb1ff"),
-  p1:css("--p1","#ff5650"),p1s:css("--p1-soft","#ff8781"),tile:css("--tile","#161b21"),bg:css("--bg","#101317")};
-var MONO="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
-var REDUCED=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-function gumbel(){var u=Math.random();u=Math.min(Math.max(u,1e-12),1-1e-12);return -Math.log(-Math.log(u));}
-function softmax(xs){var m=-Infinity,i;for(i=0;i<xs.length;i++)if(xs[i]>m)m=xs[i];var s=0,out=[];for(i=0;i<xs.length;i++){out.push(Math.exp(xs[i]-m));s+=out[i];}for(i=0;i<out.length;i++)out[i]/=s;return out;}
-function gaussian(){var u=Math.random()||1e-9,v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+(function () {
+  "use strict";
 
-/* ============================== FIG 1: Gumbel-Top-m ============================== */
-(function(){
-var svg=document.getElementById("g-svg");if(!svg)return;
-var LOGITS=[2.3,1.8,1.5,1.2,1.0,0.8,0.6,0.45,0.3,0.15,0.0,-0.2,-0.4,-0.6,-0.8,-1.0,-1.25,-1.5,-1.8,-2.2];
-var N=LOGITS.length,M=8,tau=1.5;
-var X0=48,COLW=33,BARW=20;
-function colX(i){return X0+i*COLW;}
-/* panel A: priors + frequencies (y 14..96); panel B: draw (baseline y 268) */
-var PA_BASE=96,PA_H=78,PA_SCALE=PA_H/0.34;
-var PB_BASE=268,PB_SCALE=22;
-var counts=new Array(N).fill(0),draws=0;
-var lastG=null,lastTop=null;
-/* static scaffold */
-el("line",{x1:X0-14,y1:PA_BASE,x2:X0+N*COLW,y2:PA_BASE,stroke:C.line,"stroke-width":1},svg);
-el("line",{x1:X0-14,y1:PB_BASE,x2:X0+N*COLW,y2:PB_BASE,stroke:C.line,"stroke-width":1},svg);
-txt(X0-14,26,"priors softmax(logits) / first-pick frequency",{fill:C.muted,"font-size":"11","font-family":MONO},svg);
-txt(X0-14,118,"one draw: logit/τ (solid) + g (light), top-8 outlined",{fill:C.muted,"font-size":"11","font-family":MONO},svg);
-txt(X0+N*COLW-2,396,"candidates sorted by logit · illustrative",{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"end"},svg);
-var gDyn=el("g",{},svg);
-for(var i=0;i<N;i++)txt(colX(i)+BARW/2,378,String(i+1),{fill:C.dim,"font-size":"9","font-family":MONO,"text-anchor":"middle"},svg);
-var tauSlider=document.getElementById("g-tau"),tauRead=document.getElementById("g-tau-read"),cntRead=document.getElementById("g-count");
-function render(noiseScale){
-  gDyn.textContent="";
-  var pri=softmax(LOGITS),tgt=softmax(LOGITS.map(function(l){return l/tau;})),i;
-  for(i=0;i<N;i++){ /* panel A */
-    var h=pri[i]*PA_SCALE;
-    el("rect",{x:colX(i),y:PA_BASE-h,width:BARW,height:Math.max(h,0.5),fill:C.accentDim,opacity:.75},gDyn);
-    var ty=PA_BASE-tgt[i]*PA_SCALE;
-    el("line",{x1:colX(i)-3,y1:ty,x2:colX(i)+BARW+3,y2:ty,stroke:C.p0s,"stroke-width":1.5,"stroke-dasharray":"3 2"},gDyn);
-    if(draws>0){var f=counts[i]/draws;el("circle",{cx:colX(i)+BARW/2,cy:PA_BASE-f*PA_SCALE,r:2.6,fill:C.p1s},gDyn);}
+  /* ---------- shared readout helper ---------- */
+  function readout(id, defK, defT) {
+    var ro = document.getElementById(id);
+    var k = ro.querySelector(".ro-k"), t = ro.querySelector(".ro-t");
+    return {
+      set: function (kk, tt) { k.textContent = kk; t.textContent = tt; },
+      reset: function () { k.textContent = defK; t.textContent = defT; }
+    };
   }
-  for(i=0;i<N;i++){ /* panel B */
-    var d=LOGITS[i]/tau,x=colX(i);
-    var y0=PB_BASE,y1=PB_BASE-d*PB_SCALE;
-    el("rect",{x:x,y:Math.min(y0,y1),width:BARW,height:Math.max(Math.abs(y1-y0),0.5),fill:C.accentDim},gDyn);
-    if(lastG){
-      var g=lastG[i]*(noiseScale===undefined?1:noiseScale);
-      var y2=y1-g*PB_SCALE;
-      el("rect",{x:x+2,y:Math.min(y1,y2),width:BARW-4,height:Math.max(Math.abs(y2-y1),0.5),fill:g>=0?C.p0:C.p1,opacity:.55},gDyn);
-      if(lastTop&&noiseScale===undefined&&lastTop.indexOf(i)>=0){
-        el("rect",{x:x-2,y:Math.min(y0,y2)-3,width:BARW+4,height:Math.abs(y2-y0)+6,fill:"none",stroke:C.accent,"stroke-width":1.4},gDyn);
-        txt(x+BARW/2,Math.min(y0,y2)-8,"✓",{fill:C.accent,"font-size":"11","text-anchor":"middle"},gDyn);
-      }
-    }
-  }
-  var lg=PA_BASE-72;
-  txt(X0+N*COLW-2,lg,"— softmax(logits/τ)   ● empirical",{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"end"},gDyn);
-}
-function topM(g){
-  var idx=[];for(var i=0;i<N;i++)idx.push(i);
-  idx.sort(function(a,b){return (LOGITS[b]/tau+g[b])-(LOGITS[a]/tau+g[a]);});
-  return idx.slice(0,M);
-}
-var animId=null;
-function oneDraw(animate){
-  var g=[];for(var i=0;i<N;i++)g.push(gumbel());
-  lastG=g;lastTop=topM(g);
-  counts[lastTop[0]]++;draws++;
-  cntRead.textContent="draws: "+draws;
-  if(animId)cancelAnimationFrame(animId);
-  if(!animate||REDUCED){render();return;}
-  var t0=null;
-  function frame(ts){
-    if(t0===null)t0=ts;
-    var p=Math.min((ts-t0)/420,1);
-    render(p<1?p*p*(3-2*p):undefined);
-    if(p<1)animId=requestAnimationFrame(frame);else animId=null;
-  }
-  animId=requestAnimationFrame(frame);
-}
-document.getElementById("g-draw").addEventListener("click",function(){oneDraw(true);});
-document.getElementById("g-draw100").addEventListener("click",function(){
-  for(var k=0;k<99;k++){var g=[],i;for(i=0;i<N;i++)g.push(gumbel());counts[topM(g)[0]]++;draws++;}
-  oneDraw(false);
-});
-document.getElementById("g-reset").addEventListener("click",function(){
-  counts=new Array(N).fill(0);draws=0;lastG=null;lastTop=null;cntRead.textContent="draws: 0";render();
-});
-tauSlider.addEventListener("input",function(){
-  tau=parseFloat(tauSlider.value);tauRead.textContent="τ = "+tau.toFixed(1);
-  counts=new Array(N).fill(0);draws=0;cntRead.textContent="draws: 0 (τ changed)";
-  if(lastG)lastTop=topM(lastG);
-  render();
-});
-render();
-})();
-
-/* ============================== FIG 2: Sequential halving ============================== */
-(function(){
-var svg=document.getElementById("sh-svg");if(!svg)return;
-var BUDGET=512,MCAND=8,R=3;
-var QUOTA=[Math.floor(BUDGET/(R*8)),Math.floor(BUDGET/(R*4)),Math.floor(BUDGET/(R*2))]; /* 21,42,85 */
-var PRESETS={
-  lucky:{logits:[2.4,1.7,1.3,0.9,0.6,0.3,0.0,-0.4],
-         trueQ:[0.02,0.10,0.28,0.05,-0.05,0.12,-0.15,-0.20],
-         note:"A has the top prior but a mediocre Q"},
-  gem:{logits:[2.4,1.7,1.3,0.9,0.6,0.3,0.0,-0.4],
-       trueQ:[0.05,0.02,0.08,-0.05,0.00,-0.10,0.38,-0.20],
-       note:"G is drawn on a weak prior but its Q proves out"}};
-var LABELS=["A","B","C","D","E","F","G","H"];
-var X0=70,COLW=76,BARW=40,BASE=278,VSCALE=1.15;
-var st,playing=false,rafId=null;
-var statusEl=document.getElementById("sh-status"),playBtn=document.getElementById("sh-play");
-function presetName(){var r=document.querySelector('input[name="sh-preset"]:checked');return r?r.value:"lucky";}
-function reset(){
-  var p=PRESETS[presetName()];
-  st={p:p,round:0,visits:[],sums:[],alive:[],g:[],target:[],done:false,winner:-1,spent:0};
-  for(var i=0;i<MCAND;i++){st.visits.push(0);st.sums.push(0);st.alive.push(true);st.g.push(gumbel());st.target.push(QUOTA[0]);}
-  stopPlay();render();
-}
-function stopPlay(){playing=false;playBtn.textContent="Play";if(rafId){cancelAnimationFrame(rafId);rafId=null;}}
-function qhat(i){return st.visits[i]>0?st.sums[i]/st.visits[i]:0;}
-function visitOne(i){st.visits[i]++;st.spent++;st.sums[i]+=st.p.trueQ[i]+gaussian()*0.35;}
-function aliveBelowTarget(){var out=[];for(var i=0;i<MCAND;i++)if(st.alive[i]&&st.visits[i]<st.target[i])out.push(i);return out;}
-function aliveCount(){var n=0;for(var i=0;i<MCAND;i++)if(st.alive[i])n++;return n;}
-function halve(){
-  var maxN=0,i;for(i=0;i<MCAND;i++)if(st.visits[i]>maxN)maxN=st.visits[i];
-  var scored=[];
-  for(i=0;i<MCAND;i++)if(st.alive[i])scored.push([i,st.g[i]+st.p.logits[i]+(50+maxN)*1.0*qhat(i)]);
-  scored.sort(function(a,b){return b[1]-a[1];});
-  var keep=Math.max(Math.ceil(scored.length/2),1);
-  for(i=keep;i<scored.length;i++)st.alive[scored[i][0]]=false;
-  st.round++;
-  if(aliveCount()===1||st.round>=R){
-    for(i=0;i<MCAND;i++)if(st.alive[i]){st.winner=i;st.target[i]=st.visits[i]+Math.max(BUDGET-st.spent,0);}
-    st.round=R;
-    if(BUDGET-st.spent<=0)st.done=true;
-  }else{
-    var per=QUOTA[st.round];
-    for(i=0;i<MCAND;i++)if(st.alive[i])st.target[i]=st.visits[i]+per;
-  }
-}
-function tick(nVisits){
-  if(st.done)return;
-  var given=0;
-  while(given<nVisits){
-    var open=aliveBelowTarget();
-    if(open.length===0){
-      if(st.winner>=0){st.done=true;break;}
-      halve();
-      if(st.done)break;
-      continue;
-    }
-    /* largest-deficit-first mirrors select_gumbel_root_edge */
-    var pick=open[0],bd=-1,j;
-    for(j=0;j<open.length;j++){var d=st.target[open[j]]-st.visits[open[j]];if(d>bd){bd=d;pick=open[j];}}
-    visitOne(pick);given++;
-    if(st.winner>=0&&st.visits[st.winner]>=st.target[st.winner]){st.done=true;break;}
-  }
-}
-function render(){
-  svg.textContent="";
-  el("line",{x1:30,y1:BASE,x2:690,y2:BASE,stroke:C.line},svg);
-  var i;
-  for(i=0;i<MCAND;i++){
-    var x=X0+i*COLW,h=st.visits[i]*VSCALE,alive=st.alive[i];
-    var gcol=el("g",{opacity:alive?1:0.32},svg);
-    el("rect",{x:x,y:BASE-h,width:BARW,height:Math.max(h,1),fill:alive?C.p0:C.dim,opacity:alive?0.85:1},gcol);
-    if(alive&&!st.done&&st.target[i]>st.visits[i]&&st.target[i]<9000){
-      var ty=BASE-st.target[i]*VSCALE;
-      el("line",{x1:x-3,y1:ty,x2:x+BARW+3,y2:ty,stroke:C.p0s,"stroke-width":1,"stroke-dasharray":"2 3"},gcol);
-    }
-    txt(x+BARW/2,BASE+16,LABELS[i],{fill:alive?C.text:C.dim,"font-size":"12","font-family":MONO,"text-anchor":"middle"},gcol);
-    txt(x+BARW/2,BASE+30,"logit "+st.p.logits[i].toFixed(1),{fill:C.dim,"font-size":"9","font-family":MONO,"text-anchor":"middle"},gcol);
-    txt(x+BARW/2,BASE+44,"N "+st.visits[i],{fill:alive?C.muted:C.dim,"font-size":"9","font-family":MONO,"text-anchor":"middle"},gcol);
-    if(alive&&st.visits[i]>0)txt(x+BARW/2,BASE-h-8,"q̂ "+qhat(i).toFixed(2),{fill:C.accent,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gcol);
-    if(!alive)txt(x+BARW/2,BASE-h-8,"×",{fill:C.p1,"font-size":"12","text-anchor":"middle","font-family":MONO},svg);
-    if(st.done&&i===st.winner){
-      var cy=BASE-h-34;
-      el("path",{d:"M"+(x+BARW/2-10)+","+(cy+8)+" l4,-10 l6,7 l6,-7 l4,10 z",fill:C.accent},svg);
-      txt(x+BARW/2,cy+22,"survivor",{fill:C.accent,"font-size":"10","font-family":MONO,"text-anchor":"middle"},svg);
-    }
-  }
-  txt(36,24,st.p.note,{fill:C.muted,"font-size":"11","font-family":MONO},svg);
-  txt(36,42,"score at halving: g + logit + (50 + max N)·q̂",{fill:C.dim,"font-size":"10","font-family":MONO},svg);
-  var rTxt=st.done?"done · "+st.spent+" visits spent":"round "+Math.min(st.round+1,R)+"/"+R+" · quota "+(st.winner>=0?"rest":QUOTA[Math.min(st.round,R-1)]);
-  statusEl.textContent=rTxt;
-}
-function loop(){
-  if(!playing)return;
-  tick(3);render();
-  if(st.done){stopPlay();return;}
-  rafId=requestAnimationFrame(loop);
-}
-playBtn.addEventListener("click",function(){
-  if(playing){stopPlay();return;}
-  if(st.done)reset();
-  playing=true;playBtn.textContent="Pause";
-  if(REDUCED){while(!st.done)tick(50);render();stopPlay();return;}
-  rafId=requestAnimationFrame(loop);
-});
-document.getElementById("sh-step").addEventListener("click",function(){
-  stopPlay();
-  if(st.done)return;
-  var startRound=st.round,guard=0;
-  while(!st.done&&st.round===startRound&&guard++<2000)tick(10);
-  render();
-});
-document.getElementById("sh-reset").addEventListener("click",reset);
-var radios=document.querySelectorAll('input[name="sh-preset"]');
-for(var r=0;r<radios.length;r++)radios[r].addEventListener("change",reset);
-reset();
-})();
-
-/* ============================== FIG 3: Threat-space search ============================== */
-(function(){
-var svg=document.getElementById("t-svg");if(!svg)return;
-var SIZE=26,CX=360,CY=158,M=8,TAU=1.5;
-function hx(q,r){return CX+SIZE*(Math.sqrt(3)*q+Math.sqrt(3)/2*r);}
-function hy(q,r){return CY+SIZE*1.5*r;}
-function hexPts(q,r,rad){
-  var cx=hx(q,r),cy=hy(q,r),s=rad||SIZE*0.94,pts=[];
-  for(var k=0;k<6;k++){var a=Math.PI/180*(60*k-30);pts.push((cx+s*Math.cos(a)).toFixed(1)+","+(cy+s*Math.sin(a)).toFixed(1));}
-  return pts.join(" ");
-}
-/* radius-3 disc */
-var cells=[];
-for(var q=-3;q<=3;q++)for(var r=-3;r<=3;r++)if(Math.abs(q+r)<=3)cells.push([q,r]);
-var RED=[[-2,0],[-1,0],[0,0],[1,0]],BLUE=[[-3,0]];
-var BLOCK=[[2,0],[3,0]]; /* empties of the single live >=4 window (-2..3,0) */
-function isIn(list,q,r){for(var i=0;i<list.length;i++)if(list[i][0]===q&&list[i][1]===r)return true;return false;}
-var empties=cells.filter(function(c){return !isIn(RED,c[0],c[1])&&!isIn(BLUE,c[0],c[1]);});
-/* illustrative policy: prefers cells near stones, deterministic hash jitter; the
-   blocking cells get a middling prior — the failure mode this figure is about */
-function h2(q,r){var n=(q*73856093)^(r*19349663);n=(n^(n>>13))*1274126177;n=(n^(n>>16))>>>0;return n/4294967296;}
-function distToStones(q,r){
-  var best=99,all=RED.concat(BLUE);
-  for(var i=0;i<all.length;i++){
-    var dq=q-all[i][0],dr=r-all[i][1];
-    var d=(Math.abs(dq)+Math.abs(dr)+Math.abs(dq+dr))/2;
-    if(d<best)best=d;
-  }
-  return best;
-}
-var logitOf={};
-empties.forEach(function(c){
-  var l=1.4-0.55*distToStones(c[0],c[1])+(h2(c[0],c[1])-0.5)*1.6;
-  if(isIn(BLOCK,c[0],c[1]))l-=0.9;
-  logitOf[c[0]+","+c[1]]=l;
-});
-var board=el("g",{},svg),marks=el("g",{},svg);
-cells.forEach(function(c){
-  el("polygon",{points:hexPts(c[0],c[1]),fill:C.bg,stroke:C.lineSoft,"stroke-width":1},board);
-});
-RED.forEach(function(c){el("polygon",{points:hexPts(c[0],c[1],SIZE*0.77),fill:"url(#gradS1)",stroke:"#9c3733","stroke-width":1},board);});
-BLUE.forEach(function(c){el("polygon",{points:hexPts(c[0],c[1],SIZE*0.77),fill:"url(#gradS0)",stroke:"#2b5cad","stroke-width":1},board);});
-/* threat-window empties marker (always visible) */
-BLOCK.forEach(function(c){
-  var x=hx(c[0],c[1]),y=hy(c[0],c[1]);
-  el("path",{d:"M"+x+","+(y-7)+" L"+(x+7)+","+(y+6)+" L"+(x-7)+","+(y+6)+" Z",fill:"none",stroke:C.p1s,"stroke-width":1.5},board);
-});
-txt(20,24,"red: four in a row · blue to move (1 placement)",{fill:C.muted,"font-size":"11","font-family":MONO},svg);
-txt(20,42,"△ = empties of the live 6-window (the only saving moves)",{fill:C.dim,"font-size":"10","font-family":MONO},svg);
-txt(20,310,"policy over empty cells is illustrative",{fill:C.dim,"font-size":"10","font-family":MONO},svg);
-var statEl=document.getElementById("t-stat"),toggle=document.getElementById("t-toggle");
-var nDraws=0,nHit=0;
-function draw(){
-  var scored=empties.map(function(c){return {c:c,s:logitOf[c[0]+","+c[1]]/TAU+gumbel()};});
-  scored.sort(function(a,b){return b.s-a.s;});
-  var cand=scored.slice(0,M).map(function(o){return o.c;});
-  var hitNatural=cand.some(function(c){return isIn(BLOCK,c[0],c[1]);});
-  var injected=[];
-  if(toggle.checked){
-    BLOCK.forEach(function(b){if(!cand.some(function(c){return c[0]===b[0]&&c[1]===b[1];}))injected.push(b);});
-  }
-  nDraws++;if(hitNatural||toggle.checked)nHit++;
-  marks.textContent="";
-  cand.forEach(function(c){
-    el("polygon",{points:hexPts(c[0],c[1]),fill:"none",stroke:C.accent,"stroke-width":1.6},marks);
-  });
-  injected.forEach(function(c){
-    el("polygon",{points:hexPts(c[0],c[1]),fill:"none",stroke:C.p1,"stroke-width":2.2},marks);
-    txt(hx(c[0],c[1]),hy(c[0],c[1])-SIZE*0.72,"+TSS",{fill:C.p1s,"font-size":"9","font-family":MONO,"text-anchor":"middle"},marks);
-  });
-  if(!hitNatural&&!toggle.checked){
-    txt(560,60,"block MISSED",{fill:C.p1,"font-size":"12","font-family":MONO,"text-anchor":"middle"},marks);
-  }else if(injected.length>0){
-    txt(560,60,"block injected",{fill:C.p0s,"font-size":"12","font-family":MONO,"text-anchor":"middle"},marks);
-  }else{
-    txt(560,60,"block in draw",{fill:C.muted,"font-size":"12","font-family":MONO,"text-anchor":"middle"},marks);
-  }
-  statEl.textContent="block in candidates: "+nHit+"/"+nDraws+(toggle.checked?" (TSS on)":" (TSS off)");
-}
-document.getElementById("t-draw").addEventListener("click",draw);
-document.getElementById("t-draw25").addEventListener("click",function(){for(var k=0;k<25;k++)draw();});
-toggle.addEventListener("change",function(){nDraws=0;nHit=0;draw();});
-draw();
-})();
-
-/* ============================== FIG 4: batched scheduler ============================== */
-(function(){
-var svg=document.getElementById("s-svg");if(!svg)return;
-var W=720,H=300,LANE_X=60,LANE_W=120,QX=400,QY0=250,EVX=500,EVY=90,EVW=150,EVH=120;
-var CAP=12,EVAL_TIME=55,STARVE=80,MAXIF=4,COOL=22;
-var lanesN=4,lanes=[],dots=[],queueLanes=[],busy=0,starve=0,flash=0;
-var frames=0,busyFrames=0,batches=0,fillSum=0,lastBatch=0;
-var playing=!REDUCED;
-var playBtn=document.getElementById("s-play"),lanesSlider=document.getElementById("s-lanes");
-var lanesRead=document.getElementById("s-lanes-read"),fillRead=document.getElementById("s-fill"),busyRead=document.getElementById("s-busy");
-var gStatic=el("g",{},svg),gDots=el("g",{},svg);
-function laneY(i){return 36+i*(228/Math.max(lanesN,1))+114/Math.max(lanesN,1);}
-function buildLanes(){
-  lanes=[];dots=[];queueLanes=[];busy=0;starve=0;flash=0;
-  frames=0;busyFrames=0;batches=0;fillSum=0;lastBatch=0;
-  for(var i=0;i<lanesN;i++)lanes.push({inFlight:0,cool:(i*7)%COOL});
-  drawStatic();
-}
-function drawStatic(){
-  gStatic.textContent="";
-  for(var i=0;i<lanesN;i++){
-    var y=laneY(i);
-    el("rect",{x:LANE_X,y:y-14,width:LANE_W,height:28,rx:4,fill:C.bg,stroke:C.line},gStatic);
-    txt(LANE_X+10,y+4,"game "+(i+1),{fill:C.muted,"font-size":"10","font-family":MONO},gStatic);
-    /* tiny tree glyph */
-    var tx=LANE_X+LANE_W-26,ty=y;
-    el("circle",{cx:tx,cy:ty-6,r:2.5,fill:C.accentDim},gStatic);
-    el("line",{x1:tx,y1:ty-6,x2:tx-6,y2:ty+5,stroke:C.accentDim},gStatic);
-    el("line",{x1:tx,y1:ty-6,x2:tx+6,y2:ty+5,stroke:C.accentDim},gStatic);
-    el("circle",{cx:tx-6,cy:ty+5,r:2,fill:C.accentDim},gStatic);
-    el("circle",{cx:tx+6,cy:ty+5,r:2,fill:C.accentDim},gStatic);
-  }
-  el("rect",{x:QX-16,y:QY0-CAP*15-8,width:32,height:CAP*15+16,rx:4,fill:"none",stroke:C.line},gStatic);
-  txt(QX,QY0+22,"queue",{fill:C.muted,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gStatic);
-  el("rect",{x:EVX,y:EVY,width:EVW,height:EVH,rx:6,fill:C.bg,stroke:C.line,id:"s-evbox"},gStatic);
-  txt(EVX+EVW/2,EVY+EVH/2-4,"evaluator",{fill:C.text,"font-size":"12","font-family":MONO,"text-anchor":"middle"},gStatic);
-  txt(EVX+EVW/2,EVY+EVH/2+14,"(the network)",{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gStatic);
-  txt(EVX+EVW/2,EVY-10,"batch ≤ "+CAP,{fill:C.dim,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gStatic);
-}
-function queuePos(k){return {x:QX,y:QY0-k*15-7};}
-function step(){
-  frames++;
-  var i;
-  for(i=0;i<lanesN;i++){ /* emit */
-    var L=lanes[i];
-    if(L.cool>0){L.cool--;continue;}
-    if(L.inFlight<MAXIF&&queueLanes.length<CAP*2){
-      L.inFlight++;L.cool=COOL+((i*13+frames)%9);
-      dots.push({phase:"toQ",t:0,dur:26,lane:i,x0:LANE_X+LANE_W,y0:laneY(i)});
-    }
-  }
-  for(i=dots.length-1;i>=0;i--){ /* move dots */
-    var d=dots[i];d.t++;
-    if(d.phase==="toQ"&&d.t>=d.dur){queueLanes.push(d.lane);dots.splice(i,1);}
-    else if(d.phase==="back"&&d.t>=d.dur){lanes[d.lane].inFlight=Math.max(lanes[d.lane].inFlight-1,0);dots.splice(i,1);}
-  }
-  if(busy>0){ /* evaluator */
-    busy--;busyFrames++;
-    if(busy===0){
-      for(i=0;i<lastBatch;i++){
-        var ln=queueLanes.shift();
-        if(ln===undefined)break;
-        if(ln>=lanesN){continue;}
-        dots.push({phase:"back",t:-i*2,dur:24,lane:ln,x0:EVX,y0:EVY+EVH/2});
-      }
-      flash=0;
-    }
-  }else{
-    starve++;
-    if(queueLanes.length>=CAP||(queueLanes.length>0&&starve>STARVE)){
-      lastBatch=Math.min(CAP,queueLanes.length);
-      batches++;fillSum+=lastBatch/CAP;busy=EVAL_TIME;starve=0;flash=1;
-    }
-  }
-}
-function ease(p){return p*p*(3-2*p);}
-function render(){
-  gDots.textContent="";
-  var qn=Math.min(queueLanes.length,CAP*2),k;
-  for(k=0;k<qn;k++){
-    var qp=queuePos(Math.min(k,CAP+3));
-    el("circle",{cx:qp.x,cy:qp.y,r:4.5,fill:k<CAP?C.p0:C.dim},gDots);
-  }
-  for(k=0;k<dots.length;k++){
-    var d=dots[k];if(d.t<0)continue;
-    var p=ease(Math.min(d.t/d.dur,1)),x,y;
-    if(d.phase==="toQ"){
-      var q0=queuePos(Math.min(queueLanes.length,CAP+3));
-      x=d.x0+(q0.x-14-d.x0)*p;y=d.y0+(q0.y-d.y0)*p;
-      el("circle",{cx:x,cy:y,r:4,fill:C.p0s},gDots);
-    }else{
-      var tx=LANE_X+LANE_W,ty=laneY(d.lane);
-      x=d.x0+(tx-d.x0)*p;y=d.y0+(ty-d.y0)*p-Math.sin(p*Math.PI)*40;
-      el("circle",{cx:x,cy:y,r:4,fill:C.p1s},gDots);
-    }
-  }
-  if(busy>0){
-    el("rect",{x:EVX,y:EVY,width:EVW,height:EVH,rx:6,fill:"none",stroke:C.p0,"stroke-width":2,opacity:0.35+0.65*(busy/EVAL_TIME)},gDots);
-    txt(EVX+EVW/2,EVY+EVH-12,"batch of "+lastBatch,{fill:C.p0s,"font-size":"10","font-family":MONO,"text-anchor":"middle"},gDots);
-  }
-  fillRead.textContent="batch fill: "+(batches?Math.round(100*fillSum/batches)+"%":"–")+(lastBatch?" (last "+lastBatch+"/"+CAP+")":"");
-  busyRead.textContent="evaluator busy: "+(frames>60?Math.round(100*busyFrames/frames)+"%":"–");
-}
-function loop(){
-  if(!playing)return;
-  step();render();
-  requestAnimationFrame(loop);
-}
-playBtn.addEventListener("click",function(){
-  playing=!playing;
-  playBtn.textContent=playing?"Pause":"Play";
-  if(playing)requestAnimationFrame(loop);
-});
-lanesSlider.addEventListener("input",function(){
-  lanesN=parseInt(lanesSlider.value,10);
-  lanesRead.textContent=lanesN+(lanesN===1?" lane":" lanes");
-  buildLanes();render();
-});
-buildLanes();
-if(playing){playBtn.textContent="Pause";requestAnimationFrame(loop);}
-else{playBtn.textContent="Play";for(var w=0;w<400;w++)step();render();}
-})();
-
-/* ============ FIGS: measured ladder + gumbel-vs-puct (real data) ============
-   Both figures read data/search_compare.json (learn_snapshots.py): one real
-   512-visit search per side on quiet_midgame via the served SearchProfile.
-   The ladder replays the SH schedule against the MEASURED final visit counts
-   (the generator asserts they match); logits/priors/q are measured, the
-   per-round q trajectory is not recorded, g is not exported. */
-(function(){
-var Lsvg=document.getElementById("L-svg"),Gsvg=document.getElementById("cmp-g");
-if(!Lsvg&&!Gsvg)return;
-function offline(){
-  var s=document.getElementById("L-status");
-  if(s)s.textContent="data/search_compare.json unavailable (serve over HTTP)";
-  var r=document.getElementById("cmp-read");
-  if(r)r.textContent="data/search_compare.json unavailable (serve over HTTP)";
-}
-if(!window.fetch){offline();return;}
-fetch("data/search_compare.json")
-  .then(function(res){if(!res.ok)throw new Error("http "+res.status);return res.json();})
-  .then(function(data){
-    var gum=null,puct=null;
-    data.sides.forEach(function(s){if(s.id==="gumbel")gum=s;else puct=s;});
-    if(!gum||!puct)throw new Error("bad sides");
-    initLadder(gum);
-    initCompare(data,gum,puct);
-  })
-  .catch(offline);
-
-/* ---------------- the measured ladder ---------------- */
-function initLadder(gum){
-  var svg=Lsvg;if(!svg)return;
-  var sh=gum.sh,R=sh.rounds,CUM=sh.cum_cap,QUOTA=sh.round_quota;
-  var cands=gum.moves.slice().sort(function(a,b){return b.logit-a.logit;});
-  var M=cands.length;
-  var X0=30,COLW=(720-2*X0)/M,BARW=Math.min(28,COLW-8),BASE=268;
-  var VSCALE=(BASE-64)/CUM[R-1];
-  var statusEl=document.getElementById("L-status");
-  var playBtn=document.getElementById("L-play");
-  var round=0,prog=0,finished=false,playing=false,rafId=null,pauseLeft=0,lastTs=null;
-  function capBefore(r){return r>0?CUM[r-1]:0;}
-  function render(){
-    svg.textContent="";
-    el("line",{x1:16,y1:BASE,x2:704,y2:BASE,stroke:C.line},svg);
-    txt(20,20,"m = "+M+" measured candidates (config 32, calibrated for 512 visits) · R = "+R+" rounds",
-      {fill:C.muted,"font-size":"11","font-family":MONO},svg);
-    txt(20,38,"quotas +"+QUOTA.join(" / +")+" per survivor · cumulative caps "+CUM.join(" / "),
-      {fill:C.dim,"font-size":"10","font-family":MONO},svg);
-    var i;
-    /* current-round cap line */
-    if(!finished){
-      var cy=BASE-CUM[round]*VSCALE;
-      el("line",{x1:16,y1:cy,x2:704,y2:cy,stroke:C.p0s,"stroke-width":1,"stroke-dasharray":"2 4",opacity:.6},svg);
-      txt(704,cy-4,"cap "+CUM[round],{fill:C.p0s,"font-size":"9","font-family":MONO,"text-anchor":"end"},svg);
-    }
-    for(i=0;i<M;i++){
-      var c=cands[i],x=X0+i*COLW+(COLW-BARW)/2;
-      var lo=capBefore(round);
-      var v=finished?c.n:Math.min(c.n,lo+prog*(CUM[round]-lo));
-      var out=finished?(c.n<CUM[R-1]):(c.n<=lo&&round>0);
-      var g=el("g",{opacity:out?0.35:1},svg);
-      var h=v*VSCALE;
-      el("rect",{x:x,y:BASE-h,width:BARW,height:Math.max(h,1),fill:out?C.dim:C.p0,opacity:out?1:0.85},g);
-      txt(x+BARW/2,BASE-h-6,"q̂ "+c.qhat.toFixed(2),{fill:out?C.dim:C.accent,"font-size":"8.5","font-family":MONO,"text-anchor":"middle"},g);
-      txt(x+BARW/2,BASE+13,"("+c.q+","+c.r+")",{fill:out?C.dim:C.text,"font-size":"8.5","font-family":MONO,"text-anchor":"middle"},g);
-      txt(x+BARW/2,BASE+26,"lg "+c.logit.toFixed(1),{fill:C.dim,"font-size":"8","font-family":MONO,"text-anchor":"middle"},g);
-      txt(x+BARW/2,BASE+39,"N "+Math.round(v),{fill:out?C.dim:C.muted,"font-size":"8.5","font-family":MONO,"text-anchor":"middle"},g);
-      if(out)txt(x+BARW/2,BASE-h-18,"×",{fill:C.p1,"font-size":"11","font-family":MONO,"text-anchor":"middle"},svg);
-      if(finished&&c.q===gum.chosen[0]&&c.r===gum.chosen[1]){
-        var cy2=BASE-h-34;
-        el("path",{d:"M"+(x+BARW/2-9)+","+(cy2+8)+" l4,-9 l5,6 l5,-6 l4,9 z",fill:C.accent},svg);
-        txt(x+BARW/2,cy2+21,"played",{fill:C.accent,"font-size":"9","font-family":MONO,"text-anchor":"middle"},svg);
-      }
-    }
-    if(finished){
-      statusEl.textContent="done · "+gum.visits+" visits · played ("+gum.chosen[0]+","+gum.chosen[1]+") · finalists measured to "+CUM[R-1]+" visits each";
-    }else{
-      statusEl.textContent="round "+(round+1)+"/"+R+" · quota +"+QUOTA[round]+" per survivor · σ multiplier ≈ "+(50+CUM[round])+" at this barrier";
-    }
-  }
-  function stopPlay(){playing=false;playBtn.textContent="Play";
-    if(rafId){cancelAnimationFrame(rafId);rafId=null;}lastTs=null;}
-  function stepRound(){
-    if(finished)return;
-    if(round>=R-1){prog=1;finished=true;}
-    else{round++;prog=0;}
-    render();
-  }
-  function loop(ts){
-    if(!playing)return;
-    if(lastTs===null)lastTs=ts;
-    var dt=ts-lastTs;lastTs=ts;
-    if(pauseLeft>0){pauseLeft-=dt;}
-    else{
-      prog+=dt/1400;
-      if(prog>=1){
-        prog=1;render();
-        if(round>=R-1){finished=true;render();stopPlay();return;}
-        round++;prog=0;pauseLeft=450;
-      }
-    }
-    render();
-    rafId=requestAnimationFrame(loop);
-  }
-  playBtn.addEventListener("click",function(){
-    if(REDUCED){stepRound();return;}
-    if(playing){stopPlay();return;}
-    if(finished){round=0;prog=0;finished=false;}
-    playing=true;playBtn.textContent="Pause";
-    rafId=requestAnimationFrame(loop);
-  });
-  document.getElementById("L-step").addEventListener("click",function(){stopPlay();stepRound();});
-  document.getElementById("L-reset").addEventListener("click",function(){
-    stopPlay();round=0;prog=0;finished=false;render();});
-  render();
-  statusEl.textContent="press play · round 1/"+R+" fills every candidate to "+CUM[0]+" visits";
-}
-
-/* ---------------- gumbel vs puct boards + table ---------------- */
-function initCompare(data,gum,puct){
-  if(!Gsvg)return;
-  var pos=data.position;
-  var readEl=document.getElementById("cmp-read");
-  document.getElementById("cmp-tag-g").textContent=
-    "gumbel root + SH · "+gum.run+" "+gum.checkpoint;
-  document.getElementById("cmp-tag-p").textContent=
-    "puct · "+puct.run+" "+puct.checkpoint;
-  function paint(svg,side){
-    var coords=pos.support.coords,lc=pos.support.legal_count,sc=pos.support.stone_count;
-    var own={};pos.stones.forEach(function(s){own[s[0]+","+s[1]]=s[2];});
-    var SZ=12;
-    function hx(q,r){return SZ*(Math.sqrt(3)*q+Math.sqrt(3)/2*r);}
-    function hy(q,r){return SZ*1.5*r;}
-    function pts(q,r,rad){
-      var cx=hx(q,r),cy=hy(q,r),s=rad||SZ-0.8,p="";
-      for(var k=0;k<6;k++){var a=Math.PI/180*(60*k-30);
-        p+=(cx+s*Math.cos(a)).toFixed(1)+","+(cy+s*Math.sin(a)).toFixed(1)+" ";}
-      return p.trim();
-    }
-    var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
-    coords.forEach(function(c){
-      var x=hx(c[0],c[1]),y=hy(c[0],c[1]);
-      minX=Math.min(minX,x);maxX=Math.max(maxX,x);
-      minY=Math.min(minY,y);maxY=Math.max(maxY,y);
+  function wireHover(els, ro) {
+    Array.prototype.forEach.call(els, function (n) {
+      var show = function () { ro.set(n.dataset.k, n.dataset.info); };
+      n.addEventListener("mouseenter", show);
+      n.addEventListener("focus", show);
+      n.addEventListener("mouseleave", ro.reset);
+      n.addEventListener("blur", ro.reset);
     });
-    var pad=SZ+4;
-    svg.setAttribute("viewBox",(minX-pad).toFixed(1)+" "+(minY-pad).toFixed(1)+" "+
-      (maxX-minX+2*pad).toFixed(1)+" "+(maxY-minY+2*pad).toFixed(1));
-    var byKey={};side.moves.forEach(function(m){byKey[m.q+","+m.r]=m;});
-    var maxN=1;side.moves.forEach(function(m){if(m.n>maxN)maxN=m.n;});
-    var gC=el("g",{},svg),gH=el("g",{},svg),gS=el("g",{},svg),gO=el("g",{},svg);
-    function show(q,r){
-      var m=byKey[q+","+r];
-      var who=side.id==="gumbel"?"gumbel":"puct";
-      if(m){
-        readEl.textContent=who+" · ("+q+","+r+"): "+m.n+" visits ("+
-          Math.round(100*m.n/side.visits)+"%) · q̂ "+m.qhat.toFixed(2)+
-          " · prior "+m.prior.toFixed(3)+
-          (m.logit!==undefined?" · logit "+m.logit.toFixed(2):"");
-      }else{
-        readEl.textContent=who+" · ("+q+","+r+"): no visits";
-      }
-    }
-    coords.forEach(function(c,i){
-      var q=c[0],r=c[1],kind=i<lc?"legal":(i<lc+sc?"stone":"halo");
-      var poly=el("polygon",{points:pts(q,r),
-        fill:kind==="halo"?"none":(kind==="stone"?"#12161c":"#1b222b"),
-        stroke:kind==="halo"?C.dim:C.lineSoft,"stroke-width":1},gC);
-      if(kind==="halo"){poly.setAttribute("stroke-dasharray","2.5 2.5");return;}
-      poly.setAttribute("class","cmp-cell");
-      poly.setAttribute("tabindex","0");
-      poly.setAttribute("role","button");
-      var m=byKey[q+","+r];
-      poly.setAttribute("aria-label","cell "+q+","+r+(m?": "+m.n+" visits":": no visits"));
-      poly.addEventListener("click",function(){show(q,r);});
-      poly.addEventListener("keydown",function(e){
-        if(e.key==="Enter"||e.key===" "){e.preventDefault();show(q,r);}});
-      if(m)el("polygon",{points:pts(q,r),fill:C.accent,"pointer-events":"none",
-        "fill-opacity":(0.88*m.n/maxN).toFixed(3)},gH);
-      var o=own[q+","+r];
-      if(o!==undefined)el("polygon",{points:pts(q,r,SZ*0.77),
-        fill:o===0?"url(#gradS0)":"url(#gradS1)",
-        stroke:o===0?"#2b5cad":"#9c3733","stroke-width":1,
-        "pointer-events":"none"},gS);
-    });
-    el("polygon",{points:pts(side.chosen[0],side.chosen[1]),fill:"none",
-      stroke:C.accent,"stroke-width":2,"pointer-events":"none"},gO);
   }
-  paint(Gsvg,gum);
-  paint(document.getElementById("cmp-p"),puct);
-  var top=function(side){var m=side.moves[0];
-    return "("+m.q+","+m.r+") · "+m.n+" of "+side.visits+" ("+Math.round(100*m.n/side.visits)+"%)";};
-  var rows=[
-    ["profile / net",gum.profile+" · "+gum.checkpoint,puct.profile+" · "+puct.checkpoint],
-    ["played move","("+gum.chosen[0]+","+gum.chosen[1]+")","("+puct.chosen[0]+","+puct.chosen[1]+")"],
-    ["searched value",gum.root_value.toFixed(3),puct.root_value.toFixed(3)],
-    ["visits used",gum.visits+" / "+gum.budget+(gum.early_stopped?" (early stop)":""),
-                   puct.visits+" / "+puct.budget+(puct.early_stopped?" (early stop)":"")],
-    ["moves visited",String(gum.moves_visited),String(puct.moves_visited)],
-    ["max-visit move",top(gum),top(puct)]
-  ];
-  var html="<table><tr><th></th><th>gumbel + SH</th><th>puct</th></tr>";
-  rows.forEach(function(rw){
-    html+="<tr><th>"+rw[0]+"</th><td class=\"v\">"+rw[1]+"</td><td class=\"v\">"+rw[2]+"</td></tr>";
-  });
-  document.getElementById("cmp-table").innerHTML=html+"</table>";
-}
-})();
 
+  /* ---------- fig 1: tree hover ---------- */
+  var ro1 = readout("ro1", "stone-per-edge tree",
+    "hover a node for its side-to-move, or the highlighted path for how the backup signs work.");
+  wireHover(document.querySelectorAll("#fig-tree .tnode, #fig-tree .bkpath"), ro1);
+
+  /* ---------- fig 5: scheduler hover ---------- */
+  var ro5 = readout("ro5", "continuous scheduler",
+    "hover a stage. the serving page covers what happens to a flush inside the GPU.");
+  wireHover(document.querySelectorAll("#fig-sched .map-node"), ro5);
+
+  /* ---------- seeded PRNG (mulberry32) + samplers ---------- */
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      var t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function gumbelOf(rng) { // standard Gumbel(0,1)
+    var u = Math.max(1e-12, Math.min(1 - 1e-12, rng()));
+    return -Math.log(-Math.log(u));
+  }
+  function normalOf(rng) { // Box-Muller
+    var u = Math.max(1e-12, rng()), v = rng();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  function f(x, d) { return (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(d); }
+
+  /* =========================================================
+     fig 2 — sequential halving
+     mechanics: HEXFIELD_EQ_EXPLAINER.md §7.2 (m=16, 256 visits,
+     4 rounds, halve per round, rank g+logits+σ(q̂),
+     σ(q)=(50+maxN)·q). logits & true values ILLUSTRATIVE.
+     ========================================================= */
+  var M = 16, ROUNDS = 4, BUDGET = 256;
+  var QUOTA = [4, 8, 16, 32];              // equal per-round budget: 64 = 256/4
+  var KEEP  = [8, 4, 2, 1];
+  var MAXVIS = 60;                          // finalist total: 4+8+16+32
+  var LABELS = "ABCDEFGHIJKLMNOP".split("");
+  // illustrative fixed logits (already the top-16 by g+logits at this root)
+  var LOGITS = [2.4, 2.1, 1.9, 1.6, 1.4, 1.1, 0.9, 0.7, 0.5, 0.3, 0.1, -0.1, -0.3, -0.6, -0.9, -1.2];
+  // illustrative hidden true values (root player's view) — best move is NOT the top logit
+  var TRUEQ = [0.010, 0.000, 0.060, -0.020, 0.035, 0.015, -0.040, 0.005,
+               0.050, -0.025, -0.005, -0.045, 0.010, -0.030, -0.055, -0.035];
+  var NOISE_SD = 0.15; // per-candidate eval noise, shrinks as 1/√N
+
+  var sh = {
+    seed: 20260710, g: [], eps: [], N: [], qhat: [], alive: [], round: 0,
+    done: false, timer: null
+  };
+
+  var shWrap = document.getElementById("shWrap");
+  var shfRow = document.getElementById("shfRow");
+  var shFinal = document.getElementById("shFinal");
+  var shStatus = document.getElementById("shStatus");
+  var shSigma = document.getElementById("shSigma");
+  var shStep = document.getElementById("shStep");
+  var shPlay = document.getElementById("shPlay");
+  var ro2 = readout("ro2", "sequential halving",
+    "bars fill with visits; order is the live ranking g + logits + σ(q̂). hover a bar for its score components.");
+
+  var candEls = [];
+  for (var ci = 0; ci < M; ci++) {
+    var cel = document.createElement("div");
+    cel.className = "sh-cand";
+    cel.tabIndex = 0;
+    cel.innerHTML = '<div class="sh-bar"><div class="sh-fill"></div></div><div class="sh-lab">' +
+      LABELS[ci].toLowerCase() + "</div>";
+    shWrap.appendChild(cel);
+    candEls.push(cel);
+    (function (idx, node) {
+      var show = function () { ro2.set(candK(idx), candInfo(idx)); };
+      node.addEventListener("mouseenter", show);
+      node.addEventListener("focus", show);
+      node.addEventListener("mouseleave", ro2.reset);
+      node.addEventListener("blur", ro2.reset);
+    })(ci, cel);
+  }
+
+  function maxN() { var m = 0; for (var i = 0; i < M; i++) m = Math.max(m, sh.N[i]); return m; }
+  function sigScale() { return 50 + maxN(); }
+  function score(i) {
+    var s = sh.g[i] + LOGITS[i];
+    if (sh.N[i] > 0) s += sigScale() * sh.qhat[i];
+    return s;
+  }
+  function ranking() {
+    var idx = [];
+    for (var i = 0; i < M; i++) idx.push(i);
+    idx.sort(function (a, b) {
+      if (sh.alive[a] !== sh.alive[b]) return sh.alive[a] ? -1 : 1;
+      return score(b) - score(a);
+    });
+    return idx;
+  }
+  function candK(i) {
+    return "candidate " + LABELS[i].toLowerCase() + " · " +
+      (sh.done && sh.alive[i] ? "winner" : sh.alive[i] ? "alive" : "eliminated");
+  }
+  function candInfo(i) {
+    var s = "logits " + f(LOGITS[i], 2) + " · g " + f(sh.g[i], 2);
+    if (sh.N[i] > 0) {
+      s += " · q̂ " + f(sh.qhat[i], 3) + " (" + sh.N[i] + " visits) · σ(q̂) = " +
+        sigScale() + "×" + f(sh.qhat[i], 3) + " = " + f(sigScale() * sh.qhat[i], 2);
+    } else {
+      s += " · unvisited — ranked by g + logits alone (the top-m draw criterion)";
+    }
+    return s + " · score " + f(score(i), 2);
+  }
+
+  function shRender() {
+    var idx = ranking();
+    var winner = sh.done ? idx[0] : -1;
+    idx.forEach(function (i, rank) {
+      var el = candEls[i];
+      el.style.left = (rank * (100 / M)) + "%";
+      el.querySelector(".sh-fill").style.height = (sh.N[i] / MAXVIS * 100) + "%";
+      el.classList.toggle("dead", !sh.alive[i]);
+      el.classList.toggle("win", i === winner);
+    });
+    shSigma.textContent = "σ scale = 50 + " + maxN() + " = " + sigScale();
+    var aliveN = sh.alive.filter(Boolean).length;
+    if (sh.done) {
+      shStatus.innerHTML = "done · 256 visits spent · winner <b>" +
+        LABELS[idx[0]].toLowerCase() + "</b> · finalists hold 60 visits each — compare below";
+    } else if (sh.round === 0) {
+      shStatus.innerHTML = "round 0 · gumbels drawn · <b>16 candidates</b> ordered by g + logits · budget 256 · schedule 16&times;4, 8&times;8, 4&times;16, 2&times;32";
+    } else {
+      shStatus.innerHTML = "after round " + sh.round + " of 4 · <b>" + aliveN +
+        " survive</b> · next quota: " + aliveN + " × " + QUOTA[sh.round] + " visits each";
+    }
+    shStep.disabled = sh.done;
+    shPlay.disabled = sh.done;
+  }
+
+  function shSample() {
+    var rng = mulberry32(sh.seed);
+    sh.g = []; sh.eps = [];
+    for (var i = 0; i < M; i++) sh.g.push(gumbelOf(rng));
+    for (i = 0; i < M; i++) sh.eps.push(normalOf(rng) * NOISE_SD);
+  }
+  function shInit() {
+    if (sh.timer) { clearInterval(sh.timer); sh.timer = null; }
+    sh.N = []; sh.qhat = []; sh.alive = [];
+    for (var i = 0; i < M; i++) { sh.N.push(0); sh.qhat.push(0); sh.alive.push(true); }
+    sh.round = 0; sh.done = false;
+    shFinal.classList.remove("on");
+    shRender();
+  }
+  function shStepRound() {
+    if (sh.done) return;
+    var quota = QUOTA[sh.round];
+    for (var i = 0; i < M; i++) {
+      if (!sh.alive[i]) continue;
+      sh.N[i] += quota;
+      // illustrative completedQ estimate: true value + noise shrinking with visits
+      sh.qhat[i] = TRUEQ[i] + sh.eps[i] / Math.sqrt(sh.N[i]);
+    }
+    // rank the survivors, eliminate the worse half
+    var aliveIdx = [];
+    for (i = 0; i < M; i++) if (sh.alive[i]) aliveIdx.push(i);
+    aliveIdx.sort(function (a, b) { return score(b) - score(a); });
+    for (i = KEEP[sh.round]; i < aliveIdx.length; i++) sh.alive[aliveIdx[i]] = false;
+    sh.round++;
+    if (sh.round === ROUNDS) { sh.done = true; shBuildFinal(); }
+    shRender();
+  }
+  function shBuildFinal() {
+    // π′ = softmax(logits + σ(q̂)) over all 16 candidates, at the final σ scale
+    var sc = sigScale(), z = [], mx = -1e9, i;
+    for (i = 0; i < M; i++) { z.push(LOGITS[i] + sc * sh.qhat[i]); mx = Math.max(mx, z[i]); }
+    var sum = 0, pi = [];
+    for (i = 0; i < M; i++) { pi.push(Math.exp(z[i] - mx)); sum += pi[i]; }
+    for (i = 0; i < M; i++) pi[i] /= sum;
+    var vs = sh.N.map(function (n) { return n / BUDGET; });
+    var order = [];
+    for (i = 0; i < M; i++) order.push(i);
+    order.sort(function (a, b) { return pi[b] - pi[a]; });
+    var peak = Math.max(Math.max.apply(null, pi), Math.max.apply(null, vs));
+    shfRow.innerHTML = "";
+    order.forEach(function (cc) {
+      var slot = document.createElement("div");
+      slot.className = "shf-slot"; slot.tabIndex = 0;
+      slot.innerHTML =
+        '<div class="b v" style="height:' + (vs[cc] / peak * 100) + '%"></div>' +
+        '<div class="b p" style="height:' + (pi[cc] / peak * 100) + '%"></div>' +
+        '<div class="l">' + LABELS[cc].toLowerCase() + "</div>";
+      slot.dataset.k = "candidate " + LABELS[cc].toLowerCase() + " · recorded vs played-from";
+      slot.dataset.info = "visits " + sh.N[cc] + "/256 = " + vs[cc].toFixed(3) +
+        " · π′ = " + pi[cc].toFixed(3) +
+        " — the training row records π′ (plus the raw root logits); the visit histogram only shapes which move is played.";
+      var show = function () { ro2.set(slot.dataset.k, slot.dataset.info); };
+      slot.addEventListener("mouseenter", show);
+      slot.addEventListener("focus", show);
+      slot.addEventListener("mouseleave", ro2.reset);
+      slot.addEventListener("blur", ro2.reset);
+      shfRow.appendChild(slot);
+    });
+    shFinal.classList.add("on");
+  }
+
+  document.getElementById("shDraw").addEventListener("click", function () {
+    sh.seed = (sh.seed + 0x9E3779B9) | 0; shSample(); shInit();
+    ro2.set("gumbels redrawn", "fresh g(a) per candidate — a different search: same logits, new noise, possibly different survivors.");
+  });
+  shStep.addEventListener("click", shStepRound);
+  shPlay.addEventListener("click", function () {
+    if (sh.timer || sh.done) return;
+    shStepRound();
+    sh.timer = setInterval(function () {
+      shStepRound();
+      if (sh.done) { clearInterval(sh.timer); sh.timer = null; }
+    }, 950);
+  });
+  document.getElementById("shReset").addEventListener("click", function () { shInit(); ro2.reset(); });
+
+  shSample(); shInit();
+
+  /* =========================================================
+     fig 3 — interior selection
+     rule: argmax_a π′(a) − N(a)/(1+ΣN)   (§7.3, real)
+     π′ vector illustrative, held fixed at this node.
+     ========================================================= */
+  var IP = [0.40, 0.26, 0.16, 0.11, 0.07];
+  var ILAB = ["a", "b", "c", "d", "e"];
+  var ISCALE = 0.47; // bar y-scale so π′=.40 sits at ~85% height
+  var isN = [0, 0, 0, 0, 0];
+  var isWrap = document.getElementById("isWrap");
+  var isTotal = document.getElementById("isTotal");
+  var ro3 = readout("ro3", "interior rule",
+    "the outlined child is the current argmax of π′(a) − N(a)/(1+ΣN). press visit and watch the shares converge.");
+
+  function isSum() { return isN.reduce(function (a, b) { return a + b; }, 0); }
+  function isPick() {
+    var s = isSum(), best = 0, bv = -1e9;
+    for (var i = 0; i < IP.length; i++) {
+      var v = IP[i] - isN[i] / (1 + s);
+      if (v > bv) { bv = v; best = i; }
+    }
+    return best;
+  }
+
+  var isCols = IP.map(function (p, i) {
+    var col = document.createElement("div");
+    col.className = "is-col"; col.tabIndex = 0;
+    col.innerHTML = '<div class="frame"><div class="fill"></div>' +
+      '<div class="tick" style="bottom:' + (p / ISCALE * 100) + '%"></div></div>' +
+      '<div class="lab">' + ILAB[i] + ' · π′ ' + p.toFixed(2) + "</div>" +
+      '<div class="num">N 0 · share .000</div>';
+    isWrap.appendChild(col);
+    var show = function () {
+      var s = isSum();
+      ro3.set("child " + ILAB[i],
+        "π′ " + IP[i].toFixed(2) + " · N " + isN[i] +
+        " · share N/(1+ΣN) = " + (isN[i] / (1 + s)).toFixed(3) +
+        " · gap = " + f(IP[i] - isN[i] / (1 + s), 3) +
+        (i === isPick() ? " — current argmax: visited next" : ""));
+    };
+    col.addEventListener("mouseenter", show);
+    col.addEventListener("focus", show);
+    col.addEventListener("mouseleave", ro3.reset);
+    col.addEventListener("blur", ro3.reset);
+    return col;
+  });
+
+  function isRender(msg) {
+    var s = isSum(), pick = isPick();
+    isCols.forEach(function (col, i) {
+      var share = isN[i] / (1 + s);
+      col.querySelector(".fill").style.height = Math.min(100, share / ISCALE * 100) + "%";
+      col.querySelector(".num").textContent = "N " + isN[i] + " · share " + share.toFixed(3);
+      col.classList.toggle("next", i === pick);
+    });
+    isTotal.textContent = "ΣN = " + s;
+    if (msg) ro3.set("visited", msg);
+  }
+  function isVisit(k) {
+    var last = -1;
+    for (var j = 0; j < k; j++) { last = isPick(); isN[last]++; }
+    var s = isSum();
+    isRender(k + "× applied · last pick " + ILAB[last] +
+      " · shares now [" + isN.map(function (n) { return (n / (1 + s)).toFixed(2); }).join(" ") +
+      "] vs π′ [" + IP.map(function (p) { return p.toFixed(2); }).join(" ") + "]");
+  }
+  document.getElementById("isV1").addEventListener("click", function () { isVisit(1); });
+  document.getElementById("isV10").addEventListener("click", function () { isVisit(10); });
+  document.getElementById("isV96").addEventListener("click", function () { isVisit(96); });
+  document.getElementById("isReset").addEventListener("click", function () {
+    isN = [0, 0, 0, 0, 0]; isRender(); ro3.reset();
+  });
+  isRender();
+
+  /* =========================================================
+     fig 4 — temperature schedule  T(ply)=max(0.15, 0.5^(ply/20))
+     real function; halflife 20, floor .15 (hit ≈ ply 54.7)
+     ========================================================= */
+  var TP = { x0: 60, x1: 740, y0: 270, y1: 30, pmax: 110, tmax: 1.15 };
+  function T(p) { return Math.max(0.15, Math.pow(0.5, p / 20)); }
+  function px(p) { return TP.x0 + p / TP.pmax * (TP.x1 - TP.x0); }
+  function py(t) { return TP.y0 - t / TP.tmax * (TP.y0 - TP.y1); }
+
+  var svg = document.getElementById("tpSvg");
+  var NS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, text) {
+    var e = document.createElementNS(NS, tag);
+    for (var a in attrs) e.setAttribute(a, attrs[a]);
+    if (text) e.textContent = text;
+    svg.appendChild(e);
+    return e;
+  }
+  // axes + grid
+  el("line", { "class": "axis", x1: TP.x0, y1: TP.y0, x2: TP.x1, y2: TP.y0 });
+  el("line", { "class": "axis", x1: TP.x0, y1: TP.y0, x2: TP.x0, y2: TP.y1 });
+  [1.0, 0.5].forEach(function (t) {
+    el("line", { "class": "grid", x1: TP.x0, y1: py(t), x2: TP.x1, y2: py(t) });
+    el("text", { "class": "tick", x: TP.x0 - 8, y: py(t) + 3, "text-anchor": "end" }, t.toFixed(2));
+  });
+  el("line", { "class": "floor", x1: TP.x0, y1: py(0.15), x2: TP.x1, y2: py(0.15) });
+  el("text", { "class": "tick", x: TP.x0 - 8, y: py(0.15) + 3, "text-anchor": "end" }, "0.15");
+  [0, 20, 40, 60, 80, 100].forEach(function (p) {
+    el("line", { "class": "axis", x1: px(p), y1: TP.y0, x2: px(p), y2: TP.y0 + 4 });
+    el("text", { "class": "tick", x: px(p), y: TP.y0 + 16, "text-anchor": "middle" }, String(p));
+  });
+  el("text", { "class": "tick", x: (TP.x0 + TP.x1) / 2, y: TP.y0 + 32, "text-anchor": "middle" }, "ply");
+  // the curve — the real function, sampled at every ply
+  var d = "";
+  for (var p = 0; p <= TP.pmax; p++) d += (p ? "L" : "M") + px(p).toFixed(1) + " " + py(T(p)).toFixed(1);
+  el("path", { "class": "curve", d: d });
+  // annotations: halflife + floor hit (ply = 20·log2(1/0.15) ≈ 54.7)
+  var pFloor = 20 * Math.log2(1 / 0.15);
+  el("circle", { "class": "mark", cx: px(20), cy: py(0.5), r: 4 });
+  el("text", { "class": "plab", x: px(20) + 8, y: py(0.5) - 8 }, "halflife: T(20) = 0.5");
+  el("circle", { "class": "mark", cx: px(pFloor), cy: py(0.15), r: 4 });
+  el("text", { "class": "plab", x: px(pFloor) + 8, y: py(0.15) - 10 }, "floor 0.15 from ≈ ply 55");
+  el("text", { "class": "plab", x: px(2) + 6, y: py(1.0) - 10 }, "T(0) = 1.0 — sample the visit distribution");
+  // hover/slider marker
+  var dot = el("circle", { "class": "dot", cx: px(0), cy: py(1), r: 5 });
+
+  var ro4 = readout("ro4", "temperature schedule",
+    "early plies sample near T = 1 for variety; by ply 55 the floor T = 0.15 makes play nearly greedy. hover the cards for the guards around sampling.");
+  var slider = document.getElementById("tpSlider");
+  var tpVal = document.getElementById("tpVal");
+  function tpShow(p) {
+    p = Math.max(0, Math.min(TP.pmax, Math.round(p)));
+    var t = T(p);
+    dot.setAttribute("cx", px(p)); dot.setAttribute("cy", py(t));
+    tpVal.textContent = "ply " + p + " · T = " + t.toFixed(2);
+    ro4.set("ply " + p + " · T = " + t.toFixed(3),
+      t <= 0.1500001
+        ? "at the floor: visits^(1/0.15) — the played move is almost always the visit leader (and never a first-round elimination)."
+        : "the played move is sampled ∝ visits^(1/T) over surviving candidates; the training target π′ is unaffected by T.");
+    if (+slider.value !== p) slider.value = p;
+  }
+  slider.addEventListener("input", function () { tpShow(+slider.value); });
+  svg.addEventListener("pointermove", function (ev) {
+    var r = svg.getBoundingClientRect();
+    var x = (ev.clientX - r.left) / r.width * 760;
+    tpShow((x - TP.x0) / (TP.x1 - TP.x0) * TP.pmax);
+  });
+  svg.addEventListener("pointerleave", function () { ro4.reset(); });
+  tpShow(0); ro4.reset();
+
+  /* fig 4 annotation cards */
+  wireHover(document.querySelectorAll("#fig-temp .anno"), ro4);
 })();
 </script>
+
 </body>
 </html>

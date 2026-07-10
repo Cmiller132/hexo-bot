@@ -29,10 +29,10 @@ class CheckpointStore:
 
     Real model packages can override checkpoint writing through their plugin.
     Until then, this tiny store gives the pipeline something deterministic to
-    write and test without pretending to serialize model weights. All four
-    registered plugins provide a real saver, so `write_placeholder` is reached
-    only by FakePlugin tests (tests/test_training_pipeline_simplification.py);
-    `path_for` remains generally useful.
+    write and test without pretending to serialize model weights. Real model
+    plugins provide a real saver, so `write_placeholder` is reached only by
+    FakePlugin-style pipeline tests, never on a production run; `path_for`
+    remains generally useful.
     """
 
     checkpoint_dir: Path
@@ -86,8 +86,8 @@ def publish_selfplay_checkpoint_pointer(
 
     Near-duplicate of checkpoints._publish_epoch_checkpoint_pointer (the
     per-epoch variant); keep the two writers format-identical. Only legacy
-    dense_cnn/hexgt configs enable the pointer — all restnet main_* configs
-    set `update_checkpoint_pointer = false`.
+    dense_cnn/hexgt configs enable the pointer — the active hexfield/hexfield_eq
+    configs set `update_checkpoint_pointer = false`.
     """
 
     _ = components
