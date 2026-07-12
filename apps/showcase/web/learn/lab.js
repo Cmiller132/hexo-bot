@@ -85,6 +85,8 @@ const state = {
   feature: "support",            // "support" | feature name
   ckpt: null,
   ckptLabel: "",
+  ckptFamily: "shrimp",
+  featureNames: null,
   bots: null,                    // normalized /api/bots payload
   attnCell: null,                // [q, r] attention query
   attnBlock: 0,
@@ -561,12 +563,16 @@ function renderCkpts() {
       if (id === state.ckpt) return;
       state.ckpt = id;
       state.ckptLabel = c ? c.label : id;
+      state.ckptFamily = c ? c.family : "shrimp";
+      state.feature = "support";
+      state.featureNames = null;
+      buildFeatList();
       refreshModule();
     },
   });
 }
 
-async function loadBots() {
+async function loadBots(preferredId = null) {
   try {
     state.bots = normalizeCheckpoints(await requestJson("/api/bots"));
   } catch (_) {
@@ -574,9 +580,11 @@ async function loadBots() {
     setStatus("evalStatus", "server unreachable — live modules unavailable", true);
     return;
   }
-  const def = defaultCheckpoint(state.bots);
+  const def = state.bots.find(c => c.id === preferredId) || defaultCheckpoint(state.bots);
   state.ckpt = def ? def.id : null;
   state.ckptLabel = def ? def.label : "";
+  state.ckptFamily = def ? def.family : "shrimp";
+  buildFeatList();
   renderCkpts();
 }
 
@@ -603,7 +611,7 @@ function setStatus(id, msg, isErr = false) {
 
 function wantsKey(wants) {
   return (wants.attention_query ? "a" + wants.attention_query.q + "," + wants.attention_query.r : "") +
-         (wants.activations ? "|act" : "");
+         (wants.activations ? "|act" : "") + (wants.features ? "|feat" : "");
 }
 
 function fetchEval(wants = {}) {
@@ -614,7 +622,7 @@ function fetchEval(wants = {}) {
   const k = state.ckpt + "|" + posKey() + "|" + wantsKey(wants);
   if (state.evalCache.has(k)) return state.evalCache.get(k);
   const body = { checkpoint_id: state.ckpt, ...positionBody() };
-  if (wants.attention_query || wants.activations) body.wants = wants;
+  if (wants.attention_query || wants.activations || wants.features) body.wants = wants;
   const prom = requestJson("/api/lab/eval", body).catch(e => {
     state.evalCache.delete(k);
     if (e.status === 429) state.rlUntil = Date.now() + 15000;
@@ -664,7 +672,7 @@ function renderPosition() {
 
 // ---- module: features (client-side) ------------------------------------------------------------
 
-function buildFeatList() {
+function buildFeatList(names = LF.FEATURE_NAMES, zeroedNames = LF.FREE_ZEROED) {
   const list = $("featList");
   list.textContent = "";
   const mk = (val, label, cls = "") => {
@@ -675,8 +683,8 @@ function buildFeatList() {
     list.appendChild(b);
   };
   mk("support", "support set");
-  for (const name of LF.FEATURE_NAMES) {
-    const zeroed = LF.FREE_ZEROED.includes(name);
+  for (const name of names) {
+    const zeroed = zeroedNames.includes(name);
     mk(name, name.replace(/_/g, " ") + (zeroed ? ' <span class="fz" title="zeroed in free edit">&deg;</span>' : ""));
   }
   segFeat();
@@ -697,6 +705,18 @@ $("featList").addEventListener("click", e => {
 });
 
 function renderFeatures() {
+  if (state.ckptFamily === "hexfield_eq") {
+    const k = posKey();
+    setReadout("features", "computing family-specific input planes...");
+    fetchEval({ features: true }).then(payload => {
+      if (posKey() !== k || state.module !== "features") return;
+      renderServerFeatures(payload);
+    }).catch(e => {
+      if (posKey() !== k || state.module !== "features") return;
+      setReadout("features", e.message || "feature fetch failed");
+    });
+    return;
+  }
   clearOverlay();
   const facts = currentFacts();
   const sup = LF.buildSupport(facts.records.map(rec => [rec.q, rec.r]));
@@ -730,6 +750,58 @@ function renderFeatures() {
     `${nonzero} of ${vals.length} cells nonzero · max ${max.toFixed(3)}` +
     ` · own/opp are relative to the side to move (${mover === 0 ? "blue" : "red"})` +
     zeroNote,
+  );
+}
+
+function renderServerFeatures(payload) {
+  clearOverlay();
+  const feat = payload.features;
+  if (!feat || !Array.isArray(feat.names) || !Array.isArray(feat.planes)) {
+    setReadout("features", "this family did not return feature planes");
+    return;
+  }
+  const sig = feat.names.join("|");
+  if (state.featureNames !== sig) {
+    state.featureNames = sig;
+    if (state.feature !== "support" && !feat.names.includes(state.feature)) {
+      state.feature = "support";
+    }
+    buildFeatList(feat.names, payload.zeroed_features || LF.FREE_ZEROED);
+  }
+  const sup = payload.support;
+  const coords = sup.coords;
+  const halo = coords.slice(sup.legal_count + sup.stone_count);
+  if (state.feature === "support") {
+    paintFill(
+      coords.slice(0, sup.legal_count).map(([q, r]) => ({ q, r, v: 1 })),
+      ACCENT, 0.18,
+    );
+    paintHalo(halo);
+    setReadout(
+      "support set",
+      `${coords.length} nodes Â· ${sup.legal_count} legal + ${sup.stone_count} stones + ` +
+      `${sup.halo_count} halo Â· ${feat.names.length} ${state.ckptFamily} input planes`,
+    );
+    return;
+  }
+  const f = feat.names.indexOf(state.feature);
+  if (f < 0) return;
+  const vals = feat.planes[f];
+  const mover = payload.to_move;
+  const own = state.feature.startsWith("own");
+  const opp = state.feature.startsWith("opp");
+  const color = own ? (mover === 0 ? H0 : H1) : opp ? (mover === 0 ? H1 : H0) : ACCENT;
+  paintFill(coords.map(([q, r], i) => ({ q, r, v: vals[i] })), color, 0.55);
+  paintHalo(halo);
+  const finite = vals.filter(v => typeof v === "number");
+  const nonzero = finite.filter(v => v > 0).length;
+  const max = Math.max(0, ...finite);
+  const zeroNote = payload.mode === "free" &&
+    (payload.zeroed_features || []).includes(state.feature) ? " Â· zeroed in free edit" : "";
+  setReadout(
+    "feature Â· " + state.feature.replace(/_/g, " "),
+    `${nonzero} of ${vals.length} cells nonzero Â· max ${max.toFixed(3)} Â· ` +
+    `own/opp are relative to ${mover === 0 ? "blue" : "red"}${zeroNote}`,
   );
 }
 
@@ -798,9 +870,10 @@ function renderEvalPayload(payload) {
   setBig($("valNow"), v, "value-big");
   $("valWho").textContent =
     v === null ? "" : Math.abs(v) < 0.08 ? "even" : v >= 0 ? "blue better" : "red better";
-  setBig($("stv2"), flip(payload.stv["2"]), "hz-v");
-  setBig($("stv6"), flip(payload.stv["6"]), "hz-v");
-  setBig($("stv16"), flip(payload.stv["16"]), "hz-v");
+  const stv = payload.stv || {};
+  setBig($("stv2"), flip(stv["2"]), "hz-v");
+  setBig($("stv6"), flip(stv["6"]), "hz-v");
+  setBig($("stv16"), flip(stv["16"]), "hz-v");
   $("mlNow").textContent = "~" + Math.max(0, Math.round(payload.moves_left));
   renderDist(payload.value_dist, payload.value);
 
@@ -924,6 +997,23 @@ function renderTokens(tokens) {
 
 function renderAttention() {
   clearOverlay();
+  if (state.ckptFamily === "hexfield_eq") {
+    renderTokens(null);
+    $("attnList").textContent = "";
+    fetchEval({}).then(payload => {
+      if (state.module !== "attention") return;
+      const marker = payload.attention;
+      const reason = marker && marker.available === false
+        ? marker.reason : "attention visualization unavailable for this family";
+      setStatus("attnStatus", reason);
+      setReadout("attention unavailable", reason);
+    }).catch(e => {
+      if (state.module === "attention") {
+        setStatus("attnStatus", e.message || "attention fetch failed", true);
+      }
+    });
+    return;
+  }
   if (!state.attnCell) {
     renderTokens(null);
     $("attnList").textContent = "";
@@ -940,6 +1030,12 @@ function renderAttention() {
     if (!state.attnCell || state.attnCell[0] !== q || state.attnCell[1] !== r) return;
     setStatus("attnStatus", "");
     const attn = payload.attention;
+    if (!attn || attn.available === false) {
+      const reason = attn && attn.reason ? attn.reason : "attention unavailable";
+      setStatus("attnStatus", reason);
+      setReadout("attention unavailable", reason);
+      return;
+    }
     buildAttnSegs(attn.blocks, attn.heads);
     const row = attn.rows[state.attnBlock][state.attnHead];
     const coords = payload.support.coords;
@@ -1013,6 +1109,13 @@ function renderActivations() {
   const k = posKey();
   fetchEval({ activations: true }).then(payload => {
     if (posKey() !== k || state.module !== "activations") return;
+    if (!payload.activations || payload.activations.available === false) {
+      const reason = payload.activations && payload.activations.reason
+        ? payload.activations.reason : "activation visualization unavailable";
+      setStatus("actStatus", reason);
+      setReadout("activations unavailable", reason);
+      return;
+    }
     setStatus("actStatus", "");
     actPayload = payload;
     const n = payload.activations.blocks.length;
@@ -1166,7 +1269,7 @@ window.addEventListener("hashchange", () => {
   if (applied) syncModeUI();
   renderPosition();
   refreshModule();
-  await loadBots();
+  await loadBots(params.get("checkpoint_id"));
   loadPresets();
   if (!applied && params.has("game")) {
     importFromGame(params.get("game"), parseInt(params.get("ply") ?? "", 10));

@@ -1367,6 +1367,7 @@ if (openLabBtn) openLabBtn.addEventListener("click", () => {
   if (!ana.id) return;
   const url = new URL("learn/lab.html", location.href);
   url.search = "?game=" + encodeURIComponent(ana.id) + "&ply=" + ana.ply;
+  if (ana.ckpt) url.searchParams.set("checkpoint_id", ana.ckpt);
   window.open(url.href, "_blank", "noopener");
 });
 

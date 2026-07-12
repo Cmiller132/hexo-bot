@@ -182,7 +182,7 @@ def summary_eval(model: Any, rows: list[tuple[Any, Any]]) -> dict[str, Any]:
 
 def searched_eval(
     session: Any, evaluator: Any, profile: Any, state: Any, *,
-    game_key: int, visits: int, seed: int,
+    game_key: int, visits: int, seed: int, decode_action: Any = unpack_action_id,
 ) -> dict[str, Any]:
     """Small searched eval (analysis `?search=1`): one as-trained-profile
     search at a capped visit budget, greedy selection. The tree is discarded
@@ -201,11 +201,11 @@ def searched_eval(
     visit_policy = [
         {"q": q, "r": r, "p": round(float(w) / total, 6)}
         for (q, r), w in (
-            (unpack_action_id(int(aid)), w) for aid, w in zip(ids.tolist(), weights.tolist())
+            (decode_action(int(aid)), w) for aid, w in zip(ids.tolist(), weights.tolist())
         )
     ]
     visit_policy.sort(key=lambda row: row["p"], reverse=True)
-    best_q, best_r = unpack_action_id(int(result["action_id"]))
+    best_q, best_r = decode_action(int(result["action_id"]))
     # NaN/Inf -> null, per the net_eval contract note.
     return sanitize_json({
         "visits": int(result["visits"]),

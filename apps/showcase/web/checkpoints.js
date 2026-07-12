@@ -27,7 +27,7 @@ function fmtParams(n) {
  * other scalar key plus the formatted params make up the display `meta` line. */
 export function normalizeCheckpoints(raw) {
   const list = raw && Array.isArray(raw.checkpoints) ? raw.checkpoints : [];
-  const reserved = ["id", "label", "run", "epoch", "group", "search",
+  const reserved = ["id", "label", "run", "epoch", "group", "family", "search",
                     "params", "featured", "strongest", "default"];
   return list.map(c => {
     const extras = Object.entries(c)
@@ -41,6 +41,7 @@ export function normalizeCheckpoints(raw) {
       id: String(c.id ?? c.checkpoint_id),
       label: String(c.label ?? c.id ?? c.checkpoint_id),
       run: typeof c.run === "string" ? c.run : "",
+      family: typeof c.family === "string" ? c.family : "shrimp",
       epoch: c.epoch,
       params: typeof c.params === "number" ? c.params : null,
       search: typeof c.search === "string" ? c.search : "",
@@ -66,7 +67,7 @@ function runOrdinal(run) {
 export function modelLabel(run) {
   if (!run) return "model";
   const cleaned = String(run)
-    .replace(/^shrimp[_\s-]*/i, "")
+    .replace(/^(?:shrimp|hexfield[_-]?eq)[_\s-]*/i, "")
     .replace(/[_-]+/g, " ")
     .trim();
   return cleaned || String(run);

@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Shrimp &mdash; lab</title>
-<meta name="description" content="Live sandbox: build a Hexo position and inspect the real Shrimp model on it — input features, net evaluation, attention, activation flow, and a real search.">
+<title>Hexo &mdash; model lab</title>
+<meta name="description" content="Live sandbox: build a Hexo position and inspect the selected model family's inputs, evaluation, available internals, and search.">
 <link rel="stylesheet" href="learn.css">
 <link rel="stylesheet" href="lab.css?v=3">
 </head>
@@ -133,11 +133,10 @@ left. Positions from the analysis tab open here via their
         <h2 class="k gap">Input planes</h2>
         <div class="feat-list" id="featList"></div>
         <p class="mod-note">
-          the network reads 15 features per support cell. the support set is
-          the stones, the legal cells within distance 4 of a stone, and a
-          one-cell halo (dashed). computed in the page with the same formulas
-          the server featurizer uses; own/opp planes are relative to the side
-          to move.
+          input-plane names and support geometry follow the selected model
+          family. shrimp planes are mirrored in the page; hexfield_eq planes
+          are returned by the server's real checkpoint-version featurizer.
+          own/opp planes are relative to the side to move.
         </p>
       </div>
 

@@ -378,7 +378,7 @@ def eval_payload(
 
 def search_payload(
     session: Any, evaluator: Any, profile: Any, state: Any, *,
-    game_key: int, visits: int, seed: int,
+    game_key: int, visits: int, seed: int, decode_action: Any = unpack_action_id,
 ) -> dict[str, Any]:
     """One as-trained-profile search at the capped budget, greedy selection.
 
@@ -405,11 +405,11 @@ def search_payload(
             "w": round(float(w), 4),
         }
         for (q, r), w in (
-            (unpack_action_id(int(aid)), w) for aid, w in zip(ids.tolist(), weights.tolist())
+            (decode_action(int(aid)), w) for aid, w in zip(ids.tolist(), weights.tolist())
         )
     ]
     visit_policy.sort(key=lambda row: (-row["p"], row["q"], row["r"]))
-    best_q, best_r = unpack_action_id(int(result["action_id"]))
+    best_q, best_r = decode_action(int(result["action_id"]))
     # NaN/Inf -> null, per the eval_payload contract note.
     return sanitize_json({
         "visits": int(result["visits"]),
