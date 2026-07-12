@@ -623,6 +623,13 @@ class HexNodeConv(nn.Module):
     def _base_param(self) -> torch.Tensor:
         return self.w0 if self.kind == "stem" else self.w_base
 
+    def _apply(self, fn, recurse=True):
+        # `.to()`/`.half()` swap parameter data without bumping `_version`, so
+        # a materialized weight cached on the old device/dtype would survive
+        # the move and mix devices in the next serve forward.
+        self._cache_v = self._cache_w = self._cache_b = None
+        return super()._apply(fn, recurse)
+
     def _gen_weight(self) -> torch.Tensor:
         if self.kind == "stem":
             return _eq.gen_stem_weight(self.w0)
@@ -817,6 +824,12 @@ class EquivLinear(nn.Module):
                 "_serve_in_perm", in_perm.detach().clone(), persistent=False
             )
         self._cache_v = self._cache_w = self._cache_b = None
+
+    def _apply(self, fn, recurse=True):
+        # Same staleness hazard as HexNodeConv._apply: drop the folded serve
+        # weight cache whenever parameter data is moved or cast.
+        self._cache_v = self._cache_w = self._cache_b = None
+        return super()._apply(fn, recurse)
 
     def _materialize(self) -> tuple[torch.Tensor, torch.Tensor]:
         grad_on = torch.is_grad_enabled()
