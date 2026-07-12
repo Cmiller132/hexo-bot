@@ -92,9 +92,8 @@ _NICK_MAX = 24
 # Version stamp ("v") on cached analysis/summary payloads. Bump whenever the
 # payload schema changes: cached entries with a different (or missing) stamp
 # are treated as misses and recomputed. v2 added stv + moves_left; v3
-# scrubs non-finite floats to null (and thereby retires rows poisoned with
-# bare NaN literals, which 500 on every read).
-_ANALYSIS_VERSION = 3
+# scrubbed non-finite floats to null; v4 populates hexfield STV.
+_ANALYSIS_VERSION = 4
 
 # analysis_cache "ply" slot for the whole-game summary payload (real plies are
 # always >= 0, so -1 can never collide).
@@ -156,7 +155,7 @@ class LabWants(BaseModel):
     attention_query: LabCell | None = None
     # Per-block per-cell activation norms over the whole trunk.
     activations: bool = False
-    # The (15, N) input feature planes as the server featurizer built them.
+    # The family-specific (F, N) input planes as the server featurizer built them.
     features: bool = False
 
 
@@ -959,6 +958,7 @@ def create_app(settings: Settings) -> FastAPI:
                 {
                     "id": spec.slug, "label": spec.label,
                     "run": spec.run, "epoch": spec.epoch,
+                    "family": spec.family,
                     **spec.meta,
                 }
                 for spec in app.state.catalogue.values()

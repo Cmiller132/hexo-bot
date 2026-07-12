@@ -7,7 +7,7 @@
 #
 #   docker build -f apps/showcase/Dockerfile .        # from the repo root
 #
-# Stage 1 builds release wheels for the three pyo3 crates with maturin.
+# Stage 1 builds release wheels for the four pyo3 crates with maturin.
 # The crates are NOT abi3, so the wheels are CPython-version-specific
 # (cp312) — the builder therefore bases on python:3.12 and installs a pinned
 # rust toolchain via rustup (rust:slim-bookworm ships Debian's python 3.11,
@@ -26,7 +26,7 @@
 # docker-compose.xpu.yml). Its builder stage mirrors this one — keep in sync.
 
 ##############################################################################
-# Stage 1 — builder: rustup (pinned) + maturin, wheels for the three crates
+# Stage 1 — builder: rustup (pinned) + maturin, wheels for the four crates
 ##############################################################################
 FROM python:3.12-slim-bookworm AS builder
 
@@ -54,6 +54,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY packages/hexo_engine packages/hexo_engine
 COPY packages/hexo_utils packages/hexo_utils
 COPY packages/shrimp packages/shrimp
+COPY packages/hexfield_eq packages/hexfield_eq
 
 # --locked: build exactly the dependency set in the committed Cargo.lock.
 RUN maturin build --release --locked -o /wheels -i python3.12 \
@@ -61,7 +62,9 @@ RUN maturin build --release --locked -o /wheels -i python3.12 \
     && maturin build --release --locked -o /wheels -i python3.12 \
         -m packages/hexo_utils/Cargo.toml \
     && maturin build --release --locked -o /wheels -i python3.12 \
-        -m packages/shrimp/Cargo.toml
+        -m packages/shrimp/Cargo.toml \
+    && maturin build --release --locked -o /wheels -i python3.12 \
+        -m packages/hexfield_eq/Cargo.toml
 
 ##############################################################################
 # Stage 2 — runtime: python 3.12 + CPU torch + wheels + the showcase app

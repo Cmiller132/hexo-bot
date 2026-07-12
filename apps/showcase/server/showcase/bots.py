@@ -8,7 +8,7 @@ search session per CHECKPOINT — the visit budget is a per-job parameter, so
 the catalogue stays small in memory no matter how many strengths are offered.
 
 Process model: `SHOWCASE_WORKERS` spawned processes each load the FULL
-catalogue once (checkpoints are small) plus one `ShrimpMctsSession` per
+catalogue once (checkpoints are small) plus one family-specific MCTS session per
 checkpoint, and serve jobs from a per-worker queue. Jobs for a game are routed
 sticky by `game_key % workers`, so a game's search trees live in exactly one
 worker and `discard(game_key)` at game end reclaims them there. Results flow
@@ -16,7 +16,7 @@ back over a shared queue drained by a reader thread that resolves asyncio
 futures; an abandoned or timed-out job simply resolves a future nobody awaits,
 so the pool can never deadlock on a dead game.
 
-This module keeps torch/shrimp imports out of module scope: the web process
+This module keeps torch/model-stack imports out of module scope: the web process
 imports it for `BotSpec`/`load_bots_toml`/`BotPool` without paying (or
 depending on) the model stack. Workers do the heavy imports in
 `_WorkerRuntime` after multiprocessing spawn.
@@ -60,8 +60,6 @@ _READY = "__ready__"
 # Without it, ordinary queue-wait was misdiagnosed as an accelerator fault and,
 # at GPU_FAULT_THRESHOLD=1, needlessly failed the shard over to CPU.
 _STARTED = "__started__"
-_SEED_MASK = (1 << 63) - 1
-
 # How many times a failed job is transparently re-run after its shard has been
 # recycled (or failed over to CPU). One retry is enough: a job that wedged the
 # accelerator recycles the shard — onto CPU once the fault threshold is hit — so
@@ -158,7 +156,7 @@ PROFILES_DIR = Path(__file__).resolve().parents[2] / "profiles"
 # Keys of a [[checkpoint]] table the server itself consumes; anything else is
 # passed through verbatim as display metadata (e.g. games_trained, group).
 _CHECKPOINT_REQUIRED = {"id", "checkpoint", "label", "run", "epoch"}
-_CHECKPOINT_SERVER_KEYS = _CHECKPOINT_REQUIRED | {"search_profile"}
+_CHECKPOINT_SERVER_KEYS = _CHECKPOINT_REQUIRED | {"family", "search_profile"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +170,7 @@ class CheckpointSpec:
     checkpoint: Path
     weights_sha: str
     meta: dict  # optional display metadata (scalars only), served verbatim
+    family: str = "shrimp"
     # Resolved profile toml this checkpoint searches with; None selects the
     # global settings.search_config default.
     search_profile: Path | None = None
@@ -250,6 +249,13 @@ def load_bots_toml(path: Path | str) -> Catalogue:
         if slug in seen:
             raise ValueError(f"duplicate checkpoint id {slug!r} in {path}")
         seen.add(slug)
+        family = str(entry.get("family", "shrimp")).strip().lower()
+        # Registry lookup is deliberately lightweight: adapter modules import
+        # no torch/model stack at module scope, preserving the web-process
+        # catalogue contract.
+        from .families import get_family
+
+        get_family(family)
         checkpoint = Path(entry["checkpoint"])
         if not checkpoint.is_absolute():
             checkpoint = (path.parent / checkpoint).resolve()
@@ -276,6 +282,7 @@ def load_bots_toml(path: Path | str) -> Catalogue:
                 checkpoint=checkpoint,
                 weights_sha=_file_sha256(checkpoint),
                 meta=meta,
+                family=family,
                 search_profile=search_profile,
             )
         )
@@ -287,113 +294,17 @@ def load_bots_toml(path: Path | str) -> Catalogue:
 # ---------------------------------------------------------------------------
 
 
-class SearchProfile:
-    """As-trained search invocation, parsed from a profile TOML.
-
-    The source is either a full training config or a distilled profile from
-    `PROFILES_DIR`; both carry the same `[model.config.selfplay]` and
-    `[model.config.multi_stage_eval]` sections. Everything except the per-bot
-    visit budget comes from there: c_puct, widening, FPU, TSS, and the
-    divergence overrides (which carry the Gumbel root/sequential-halving
-    levers for a Gumbel-era profile, and leave them off for a PUCT-era one).
-    The virtual batch size and opening sampling mirror the eval arena's
-    single-root CPU settings rather than the GPU self-play pipeline depth.
-    Parsed once per unique profile per worker (see `_WorkerRuntime`).
-    """
-
-    def __init__(self, config_path: Path | str) -> None:
-        from shrimp.config import build_divergence_overrides, parse_shrimp_config
-
-        with open(config_path, "rb") as fh:
-            raw = tomllib.load(fh)
-        model_cfg = raw.get("model", {}).get("config", {})
-        cfg = parse_shrimp_config(
-            {
-                "device": "cpu",
-                "selfplay": model_cfg.get("selfplay", {}),
-                "multi_stage_eval": model_cfg.get("multi_stage_eval", {}),
-            }
-        )
-        self.selfplay = cfg.selfplay
-        self.overrides = build_divergence_overrides(cfg.selfplay)
-        self.virtual_batch_size = int(cfg.multi_stage_eval.eval_virtual_batch_size or 32)
-        self.opening_plies = int(cfg.multi_stage_eval.opening_plies)
-        self.opening_temperature = float(cfg.multi_stage_eval.opening_temperature)
-
-    def move_temperature(self, ply: int) -> float:
-        """Eval-arena selection protocol: sampled opening prefix, then greedy."""
-        if ply < self.opening_plies and self.opening_temperature > 0.0:
-            return self.opening_temperature
-        return 0.0
-
-    def search_one(
-        self, session: Any, evaluator: Any, state: Any, *,
-        game_key: int, visits: int, seed: int, temperature: float,
-    ) -> dict:
-        """One single-root search; returns the raw per-root result dict.
-
-        Selection happens IN-SEARCH via `move_temperatures` (the scalar
-        `temperature` argument must stay 0.0; per-root behavior rides the
-        list), so callers play `result["action_id"]` directly.
-
-        The kwarg set mirrors the training repo's eval arena exactly.
-        root_policy_temperature and root_fpu_reduction are deliberately NOT
-        passed even though the Rust signature accepts them: only the self-play
-        driver threads them into search, while the eval arena leaves them at
-        the Rust defaults for every profile, Gumbel and PUCT alike. As-trained
-        serving here means the eval-arena invocation.
-        """
-        sp = self.selfplay
-        return session.search(
-            [int(game_key)],
-            (state,),
-            visits=int(visits),
-            c_puct=sp.c_puct,
-            temperature=0.0,
-            seed=int(seed) & _SEED_MASK,
-            evaluator=evaluator,
-            move_temperatures=[float(temperature)],
-            divergence_overrides=self.overrides,
-            virtual_batch_size=self.virtual_batch_size,
-            active_root_limit=sp.active_root_limit,
-            widening_policy_mass=sp.widening_policy_mass,
-            widening_max_children=sp.widening_max_children,
-            widening_min_children=sp.widening_min_children,
-            fpu_reduction=sp.fpu_reduction,
-            tss_enabled=sp.tss_enabled,
-            search_parity_mode=sp.search_parity_mode,
-        )[0]
-
-
-def _load_checkpoint(path: Path) -> Any:
-    """Strict-load a shrimp checkpoint into a fresh eval-mode ShrimpNet.
-
-    Arch (width / head count / trunk layout) is inferred from the state dict
-    where determinable, falling back to the env-driven module globals — the
-    same contract as the eval arena's loader. A mismatch fails the strict load
-    with a clear error rather than serving a half-random net.
-    """
-    import torch
-
-    from shrimp.model import ShrimpNet, infer_net_kwargs_from_state_dict
-
-    payload = torch.load(path, map_location="cpu", weights_only=False)
-    if not isinstance(payload, dict) or not isinstance(payload.get("model"), dict):
-        raise RuntimeError(f"checkpoint payload has no 'model' state dict: {path}")
-    state_dict = payload["model"]
-    model = ShrimpNet(**infer_net_kwargs_from_state_dict(state_dict))
-    model.load_state_dict(state_dict, strict=True)
-    model.eval()
-    return model
-
+# Compatibility exports: the shrimp adapter now owns these implementations.
+from .families.shrimp_family import SearchProfile, _load_checkpoint  # noqa: E402
 
 @dataclass
 class _LoadedBot:
     spec: CheckpointSpec
+    family: Any
     model: Any
     evaluator: Any
     session: Any
-    profile: SearchProfile
+    profile: Any
 
 
 class _WorkerRuntime:
@@ -404,11 +315,11 @@ class _WorkerRuntime:
 
     Device: `settings.device` (SHOWCASE_DEVICE) is resolved once per worker at
     init (see showcase.device). When it resolves to an accelerator, a startup
-    CPU-vs-device parity self-check runs on the FIRST checkpoint's net — the
-    device either serves the same numbers as CPU within tolerance or the whole
-    worker falls back to cpu (never serve wrong moves). The check is per
-    device, not per checkpoint: all catalogue nets share the arch code paths,
-    so one parity pass vouches for the backend. Only the model/evaluator move;
+    CPU-vs-device parity self-check runs on one checkpoint per model family —
+    the device either serves the same numbers as CPU within tolerance or the
+    whole worker falls back to cpu (never serve wrong moves). Checkpoints in a
+    family share its forward code path, so one pass per family vouches for the
+    backend. Only the model/evaluator move;
     the Rust search session is device-agnostic (it calls back into the
     evaluator for every batch).
     """
@@ -424,10 +335,8 @@ class _WorkerRuntime:
         )
         torch.set_num_threads(threads)
 
-        from shrimp import _rust
-        from shrimp.inference import ShrimpEvaluator
-
         from . import device as devmod
+        from .families import get_family
 
         # `device_override` is set when the pool forces a specific serving device
         # on a (re)spawn — the GPU->CPU failover path passes "cpu" after this
@@ -448,25 +357,45 @@ class _WorkerRuntime:
                 log.warning("%s", note)
 
         self.policy_floor = settings.policy_floor
-        # One parse per unique profile toml; the settings.search_config
-        # default is parsed only if some checkpoint actually uses it.
-        profiles: dict[Path, SearchProfile] = {}
+        grouped: dict[str, list[CheckpointSpec]] = {}
+        for spec in specs:
+            grouped.setdefault(spec.family, []).append(spec)
+        families = {name: get_family(name) for name in grouped}
+        # Must precede load_net: hexfield_eq constants are frozen when its
+        # model module is first imported.
+        for name, family_specs in grouped.items():
+            families[name].prepare_process(family_specs)
 
-        def profile_for(spec: CheckpointSpec) -> SearchProfile:
-            key = spec.search_profile or Path(settings.search_config)
+        # Profiles are family-scoped: two families may parse the same TOML
+        # using different config dataclasses/search implementations.
+        profiles: dict[tuple[str, Path], Any] = {}
+
+        def profile_for(spec: CheckpointSpec) -> Any:
+            key_path = spec.search_profile or Path(settings.search_config)
+            key = (spec.family, key_path)
             profile = profiles.get(key)
             if profile is None:
-                profile = profiles[key] = SearchProfile(key)
+                profile = profiles[key] = families[spec.family].build_profile(
+                    spec.search_profile, settings
+                )
             return profile
 
         self.bots: dict[str, _LoadedBot] = {}
-        checked = False
+        loaded: list[tuple[CheckpointSpec, Any, Any]] = []
         for spec in specs:
-            model = _load_checkpoint(spec.checkpoint)
-            if device != "cpu" and not checked:
-                checked = True
+            family = families[spec.family]
+            loaded.append((spec, family, family.load_net(spec)))
+
+        # Vouch for every resident model implementation, not merely the first
+        # checkpoint. Any family mismatch falls the whole worker back to CPU.
+        checked_families: set[str] = set()
+        if device != "cpu":
+            for spec, family, model in loaded:
+                if spec.family in checked_families:
+                    continue
+                checked_families.add(spec.family)
                 if devmod.selfcheck_wanted(settings.device_selfcheck, device):
-                    check = devmod.verify_device(model, device)
+                    check = devmod.verify_device(model, device, family=family)
                     if check.ok:
                         log.info(
                             "device self-check passed on %s (serve path): "
@@ -483,15 +412,19 @@ class _WorkerRuntime:
                             device,
                         )
                         device = "cpu"
-                if device != "cpu":
-                    # Trigger lazy backend init / kernel JIT off the hot path.
-                    model.to(device)
-                    devmod.warmup(model, device)
+                        for _, _, loaded_model in loaded:
+                            loaded_model.to("cpu")
+                        break
+        for spec, family, model in loaded:
+            if device != "cpu":
+                model.to(device)
+                family.warmup(model, device)
             self.bots[spec.slug] = _LoadedBot(
                 spec=spec,
+                family=family,
                 model=model,
-                evaluator=ShrimpEvaluator(model, device=device),
-                session=_rust.ShrimpMctsSession(max_states=65_536),
+                evaluator=family.build_evaluator(model, device),
+                session=family.build_session(),
                 profile=profile_for(spec),
             )
         self.device = device
@@ -550,8 +483,6 @@ class _WorkerRuntime:
         """
         import hexo_engine as engine
         from hexo_engine.types import PlacementAction, unpack_coord_id
-        from shrimp.geometry import unpack_action_id
-
         bot = self.bots[bot_slug]
         state = self._replay(actions)
         entry_player = engine.current_player(state)
@@ -566,7 +497,7 @@ class _WorkerRuntime:
                 temperature=bot.profile.move_temperature(ply),
             )
             action_id = int(result["action_id"])
-            q, r = unpack_action_id(action_id)
+            q, r = bot.family.decode_action(action_id)
             engine.apply_action(state, PlacementAction(unpack_coord_id(action_id)))
             played.append(
                 {
@@ -588,11 +519,11 @@ class _WorkerRuntime:
         position after `actions`."""
         import hexo_engine as engine
 
-        from . import analysis
-
         bot = self.bots[bot_slug]
         state = self._replay(actions)
-        payload = analysis.net_eval(bot.model, state, policy_floor=self.policy_floor)
+        payload = bot.family.net_eval(
+            bot.model, state, policy_floor=self.policy_floor
+        )
         payload["ply"] = len(actions)
         terminal = engine.terminal(state)
         payload["to_move"] = (
@@ -600,7 +531,7 @@ class _WorkerRuntime:
             else (1 if str(engine.current_player(state).value).endswith("1") else 0)
         )
         if want_search and terminal is None:
-            payload["search"] = analysis.searched_eval(
+            payload["search"] = bot.family.searched_eval(
                 bot.session, bot.evaluator, bot.profile, state,
                 # Throwaway tree key: high bit set so it can never collide with
                 # a live game's 48-bit key.
@@ -618,14 +549,12 @@ class _WorkerRuntime:
         import hexo_engine as engine
         from hexo_engine.types import PlacementAction, unpack_coord_id
 
-        from . import analysis
-
         bot = self.bots[bot_slug]
         state = engine.new_game()
         rows: list[Any] = []
         to_move: list[int | None] = []
         for index in range(len(actions) + 1):
-            rows.append(analysis.featurize(state))
+            rows.append(bot.family.summary_row(state))
             terminal = engine.terminal(state)
             to_move.append(
                 None if terminal is not None
@@ -633,7 +562,7 @@ class _WorkerRuntime:
             )
             if index < len(actions):
                 engine.apply_action(state, PlacementAction(unpack_coord_id(int(actions[index]))))
-        payload = analysis.summary_eval(bot.model, rows)
+        payload = bot.family.summary_eval(bot.model, rows)
         payload["to_move"] = to_move
         payload["ply_count"] = len(actions)
         return payload
@@ -655,20 +584,10 @@ class _WorkerRuntime:
         (lab_rules); the one remaining user error — an attention query outside
         the support — comes back as a ``reject`` payload so the endpoint can
         422 instead of treating it as a worker failure."""
-        from . import lab
-
         bot = self.bots[bot_slug]
-        if actions is not None:
-            facts, support, feats = lab.build_sequence_position(actions)
-            mode = "sequence"
-        else:
-            p0, p1 = stones or ([], [])
-            mover = to_move if to_move is not None else 0
-            facts, support, feats = lab.build_free_position(p0, p1, mover)
-            mode = "free"
         try:
-            payload = lab.eval_payload(
-                bot.model, facts, support, feats,
+            return bot.family.lab_eval_payload(
+                bot.model, actions=actions, stones=stones, to_move=to_move,
                 policy_floor=self.policy_floor,
                 attention_cell=attention_cell,
                 want_activations=want_activations,
@@ -676,11 +595,6 @@ class _WorkerRuntime:
             )
         except ValueError as exc:
             return {"reject": str(exc)}
-        payload["mode"] = mode
-        if mode == "free":
-            payload["synthesized_history"] = True
-            payload["zeroed_features"] = list(lab.FREE_ZEROED)
-        return payload
 
     def lab_search(
         self, *, bot_slug: str, actions: list[tuple[int, int]], visits: int, seed: int,
@@ -688,12 +602,9 @@ class _WorkerRuntime:
         """One capped lab search from a validated placement sequence, under
         the checkpoint's own as-trained profile. Throwaway tree key (high bit
         set, like analysis) — the tree is discarded inside search_payload."""
-        from . import lab
-
         bot = self.bots[bot_slug]
-        state = lab.replay_state(actions)
-        return lab.search_payload(
-            bot.session, bot.evaluator, bot.profile, state,
+        return bot.family.lab_search_payload(
+            bot.session, bot.evaluator, bot.profile, actions=actions,
             game_key=(1 << 63) | (seed & ((1 << 48) - 1)),
             visits=int(visits),
             seed=seed,
@@ -778,6 +689,7 @@ def _gpu_probe_main(
     """
     try:
         from . import device as devmod
+        from .families import get_family
 
         resolved = devmod.resolve_device(requested_device)
         if resolved.device == "cpu":
@@ -785,8 +697,10 @@ def _gpu_probe_main(
             # resolvable (driver gone, etc.) — definitively not healthy.
             out_queue.put((False, f"accelerator unavailable: {resolved.notes}"))
             return
-        model = _load_checkpoint(spec.checkpoint)
-        check = devmod.verify_device(model, resolved.device)
+        family = get_family(spec.family)
+        family.prepare_process([spec])
+        model = family.load_net(spec)
+        check = devmod.verify_device(model, resolved.device, family=family)
         if check.ok:
             out_queue.put((True, f"parity ok on {resolved.device}"))
         else:

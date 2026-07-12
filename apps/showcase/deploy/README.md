@@ -35,10 +35,31 @@ Everything below runs from `apps/showcase/` on the deploy machine.
    ```
 
    `checkpoint` paths inside `bots.toml` resolve relative to the file, so
-   entries reference the `.pt` files by bare filename. All checkpoints must
-   match the support radius the server runs at
-   (`SHRIMP_SUPPORT_RADIUS=4` in compose); width/heads/trunk are inferred
-   per checkpoint from its state dict.
+   entries reference the `.pt` files by bare filename. Shrimp checkpoints
+   must match `SHRIMP_SUPPORT_RADIUS=4` from compose; their width/heads/trunk
+   are inferred from the state dict. Hexfield architecture is instead derived
+   from each checkpoint's metadata before its model package is imported.
+
+### Preparing the hexfield_eq ep70 model
+
+The showcase supports mixed shrimp + `hexfield_eq` catalogues. Prepare the
+main_2 ep70 deploy mount without its optimizer state (this does not deploy or
+contact a server):
+
+```bash
+python scripts/export_hexfield_eq_infer.py \
+  /mnt/e/Hexo-BotTrainer/runs/hexfield_eq_main_2/checkpoints/epoch_000070.pt \
+  --out apps/showcase/deploy/models/hexfield_eq_main2_ep70_infer.pt \
+  --verify
+```
+
+Merge `deploy/bots.hexfield_eq.example.toml` into
+`deploy/models/bots.toml`. Its entry declares `family = "hexfield_eq"` and
+the main_2 search profile. Architecture environment variables are unnecessary:
+workers derive `HEXFIELD_EQ_*` from checkpoint `meta` before importing the
+model. A worker may host shrimp and hexfield entries together, but all
+hexfield entries in one worker must share one architecture. Local development
+may point the entry directly at the full training checkpoint.
 
 4. **Launch**:
 

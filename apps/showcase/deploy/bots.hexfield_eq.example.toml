@@ -1,0 +1,13 @@
+# Deploy-prep catalogue example. Copy/merge into deploy/models/bots.toml;
+# this file is documentation only and is not deployed automatically.
+sims = [64, 128, 256, 512]
+
+[[checkpoint]]
+id = "hexfield-main2-ep70"
+family = "hexfield_eq"
+checkpoint = "hexfield_eq_main2_ep70_infer.pt"
+label = "Hexfield EQ main_2 (ep70)"
+run = "hexfield_eq_main_2"
+epoch = 70
+search_profile = "/app/configs/hexfield_eq_main_2.toml"
+group = "hexfield_eq"

@@ -143,18 +143,24 @@ def selfcheck_wanted(setting: bool | None, device: str) -> bool:
     return device != "cpu"
 
 
-def _selfcheck_batch() -> dict[str, Any]:
-    """Featurized fixed synthetic position -> one collated model batch (CPU)."""
+def _selfcheck_state() -> Any:
+    """Build the fixed synthetic engine position shared by all families."""
     import hexo_engine as engine
     from hexo_engine.types import AxialCoord, PlacementAction
-
-    from shrimp.batching import collate_rows
-
-    from .analysis import featurize
 
     state = engine.new_game()
     for q, r in _SELFCHECK_MOVES:
         engine.apply_action(state, PlacementAction(AxialCoord(q, r)))
+    return state
+
+
+def _selfcheck_batch() -> dict[str, Any]:
+    """Shrimp-featurized fixed synthetic position (legacy public behavior)."""
+    from shrimp.batching import collate_rows
+
+    from .analysis import featurize
+
+    state = _selfcheck_state()
     return collate_rows([featurize(state)])
 
 
@@ -187,7 +193,9 @@ def _forward(
     return {k: v.detach().float().cpu() for k, v in out.items()}
 
 
-def verify_device(model: Any, device: str, *, tol: float | None = None) -> SelfCheckResult:
+def verify_device(
+    model: Any, device: str, *, tol: float | None = None, family: Any = None,
+) -> SelfCheckResult:
     """Startup parity self-check: the same fixed position forwarded on CPU
     (fp32 reference) and on `device` UNDER THE SERVE CONFIGURATION (no-grad
     forward_policy_value, fp16 autocast when the evaluator would use it) must
@@ -205,16 +213,29 @@ def verify_device(model: Any, device: str, *, tol: float | None = None) -> SelfC
 
     import torch
 
-    from shrimp.inference import serve_autocast
+    if family is None:
+        from shrimp.inference import serve_autocast
 
-    autocast_on = serve_autocast(device)
+        autocast_on = serve_autocast(device)
+    else:
+        autocast_on = family.selfcheck_autocast(device)
     if tol is None:
         tol = SELFCHECK_TOL_AUTOCAST if autocast_on else SELFCHECK_TOL
-    batch = _selfcheck_batch()
-    ref = _forward(model.to("cpu"), batch, torch.device("cpu"))
+    batch = None if family is not None else _selfcheck_batch()
+    if family is None:
+        ref = _forward(model.to("cpu"), batch, torch.device("cpu"))
+    else:
+        state = _selfcheck_state()
+        model.to("cpu")
+        ref = family.selfcheck_forward(model, state, "cpu")
     dev = torch.device(device)
     try:
-        out = _forward(model.to(dev), batch, dev, autocast_on=autocast_on)
+        model.to(dev)
+        out = (
+            _forward(model, batch, dev, autocast_on=autocast_on)
+            if family is None
+            else family.selfcheck_forward(model, state, device)
+        )
     except Exception as exc:  # broken backend/runtime: fall back, don't crash
         model.to("cpu")
         return SelfCheckResult(False, math.inf, math.inf, f"{type(exc).__name__}: {exc}")

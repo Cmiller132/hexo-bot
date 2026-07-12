@@ -15,6 +15,12 @@ apps/showcase/.env
 apps/showcase/deploy/models/*
 !apps/showcase/deploy/models/.gitkeep
 
+# Showcase runtime SQLite DB (created on server/test run; never committed)
+*.db
+*.db-shm
+*.db-wal
+apps/showcase/showcase.db
+
 # Data caches — keep only scaffolding .gitkeep files
 data/*
 !data/*/

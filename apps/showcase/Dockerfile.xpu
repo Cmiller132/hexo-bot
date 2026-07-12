@@ -39,7 +39,7 @@
 # docker layer cache dedupes the shared steps automatically).
 
 ##############################################################################
-# Stage 1 — builder: rustup (pinned) + maturin, wheels for the three crates
+# Stage 1 — builder: rustup (pinned) + maturin, wheels for the four crates
 ##############################################################################
 FROM python:3.12-slim-bookworm AS builder
 
@@ -67,6 +67,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY packages/hexo_engine packages/hexo_engine
 COPY packages/hexo_utils packages/hexo_utils
 COPY packages/shrimp packages/shrimp
+COPY packages/hexfield_eq packages/hexfield_eq
 
 # --locked: build exactly the dependency set in the committed Cargo.lock.
 RUN maturin build --release --locked -o /wheels -i python3.12 \
@@ -74,7 +75,9 @@ RUN maturin build --release --locked -o /wheels -i python3.12 \
     && maturin build --release --locked -o /wheels -i python3.12 \
         -m packages/hexo_utils/Cargo.toml \
     && maturin build --release --locked -o /wheels -i python3.12 \
-        -m packages/shrimp/Cargo.toml
+        -m packages/shrimp/Cargo.toml \
+    && maturin build --release --locked -o /wheels -i python3.12 \
+        -m packages/hexfield_eq/Cargo.toml
 
 ##############################################################################
 # Stage 2 — runtime: ubuntu 24.04 (python 3.12) + XPU torch + level-zero
