@@ -1,0 +1,245 @@
+\section{Horizon-parameterized dismissal soundness}
+\label{sec:main-theorem}
+
+The proof runs the attacker's real strategy beside a bookkeeping play, called
+the ghost, that remains on certificate branches.  The two boards have the
+same attacker stones.  The set $X$ contains dismissed defender stones present
+only in the real game, while $Y$ contains searched filler stones present only
+in the ghost.  The coupling keeps both games at the same ply and budget while
+tracking the effects of these two differences.
+
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[scale=.39]
+    \begin{scope}[xshift=-8.2cm]
+      \HexBoardRange{0}{0}{3}
+      \HexAttacker{-1}{0}\HexAttacker{0}{0}\HexAttacker{1}{-1}
+      \HexDefender{-1}{1}\HexDefender{2}{-1}
+      \node[defender stone,fill=black!30] at \HexAt{1}{1} {};
+      \draw[line width=1.2pt] \HexAt{1}{1} ++(-.22,-.22) -- ++(.44,.44);
+      \draw[line width=1.2pt] \HexAt{1}{1} ++(-.22,.22) -- ++(.44,-.44);
+      \node[font=\small] at (0,-6.8) {real game};
+    \end{scope}
+    \begin{scope}[xshift=8.2cm]
+      \HexBoardRange{0}{0}{3}
+      \HexAttacker{-1}{0}\HexAttacker{0}{0}\HexAttacker{1}{-1}
+      \HexDefender{-1}{1}\HexDefender{2}{-1}
+      \node[defender stone,fill=white] at \HexAt{-2}{0} {};
+      \draw[line width=1.15pt] \HexAt{-2}{0} circle (.36);
+      \node[font=\small] at (0,-6.8) {ghost game};
+    \end{scope}
+  \end{tikzpicture}
+
+  \vspace{1ex}
+  \begin{tabular}{@{}cl@{\qquad}cl@{}}
+    \tikz\node[attacker stone,minimum size=3.7mm] {}; & attacker stone &
+    \tikz\node[defender stone,minimum size=3.7mm] {}; & shared defender stone \\
+    \tikz{\node[defender stone,fill=black!30,minimum size=3.7mm] {};
+      \draw[line width=.8pt] (-.12,-.12)--(.12,.12);
+      \draw[line width=.8pt] (-.12,.12)--(.12,-.12);} &
+      $X$ (dismissed, real only) &
+    \tikz{\node[defender stone,minimum size=3.7mm] {};
+      \draw[line width=.8pt] (0,0) circle (.15);} &
+      $Y$ (filler, ghost only)
+  \end{tabular}
+  \caption{The coupled positions have identical attacker stones and shared
+  defender stones.  Canonical difference sets record one real-only dismissed
+  stone and one ghost-only filler.}
+  \label{fig:ghost-coupling}
+\end{figure}
+
+The main result turns the local zone conditions into a strategy against every
+legal defender reply.
+
+\begin{theorem}[Horizon-parameterized dismissal soundness]
+\label{thm:T3}
+This statement is proved for valid zone-carrying certificates obeying the
+grammar of \cref{def:D9} and satisfying \cref{zone:Z1,zone:Z2,zone:Z4,zone:Z5},
+with exact $D_N$ and the full, rather than sharpened, defender-placement
+budget.  Let $\mathcal C$ be such a certificate for ``$\A$ wins from $P_0$ by
+ply $T$.''  Then $\A$ wins from $P_0$ against every defender strategy over
+the full legal move set by a ply at most $T$.  Hence every dismissal in
+$\mathcal C$ is sound.
+\end{theorem}
+
+\begin{proof}
+We construct the attacker's real-game strategy by coupling the real position
+$R$, initially $P_0$, to a walk on $\mathcal C$ with ghost position $G$,
+also initially $P_0$.  We maintain all invariants of \cref{def:D12}: equal
+ply, mover, and budget; identical attacker stones; the canonical defender
+differences $X$ and $Y$; and the protection and frontier-clear properties.
+Leaves are processed as soon as the walk reaches them.  The induction
+parameter is $T$ minus the current ply.
+
+\medskip\noindent
+\textbf{Step O (ghost at an OR node, designated placement $c$).}
+The cell $c$ is empty in the ghost because the certificate is valid.  It is
+not in $X$: it belongs to the core and therefore to the protected set of
+every ancestor by \cref{prop:prot-mono}, while the coupling keeps $X$ out of
+the protected set.  It is not in $Y$, since cells of $Y$ are ghost defender
+stones and $c$ is ghost-empty.  Thus $c$ is empty in the real position.
+
+The cell is also real-legal.  By \cref{zone:Z4}, it lies within distance $8$
+of an attacker stone of its predecessor position or a root stone.  These
+stones are identical in $R$ and $G$.  The attacker plays $c$ in both games.
+The attacker stones remain identical, and $X$ and $Y$ do not change.
+
+If this placement completes the named witness $W^*$ in the ghost, then
+$W^*$ belongs to the core.  Hence $X\cap W^*=\varnothing$.  Also
+$Y\cap W^*=\varnothing$, because an attacker-complete ghost window contains
+no ghost defender stone.  Its masks agree in the two games by
+\cref{lem:L5}, so the real placement completes $W^*$ at the same ply, which
+is at most $T$.
+
+The real placement may instead complete another window that the ghost does
+not.  Such a window is blocked by $Y$ in the ghost but not in the real game,
+as characterized by \cref{lem:L5,lem:L6}.  The real game then terminates
+immediately with an attacker win before $T$.  If neither completion occurs,
+the coupling recurses on the child.
+
+\medskip\noindent
+\textbf{Step A (ghost at an AND node $N$, real defender placement $d$).}
+The real-legal cell $d$ is either ghost-occupied, ghost-empty and searched,
+or ghost-empty and unsearched.  These cases are exhaustive.
+
+\smallskip\noindent
+\emph{Filler subroutine.}
+This subroutine is used in A2 and A3.  The ghost must consume a defender ply.
+Choose any $d_0\in S(N)$.  This set is nonempty by the certificate grammar,
+and every member is ghost-legal and ghost-empty.  The ghost plays $d_0$.  If
+$d_0$ was real-occupied, then $d_0\in X$ and the update is
+$X\leftarrow X\setminus\{d_0\}$: the ghost has caught up.  Otherwise the
+update is $Y\leftarrow Y\cup\{d_0\}$.  Recomputing the canonical differences
+preserves the coupling invariants.  Every new $Y$-cell is a searched
+placement, and $X$ can only shrink.
+
+\smallskip\noindent
+\textbf{A1.} Suppose $d$ is ghost-empty and $d\in S(N)$.  Both games play
+$d$, their difference sets do not change, and the ghost descends to the
+$d$-child.
+
+\smallskip\noindent
+\textbf{A2.} Suppose $d$ is ghost-occupied.  It is a ghost defender stone:
+ghost attacker stones also occur in the real game, while $d$ is real-empty.
+Thus $d\in Y$.  The real game plays $d$, removes it from $Y$, runs the filler
+subroutine, and descends to the $d_0$-child.
+
+\smallskip\noindent
+\textbf{A3.} Suppose $d$ is ghost-empty and $d\notin S(N)$.  This is a
+dismissal.  First, $d\notin\Prot(N)$.  If $d\in\Legal(P_N)$, this follows
+from \cref{zone:Z2}, since protected legal cells are searched.  If
+$d\notin\Legal(P_N)$ and is real-legal only through the $X$-expanded
+frontier, \cref{lem:L9} excludes a protected-not-legal cell.  The assumption
+also excludes a protected legal cell.
+
+Second, $d$ is frontier-clear.  If $d\in\Legal(P_N)$, a non-clear cell lies
+in the band of \cref{zone:Z5} and would have been searched.  If
+$d\notin\Legal(P_N)$, \cref{lem:L9} supplies clearance.  The real game plays
+$d$ and updates
+\[
+  X\leftarrow X\cup\{d\},
+  \qquad
+  \widehat X\leftarrow\widehat X\cup\{d\}.
+\]
+The protection and clearance invariants hold.  The ghost runs the filler
+subroutine and descends to the $d_0$-child.  This is also where
+\cref{lem:L9} prevents a dismissed-stone corridor from reaching protected
+frontier territory.
+
+\medskip\noindent
+\textbf{Anchored no-completion argument.}
+We show that the real defender cannot complete a window before ply $T$.
+For every window $W$, the defender stones in the real position are the ghost
+defender stones, plus $X$ and minus $Y$.  Consequently,
+\begin{equation}
+  \cnt_\D(W,R)
+  =\cnt_\D(W,G)+|X\cap W|-|Y\cap W|
+  \le \cnt_\D(W,G)+|\widehat X\cap W|.
+  \tag{MI}\label{eq:MI}
+\end{equation}
+Suppose that $W$ becomes defender-complete in the real play at a ply less
+than $T$.
+
+If no placement in $W$ was ever dismissed, then
+$\widehat X\cap W=\varnothing$.  Inequality \eqref{eq:MI} gives
+$\cnt_\D(W,G)\ge6$ at that ply.  The ghost follows an actual certificate
+line, but the grammar of \cref{def:D9} forbids defender-terminal edges and
+requires exact successors.  No valid line can contain this completion, a
+contradiction.
+
+Otherwise let $x^*$ be the first cell of $W$ ever placed into
+$\widehat X$, and let $N^*$ be its dismissal node.  Write $P(N^*)$,
+$R(N^*)$, and $D(N^*)$ for the ghost position, real position, and remaining
+defender count at that node.  Step A3 gives
+$x^*\notin\Prot(N^*)$.  The window $W$ is alive for the defender at $N^*$:
+it completes later, and defender-aliveness persists backward by
+\cref{lem:L4}.  The cell $x^*$ is one of its empties.  If
+\[
+  \cnt_\D(W,P(N^*))+D(N^*)\ge6,
+\]
+then $W$ qualifies for the completion guard and all its empties, including
+$x^*$, lie in $\Prot(N^*)$, a contradiction.  Hence the displayed sum is
+less than $6$.
+
+Before $x^*$, no cell of $W$ belongs to $\widehat X$, so \eqref{eq:MI}
+gives
+\[
+  \cnt_\D(W,R(N^*))\le\cnt_\D(W,P(N^*)).
+\]
+The plays are synchronized.  From $x^*$ onward, at most $D(N^*)$ real
+defender placements occur strictly before $T$.  Applying \cref{lem:L7} at
+$N^*$ shows that $W$ cannot reach count $6$ before $T$, again a
+contradiction.
+
+\medskip\noindent
+\textbf{Leaf transfer.}
+Post-leaf plies are analyzed directly in the real game; the coupling is not
+extended past the leaf.
+
+At a WIN leaf, \cref{def:D9} provides a checked $\ownwinnow$ witness with
+count $5$, or with count $4$ and both remaining attacker placements.  No
+defender placement is interleaved.  The witness window belongs to the core,
+so it is disjoint from $X$; it is defender-free in the ghost and therefore
+disjoint from $Y$.  Its masks agree by \cref{lem:L5}.  Its empty cells lie
+within distance $2$ of shared attacker stones by \cref{lem:L1}, so they are
+legal in the real game.  They are also real-empty: $X$ avoids the core and
+$Y$-cells are absent from the real position.  The attacker fills the cells
+and completes the window at the declared resolution ply, at most $T$.
+
+At a LOSS leaf with defender budget $b$, the named family $\mathcal T$ has
+hitting number greater than $b$.  The real and ghost masks and empty sets of
+every $W\in\mathcal T$ are identical at the leaf.  Such windows belong to
+the core, so $X$ avoids them.  They are attacker-alive in the ghost, so they
+contain no ghost defender stone and in particular no $Y$-cell.  Attacker
+stones are shared.  Thus the real hitting number of $\mathcal T$ is the same
+as the ghost hitting number and is greater than $b$.
+
+It remains to exclude a real defender $\ownwinnow$ at the leaf.  Let $W$ be
+a putative witness.  If $\widehat X\cap W=\varnothing$, the leaf-time form
+of \eqref{eq:MI} gives
+$\cnt_\D(W,R)\le\cnt_\D(W,G)$.  The attacker mask and budget agree, so the
+real predicate would imply the ghost predicate.  This contradicts the
+verifier check required at the leaf.  If
+$\widehat X\cap W\ne\varnothing$, the second case of the anchored argument,
+applied at the first dismissed cell $x^*\in W$, is pure counting over every
+real defender placement before $T$.  It does not require the coupling to
+continue.  It forbids $W$ from reaching count $6$ before $T$.  Yet a
+current-turn win would complete before the declared resolution, which is at
+most $T$.  This is also a contradiction.
+
+Now let the real defender play any complete remainder $H$ of the current
+turn.  Since $|H|\le b$ is smaller than the hitting number of $\mathcal T$,
+some $W_H\in\mathcal T$ satisfies $E(W_H)\cap H=\varnothing$.  The window
+remains attacker-alive, because its leaf masks agreed with the ghost and its
+cells avoid $H$.  It has at most two empty cells.  By \cref{lem:L1}, they lie
+within distance $2$ of shared, permanent attacker stones and remain legal and
+empty in the real game.  The attacker completes $W_H$ during the following
+turn, using one placement for a count-$5$ witness and two for a count-$4$
+witness.  Completion occurs by
+\[
+  \text{leaf-ply}+b+2\le T.
+\]
+The set $H$ may contain hits on other witness windows, quiet moves, or
+frontier moves.  The argument uses only its cardinality and permanence.
+This completes the induction.
+\end{proof}

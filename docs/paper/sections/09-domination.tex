@@ -1,0 +1,320 @@
+\section{Domination patterns}
+\label{sec:domination}
+
+Domination compares a searched defender reply with an omitted reply over a
+finite stopped horizon.  The comparison transfers complete strategies and
+checks occupancy, window masks, and the legality frontier after every mapped
+placement.  This prevents local mask similarity from hiding a different legal
+continuation.
+
+For a cell $x$, write $B_R(x)=\{z:\dist(x,z)\le R\}$ and let $\Omega(x)$ be
+the 18 windows containing $x$.  For a post-opening position $P$, define its
+geometric support by
+\[
+  \Lambda(P)=\bigcup_{s\in\Stones(P)}B_8(s).
+\]
+If $P$ is nonterminal, its legal placements are
+$L(P)=\Lambda(P)\setminus\Stones(P)$; if $P$ is terminal, $L(P)=\varnothing$.
+An empty cell is \emph{dead} when every window in $\Omega(x)$ is dead.
+
+\subsection{Stopped outcomes and causal simulation}
+
+The outcome records the first terminal placement, with the defender's reply
+itself at time zero.
+
+\begin{definition}[Stopped horizon outcome; companion D3 and D4]
+\label{def:Dom-D3}
+Let $S$ be a possibly terminal successor of a defender reply.  A horizon $n$
+allows at most $n$ further placements after that reply.  Given pure
+continuation strategies $\sigma_D$ and $\tau_A$, play stops at the first
+terminal placement or after those $n$ placements, and
+\[
+  \operatorname{Out}_n(S,\sigma_D,\tau_A)
+  \in\{D@t:0\le t\le n\}\cup
+      \{A@t:0\le t\le n\}\cup\{?\}.
+\]
+Here $? $ means that no terminal placement occurred through the horizon.  For
+defender comparison, set
+\[
+  u_D(D@t)=1,
+  \qquad u_D(?)=0,
+  \qquad u_D(A@t)=-1.
+\]
+Winning windows and times remain in the trace, although all wins by one player
+have the same qualitative value.  A pure $X$-strategy assigns a legal
+placement to every nonterminal history of length less than $n$ at which $X$
+is to place, including both consecutive histories of an $X$ turn, and is
+never queried after a terminal history.  Write $\Sigma_X(S)$ for the set of
+such strategies from $S$.
+\end{definition}
+
+The transfer directions encode the defender-pruning implication.
+
+\begin{definition}[$n$-outcome domination; companion D5 and Lemma 3]
+\label{def:Dom-D5}
+Let $a$ and $b$ be legal defender replies at the same nonterminal position
+$P$, with stopped successors $S_a=P+a$ and $S_b=P+b$.  The reply $b$ is
+\emph{$n$-outcome-dominated by $a$ for the defender}, written
+$b\preceq_n a$, if there are maps
+\[
+  T_D:\Sigma_D(S_b)\to\Sigma_D(S_a),
+  \qquad
+  T_A:\Sigma_D(S_b)\times\Sigma_A(S_a)\to\Sigma_A(S_b)
+\]
+such that, for every discarded-branch defender strategy $\sigma_b$ and every
+searched-branch attacker strategy $\tau_a$,
+\[
+ u_D\!\left(\operatorname{Out}_n
+     (S_a,T_D(\sigma_b),\tau_a)\right)
+ \ge
+ u_D\!\left(\operatorname{Out}_n
+     (S_b,\sigma_b,T_A(\sigma_b,\tau_a))\right).
+\]
+Equivalently,
+\[
+  \forall\sigma_b\ \exists\sigma_a\
+  \forall\tau_a\ \exists\tau_b:\quad
+  u_D(\operatorname{Out}_n(S_a,\sigma_a,\tau_a))
+  \ge u_D(\operatorname{Out}_n(S_b,\sigma_b,\tau_b)).
+\]
+Consequently, an attacker win forced by the horizon after the searched reply
+$a$ is also forced after the omitted reply $b$.
+\end{definition}
+
+A causal simulation is the checkable witness used by the patterns below.
+
+\begin{definition}[Causal alternating simulation; companion D6]
+\label{def:Dom-D6}
+A depth-$k$ defender-favouring alternating simulation relates a searched state
+$G$ to an omitted state $H$ at equal placement depth.  A defender-terminal
+$G$, or an attacker-terminal $H$, is accepted immediately.  An
+attacker-terminal $G$ is accepted only if $H$ is already attacker-terminal;
+a defender-terminal $H$ is accepted only if $G$ is already
+defender-terminal.  No move is generated after a terminal state.  Two
+nonterminal states are accepted when $k=0$.
+
+Otherwise the states have the same player to move and the same remaining
+placement budget.  At a defender history, every legal move in $H$ is mapped
+causally to a legal move in $G$.  At an attacker history, every legal move in
+$G$ is mapped causally to a legal move in $H$.  The successor pair is related
+at depth $k-1$.  The map depends only on the paired prefix and current move.
+It pairs \textup{FirstStone} with \textup{FirstStone} and
+\textup{SecondStone} with \textup{SecondStone}, including stored first-cell
+coordinates under any coordinate involution.
+\end{definition}
+
+Such a simulation implies $n$-outcome domination by recursively transferring
+the two players' strategies \cite{hexobot-companions}.  Each simulation step
+must account for three channels: the mapped cells must be empty with explicit
+images for branch-exclusive empties; after each mapped placement, every
+labelled mask in the union of the two incident 18-window sets must be compared,
+with the terminal clauses applied before phase advance; and legal moves must
+be included in the actor-dependent direction.
+
+\subsection{Dead cells and interchangeable hits}
+
+A dead empty has no legality frontier because the dead-window witnesses on
+the six directed rays already support its whole radius-eight ball.
+
+\begin{lemma}[A dead empty has no legality frontier; companion Lemma 7]
+\label{lem:Dom-L7}
+Let $b$ be empty and dead in a nonterminal post-opening position $P$.  Then
+\[
+  B_8(b)\subseteq\Lambda(P).
+\]
+In particular, $b$ is legal, and placing at $b$ inserts no previously
+unsupported cell into the legal store.
+\end{lemma}
+
+\begin{proof}
+Let $u$ range over the six directed axial unit vectors.  The endpoint window
+\[
+  W_u=\{b,b+u,\ldots,b+5u\}
+\]
+belongs to $\Omega(b)$.  It is dead while $b$ is empty, so among
+$b+u,\ldots,b+5u$ there is an old stone
+$s_u=b+k_u u$ with $1\le k_u\le5$.
+
+Take $z\in B_8(b)$.  It lies in a closed $60^\circ$ sector between adjacent
+directed axes $u$ and $v$, so
+\[
+  z-b=\alpha u+\beta v,
+  \qquad \alpha,\beta\ge0,
+  \qquad \alpha+\beta=\dist(b,z)\le8.
+\]
+After a rotation or reflection, take $u=(1,0)$ and $v=(0,1)$, and write
+$s=s_u=b+ku$ with $1\le k\le5$.  Then
+\[
+  \dist(z,s)=
+  \max\{|\alpha-k|,\beta,|\alpha+\beta-k|\}\le8,
+\]
+because $\alpha$, $\beta$, $\alpha+\beta$, and $k$ all lie in $[0,8]$.
+Thus $z\in B_8(s)\subseteq\Lambda(P)$.  This holds for every $z$.
+\end{proof}
+
+Deadness makes the omitted reply frontier-inert, but it does not impose the
+same condition on the searched substitute.
+
+\begin{proposition}[Frontier-certified dead-cell dismissal; companion P1]
+\label{prop:Dom-P1}
+Let $P$ be a nonterminal post-opening position with the defender to place.
+Let $a\ne b$ be legal empty cells.  Assume every window in $\Omega(b)$ is
+already dead in $P$.  Unless $P+a$ is an immediate defender win, also assume
+\[
+  \Lambda(P)\cup B_8(a)=\Lambda(P)\cup B_8(b).
+\]
+Then $b\preceq_n a$ for every finite $n$.  By \cref{lem:Dom-L7}, the displayed
+condition is equivalent here to $B_8(a)\subseteq\Lambda(P)$.  Thus $b$ may be
+dismissed in favor of any searched $a$ that either wins immediately or is
+frontier-inert.  Deadness of $b$ does not make this separate obligation on
+$a$ automatic.
+\end{proposition}
+
+\begin{proof}[Proof idea; complete proof in the companion]
+Compare $P+a$ and $P+b$ by transposing $a$ and $b$ until the counterpart is
+used.  The hypotheses synchronize legal support.  Every window through $b$
+is permanently dead, while the remaining changed windows either agree or
+change ownership in the defender-favouring direction.  The occupancy,
+terminality, and frontier channels therefore give an all-depth causal
+simulation; an immediate defender win after $a$ is already maximal.  See
+\cite{hexobot-companions}.
+\end{proof}
+
+Two hits of one count-$4$ threat become symmetric only after every other
+incident window is made inert and the successor supports agree.
+
+\begin{proposition}[Dead-spoke interchangeable hits; companion P2]
+\label{prop:Dom-P2}
+Let $P$ be a nonterminal post-opening position with the defender to place.
+Let $W$ be an attacker-alive window with exactly four attacker stones and
+exactly two empty cells $x\ne y$.  Both $x$ and $y$ are legal.  Assume
+\[
+  (\Omega(x)\cup\Omega(y))\setminus\{W\}
+\]
+consists entirely of windows already dead in $P$, and assume
+\[
+  \Lambda(P)\cup B_8(x)=\Lambda(P)\cup B_8(y).
+\]
+Then the replies are mutually outcome-dominating at every horizon:
+\[
+  x\preceq_n y,
+  \qquad
+  y\preceq_n x
+  \qquad(n<\infty).
+\]
+A solver may retain one canonical member of $\{x,y\}$ at that defender node.
+\end{proposition}
+
+\begin{proof}[Proof idea; complete proof in the companion]
+Either defender hit kills $W$.  The dead-spoke premise then makes every window
+through either special cell permanently dead.  Transposing $x$ and $y$
+preserves occupancy choices, the support equality preserves legal moves in
+both directions, and every mask outside the dead union is identical.  This is
+an outcome-preserving bisimulation at all depths.  See
+\cite{hexobot-companions}.
+\end{proof}
+
+Equality of count profiles is insufficient.  Labelled empty cells and the
+window-intersection hypergraph can change minimum hitting sets or
+fork-creating cells even when every pair $(\cnt_A,\cnt_D)$ agrees.  A broader
+equivalence would have to preserve labelled masks, incidence, occupancy, and
+radius-eight support throughout the $n$-causal cone.  The dead-spoke premise
+avoids that unproved classification.
+
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[scale=.52]
+    \HexPatch{-1/0,0/0,1/0,2/0,3/0,4/0,5/0,6/0,
+      2/-1,2/1,1/1,3/-1,4/-1,4/1,3/1,5/-1}
+    \HexWindow[window one]{0}{0}{1}{0}
+    \draw[black!45,line width=2.2pt]
+      \HexAt{2}{-1} -- \HexAt{2}{0} -- \HexAt{2}{1};
+    \draw[black!45,line width=2.2pt]
+      \HexAt{1}{1} -- \HexAt{2}{0} -- \HexAt{3}{-1};
+    \draw[black!45,line width=2.2pt]
+      \HexAt{4}{-1} -- \HexAt{4}{0} -- \HexAt{4}{1};
+    \draw[black!45,line width=2.2pt]
+      \HexAt{3}{1} -- \HexAt{4}{0} -- \HexAt{5}{-1};
+    \HexAttacker{0}{0}\HexAttacker{1}{0}
+    \HexAttacker{3}{0}\HexAttacker{5}{0}
+    \HexMark{2}{0}{dot}{}\HexMark{4}{0}{dot}{}
+    \HexAttacker{2}{-1}\HexDefender{2}{1}
+    \HexAttacker{1}{1}\HexDefender{3}{-1}
+    \HexDefender{-1}{0}
+    \HexAttacker{4}{-1}\HexDefender{4}{1}
+    \HexAttacker{3}{1}\HexDefender{5}{-1}
+    \HexDefender{6}{0}
+  \end{tikzpicture}
+  \caption{A representative dead-spoke configuration.  The highlighted
+  threat has four attacker stones and the two marked empty hits.  Three spoke
+  directions per hit show old attacker and defender witnesses.  The P2
+  premise applies this deadness condition to all 17 other windows through
+  each marked cell, not only the representative spokes shown.}
+  \label{fig:dead-spoke}
+\end{figure}
+
+\subsection{Same-turn commutation}
+
+Two placements may be sorted only when both were legal before the turn and
+neither possible first placement wins.
+
+\begin{proposition}[Nonwinning-prefix turn commutation; companion P3]
+\label{prop:Dom-P3}
+Let $P$ be a nonterminal \textup{FirstStone} position for either player $X$.
+Let $p\ne q$ be legal already in $P$, and suppose neither $P+p$ nor $P+q$ is
+terminal.  Then both traces $p;q$ and $q;p$ are legal and have the same
+qualitative rule outcome after the second placement.  If nonterminal, they
+have identical occupancy, labelled window masks, legal support, player to
+move, and \textup{FirstStone} phase.  If terminal, both terminate on the
+second placement with winner $X$ and the same absolute placement count.
+\end{proposition}
+
+\begin{proof}[Proof idea; complete proof in the companion]
+Initial legality makes either second cell remain legal, and the final support
+$\Lambda(P)\cup B_8(p)\cup B_8(q)$ is order-independent.  Inserting the two
+owner bits into every window mask commutes, including in a window containing
+both cells.  The singleton-nonterminal premises exclude a first-placement
+win; any joint win is therefore completed by the second placement in both
+orders.  See \cite{hexobot-companions}.
+\end{proof}
+
+The live engine states need not be field-identical.  Ordered history,
+last-turn metadata, serialized order, and the retained terminal
+\textup{SecondStone} first-cell payload may differ.  The proposition equates
+rule outcomes, not these order-sensitive features or the two intermediate
+\textup{SecondStone} threat states.
+
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[
+      position node/.style={draw,rounded corners=2pt,minimum width=2.4cm,
+        minimum height=.8cm,fill=black!3},
+      every edge/.style={draw,-{Stealth[length=5pt]}}]
+    \node[position node] (P) {$P$};
+    \node[position node,right=3.2cm of P] (Pp) {$P+p$};
+    \node[position node,below=1.7cm of P] (Pq) {$P+q$};
+    \node[position node,right=3.2cm of Pq] (Ppq) {$P+\{p,q\}$};
+    \path (P) edge node[above] {$p$} (Pp)
+              edge node[left] {$q$} (Pq)
+          (Pp) edge node[right] {$q$} (Ppq)
+          (Pq) edge node[below] {$p$} (Ppq);
+  \end{tikzpicture}
+  \caption{The commuting square for two same-turn placements.  Both paths
+  reach the same completed-turn rule state under the premises of P3.}
+  \label{fig:commutation}
+\end{figure}
+
+The analytic proofs have randomized local checks, not exhaustive machine
+proofs.  MV-P3 tested 2,997 random legal same-mover pairs under the
+singleton-nonwin filter and found 0 commutation mismatches.  MV-L7 tested 400
+adversarial dead-cell configurations and found 0 legality-frontier violations;
+the worst minimum distance from a cell of the radius-eight ball to an old
+stone was $6$, leaving margin $2$.  Full exhaustive quotient enumeration
+remains open.
+
+These results do not claim that an arbitrary frontier-extending reply can
+substitute for a dead cell, that equal window counts make hitting cells
+interchangeable, or that stones of one colour are globally monotone-helpful
+when legal frontiers differ; no transferred strategy continues after a
+terminal placement, and the prospective exhaustive enumerations are
+specifications rather than executed evidence.

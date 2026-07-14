@@ -1,0 +1,247 @@
+\section{The game and formal model}
+\label{sec:game}
+
+\subsection{Informal rules}
+
+Hexo is a two-player placement game on an unbounded hexagonal grid.  The
+opening player places one stone at the origin.  Thereafter the players
+alternate turns of two placements.  Stones are permanent.  A placement is
+legal on any empty cell within hex distance 8 of a stone of either player.
+The first player to occupy six consecutive cells on one of the three grid
+axes wins.  A win is checked after each placement, so a win on the first
+placement ends the game before the second placement of that turn.
+
+We use attacker and defender as fixed roles, denoted by $\A$ and $\D$.  A
+ply is one placement, while a normal turn contains two plies.  Everything
+below concerns positions after the Opening placement (the origin is occupied;
+budgets follow the turn structure of \cref{def:D4}).
+
+\subsection{Formal model}
+
+The first definition fixes the infinite board and the metric used by both
+the line geometry and the legality rule.
+
+\begin{definition}[Board, cells, and distance]
+\label{def:D1}
+The cells are the integer axial lattice $\Cells\ni x=(q,r)$.  For
+$x=(q,r)$ and $y=(q',r')$, set
+\[
+  \dist(x,y)=\max\bigl\{|q-q'|,\ |r-r'|,
+                  |(q-q')+(r-r')|\bigr\}.
+\]
+\end{definition}
+
+The winning patterns are finite segments along the three line directions of
+the axial lattice.
+
+\begin{definition}[Axes and windows]
+\label{def:D2}
+The axis vectors are
+\[
+  \mathfrak a\in\{(1,0),(0,1),(1,-1)\}.
+\]
+A \emph{window} is a set
+\[
+  W=\{s+i\mathfrak a:0\le i\le5\}
+\]
+for a start cell $s$ and an axis vector $\mathfrak a$.  Every window has
+exactly six cells, and every cell lies in exactly 18 windows, from three axes
+and six possible offsets on each axis.
+\end{definition}
+
+The next fact records the metric consequence of belonging to one window.
+
+\begin{fact}[Window collinearity]
+\label{fact:F1}
+Two distinct cells of a window differ by a nonzero multiple of the window's
+axis vector.  Thus any two cells contained in a common window are collinear
+along that axis and have distance at most $5$.
+\end{fact}
+
+Figure~\ref{fig:coordinates} shows the coordinate convention and one distance
+calculation.
+
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[scale=.88]
+    \HexBoardRange{0}{0}{2}
+    \foreach \q/\r/\shade in {0/0/22,1/0/10,2/-1/22}{
+      \path[fill=black!\shade,draw=none] \HexAt{\q}{\r}
+        ++(30:.94) \foreach \angle in {150,210,270,330,30}
+        {-- ++(\angle:.94)} -- cycle;
+    }
+    \node[font=\scriptsize] at \HexAt{-1}{0} {$(-1,0)$};
+    \node[font=\scriptsize] at \HexAt{0}{0} {$(0,0)$};
+    \node[font=\scriptsize] at \HexAt{1}{0} {$(1,0)$};
+    \node[font=\scriptsize] at \HexAt{2}{0} {$(2,0)$};
+    \node[font=\scriptsize] at \HexAt{0}{1} {$(0,1)$};
+    \node[font=\scriptsize] at \HexAt{2}{-1} {$(2,-1)$};
+  \end{tikzpicture}
+  \caption{Pointy-top axial coordinates.  The shaded cells show a shortest
+  path from $(0,0)$ to $(2,-1)$, and
+  $d=\max(|2|,|-1|,|1|)=2$.}
+  \label{fig:coordinates}
+\end{figure}
+
+A position records the finite board state and the exact placement remaining
+in the current turn.
+
+\begin{definition}[Positions]
+\label{def:D3}
+A position is $P=(\sigma,m,b)$, where $\sigma$ is a finite partial map
+$\Cells\rightharpoonup\{\A,\D\}$, the mover is
+$m\in\{\A,\D\}$, and $b\in\{1,2\}$ is the mover's number of remaining
+placements in the current turn.  Stones are permanent, and
+$\Stones(P)=\operatorname{dom}\sigma$.  For $X\in\{\A,\D\}$, let $\bar X$
+denote the other player.  For such an $X$ and a window
+$W$, define
+\[
+  \cnt_X(W,P)=|\{c\in W:\sigma(c)=X\}|.
+\]
+When the position is clear from context, we suppress it and write
+$\cnt_X(W)$.
+\end{definition}
+
+Legality is local to the existing stones, while a transition must also
+account for immediate termination and the two-placement turn structure.
+
+\begin{definition}[Legality and transitions]
+\label{def:D4}
+A cell $c$ is \emph{legal} in $P$ if and only if
+\[
+  c\notin\operatorname{dom}\sigma
+  \quad\text{and}\quad
+  \exists s\in\operatorname{dom}\sigma:\dist(c,s)\le8.
+\]
+Write $\Legal(P)$ for the set of cells legal in $P$.
+The mover places on a legal cell $c$, producing
+$\sigma'=\sigma\cup\{c\mapsto m\}$.  If some window $W$ then satisfies
+$\cnt_m(W)=6$, the game terminates immediately and $m$ wins.  Wins are
+therefore checked after each placement and may occur on the first placement
+of a two-placement turn.  If there is no win, the next position is
+$ (\sigma',m,1)$ when $b=2$, and $(\sigma',\bar m,2)$ when $b=1$.
+\end{definition}
+
+Window states distinguish usable winning lines, blocked lines, and lines that
+can be completed within one normal turn.
+
+\begin{definition}[Window states]
+\label{def:D5}
+A window $W$ is \emph{alive for $X$} if
+$\cnt_{\bar X}(W)=0$.  An all-empty window is alive for both players.  It is
+\emph{dead} if $\cnt_\A(W)\ge1$ and $\cnt_\D(W)\ge1$.  It is an
+\emph{$X$-threat} if it is alive for $X$ and $\cnt_X(W)\ge4$.
+\end{definition}
+
+The three panels in \cref{fig:window-states} give the basic mask patterns used
+by this terminology.
+
+\begin{figure}[tbp]
+  \centering
+  \begin{subfigure}[t]{.30\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=.38]
+      \HexPatch{0/0,1/0,2/0,3/0,4/0,5/0}
+      \HexWindow[window one]{0}{0}{1}{0}
+      \HexAttacker{1}{0}\HexAttacker{4}{0}
+    \end{tikzpicture}
+    \caption{Alive for $\A$.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{.30\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=.38]
+      \HexPatch{0/0,1/0,2/0,3/0,4/0,5/0}
+      \HexAttacker{1}{0}\HexDefender{4}{0}
+    \end{tikzpicture}
+    \caption{Dead.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{.30\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=.38]
+      \HexPatch{0/0,1/0,2/0,3/0,4/0,5/0}
+      \HexWindow[window two]{0}{0}{1}{0}
+      \HexAttacker{0}{0}\HexAttacker{1}{0}
+      \HexAttacker{3}{0}\HexAttacker{4}{0}
+    \end{tikzpicture}
+    \caption{An $\A$-threat with count $4$.}
+  \end{subfigure}
+  \caption{Alive, dead, and threat window states.  Filled disks are attacker
+  stones and open disks are defender stones.}
+  \label{fig:window-states}
+\end{figure}
+
+The implemented one-ply analysis tests whether the mover can win in the
+remaining placements or whether the opponent's threats exceed the defensive
+budget.
+
+\begin{definition}[$\lambda^1$ predicates]
+\label{def:D6}
+For mover $m$ with budget $b$, $\ownwinnow(P)$ holds if and only if there is
+an $m$-alive window $W$ such that
+\[
+  \cnt_m(W)=5,
+  \qquad\text{or}\qquad
+  \cnt_m(W)=4\ \text{ and }\ b=2.
+\]
+The value $\hit(P)$ is the multiset of empty-cell sets of the
+$\bar m$-threat windows.  The value $\mhs(P)$ is the minimum number of cells
+meeting every set in $\hit(P)$, computed exhaustively for values at most $2$.
+The $\lambda^1$ verdict is \textsc{win} when $\ownwinnow(P)$ holds,
+\textsc{loss} when it does not hold and $\mhs(P)>b$, and undecided otherwise.
+The post-opening soundness of these implemented verdicts is assumed here.
+\end{definition}
+
+Absolute placement indices allow later certificates to state an exact win
+horizon without treating a two-placement turn as simultaneous.
+
+\begin{definition}[Plies and horizon]
+\label{def:D7}
+A \emph{ply} is one placement, and ply indices are absolute along a play.  For
+a position $P$ with mover $m$, the \emph{defender-placement count before ply
+$T$}, written $\DefCount(P,T)$, is the number of plies strictly before $T$ at
+which $\D$ places, as determined by $(m,b)$ and alternation.
+\end{definition}
+
+The final convention fixes the direction needed when defender replies are
+removed from an attacker-win certificate.
+
+\begin{definition}[Dominance direction]
+\label{def:D8}
+Outcomes are evaluated for the attacker $\A$, with
+$\mathrm{WIN}\succ\nonWIN$.  A \emph{sound dismissal} of a defender reply
+$c$ at a node $N$ means that, if the certificate proves that $\A$ wins against
+all searched replies, then $\A$ also wins against $c$.
+\end{definition}
+
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[scale=.46]
+    \HexPatch{0/-4,1/-4,-1/-3,0/-3,1/-3,-1/-2,0/-2,1/-2,2/-2,
+      -1/-1,0/-1,1/-1,2/-1,3/-1,4/-1,5/-1,
+      -2/0,-1/0,0/0,1/0,2/0,3/0,4/0,5/0,
+      -2/1,-1/1,0/1,1/1,2/1,3/1,4/1,
+      -3/2,-2/2,-1/2,0/2,1/2,
+      -4/3,-3/3,-2/3,-1/3,0/3,
+      -5/4,-4/4,-3/4,-5/5,-4/5}
+    \HexWindow[fill=black!8,draw=none]{-1}{0}{1}{0}
+    \HexWindow[fill=black!18,draw=none]{0}{-3}{0}{1}
+    \HexWindow[fill=black!30,draw=none]{-4}{4}{1}{-1}
+    \HexMark{0}{0}{dot}{}
+    \draw[-{Stealth[length=4pt]},line width=.55pt]
+      \HexAt{5.75}{0} -- \HexAt{6.30}{0};
+    \node[font=\scriptsize,anchor=west] at \HexAt{6.45}{0} {$(1,0)$ axis};
+    \draw[-{Stealth[length=4pt]},line width=.55pt]
+      \HexAt{0}{3.70} -- \HexAt{0}{4.25};
+    \node[font=\scriptsize,anchor=south west] at \HexAt{0}{4.40}
+      {$(0,1)$ axis};
+    \draw[-{Stealth[length=4pt]},line width=.55pt]
+      \HexAt{2.70}{-2.70} -- \HexAt{3.25}{-3.25};
+    \node[font=\scriptsize,anchor=north west] at \HexAt{3.40}{-3.40}
+      {$(1,-1)$ axis};
+  \end{tikzpicture}
+  \caption{One six-cell window on each axis through the central cell, shown
+  with three fill shades.  Sliding a window so that the cell occupies offsets
+  $0$ through $5$ gives $3$ axes $\times$ $6$ offsets $=18$ windows through
+  the marked cell.}
+  \label{fig:axes-windows}
+\end{figure}

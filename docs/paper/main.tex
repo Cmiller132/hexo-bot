@@ -1,0 +1,44 @@
+\documentclass[11pt,letterpaper,onecolumn]{article}
+
+\usepackage{hexopaper}
+\usepackage{hexfig}
+
+\title{Certified Defender Move Restriction in Hexo Threat Search}
+\author{Cmiller132}
+\date{July 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Threat-space search in Hexo has large defender branching because every legal
+reply must ordinarily be considered.  We develop a horizon-parameterized
+certificate that restricts defender replies while preserving a proved
+attacker win over the full legal move set.  Companion results establish the
+impossibility of a global pairing defense, a potential-function layer for
+blocking certificates, local domination patterns, and mechanized validation
+of the finite claims and move-set closure.
+\end{abstract}
+
+\input{sections/01-introduction}
+\input{sections/02-game}
+\input{sections/03-geometry}
+\input{sections/04-certificates}
+\input{sections/05-main-theorem}
+\input{sections/06-computable-zones}
+\input{sections/07-no-pairing}
+\input{sections/08-potential}
+\input{sections/09-domination}
+\input{sections/10-validation}
+\input{sections/11-open-problems}
+\appendix
+\input{sections/99-appendix-notation}
+
+\section*{Acknowledgments}
+The underlying proof documents were drafted and adversarially reviewed with the assistance of AI systems (Claude and GPT-family models) and machine-checked where stated.
+
+\bibliographystyle{hexopaper}
+\bibliography{refs}
+
+\end{document}

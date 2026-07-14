@@ -1,0 +1,67 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{hexopaper}[2026/07/14 Hexo paper setup]
+
+\RequirePackage[margin=1in]{geometry}
+\RequirePackage{microtype}
+\RequirePackage{amsmath}
+\RequirePackage{amssymb}
+\RequirePackage{amsthm}
+\RequirePackage{mathtools}
+\RequirePackage{tikz}
+\RequirePackage{booktabs}
+\RequirePackage{enumitem}
+\RequirePackage{caption}
+\RequirePackage{subcaption}
+\RequirePackage{xcolor}
+
+\definecolor{HexLink}{RGB}{42,72,92}
+\definecolor{HexCite}{RGB}{82,66,92}
+\definecolor{HexURL}{RGB}{62,82,72}
+\RequirePackage[
+  colorlinks=true,
+  linkcolor=HexLink,
+  citecolor=HexCite,
+  urlcolor=HexURL
+]{hyperref}
+\RequirePackage[capitalise,nameinlink]{cleveref}
+\urlstyle{same}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{fact}[theorem]{Fact}
+\theoremstyle{remark}
+\newtheorem*{remark}{Remark}
+\newtheorem*{example}{Example}
+
+\crefname{fact}{fact}{facts}
+\Crefname{fact}{Fact}{Facts}
+
+\newcommand{\A}{\mathrm{A}}
+\newcommand{\D}{\mathrm{D}}
+\newcommand{\Cells}{\mathbb{Z}^{2}}
+\newcommand{\dist}{d}
+\newcommand{\cnt}{\operatorname{cnt}}
+\newcommand{\Stones}{\operatorname{Stones}}
+\newcommand{\Legal}{\operatorname{Legal}}
+\newcommand{\Prot}{\operatorname{Prot}}
+\newcommand{\mhs}{\operatorname{mhs}}
+\newcommand{\hit}{\operatorname{hit}}
+\newcommand{\ownwinnow}{\operatorname{own\_win\_now}}
+\newcommand{\axisQ}{\mathfrak a_q}
+\newcommand{\axisR}{\mathfrak a_r}
+\newcommand{\axisS}{\mathfrak a_s}
+\newcommand{\DefCount}{\mathfrak D}
+\newcommand{\nonWIN}{\mathrm{nonWIN}}
+
+% The cached Tectonic bundle used for this paper lacks the 6pt Computer Modern
+% math outlines.  Reuse the 8pt script font for nested scripts at 11pt text.
+\DeclareMathSizes{10.95}{10.95}{8}{8}
+
+\setlist{nosep}
+\setlength{\parindent}{1.25em}
+\setlength{\parskip}{0pt}

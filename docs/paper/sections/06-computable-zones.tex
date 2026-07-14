@@ -1,0 +1,278 @@
+\section{Computable relevance zones}
+\label{sec:computable-zones}
+
+The soundness theorem can be read as an explicit searched-set formula at each
+AND node.  Its terms separate current tactics, certificate witnesses,
+defender completions, and frontier reachability.
+
+\begin{theorem}[Zone reading]
+\label{thm:T4}
+This statement has the same boundary as \cref{thm:T3}: it applies to valid
+zone-carrying certificates obeying \cref{def:D9} and satisfying
+\cref{zone:Z1,zone:Z2,zone:Z4,zone:Z5}, with exact $D_N$ and the full, rather
+than sharpened, defender-placement budget.  At an AND node, the sound
+searched set is
+\[
+\begin{split}
+  Z(N)=\Legal(P_N)\cap\bigl[{}&\operatorname{hitting}(P_N)\cup\Prot(N)\\
+    &{}\cup B\bigl(8D_N;
+      \Prot(N)\setminus(\Legal(P_N)\cup\Stones(P_N))
+    \bigr)\bigr],
+\end{split}
+\]
+where $\operatorname{hitting}(P)$ is the union of the empty sets of the
+$\A$-threat windows of $P$, namely the cells in the members of $\hit(P)$.
+The three terms are the hitting cells, the protected cells consisting of the
+core and completion-guard empties, and the horizon-scaled frontier band.
+
+The completion guard counts all defender plies before the horizon.  The
+sharpened version that counts only non-hit placements is not proved; it is
+listed in \cref{sec:open-problems}.  The frontier band is empty whenever
+$\Prot(N)\subseteq\Legal(P_N)\cup\Stones(P_N)$.  This is the typical case,
+since witness windows cluster near the action.
+\end{theorem}
+
+\begin{proof}
+The three terms are exactly the searched cells required by
+\cref{zone:Z1,zone:Z2,zone:Z5}.  With \cref{zone:Z4} and the certificate
+grammar, \cref{thm:T3} proves that dismissing every other legal reply is
+sound.
+\end{proof}
+
+For short threat-creating continuations, future attacker placements remain
+inside windows already touched by current attacker stones.
+
+\begin{lemma}[Short-range attacker-core containment]
+\label{lem:L10}
+Suppose every attacker placement in a certificate is threat-creating: it
+lands in a window that, immediately before the placement, is alive for
+$\A$ and contains at least three attacker stones.  If a placement is the
+attacker's $k$th future placement from a node $N$, then for $k\le3$ its
+window contains at least
+\[
+  3-(k-1)\ge1
+\]
+attacker stones already present in $P_N$.  Thus the placement cell lies in
+an $\A$-touched window that is alive for $\A$ at $P_N$.  This statement covers attacker-placement core
+cells; named witness windows are a separate, certificate-known component of
+the core.
+\end{lemma}
+
+\begin{proof}
+The window has at least three attacker stones at placement time.  At most
+$k-1$ of them can be future stones, one from each earlier future attacker
+placement.  At least $3-(k-1)$ are therefore current at $N$, which is
+positive for $k\le3$.  Since the window is alive immediately before the
+placement, backward permanence from \cref{lem:L4} makes it alive at $P_N$.
+\end{proof}
+
+From the fourth future attacker placement onward, an attacker core cell may
+lie in a currently virgin window.  Such setup cells must be supplied
+explicitly from the certificate core.
+
+A common radius-three generator covers the full zone only under a joint set
+of short-horizon and witness-location hypotheses.
+
+\begin{theorem}[Static-set coverage for short horizons]
+\label{thm:T5}
+\upshape
+This is a coverage theorem under all of the following joint hypotheses:
+$D_N\le3$; at most three remaining attacker placements are made; those
+placements are threat-creating; every named witness-window cell is in an
+$\A$-touched window that is alive for $\A$ at $P_N$; and the frontier band
+is empty.  Let
+\[
+  r_3(P)=\{c\in\Legal(P):
+    \exists s\in\Stones(P),\ \dist(c,s)\le3\}.
+\]
+Then
+\[
+  r_3(P_N)\ \cup\
+  \{\textup{empty cells of $\A$-touched alive windows at $P_N$}\}
+\]
+covers $Z(N)$.
+
+Without all of these hypotheses, the searched set must include
+$\operatorname{core}(\mathcal C,N)\cap\Legal(P_N)$ explicitly.  The static
+set is then a candidate generator, not a certified zone by itself.
+\end{theorem}
+
+\begin{proof}
+For $D_N\le3$, a completion-guard window has at least three defender stones,
+so each of its empty cells is within distance $3$ of a defender stone by
+\cref{lem:L1}.  Hitting cells are within radius $2$ by \cref{thm:T1}.
+Under the stated limit on the remaining threat-creating placements,
+\cref{lem:L10} puts attacker-placement core cells in $\A$-touched alive
+windows.  The separate witness hypothesis does the same for named witness cells, and
+the last hypothesis removes the frontier term.  These observations cover
+every term of the formula in \cref{thm:T4}.
+\end{proof}
+
+When every defender turn is already fully occupied by threat hits, the
+completion and frontier guards can be removed through a local auxiliary
+refutation.
+
+\begin{theorem}[Forced-tree regime]
+\label{thm:T6}
+\upshape
+Let $\mathcal C$ be a valid certificate under \cref{def:D9}.  Suppose every
+internal AND node with defender budget $b$ has verifier-checked
+$\mhs(P_N)=b$, and the defender's immediate-win predicate is false.  Then the
+sufficient searched set is
+\[
+  S(N)=\operatorname{hitting}(P_N)\cup
+       \bigl(\operatorname{core}(\mathcal C,N)\cap\Legal(P_N)\bigr).
+\]
+The completion-guard and frontier terms are unnecessary.  The auxiliary
+refutation used in the proof is measured against the same certified horizon
+$T$.
+\end{theorem}
+
+\begin{proof}
+Work at the first dismissed reply $d$.  Before it, the real play follows
+certificate lines exactly.  Let $b$ be the defender budget at its node.
+Since every hitting cell is searched, $d$ is non-hitting.  Attach an
+auxiliary refutation according to $b$.
+
+\begin{enumerate}[label=\textup{(\alph*)}]\upshape
+  \item If $b=2$, the successor remains a defender node with budget $b'=1$.
+    The untouched threat family still needs two hits, so its hitting number
+    is greater than $b'$.  It supplies a defender LOSS leaf with the current
+    threat family as its witness family.
+  \item If $b=1$, the successor has the attacker to move with budget $2$ and
+    at least one surviving attacker threat.  This supplies an attacker WIN
+    leaf: a count-$4$ witness at budget $2$, or a count-$5$ witness, satisfies
+    $\ownwinnow$.
+\end{enumerate}
+
+The auxiliary leaf witnesses are the node's current attacker-threat windows.
+Their empty cells are hitting cells of the node and are covered by the
+searched set.  Thus the auxiliary branch needs no additional appeal to the
+original subtree's core.
+
+Its resolution fits inside the original horizon $T$.  Had the defender used
+a searched minimum hitting reply instead, a pair when $b=2$ or a common hit
+when $b=1$, every current attacker threat would be killed; defender
+placements cannot create a new attacker threat.  The original certificate
+therefore cannot resolve on the first following attacker ply.  Its horizon
+already reaches the second attacker ply, which is exactly what the auxiliary
+branch needs: $\text{leaf-ply}+b'+2$ in the $b=2$ case, and the attacker's
+own turn in the $b=1$ case.
+
+It remains to rule out defender completion before the auxiliary resolution.
+Because the defender's immediate-win predicate is checked as false at each
+AND node, a defender-alive window has defender count at most $3$ when $b=2$,
+and at most $4$ when $b=1$.
+Indeed, count $4$ at budget $2$, or count $5$ at either budget, would satisfy
+$\ownwinnow$.  When $b=2$, the dismissal and the single placement in the
+$b'=1$ LOSS contract contribute two defender placements in total; the latter
+placement is counted once.  The count reaches at most $3+2=5$.  When $b=1$,
+only the dismissal precedes the attacker's turn, so the count reaches at
+most $4+1=5$.  No defender window completes before the attacker resolution.
+\end{proof}
+
+\subsection{The relevance closure}
+
+The implementable closure uses only touched-window queries and falls back to
+the full legal set when a finite touched-window representation no longer
+covers every completion guard.
+
+\begin{definition}[Horizon relevance closure]
+\label{def:D13}
+Let $P$ have the defender to move, and let
+$D=\DefCount(P,T)$ be the number of defender placements before the horizon.
+Define
+\[
+  \mathcal A(P)=
+  \{\text{empties of alive windows with $\cnt_\A\ge1$ and $\cnt_\D=0$}\}
+\]
+and
+\[
+  \mathcal G(P,D)=
+  \{\text{empties of $\D$-alive windows with $\cnt_\D\ge6-D$}\}.
+\]
+Then
+\[
+  R(P,D)=
+  \begin{cases}
+    \Legal(P)\cap
+      [\operatorname{hitting}(P)\cup\mathcal A(P)\cup\mathcal G(P,D)],
+      &D\le5,\\[1mm]
+    \Legal(P),&D\ge6.
+  \end{cases}
+\]
+For $D\le5$, $\mathcal G(P,D)$ is a finite touched-window query.
+
+The set $R$ is a candidate generator, not a certified zone by itself.
+The set $\mathcal A$ covers attacker core cells only within the range of
+\cref{lem:L10}; deeper setup cells may lie outside every term of $R$.
+Certified sufficiency uses
+\[
+  R(P_N,D_N)
+  \cup(\operatorname{core}(\mathcal C,N)\cap\Legal(P_N))
+  \cup\bigl[\Legal(P_N)\cap B\bigl(8D_N;
+    \Prot(N)\setminus(\Legal(P_N)\cup\Stones(P_N))
+  \bigr)\bigr].
+\]
+The extra terms are certificate-known and verifier-enumerable.  The
+$D\ge6$ fallback is conservative.  The soundness theorem can still dismiss
+deep-interior cells at that depth when they lie in no defender-alive window
+and are outside the hitting, core, and frontier terms.  Lying in no
+defender-alive window is necessary but not sufficient for dismissal.  Every
+certified-sufficiency claim also presupposes a valid certificate under
+\cref{def:D9} and a separate verification of \cref{zone:Z4}.
+\end{definition}
+
+The closure plus the two certificate-derived additions covers each
+verifier-required zone term.
+
+\begin{theorem}[Closure and certificate-extras coverage]
+\label{thm:T7}
+\upshape
+This is a coverage theorem.  Searching at every AND node the set
+\[
+\begin{split}
+  R(P_N,D_N)
+  &\cup(\operatorname{core}(\mathcal C,N)\cap\Legal(P_N))\\
+  &\cup\bigl[\Legal(P_N)\cap B\bigl(8D_N;
+    \Prot(N)\setminus(\Legal(P_N)\cup\Stones(P_N))
+  \bigr)\bigr]
+\end{split}
+\]
+satisfies \cref{zone:Z1,zone:Z2,zone:Z5}.  Certified dismissal soundness
+additionally presupposes a valid certificate under \cref{def:D9}, separate
+verification of \cref{zone:Z4}, exact $D_N$, and the full defender-placement
+budget.
+
+Both certificate terms are verifier-enumerable.  The legal part of the core
+is usually redundant, for example when the next designated attacker move is
+covered by \cref{lem:L10}, rather than empty.  The band is empty whenever all
+protected territory is already legal or occupied.  Computing $R$ takes one
+  window-store pass per node, or $O(\#\textup{touched windows})$ time.
+\end{theorem}
+
+\begin{proof}
+The hitting term of $R$ gives \cref{zone:Z1}.  For $D_N\le5$, its guard term
+contains the completion-guard part of $\Prot(N)$, while $\mathcal A(P_N)$
+covers the short-range attacker cells described by \cref{lem:L10}; the
+explicit legal core supplies every remaining protected certificate cell.
+For $D_N\ge6$, $R$ is the full legal set.  The displayed band is exactly the
+set required by \cref{zone:Z5}.  Hence the union satisfies the three stated
+conditions, and \cref{thm:T3,thm:T4} give sound dismissal once the remaining
+hypotheses are verified.
+\end{proof}
+
+The practical solver loop uses $R$ as a heuristic candidate generator.  When
+a proof is found, the verifier recomputes \cref{zone:Z1,zone:Z2,zone:Z4,zone:Z5}
+exactly at every node against the actual certificate, including its core and
+frontier band.  A violation yields \textsc{unknown}.  Search trimming can
+therefore affect completeness, but it cannot create a false verified win.
+
+On random midgame positions, the generator has measured a mean of $147$ cells
+against $302$ legal cells, with smaller sets in forced regions.  In the
+fully-forcing regime of \cref{thm:T6}, the defender set consists of hitting
+cells and the certificate's own legal core cells at any depth.  For
+$D\ge6$, the completion guard covers every legal cell in a defender-alive
+window, leaving only interior cells in no such window as possible
+dismissals, subject also to the hitting, core, and frontier conditions.  This
+$D\ge6$ boundary is a theorem rather than an experimental observation.

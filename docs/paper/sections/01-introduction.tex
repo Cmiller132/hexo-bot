@@ -1,0 +1,38 @@
+\section{Introduction}
+\label{sec:introduction}
+
+A df-pn threat-space solver must, at a defender AND node, in principle
+consider every legal reply.  In Hexo this means every empty cell within hex
+distance 8 of any existing stone, often hundreds of cells.  Enumerating these
+replies dominates the cost of the search.
+
+The restriction studied here is \emph{certified}: every omitted defender
+reply has a verifier-checkable proof of sound dismissal.  Search trimming may
+cause the solver to miss an attacker win, so it can reduce completeness.  It
+cannot cause a false attacker win to pass verification.  This separation
+between completeness and soundness holds regardless of the heuristic used to
+generate the searched replies.
+
+The restriction must depend on a finite horizon.  No fixed static set is
+sufficient for every future continuation on the unbounded board.  A
+certificate instead states its own placement horizon and carries the zone
+obligations needed up to that horizon.
+
+The paper first gives the formal game model in \cref{sec:game} and the
+locality lemmas in \cref{sec:geometry}.  It then defines zone-carrying
+certificates in \cref{sec:certificates} and proves horizon-parameterized
+dismissal soundness in \cref{sec:main-theorem}.  The computable constructions
+of \cref{sec:computable-zones} include a measured generator mean of 147 cells,
+compared with 302 legal cells.  The remaining layers establish the
+impossibility of a global pairing defense in \cref{sec:no-pairing}, develop
+potential-function certificates in \cref{sec:potential}, give local
+domination patterns in \cref{sec:domination}, and report mechanized validation
+in \cref{sec:validation}.
+
+Threat-space search and proof-number methods provide the search setting for
+these certificates \cite{allis-1994,nagai-2002}.  Pairing strategies and the
+potential method are standard tools for positional games
+\cite{erdos-selfridge-1973,beck-2008}.
+
+The full internal proof documents, review history, and validation scripts are
+available in the repository \cite{hexobot-companions}.

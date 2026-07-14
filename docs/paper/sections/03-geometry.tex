@@ -1,0 +1,93 @@
+\section{Elementary geometry}
+\label{sec:geometry}
+
+The first bound relates the number of stones in a window to the maximum gap
+from an empty cell to those stones.
+
+\begin{lemma}[Packing bound]
+\label{lem:L1}
+In a window with $k\ge1$ stones of one colour and no stones of the other,
+every empty cell of the window is within distance $6-k$ of a same-window
+stone.  The bound is tight.
+\end{lemma}
+
+\begin{proof}
+Index the cells $0,\ldots,5$ along the window axis.  Let $e$ be empty, and let
+$\delta$ be its axis-distance from a nearest in-window stone.  The $\delta$
+cells from $e$ toward that stone, including $e$ and excluding the stone, are
+empty and lie in the window.  There are $6-k$ empty cells in total, so
+$\delta\le6-k$.  By \cref{fact:F1}, axis-distance agrees with hex distance
+for these cells.  For tightness, put the stones at offsets
+$6-k,\ldots,5$ and take $e$ at offset $0$.
+\end{proof}
+
+Figure~\ref{fig:packing} displays the extremal arrangement and a concrete
+$k=3$ instance of the general formula.
+
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[scale=.68]
+    \HexPatch{0/0,1/0,2/0,3/0,4/0,5/0}
+    \HexWindow[window one]{0}{0}{1}{0}
+    \HexAttacker{3}{0}\HexAttacker{4}{0}\HexAttacker{5}{0}
+    \node[inner sep=0pt] at (2.598,1.52)
+      {$\overbrace{\hspace{3.53cm}}$};
+    \node[font=\scriptsize] at (2.598,2.08) {$d=6-k=3$};
+    \node[font=\scriptsize] at (0,-1.35) {$e$};
+    \foreach \q in {0,...,5}{
+      \node[font=\scriptsize,yshift=-13mm] at \HexAt{\q}{0} {$\q$};
+    }
+  \end{tikzpicture}
+  \caption{The tightness configuration for the packing bound, shown at
+  $k=3$.  In general the $k$ stones occupy offsets $6-k$ through $5$, while
+  the empty cell at offset $0$ is at distance $6-k$ from the nearest stone.}
+  \label{fig:packing}
+\end{figure}
+
+A mixed set of occupied and empty cells on a finite line segment must change
+state across some adjacent pair.
+
+\begin{lemma}[Boundary pair]
+\label{lem:L2}
+Any window containing at least one stone and at least one empty cell has an
+empty cell at distance $1$ from a same-window stone.
+\end{lemma}
+
+\begin{proof}
+The six cells are consecutive on a line.  The stone cells form a nonempty
+proper subset of this sequence.  At a boundary of that subset, a stone and an
+empty cell are consecutive.  Their hex distance is $1$ by
+\cref{fact:F1}.
+\end{proof}
+
+The packing bound places all tactics that can resolve within the current turn
+near stones already on the board.
+
+\begin{theorem}[Single-turn tactical locality]
+\label{thm:T1}
+Every placement that completes a win within the current turn, and every empty
+cell of every threat window, lies within distance $2$ of an existing stone.
+\end{theorem}
+
+\begin{proof}
+Completion within at most two placements requires a window with at least four
+stones of the mover already present.  Apply \cref{lem:L1} with $k=4$ to its
+empty cells.  A threat window also has at least four stones by
+\cref{def:D5}, so the same bound applies to every one of its empty cells.
+\end{proof}
+
+Creating a threat can start one cell farther away because the placement need
+only raise an existing three-stone window to count four.
+
+\begin{theorem}[Threat-creation locality]
+\label{thm:T2}
+A placement creating an $X$-threat lies within distance $3$ of an $X$ stone.
+The bound is tight.
+\end{theorem}
+
+\begin{proof}
+Immediately before the placement, the window that becomes an $X$-threat held
+at least three $X$ stones.  Apply \cref{lem:L1} with $k=3$ to the placement
+cell.  For tightness, place $X$ stones at offsets $3,4,5$ of a window and make
+the threat-creating placement at offset $0$.
+\end{proof}

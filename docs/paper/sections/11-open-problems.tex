@@ -1,0 +1,30 @@
+\section{Open problems}
+\label{sec:open-problems}
+
+\paragraph{Sharpened budget.}
+The completion guard in \cref{thm:T4} counts every defender placement before
+the horizon.  A sharper budget would count quiet placements $F$ together with
+a per-window forced-hit capacity $H_W$.  Proving this bound requires
+per-branch worst-case bookkeeping over the certificate DAG.  The soundness
+result in \cref{thm:T3} does not require the sharpening, at the cost of wider
+zones for deep loose certificates.
+
+\paragraph{Sharper frontier bands.}
+The frontier guard \cref{zone:Z5} uses the worst-case radius $8D_N$ needed by
+the chain argument in \cref{lem:L9}.  Each link also costs defender tempo, and
+the completion guard already limits that tempo.  A joint accounting of time
+and distance should shrink the band substantially; that accounting is
+unwritten.
+
+\paragraph{Pairing at the threshold.}
+The density bound in \cref{cor:T8.1} leaves the case $k=7$ and $g=3$ open,
+where the required matched density is exactly one.  This threshold case does
+not affect Hexo, whose winning length is $k=6$, and
+\cref{thm:T8} already rules out the required Hexo pairing.  Existence at the
+threshold remains unsettled.
+
+\paragraph{Formalization.}
+The model and results through \cref{thm:T8} are finite combinatorics and are
+feasible to formalize in Lean or Coq.  Such a formalization would yield a
+verified reference checker
+for \cref{zone:Z1,zone:Z2,zone:Z4,zone:Z5}.

@@ -1,0 +1,119 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{hexfig}[2026/07/14 Reusable axial-coordinate Hexo figures]
+
+\RequirePackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+
+\definecolor{HexGrid}{RGB}{115,119,122}
+\definecolor{HexAttack}{RGB}{45,48,50}
+\definecolor{HexDefense}{RGB}{250,250,248}
+\definecolor{HexWindowOne}{RGB}{199,215,221}
+\definecolor{HexWindowTwo}{RGB}{94,112,124}
+
+\tikzset{
+  hex cell/.style={draw=HexGrid,line width=.35pt,fill=white},
+  window one/.style={fill=HexWindowOne,fill opacity=.62,draw=none},
+  window two/.style={fill=none,draw=HexWindowTwo,line width=1.3pt},
+  window three/.style={fill=none,draw=black,densely dashed,line width=.9pt},
+  attacker stone/.style={circle,fill=HexAttack,draw=black,line width=.35pt,
+    minimum size=5.8mm,inner sep=0pt},
+  defender stone/.style={circle,fill=HexDefense,draw=black,line width=1.1pt,
+    minimum size=5.8mm,inner sep=0pt},
+  distance annotation/.style={<->,>=Stealth,line width=.65pt,shorten <=2pt,
+    shorten >=2pt},
+}
+
+% \HexAt{q}{r}: expands to the Cartesian center of axial cell (q,r).
+% Example: \draw \HexAt{0}{0} -- \HexAt{2}{-1};
+\newcommand{\HexAt}[2]{({sqrt(3)*(#1+(#2)/2)},{1.5*(#2)})}
+
+% \HexCell{q}{r}: draws one pointy-top hexagonal cell.
+% Example: \HexCell{0}{0}
+\newcommand{\HexCell}[2]{%
+  \path[hex cell] \HexAt{#1}{#2}
+    ++(30:1) \foreach \angle in {150,210,270,330,30}{-- ++(\angle:1)} -- cycle;
+}
+
+% \HexPatch{q1/r1,q2/r2,...}: draws an explicit set of axial cells.
+% Example: \HexPatch{0/0,1/0,0/1}
+\newcommand{\HexPatch}[1]{%
+  \foreach \q/\r in {#1}{\HexCell{\q}{\r}}%
+}
+
+% \HexRhombus{q-min}{q-max}{r-min}{r-max}: draws an axial rhombus patch.
+% Example: \HexRhombus{-2}{2}{-1}{1}
+\newcommand{\HexRhombus}[4]{%
+  \foreach \q in {#1,...,#2}{\foreach \r in {#3,...,#4}{\HexCell{\q}{\r}}}%
+}
+
+% \HexBoardRange{center-q}{center-r}{radius}: draws a hex-shaped axial range.
+% Example: \HexBoardRange{0}{0}{2}
+\newcommand{\HexBoardRange}[3]{%
+  \pgfmathtruncatemacro{\HexQMin}{-#3}%
+  \pgfmathtruncatemacro{\HexQMax}{#3}%
+  \foreach \dq in {\HexQMin,...,\HexQMax}{%
+    \pgfmathtruncatemacro{\HexRMin}{max(-#3,-\dq-#3)}%
+    \pgfmathtruncatemacro{\HexRMax}{min(#3,-\dq+#3)}%
+    \foreach \dr in {\HexRMin,...,\HexRMax}{%
+      \pgfmathtruncatemacro{\q}{#1+\dq}%
+      \pgfmathtruncatemacro{\r}{#2+\dr}%
+      \HexCell{\q}{\r}%
+    }%
+  }%
+}
+
+% \HexAttacker{q}{r}: places a filled dark attacker stone.
+% Example: \HexAttacker{1}{-1}
+\newcommand{\HexAttacker}[2]{\node[attacker stone] at \HexAt{#1}{#2} {};}
+
+% \HexDefender{q}{r}: places an open defender stone readable in grayscale.
+% Example: \HexDefender{0}{1}
+\newcommand{\HexDefender}[2]{\node[defender stone] at \HexAt{#1}{#2} {};}
+
+% \HexWindow[style]{start-q}{start-r}{axis-q}{axis-r}: highlights six cells.
+% Example: \HexWindow[window two]{-2}{0}{1}{0}
+\newcommand{\HexWindow}[5][window one]{%
+  \foreach \i in {0,...,5}{%
+    \pgfmathtruncatemacro{\q}{#2+\i*#4}%
+    \pgfmathtruncatemacro{\r}{#3+\i*#5}%
+    \path[#1] \HexAt{\q}{\r}
+      ++(30:.93) \foreach \angle in {150,210,270,330,30}{-- ++(\angle:.93)} -- cycle;
+  }%
+}
+
+% \HexMark{q}{r}{dot|cross|label}{text}: marks an individual cell.
+% Example: \HexMark{0}{0}{cross}{}
+\newcommand{\HexMark}[4]{%
+  \ifstrequal{#3}{dot}{\fill \HexAt{#1}{#2} circle (1.6pt);}{%
+    \ifstrequal{#3}{cross}{%
+      \begin{scope}[shift={\HexAt{#1}{#2}}]
+        \draw[line width=.9pt] (-.18,-.18) -- (.18,.18);
+        \draw[line width=.9pt] (-.18,.18) -- (.18,-.18);
+      \end{scope}}{%
+      \node[font=\scriptsize,fill=white,inner sep=1pt] at \HexAt{#1}{#2} {#4};}%
+  }%
+}
+
+% \HexCoordLabel{q}{r}{placement}: labels a cell with its axial coordinate.
+% Example: \HexCoordLabel{1}{-1}{below}
+\newcommand{\HexCoordLabel}[3]{%
+  \node[#3,font=\scriptsize,inner sep=1pt] at \HexAt{#1}{#2} {$({#1},{#2})$};%
+}
+
+% \HexDistance{q1}{r1}{q2}{r2}{label}: annotates a distance between cells.
+% Example: \HexDistance{0}{0}{2}{-1}{$d=2$}
+\newcommand{\HexDistance}[5]{%
+  \draw[distance annotation] \HexAt{#1}{#2} --
+    node[midway,fill=white,inner sep=1.5pt,font=\scriptsize]{#5} \HexAt{#3}{#4};%
+}
+
+% Local string comparison without imposing an additional package on the paper.
+\makeatletter
+\providecommand{\ifstrequal}[2]{%
+  \edef\hexfig@a{#1}\edef\hexfig@b{#2}%
+  \ifx\hexfig@a\hexfig@b
+    \expandafter\@firstoftwo
+  \else
+    \expandafter\@secondoftwo
+  \fi}
+\makeatother
