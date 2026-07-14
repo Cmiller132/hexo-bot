@@ -8,6 +8,9 @@
 > potential-function and domination components (§10, §11) and adversarially
 > reviewed the whole; the mini-model solver (validated against `hexo_engine`)
 > machine-checked the finite claims. Review log in §13.
+> Round 5 revised the normative statements on 2026-07-14 to adopt all twelve
+> reviewed tightenings; the Round 6 hostile confirmation pass ruled every
+> adoption applied correctly (§13).
 >
 > **Status legend.** Every numbered claim carries one of:
 > **[PROVEN]** complete proof below; **[PROVEN-MECH]** proof relies on a
@@ -179,415 +182,617 @@ of the < T defender plies (≤ D). ∎
 
 ## 5. Zone-carrying certificates
 
-**D9 (certificate, machine-checkable form — strengthened per reviews
-R1/R2).** A *certificate* 𝒞 for "A wins from P₀ by horizon T (absolute ply
-index)" is a finite tree of nodes, each labelled with a position and
-mover/budget, subject to the following **grammar**, every clause of which
-the verifier checks syntactically: **the root node's position is P₀ and is
-nonterminal** (the certificate binds the position it claims to prove);
-every node carries a **path-derived ply clock** (root ply + depth — the
-verifier recomputes it; all resolution labels refer to this clock, and
-"leaf-ply" means the index of the last placement completed on the path to
-the leaf); every node's children are the *exact* D4-successors of its
-placements; every placement is legal in its node's position; **no edge
-anywhere is defender-terminal** (a searched reply that would complete a
-defender window is rejected — such a certificate is invalid); every
-maximal node is a typed leaf, where an OR node whose designated placement
-completes is itself the typed **OR-COMPLETION leaf**; every internal AND
-node has S(N) ≠ ∅; at every AND node — and again, explicitly, at every
-LOSS leaf — the verifier confirms ¬own_win_now for the defender (else the
-certificate is invalid).
-- **OR node** (A to place): one designated placement; if it completes, the
-  node names the **witness window** W* and the completion ply; else the
-  child is the successor position.
-- **AND node** N (D to place, budget b): a *searched set* S(N) of legal
-  replies with one child each, plus the dismissal claim for all other legal
-  replies.
-- **WIN leaf** (attacker to place): a verifier-checked `own_win_now`
-  position — an A-alive witness window with count 5 (any b), or count 4
-  with b = 2 — so the completion occurs **within the attacker's current
-  turn**, with no defender placement interleaved. Names the witness
-  window(s) and the resolution ply ≤ T.
-- **LOSS leaf** (defender to place, budget b, λ¹-lost): names a **witness
-  family** 𝒯 of A-threat windows whose empty-sets have hitting number > b
-  (checkable; the verifier re-derives it, including the ¬own_win_now
-  check). The continuation contract is **adaptive** (review R2): for
-  *every* complete, nonterminal remainder H of the defender's current turn
-  — exactly his b placements unless the game ends earlier (review R3
-  convention) — some W_H ∈ 𝒯 survives (E(W_H) ∩ H = ∅, guaranteed by
-  hitting number > b), and the attacker then completes W_H's ≤ 2 empties
-  within his following turn: D places at plies leaf-ply+1 … leaf-ply+b, A
-  at leaf-ply+b+1 and (for a count-4 witness) leaf-ply+b+2. The declared
-  resolution ply is the worst case, leaf-ply + b + 2, required ≤ T. No
-  fixed placement list is named — the contract quantifies over H.
-T is the maximum resolution ply over the tree. Every λ¹ fact a leaf asserts
-is tied to named windows and a checkable continuation contract — the
-transfer arguments below act on those, never on bare Boolean verdicts.
+**D9 (certificate, machine-checkable form — round-5 form).** A
+*certificate* 𝒞 for "A wins from P₀" is a finite rooted tree of nodes, each
+labelled by an exact D3 position and mover/budget. The root position is P₀
+and is nonterminal. Every node has a path-derived ply clock (root ply plus
+depth), recomputed by the verifier; "leaf-ply" is the index of the last
+placement on the path to a leaf. Every edge is the exact D4-successor of its
+labelled placement, every placement is legal, and no edge is
+defender-terminal. Every maximal node has one of the following types.
 
-**D10 (core).** core(𝒞, N) = the union, over the subtree of N, of (i) all
-cells of every *named* witness window (OR-completions, WIN leaves, LOSS-leaf
-families 𝒯), and (ii) every attacker placement cell in the subtree,
-including leaf continuation placements.
+- **OR-COMPLETION leaf** (A to place): one designated placement, its
+  A-complete witness window, and its completion ply.
+- **WIN leaf** (A to place): a verifier-checked `own_win_now` position,
+  with named A-alive count-5 witness windows (any budget) or count-4
+  witnesses at budget 2, and a resolution within the current attacker turn.
+- **LOSS leaf** (D to place, budget b): a named A-threat family 𝒯 whose
+  empty-set family has transversal number τ(𝒯) > b, together with the
+  verifier-checked defender `¬own_win_now` fact. For every complete
+  nonterminal remainder H of the defender turn (exactly b placements unless
+  the game ends earlier), some W_H ∈ 𝒯 has E(W_H,P_L) ∩ H = ∅, and A then
+  fills W_H's at most two empties during the following turn. The declared
+  worst-case resolution is leaf-ply + b + 2. By L13 the verifier may require
+  |𝒯| ≤ 3 for b = 1 and |𝒯| ≤ 6 for b = 2.
 
-**D11 (zone-carrying certificate — repaired per review R1).** For an AND
-node N with position P_N and D_N := 𝔇(P_N, T), define the **protected set**
+An internal **OR node** has one designated A-placement and its exact child.
+An internal **AND node** N has a nonempty searched set S(N) of legal replies
+and one exact child per reply; all other real-legal replies carry the
+dismissal claim. The verifier retains the internal defender
+`¬own_win_now` check as a diagnostic. Under D11's completion zone it is
+derivable (L14), rather than an independent hypothesis of T3; it remains a
+mandatory LOSS-leaf check and an explicit T6 premise. Every terminal
+resolution must be finite. The global horizon T is the maximum declared
+resolution over all root-to-leaf paths. D18/T10 extend this grammar to
+finite consistently labelled certificate DAGs.
 
-  Prot(N) = core(𝒞, N) ∪ ⋃ { empties of windows W alive for D at P_N with
-            cnt_D(W, P_N) + D_N ≥ 6 }.
+**D14 (admissible local defender budget).** The exact local budget is
 
-𝒞 is *zone-carrying* iff at every AND node N:
-- **(Z1) hitting:** S(N) ⊇ (empties of every A-threat window of P_N) ∩
-  Legal(P_N). (Kept independently of Z2 — review R1 confirmed a current
-  threat can be absent from every later witness family, and T3's leaf
-  transfer does not require searching it; Z1 is retained as belt and braces
-  for λ¹-consistency of interior nodes and costs nothing, since hitting
-  cells are the solver's first candidates anyway.)
-- **(Z2) protection:** S(N) ⊇ Prot(N) ∩ Legal(P_N).
-- **(Z5) frontier guard (horizon-scaled — repaired per review R2):**
-  S(N) ⊇ Legal(P_N) ∩ B_{8·D_N}( Prot(N) ∖ (Legal(P_N) ∪ Stones(P_N)) ),
-  where B_r(U) = { c : ∃ y ∈ U, d(c, y) ≤ r }. In words: any legal cell
-  within *chain* range — the defender has at most D_N placements before the
-  horizon, each extending the frontier by ≤ 8 — of not-yet-legal protected
-  territory must be searched. The one-hop (radius-8) version of R1's repair
-  was refuted in R2 by a multi-hop corridor (a chain of dismissed stones
-  approaching protected territory in 8-steps whose *later* links are
-  ghost-illegal and hence uncheckable at their own nodes); the horizon
-  scaling closes it via L9 below, whose invariant propagates down chains
-  automatically. The band is empty in the common case
-  Prot(N) ⊆ Legal(P_N) ∪ Stones(P_N).
-- **(Z4) WF-legality:** every attacker placement in the subtree of N is
-  within distance 8 of an attacker stone of its predecessor position or a
-  stone of P₀ (automatic for threat-creating generators, T2).
+  B(OR-COMPLETION) = B(WIN) = 0;       B(LOSS,b) = b;
+  B(OR) = B(child);                    B(AND) = 1 + max_C B(C).
 
-Both Prot-terms are finite and verifier-enumerable when D_N ≤ 5 (the
-completion-guard windows need cnt_D ≥ 1, hence are touched windows). For
-D_N ≥ 6 every all-empty window qualifies, so Prot ∩ Legal covers every
-legal cell lying in *any* D-alive window, and (Z5) additionally covers the
-frontier band; the only remaining dismissible cells are deep-interior cells
-lying in **no** D-alive window (every window through them is A-touched or
-dead — such cells can never contribute to a defender completion, L4/L7).
-This is the honest G2 boundary, now stated exactly rather than as "no
-pruning".
+Its unit is defender placements: the two placements of a D turn are two D4
+edges, and a LOSS leaf contributes its remaining b placements. Exact maxima
+are optimal for pruning but are not required. A verifier may accept any
+nonnegative integral labelling B satisfying B(L) ≥ b at every LOSS leaf,
+B(N) ≥ B(C) on every OR edge, and B(N) ≥ 1 + B(C) on every AND edge.
+The old global quantity 𝔇(P_N,T) is the always-admissible special case and
+is generally looser.
 
-**Monotonicity of protection [PROVEN].** For M a descendant AND node of N:
-Prot(M) ⊆ Prot(N). *Proof.* core is a subtree union, monotone under
-descent. For the completion-guard term: cnt_D(W, ·) grows along a play by
-exactly the defender placements made, while 𝔇(·, T) shrinks by the same
-count or more, so cnt_D + D is nonincreasing; a window qualifying at M
-qualified at N, and its empty-set at M is a subset of its empty-set at N. ∎
+**D10 (compressed obligations; replaces full-window core).** Write
+E(W,P) := W ∖ Stones(P). A *live obligation role* below N is either:
 
-**L9 (frontier chain closure). [PROVEN]** In T3's coupling, say an X-stone
-x introduced at node N_x is *(Z5)-clear* iff d(x, y) > 8·D_{N_x} for every
-y ∈ Prot(N_x) ∖ (Legal(P_{N_x}) ∪ Stones(P_{N_x})). Then:
-(a) if every ghost-legal dismissed stone is (Z5)-clear (which is exactly
-what the (Z5) searched-set condition enforces, since ghost-legal cells
-inside the band are searched, not dismissed), then every ghost-*illegal*
-dismissed stone is automatically (Z5)-clear as well; and
-(b) consequently no cell of Prot(N) ∖ (Legal(P_N) ∪ Stones(P_N)) is ever
-legal in the real game while illegal in the ghost.
-*Proof.* Any cell that is **ghost-empty**, real-legal, and ghost-illegal
-has an X-stone legality witness: its real justification is a real stone
-within distance 8, and among real stones only X-stones are absent from the
-ghost (shared root/attacker stones and searched placements exist in both;
-Y-cells are ghost-*occupied* and are irrelevant here since every L9/A3 use
-concerns ghost-empty cells). Inductively, every X-stone's own
-real-legality traces back through a chain x₀, x₁, …, x_m of X-stones with
-x₀ real-legal via a shared stone (hence ghost-legal) and consecutive links
-within distance 8.
-(a) Suppose some ghost-illegal x_j (j ≥ 1) violated clearance: some
-protected-not-legal y at N_{x_j} with d(x_j, y) ≤ 8·D_{N_{x_j}}. The chain
-prefix gives d(x₀, x_j) ≤ 8·k where k = the number of defender placements
-from x₀ up to x_j inclusive minus... precisely, x₁, …, x_j are defender
-placements after x₀, so j ≤ D_{N_{x₀}} − 1 and d(x₀, x_j) ≤ 8·j. Also
-D_{N_{x_j}} = D_{N_{x₀}} − (defender placements from x₀ to x_j exclusive of
-x_j) ≤ D_{N_{x₀}} − j. By protection monotonicity and the growth of ghost
-legality, y is protected-not-legal at N_{x₀} too. Then
-d(x₀, y) ≤ 8·j + 8·(D_{N_{x₀}} − j) = 8·D_{N_{x₀}} — contradicting x₀'s
-clearance (x₀ is ghost-legal, so its clearance is enforced by (Z5)).
-(b) If protected y becomes real-legal while ghost-illegal, y ∈ B₈(x_m) for
-the last chain stone x_m; then d(x_m, y) ≤ 8 ≤ 8·D_{N_{x_m}} (D ≥ 1 for
-any defender placement before T) contradicts x_m's clearance from (a). ∎
+1. a future designated certificate attacker placement, expressly including
+   an OR-COMPLETION placement; or
+2. a role (L,W,y), for a named WIN/LOSS witness W at leaf L and a cell
+   y ∈ E(W,P_L). These witness-empty roles also represent every possible
+   leaf continuation placement, including the adaptive LOSS choice.
 
-**D12 (coupling; replaces the extension order — per review R1).** T3's
-proof maintains a *coupling* between the real play (position R) and a walk
-on 𝒞 (ghost position G): equal ply index, equal mover/budget, identical
-attacker stones, and the defender-stone differences defined canonically as
+Let Ω(N) be all such roles at reachable descendants of N and define
 
-  X := Stones_D(R) ∖ Stones_D(G),   Y := Stones_D(G) ∖ Stones_D(R)
+  Obl(𝒞,N) = Prot(N) := { y : some live role in Ω(N) is carried by y }.
 
-(disjoint by construction), with invariants: (i) every x ∈ X entered at a
-dismissal step whose node certified x ∉ Prot; (ii) every y ∈ Y entered as
-a ghost *filler* — a searched placement of its node; (iii) X ∩ Prot(N) = ∅
-at every visited node N (by (i) + protection monotonicity); (iv) every
-x ∈ X is (Z5)-clear in the sense of L9 — enforced by (Z5) for ghost-legal
-dismissals, inherited via L9(a) for ghost-illegal ones. A *dismissal
-history* set X̂ ⊇ X (cells ever added to X, never removed) is carried for
-the anchor argument, which refers to "ever dismissed" rather than current
-membership.
+A role remains live through its deadline check and is discharged immediately
+afterward. Thus an OR-placement role is protected immediately before Step O,
+and a witness-empty role is protected at leaf entry. Full witness windows
+are not obligations. Reachable-descendant nesting gives Prot(M) ⊆ Prot(N)
+whenever M descends from N.
+
+**D15 (cell-specific deadlines).** Each role ρ has a deadline: its designated
+A-placement, or leaf entry for a WIN/LOSS witness-empty role. At a node N
+from which ρ is reachable, r_N(ρ) is an integral upper bound on defender
+placements before that deadline. Exact ranks count the maximum number of
+AND edges on a reachable path. The verifier checks r = 0 at the deadline,
+r_N(ρ) ≥ r_C(ρ) across an OR edge, and r_N(ρ) ≥ 1 + r_C(ρ) across an AND
+edge while the role remains live. For a cell with several roles,
+
+  r_N(y) := max { r_N(ρ) : ρ ∈ Ω(N) is carried by y }.
+
+The role is discharged only after its r = 0 deadline check. A seed band is
+formed only at an internal AND node with r_N(y) ≥ 1; no negative radius is
+formed at r = 0. In particular LOSS witness empties require protection only
+through leaf entry: the adaptive contract controls the remaining b
+placements. Defender-completion windows use D14 or D16 instead, never these
+role ranks. The uniform admissible choice r_N(ρ) = B(N) before the deadline
+recovers the coarser local-budget band.
+
+**D16 (per-window defender exposure).** For each window W, E_Q^D(W) is the
+maximum number of future defender placements before the certificate attacker
+wins or first places in W. Its exact recurrence is
+
+  E_Q^D(W) = 0                         at WIN/OR-COMPLETION;
+  E_Q^D(W) = b                         at LOSS with defender budget b;
+  E_Q^D(W) = 0                         at an OR whose move enters W;
+  E_Q^D(W) = E_C^D(W)                 at any other ordinary OR;
+  E_Q^D(W) = 1 + max_C E_C^D(W)       at an internal AND.
+
+If W is already non-D-alive, set E_Q^D(W) = 0. "The attacker enters W"
+means that W becomes permanently non-D-alive; it need not become D5-dead.
+Permanence (L4) is the needed property. Each overlapping window has its own
+clock. The designated attacker-in-W stopping move is a D10 obligation, so
+the obligation zone separately keeps that stop playable in the real game.
+
+**L10 (short-range attacker-obligation containment). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* In a certificate whose attacker
+placements are all threat-creating, an attacker placement that is A's k-th
+future placement from N lies, for k ≤ 3, in a window containing at least
+3 − (k − 1) ≥ 1 current attacker stones of P_N. Thus its D10 role lies in an
+A-touched window. *Proof.* Immediately before the placement its window has
+at least three A-stones. At most k − 1 are earlier future placements, leaving
+at least 3 − (k − 1) current stones. ∎ From the fourth future placement on,
+setup cells can lie in currently virgin windows and must be supplied by the
+certificate obligation set.
+
+**L11 (local-clock and nesting facts). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* If a descendant M is reached from N
+after k defender placements, then:
+
+  B(M) + k ≤ B(N),
+  cnt_D(W,P_M) + B(M) ≤ cnt_D(W,P_N) + B(N),
+
+and every selected path below N, including a LOSS remainder, contains at
+most B(N) defender placements before its declared A-resolution. For every
+still-live role ρ, r_M(ρ) + k ≤ r_N(ρ). Before the attacker enters W,
+
+  E_M^D(W) + k ≤ E_N^D(W),
+  cnt_D(W,P_M) + E_M^D(W) ≤ cnt_D(W,P_N) + E_N^D(W).
+
+Also E_N^D(W) ≤ B(N), every exact role rank r*_N(ρ) ≤ B(N), and
+Prot(M) ⊆ Prot(N). *Proof.* Sum the D14 and D15 verifier inequalities
+along the path; every AND edge contributes one and every OR edge zero. The
+AND maximum covers whichever filler child is selected, and the LOSS lower
+bound covers its remainder. A window gains at most one D-stone per counted
+defender edge, giving the two count inequalities. The D16 recurrence gives
+the exposure inequalities until its stated stop and is pointwise bounded by
+the D14 recurrence. An exact role deadline occurs no later than its path's
+resolution, giving r* ≤ B. (A verifier-supplied rank may conservatively be
+larger.) The last assertion is reachable-descendant set inclusion. ∎
+
+For d(c,W) := min_{w∈W} d(c,w), define at every internal AND node N:
+
+  Z_dir(N) = Prot(N) ∩ Legal(P_N);
+
+  Z_seed(N) = ⋃ { Legal(P_N) ∩ B_{8(r_N(y)−1)}({y}) :
+                  y ∈ Prot(N) ∖ (Legal(P_N) ∪ Stones(P_N)), r_N(y) ≥ 1 };
+
+  Z_touch(N) = ⋃ { E(W,P_N) : W is D-alive at P_N,
+                    cnt_D(W,P_N) ≥ 1,
+                    cnt_D(W,P_N) + E_N^D(W) ≥ 6 };
+
+  Z_virgin(N) = { c ∈ Legal(P_N) : some all-empty window W has
+                    E_N^D(W) ≥ 6 and d(c,W) ≤ 8(E_N^D(W)−6) }.
+
+Here B_r(U) = {c : d(c,u) ≤ r for some u ∈ U}. Every Z_touch cell is legal:
+L1 puts every empty of its touched window within distance at most 5 of an
+in-window D-stone.
+
+**D11 (zone-carrying certificate — round-5 form).** A D9 certificate is
+*zone-carrying* when, at every internal AND node, S(N) is independently
+nonempty and the following verifier clauses hold:
+
+- **(Z2) direct and completion protection:**
+  S(N) ⊇ Z_dir(N) ∪ Z_touch(N) ∪ Z_virgin(N).
+- **(Z4) WF-legality:** every certificate attacker placement, including
+  placements allowed by a leaf contract, is within distance 8 of an
+  attacker stone in its predecessor position or a root stone unaffected by
+  the coupling. L1 supplies this for WIN/LOSS continuations.
+- **(Z5′) ranked obligation seed guard:** S(N) ⊇ Z_seed(N).
+
+This is the verifier-label mapping used below: the live labels are (Z2),
+(Z4), and (Z5′). With the uniform choice r_N(y) = B(N), (Z5′) is
+
+  S(N) ⊇ Legal(P_N) ∩ B_{8(B(N)−1)}
+    ( Prot(N) ∖ (Legal(P_N) ∪ Stones(P_N)) ).
+
+The former Z1 hitting clause is not a T3/T4 requirement. Current hitting
+cells remain a sensible search heuristic, and T6's kernel regime still uses
+the current threat family. All four zone components are finite and
+verifier-enumerable: Legal(P_N) and Prot(N) are finite; touched windows are
+finite; and the virgin query can be inverted from each legal candidate over
+the finite radius allowed by E_N^D(W) ≤ B(N).
+
+**L9′ (first protected occupation; replaces former L9). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* The replacement is necessary
+because radius 8(B−1) prevents first protected *occupation*, not the stronger
+claim that a protected cell never becomes real-legal.
+
+Suppose direct legal protected cells are searched and every ghost-legal
+dismissal x at N lies outside radius 8(B(N)−1) of
+
+  Prot(N) ∖ (Legal(P_N) ∪ Stones(P_N)).
+
+Then no defender placement creates a real-only stone in the current
+protected set. The ranked form replaces B(N) by the maximum live role rank
+r_N(y) for each target y and reaches the same conclusion through that role's
+deadline.
+
+*Proof.* Assume the first violation is the defender placement at y. If y is
+ghost-legal, then y ∈ Z_dir and (Z2) makes it searched, so it is placed in
+both games and is not real-only. Otherwise trace y's real-only legality
+witness backward through current real-only defender stones to the first
+ghost-legal dismissed seed x₀. If y is the p-th defender placement from x₀,
+counting x₀, there are at most p−1 radius-8 links, so
+
+  d(x₀,y) ≤ 8(p−1).
+
+Protection nesting puts y ∈ Prot(N_{x₀}). At the violation y is still
+ghost-empty and ghost-illegal; ghost legality for an unoccupied cell is
+monotone, so it was ghost-illegal at N_{x₀}, and permanence makes it a
+non-stone there. D14 anchor coverage gives p ≤ B(N_{x₀}); in the ranked
+form, the still-live role gives p ≤ r_{N_{x₀}}(y). Thus x₀ lay in the
+applicable (Z5′) band, contradicting its dismissal. ∎
+
+The uniform radius is sharp at this level: a ghost-legal x₀ may be followed
+by B−1 successive distance-8 placements, with the protected target last.
+
+**D12 (coupling; round-5 form).** T3 couples a real position R to a walk on
+𝒞 with ghost position G: equal ply, mover, and budget; identical attacker
+stones; and canonical defender differences
+
+  X := Stones_D(R) ∖ Stones_D(G),   Y := Stones_D(G) ∖ Stones_D(R).
+
+The maintained invariants are exactly: (i) every x ∈ X entered at a
+dismissal at which (Z2)/L9′ or the selected D17 envelope certified x outside
+its live obligations; (ii) every y ∈ Y entered as a searched ghost filler;
+and (iii) X ∩ Prot(N) = ∅ at every visited node.
+L9′ supplies (iii) for a ghost-illegal dismissal; reachable-obligation
+nesting preserves it after descent. A history X̂ ⊇ X contains every cell
+ever added to X and never deletes cells. For every window W the canonical
+identity
+
+  (MI)  cnt_D(W,R) = cnt_D(W,G) + |X ∩ W| − |Y ∩ W|
+                  ≤ cnt_D(W,G) + |X̂ ∩ W|
+
+holds without any witness-window agreement assumption.
+
+**L12 (split completion safety). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* In D12's coupling, under D11's
+(Z2), (Z4), and (Z5′), before the mapped certificate attacker wins or first
+enters a fixed window W, no real defender play completes W.
+
+*Proof.* Suppose W is first completed in the real game before that stop. It
+is D-alive throughout the relevant ghost prefix by shared A-stones and L4.
+If no W-cell was ever dismissed, X̂ ∩ W = ∅ and (MI) forces the ghost line to
+have at least the real D-count. It therefore contains a defender completion,
+contrary to D9's exact successors and ban on defender-terminal edges.
+
+Otherwise let x ∈ W be the first ever-dismissed real-only W-fill, at N.
+If the ghost already has a D-stone in W, every W-empty is ghost-legal. Before
+x, (MI) gives the real W-count at most the ghost count. The real placements
+from x through completion are covered by E_N^D(W), so
+cnt_D(W,P_N) + E_N^D(W) ≥ 6; Z_touch searched x, a contradiction.
+
+If the ghost W is virgin and x is ghost-legal, all six W-fills remain in the
+exposure count. Hence E_N^D(W) ≥ 6 and d(x,W) = 0, so Z_virgin searched x.
+If x is ghost-illegal, trace its X-legality chain to the first ghost-legal
+dismissed seed x₀. With j radius-8 links before the chain reaches W,
+
+  d(x₀,W) ≤ 8j,                 E_{N_{x₀}}^D(W) ≥ j + 6.
+
+The second inequality counts the seed/chain tempo and all six W-fills before
+the exposure stop. Thus x₀ ∈ Z_virgin, again a contradiction. A searched
+fill that touches W moves later nodes to the first case; independent seeds,
+interleaving, and overlapping candidate windows are covered by the causal
+chain for the first dismissed fill of each W. The D10 obligation for the
+attacker-in-W move makes the exposure stop valid in the real game.
+
+At a LOSS remainder the coupling stops at leaf entry. If W has an
+ever-dismissed fill, the same first-dismissal count remains valid because
+D16 includes the leaf's b placements. If it has none, leaf-time (MI) gives
+the real count at most the ghost count; the mandatory leaf
+`¬own_win_now` check bounds the latter by 3 at b = 2 and 4 at b = 1, so the
+remaining b placements reach at most 5. Thus no defender completion was
+lost when the coupling stopped. ∎
+
+The virgin radius is sharp at E = 7: a legal seed at distance 8 may be
+followed by the first W-fill and the five remaining fills.
 
 ---
 
 ## 6. The main theorem
 
-**T3 (horizon-parameterized dismissal soundness). [PROVEN]** *(R4-ruled
-caveat: proven for valid zone-carrying certificates obeying the D9 grammar
-and satisfying (Z1), (Z2), (Z4), (Z5), with exact D_N and the full — not
-sharpened — defender-placement budget. Four-round hostile review trail in
-§13.)*
-Let 𝒞 be a zone-carrying certificate (D9–D12) for "A wins from P₀ by ply
-T". Then A wins from P₀ — against *every* defender strategy, over the full
-legal move set — by ply ≤ T. Hence every dismissal of 𝒞 is sound.
+**T3 (local-clock, pathwise dismissal soundness). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* Let 𝒞 obey D9–D12 and D14–D16 and be
+zone-carrying under (Z2), (Z4), and (Z5′). For every real defender play
+against the compiled attacker strategy, either the real attacker wins
+strictly earlier than the mapped ghost resolution, or the play maps to a
+finite certificate path and A completes by that path's declared resolution.
+Consequently A wins by the global maximum T, and every certified dismissal
+is sound.
 
-*Proof.* We construct A's real-game strategy by coupling the real play
-(position R, initially P₀) to a walk on 𝒞 (ghost position G, initially P₀),
-maintaining D12's invariants: equal ply/mover/budget, identical attacker
-stones, X and Y the canonical defender-stone differences, (i)–(iii).
-Leaves are processed the moment the walk reaches them (before any further
-case analysis). Induction on T − (current ply).
+*Proof.* Couple the real position R, initially P₀, to a ghost walk G on 𝒞,
+maintaining D12. Process a typed leaf immediately upon reaching it.
 
-**Step O (ghost at an OR node, designated placement c).**
-c is empty in ghost (𝒞 valid). c ∉ X: c ∈ core ⊆ Prot of every ancestor
-(protection monotonicity) and X avoids Prot by (iii). c ∉ Y: Y-cells are
-ghost D-stones, c is ghost-empty. So c is empty in real. c is legal in
-real: by (Z4) c is within distance 8 of an attacker/root stone of its
-predecessor position; attacker and root stones are *identical* in R and G,
-so the same justification holds in real. A plays c in the real game; ghost
-plays it too. Attacker stones stay identical; X, Y unchanged.
-*Termination.* If the placement completes the named witness window W* in
-ghost: W* ⊆ core, so X ∩ W* = ∅ (iii), and Y ∩ W* = ∅ (W* is A-complete in
-ghost, hence D-free there); masks agree (L5(b)), so the real placement
-completes W* at the same ply ≤ T — **A wins**. If the real placement
-completes some *other* window that ghost does not (possible only on a
-window D-blocked in ghost but not in real, i.e. meeting Y — L5(d)/L6(b)):
-the real game terminates immediately with **A the winner** at a ply < T;
-return success (per review R1 item 9, this branch exits rather than
-recursing). Otherwise recurse on the child.
+**Step O (OR node, designated placement c).** The live placement role puts
+c in Prot at every current ancestor. Hence c ∉ X by D12(iii); ghost
+emptiness gives c ∉ Y. It is real-empty. Clause (Z4) supplies a shared
+attacker/root legality witness, so c is real-legal. Play c in both games;
+the A-stone sets remain identical.
 
-**Step A (ghost at an AND node N, real defender plays a real-legal d).**
-The split below is exhaustive over real-legal d: d is ghost-occupied, or
-ghost-empty ∧ ∈ S(N), or ghost-empty ∧ ∉ S(N).
+At an OR-COMPLETION, the other five cells of its named window are shared
+A-stones immediately before c. The ghost window contains no D-stone, hence
+no Y-cell, and c is not an X-cell. The same placement therefore completes
+the real window at the declared ply. If instead the real placement completes
+some other window that the ghost does not, L5(d)/L6(b) make that an immediate
+strictly earlier real A-win; exit. Otherwise discharge c's role after its
+deadline check and descend to the exact child.
 
-*Filler subroutine (used by A2, A3).* Ghost must consume a defender ply:
-pick any d₀ ∈ S(N) — S(N) ≠ ∅ since a non-leaf AND node has children, and
-every S-cell is ghost-legal hence ghost-empty. Ghost plays d₀. If d₀ was
-real-occupied (d₀ ∈ X), the difference sets update to X ∖ {d₀} (ghost has
-caught up); otherwise Y ∪= {d₀}. Either way the canonical differences of
-D12 are recomputed and the invariants are preserved: a new Y-cell is a
-searched placement of its node (ii); X only shrinks here.
+**Step A (AND node N, real defender placement d).** Exactly one case holds:
+d is ghost-occupied; d is ghost-empty and searched; or d is ghost-empty and
+unsearched.
 
-*(A1) d ghost-empty and d ∈ S(N).* Both real and ghost play d; descend to
-the d-child. Differences unchanged.
+*Filler subroutine.* Whenever the ghost must consume a defender ply without
+copying d, choose any d₀ ∈ S(N), which exists independently by D9. It is
+ghost-empty and ghost-legal. If d₀ ∈ X, ghost placement removes it from X;
+otherwise it adds d₀ to Y. Recompute the canonical differences. A new
+Y-cell is a searched filler and X only shrinks.
 
-*(A2) d ghost-occupied.* Then d is a ghost D-stone (ghost A-stones are
-real A-stones, and d is real-empty), i.e. d ∈ Y. Real plays d; Y loses d.
-Run the filler subroutine; descend to the d₀-child.
+*(A1) d ghost-empty and d ∈ S(N).* Both games play d and descend to its
+exact child; X and Y do not change.
 
-*(A3) d ghost-empty and d ∉ S(N) — a dismissal.* First, d ∉ Prot(N): if
-d ∈ Legal(P_N), this is (Z2) (protected legal cells are searched); if
-d ∉ Legal(P_N) — real-legal only through the X-expanded frontier — then by
-L9(b), d cannot be a protected-not-legal cell, and d cannot be a protected
-*legal* cell by assumption, so d ∉ Prot(N). Second, invariant (iv) for d:
-if d ∈ Legal(P_N), the (Z5) band condition means a non-clear d would have
-been searched; if d ∉ Legal(P_N), clearance is inherited by L9(a). Real
-plays d; X ∪= {d}, X̂ ∪= {d} — invariants (i) and (iv) hold as just shown.
-Run the filler subroutine; descend to the d₀-child.
+*(A2) d ghost-occupied.* Since attacker stones are shared and d is
+real-empty, d ∈ Y. Real placement removes d from Y. Run the filler
+subroutine and descend to the filler child.
 
-**No real defender completion before ply T (anchored argument with mask
-inclusion).** Suppose some window W becomes D-complete in the real play at
-a ply < T. Along the coupling, real D-stones in W at any moment are
-(ghost D-stones in W) ∪ (X ∩ W) minus (Y ∩ W), so
+*(A3) d ghost-empty and d ∉ S(N).* If d is ghost-legal and protected, then
+d ∈ Z_dir ⊆ S(N), contradiction; thus a ghost-legal dismissal is outside
+Prot and, because it is outside Z_seed, satisfies the seed hypothesis of
+L9′. If d is ghost-illegal, L9′ says that placing it cannot create the first
+real-only protected stone; hence it too is outside the current Prot. Real
+plays d; add d to X and X̂. Run the filler subroutine and descend. L9′ and
+protection nesting preserve D12(iii). This completes the C1/C3 accounting;
+L12 supplies C2 by excluding a real defender completion before the mapped
+attacker stop.
 
-  **(MI)** cnt_D(W, R) = cnt_D(W, G) + |X ∩ W| − |Y ∩ W|
-           ≤ cnt_D(W, G) + |X̂ ∩ W|.
+**WIN leaf.** Let W be a named A-alive witness. Every ghost A-stone of W is
+shared. Every other W-cell is in E(W,P_L), hence has a live witness-empty
+role and is X-free at leaf entry. A-aliveness gives no ghost D-stone in W,
+so W has no Y-cell. Thus the complete real and ghost masks and empty sets
+agree although only leaf empties were protected. L1 puts the one or two
+empties within distance 2 of shared A-stones. They are real-legal and remain
+empty, and A fills them with no intervening D-placement, completing by the
+leaf's declared resolution.
 
-*Case (a): no W-fill was ever dismissed* (X̂ ∩ W = ∅ throughout). Then by
-(MI), cnt_D(W, G) ≥ 6 at that ply: the *ghost* position — on an actual
-certificate line — contains a D-complete window before T. D9's grammar
-forbids defender-terminal edges and requires exact successors, so no valid
-certificate line contains a D-completion. Contradiction.
-*Case (b): some W-fill was dismissed.* Let x* be the first ever
-(membership in X̂), at node N*. Step A3 established x* ∉ Prot(N*). W is
-D-alive at N* (it is D-completable later, and alive-for-D persists
-backward, L4), and x* is one of W's empties. Had W qualified for the
-completion-guard term — cnt_D(W, P_{N*}) + D_{N*} ≥ 6 — then W's empties,
-including x*, would lie in Prot(N*): contradiction. Hence
-cnt_D(W, P_{N*}) + D_{N*} < 6. Before x*, X̂ ∩ W = ∅, so by (MI)
-cnt_D(W, R_{N*}) ≤ cnt_D(W, P_{N*}). The plies are synchronized, so all
-real defender placements from x* onward and strictly before T number at
-most D_{N*}. By L7 anchored at N*, W cannot reach 6 D-stones before ply T.
-Contradiction. ∎
+**LOSS leaf.** The same compressed-obligation argument makes the real and
+ghost masks and empty sets identical for every W ∈ 𝒯 at leaf entry; hence
+the real transversal number is the checked value τ(𝒯) > b. A real defender
+`own_win_now` is impossible. If its putative window has no ever-dismissed
+fill, leaf-time (MI), the shared A-mask, and equal budget transfer it to the
+ghost, contradicting the mandatory leaf check. If it has an ever-dismissed
+fill, the L12 first-dismissal/exposure argument includes the LOSS leaf's b
+placements, so completing within the current D turn is impossible.
 
-**Leaf transfer (rewritten per review R2 — the post-leaf plies are argued
-directly in the real game; the coupling is not extended past the leaf).**
-*(WIN leaf.)* By D9 the leaf is a checked own_win_now position: the witness
-window has count 5, or count 4 with the attacker owning both placements of
-the current turn — so completion occurs within attacker-owned plies with
-**no defender placement interleaved**. The witness window is core: X-free
-(iii), D-free in ghost (hence Y-free), masks equal (L5(b)); its empties are
-within distance 2 of attacker stones (L1), hence legal in real (shared
-attacker stones); they are real-empty (X avoids core; Y-cells are absent in
-real, i.e. *more* empty). The attacker fills them; the real game completes
-at the leaf's resolution ply ≤ T.
-*(LOSS leaf, adaptive.)* The leaf names 𝒯 with hitting number > b. At the
-leaf, the real and ghost masks and empty-sets of every W ∈ 𝒯 are
-**identical**: 𝒯-windows are core, so X avoids them (iii); they are
-A-alive in ghost, so they contain no ghost D-stones and in particular no
-Y-cells; and A-stones are shared. Hence the real hitting number over 𝒯
-equals the ghost's, > b.
-The real defender's own_win_now at the leaf is excluded by a leaf-time
-split (review R3 — the coupling stops at the leaf, so the anchored
-argument is applied *at* the leaf, not extended past it). Let W be a
-putative real own-win window. If X̂ ∩ W = ∅: leaf-time (MI) gives
-cnt_D(W, R) ≤ cnt_D(W, G), with the same A-mask and the same budget, so
-real own_win_now would imply ghost own_win_now — contradicting the leaf's
-verifier-checked ¬own_win_now (D9). If X̂ ∩ W ≠ ∅: the anchored case (b)
-at the first dismissed x* ∈ W is pure counting over *all* real defender
-placements before T, independent of whether the coupling continues, and
-forbids W reaching count 6 before T; an own-win at the leaf would complete
-W within the defender's current turn, at a ply < resolution ≤ T —
-contradiction.
-Now let the real defender play any complete remainder H of his turn (D9
-convention). Since |H| ≤ b < hitting number(𝒯), some W_H ∈ 𝒯 has
-E(W_H) ∩ H = ∅; W_H remains A-alive (its cells avoid H by choice and its
-leaf masks were exactly the ghost's); its ≤ 2 empties are within distance
-2 of *shared, permanent* attacker stones (L1), hence legal and empty in
-the real game when the attacker moves. The attacker completes W_H within
-his following turn (count-5 → one placement; count-4 → both), finishing by
-leaf-ply + b + 2 ≤ T (D9's clock). H may include placements anywhere —
-hits on other 𝒯-windows, quiet moves, frontier moves — the argument uses
-only |H| ≤ b and permanence. ∎ (T3)
+Now discharge the leaf roles and let the real defender choose any complete
+nonterminal remainder H. Since |H| ≤ b < τ(𝒯), some W_H ∈ 𝒯 has
+E(W_H,P_L) ∩ H = ∅. It remains A-alive. Its at most two surviving empties
+are within distance 2 of shared permanent A-stones, so A completes W_H in
+the following turn, by leaf-ply + b + 2. Protection is intentionally not
+needed after leaf entry; the adaptive quantifier over H supplies the
+surviving witness.
 
-**T4 (zone reading of T3). [PROVEN]** *(Same R4 caveat as T3.)* Corollary:
-at an AND node the sound searched set is
+Every nonterminal step descends the finite certificate. Thus, absent an
+earlier real A-win, the coupled play reaches one of the preceding terminal
+transfers and resolves by that selected path's declared ply. T is their
+maximum. ∎
 
-  Z(N) = Legal(P_N) ∩ [ hitting(P_N) ∪ Prot(N) ∪
-         B_{8·D_N}( Prot(N) ∖ (Legal(P_N) ∪ Stones(P_N)) ) ],
+**T4 (ranked zone reading of T3). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* At an ordinary AND node the
+normative verifier zone is
 
-where hitting(P) := the union of the empty-sets of the A-threat windows of
-P (the cells of D6's `hit(P)` members) — i.e. hitting cells, protected
-cells (core + completion-guard window empties), and the horizon-scaled
-(Z5) frontier band. The completion-guard term uses D_N = all defender
-plies before the horizon; the *sharpened* F-version counting only non-hit
-placements is **not** proven (Open Problems §12.1). The frontier band is
-empty whenever Prot(N) ⊆ Legal(P_N) ∪ Stones(P_N) — the typical case,
-since witness windows cluster near the action.
+  Z(N) = Z_dir(N) ∪ Z_seed(N) ∪ Z_touch(N) ∪ Z_virgin(N).
 
-**L10 (short-range attacker-core containment). [PROVEN]** In a certificate
-whose attacker placements are all threat-creating (each lands in a window
-that, immediately before the placement, is A-alive and holds ≥ 3 attacker
-stones), an attacker placement cell that is the attacker's k-th future
-placement from node N lies, for k ≤ 3, in a window containing
-≥ 3 − (k − 1) ≥ 1 *current* attacker stones of P_N — hence inside the
-A-touched-window term. (L10 covers attacker-placement core cells; the
-named-witness component of core is a separate, certificate-known set.)
-*Proof.* Its window holds ≥ 3 attacker stones at placement time, of which
-at most k − 1 are future (one per earlier future placement); so ≥ 3−(k−1)
-are current. For k ≤ 3 that is ≥ 1. ∎ (From the 4th future placement on,
-attacker core cells can lie in currently-virgin windows — review R2's
-setup-cell example — and must be supplied to the searched set from the
-certificate's core explicitly.)
+Any independently nonempty searched set S(N) ⊇ Z(N), together with (Z4),
+is sufficient. If Z(N) is empty, D9 still requires one arbitrary legal
+searched fallback. The uniform admissible deadline r_N(y) = B(N) replaces
+Z_seed by the radius-8(B(N)−1) band displayed in D11. Exact cell ranks can
+only reduce that uniform obligation band; exact window exposures likewise
+reduce the corresponding B-clock completion guards. Larger admissible upper
+bounds remain sound. Current hitting cells
+are optional search candidates, not a T3/T4 term; T6 below uses them only to
+define its separate kernel.
 
-**T5 (static-set coverage for short horizons — rescoped per review R2).
-[PROVEN]** *(R4 caveat: a coverage theorem only, under all joint
-hypotheses — D_N ≤ 3, at most three remaining threat-creating attacker
-placements, witness-window cells covered by A-touched windows, empty
-frontier band; otherwise the static set is only a candidate generator.)*
-For D_N ≤ 3, the completion-guard term of Z(N) is contained in radius-3 of
-defender stones (L1 with k ≥ 3); hitting ⊆ radius-2 (T1); and, for
-certificates with ≤ 3 remaining attacker placements and threat-creating
-attacker moves, attacker core cells lie in A-touched windows (L10). Hence
-the static set r3 ∪ {empties of A-touched alive windows} — where r3 :=
-{ legal empties within distance 3 of any stone } — covers Z(N) whenever
-additionally all witness-window cells are A-touched-window cells and the
-frontier band is empty. In general the searched set must include
-core(𝒞, N) ∩ Legal(P_N) explicitly — it is certificate-known — and the
-static set is a **candidate generator**, not a certified zone by itself.
+**L13 (sparse LOSS witnesses). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* A D9 LOSS witness can be chosen
+with |𝒯| ≤ 3 at b = 1 and |𝒯| ≤ 6 at b = 2. Here b counts placements.
 
-**T6 (the forced-tree regime — proof replaced per reviews R2/R3).
-[PROVEN]** *(R4 caveat: proven for valid D9 certificates whose internal
-AND nodes have verifier-checked mhs = b and ¬own_win_now; the sufficient
-searched set is hitting(P_N) ∪ (core(𝒞,N) ∩ Legal(P_N)), with the
-auxiliary refutation measured against the same certified horizon T.)* If at every
-AND node of 𝒞 the defender's λ¹ analysis gives mhs = b and (per D9's
-grammar) ¬own_win_now for the defender, then S(N) = hitting(P_N) ∪
-(core(𝒞,N) ∩ Legal(P_N)) suffices: the completion-guard and frontier terms
-are unnecessary.
-*Proof (framed at the first dismissed reply, per review R3 — before it,
-the real play follows certificate lines exactly).* Let d be the first
-dismissed reply, at a node with budget b; d is non-hitting (hitting is
-searched). Attach the auxiliary refutation:
-- **b = 2:** the successor is a defender node with b' = 1 and the untouched
-  threat family still needing mhs = b = 2 hits: mhs > b', a defender LOSS
-  leaf with the current threat family as witness family.
-- **b = 1:** the successor is the *attacker* to move with budget 2 and at
-  least one surviving A-threat: an attacker WIN leaf (count-4 at b = 2, or
-  count-5, is own_win_now).
-The auxiliary leaf's witness windows are the node's current A-threat
-windows. Their cells are covered by the searched set: they are hitting
-cells of the node (searched by hypothesis), so the auxiliary branch's
-protection needs no appeal to D10-core of the original subtree. Its
-resolution fits inside the original T: following instead a searched
-minimum hitting reply (pair at b = 2, common hit at b = 1) kills every
-current A-threat and defender placements create no new A-threats, so the
-original certificate cannot resolve on the first following attacker ply —
-its T already reaches the second attacker ply, exactly what the auxiliary
-branch needs (leaf-ply + b' + 2 at b = 2; the attacker's own turn at
-b = 1).
-It remains to exclude a defender completion before the auxiliary
-resolution. By D9's grammar ¬own_win_now holds at AND nodes, so any
-D-alive window W has cnt_D(W) ≤ 3 at b = 2 nodes and ≤ 4 at b = 1 nodes
-(count 4 at b = 2, count 5 anywhere, is own_win_now). From the dismissal
-onward the defender places: at b = 2, the dismissal plus the single
-placement of the b' = 1 LOSS contract — the same one placement, counted
-once — total 2, reaching at most 3 + 2 = 5 < 6; at b = 1, the dismissal
-alone before the attacker's turn — at most 4 + 1 = 5 < 6. No defender
-window reaches 6 before the attacker's completion. ∎
+*Proof.* Every threat empty-set has size one or two. For b = 1, if the
+family contains {a}, choose one set missing a; those two have no one-point
+transversal. Otherwise choose E = {a,b}, one set missing a, and one missing
+b. Any point hitting E is a or b and misses the corresponding selected set.
+The three edges of a triangle show sharpness.
+
+For b = 2, take a maximal pairwise-disjoint subfamily. It cannot have size
+one, because its sole set, of size at most two, would hit the whole family.
+If it has size at least three, three disjoint sets suffice. Otherwise take
+the two disjoint sets E₁,E₂. Their two-point transversals are the at most
+four cross-pairs selecting one point from each. For each cross-pair select
+one original set that it misses. Together with E₁,E₂, at most six sets
+exclude every two-point transversal. The six edges of K₄ show the general
+rank-two bound is sharp. Since every real LOSS remainder H has |H| ≤ b, a
+selected family with τ > b retains a witness disjoint from H. ∎
+
+**T5 (static-set coverage for short local budgets). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* Suppose B(N) ≤ 3, at most three
+remaining attacker placements are threat-creating, all named witness-empty
+roles lie in A-touched windows, and Z_seed(N) is empty. Then
+
+  r3 ∪ {empties of A-touched alive windows},
+
+where r3 is the set of legal empties within distance 3 of any stone, covers
+Z(N). *Proof.* E_N^D(W) ≤ B(N) ≤ 3, so Z_virgin is empty. A touched window
+in Z_touch has cnt_D ≥ 6−E ≥ 3, and L1 puts all its empties within distance
+3 of a D-stone. L10 covers the stated attacker roles, and the witness-role
+hypothesis covers the rest of Z_dir. The seed term is empty by hypothesis.
+∎ Without all joint hypotheses this static set is a heuristic candidate
+generator, not a certified zone.
+
+For an A-threat empty-set family ℱ_N, write
+
+  ℱ_N ∖ d := { E ∈ ℱ_N : d ∉ E },
+  K_b(N) := { d ∈ Legal(P_N) : τ(ℱ_N ∖ d) ≤ b−1 }.
+
+**T6 (extendable-hit kernel; forced-tree regime). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* A kernel-governed region is entered
+at a certificate node with real and ghost positions equal and uses the
+following rule until a typed terminal or an mhs > b handoff. At every
+internal AND node
+in that region require the explicit defender `¬own_win_now` check and
+mhs(P_N) = τ(ℱ_N) ≤ b, and search exactly K_b(N). No original
+obligation/core term is required. If mhs < b, K_b(N) is all of Legal(P_N)
+and there is no pruning. If mhs = b, K_b weakly refines the current
+hitting-cell set and can strictly reduce it; equality can occur. A node with
+mhs > b ends the kernel region: it must be a valid LOSS leaf or hand off to
+an existing nonempty sound subtree, below which the core-free kernel claim
+is not asserted without a fresh equal-position entry.
+
+*Proof.* When τ < b, deleting sets hit by any d cannot increase τ, so every
+legal d is in K_b. When τ = b, follow a minimum transversal: its first cell
+is legal by T1 and lies in K_b, so the kernel is nonempty. Before the first real reply
+d ∉ K_b, real and certificate play agree exactly; thus X = Y = ∅. Abandon
+the original subtree and use the residual current threat family directly.
+For b = 2, the successor has defender budget 1 and residual τ > 1, a valid
+adaptive LOSS refutation. For b = 1, a current A-threat survives and A now
+has budget 2, giving a WIN refutation. No original future obligation is used.
+
+The defender cannot complete first. The explicit `¬own_win_now` premise
+bounds every D-alive window by count 3 at b = 2 and count 4 at b = 1. The
+two or one remaining defender placements reach at most 5. For the same-T
+claim, a minimum hitting line is followable through K_b: at b = 2 its first
+member leaves a family hit by the second; at b = 1 its sole member hits all
+current threats. At b = 2 the b = 1 child remains kernel-governed and
+searches the second member; at b = 1 the sole common hit suffices. Thus the
+two D-stones in the first case, or the one in the second, kill every current
+A-threat. Defender stones create no new A-threat. In both budgets the first
+following A-placement therefore cannot complete a window—such a window
+would have been a current count-5 threat and was killed—so the relevant
+original path's clock, and hence global T, reaches the second A-placement
+needed by the auxiliary refutation.
+
+Finally, if τ > b and d ∈ K_b, then d plus a residual transversal of size at
+most b−1 would hit all of ℱ_N, contradicting τ > b. Hence K_b is empty in
+that case and would violate D9's nonempty searched-set rule. This proves the
+stated scope restriction. ∎
 
 ---
 
 ## 7. The n-relevance closure operator
 
-**D13 (closure — repaired per review R1).** For a position P with defender
-to move and D = 𝔇(P, T) defender placements before the horizon:
+**D13 (ranked relevance closure).** The certificate-relative mandatory
+closure is
 
-  R(P, D) = Legal(P) ∩ [ hitting(P) ∪ 𝒜(P) ∪ ℬ(P, D) ],  for D ≤ 5;
-  R(P, D) = Legal(P),                                     for D ≥ 6,
+  R_cert(𝒞,N) := Z_dir(N) ∪ Z_seed(N) ∪ Z_touch(N) ∪ Z_virgin(N).
 
-where 𝒜(P) = { empties of **A-touched** alive windows (cnt_A ≥ 1,
-cnt_D = 0) } and ℬ(P, D) = { empties of D-alive windows with
-cnt_D ≥ 6 − D } (a *touched-window* query for D ≤ 5, hence finite).
-**Scope (per review R2): R is a candidate generator, not by itself a
-certified zone.** 𝒜 covers attacker core cells only within the L10 range
-(≤ 3 remaining attacker placements); deeper certificates place attacker
-setup cells outside every R-term. Certified sufficiency is always
-R ∪ (core(𝒞, N) ∩ Legal(P_N)) ∪ the (Z5) band — the two extra terms are
-certificate-known and verifier-enumerable. The D ≥ 6 fallback is
-conservative (T3 permits dismissing deep-interior cells even at D ≥ 6 when
-they lie in no D-alive window AND outside hitting, core, and the (Z5)
-band — no-D-alive-window alone is necessary, not sufficient; the
-implementation forgoes that optimization). All certified-sufficiency
-statements here presuppose a valid D9 certificate and separately verified
-(Z4).
+For search, the solver may use the finite superset
 
-**T7 (closure + certificate extras coverage — corollary of T3/T4/L10).
-[PROVEN]** *(R4 caveat: a coverage theorem — the displayed set satisfies
-(Z1), (Z2), (Z5); certified dismissal soundness additionally presupposes a
-valid D9 certificate, separately verified (Z4), exact D_N, and the full
-defender-placement budget.)*
-Searching, at every AND node, R(P, D) ∪ (core(𝒞, N) ∩ Legal(P_N)) ∪ the
-(Z5) band satisfies (Z1), (Z2), (Z5). The two certificate terms are
-verifier-enumerable; core ∩ Legal is typically *redundant* (already inside
-R, e.g. the next designated attacker move under L10's hypotheses) rather
-than empty, and the band is empty when protected territory is already
-legal. R alone costs one window-store pass
-per node, O(#touched windows).
+  R_search(𝒞,N) := R_cert(𝒞,N) ∪ hitting(P_N) ∪ 𝒜(P_N) ∪ r3(P_N),
 
-The solver's practical loop: search with R (a heuristic candidate
-generator); when a proof is found, the verifier recomputes **(Z1), (Z2),
-(Z4), (Z5)** exactly, per node, against the actual certificate — including
-the core and band terms; any violation ⇒ UNKNOWN. T3 then guarantees no
-false WIN can survive verification **regardless of how the search
-trimmed** — search trimming affects completeness only, never soundness.
+where hitting(P) is the union of the empty-sets of current A-threats,
+𝒜(P) is the set of empties in A-touched alive windows, and r3(P) is the
+legal radius-3 neighborhood of current stones. The last three terms are
+heuristics, not T3 hypotheses. All mandatory terms are finite: obligations
+come from a finite certificate; touched windows from the finite position;
+and for each finite legal candidate the virgin test examines only windows
+within its bounded exposure radius.
+
+**T7 (ranked-closure coverage). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* At every ordinary zone-governed AND
+node, any independently nonempty S(N) ⊇ R_cert(𝒞,N) satisfies (Z2) and
+(Z5′); dismissal soundness follows from T3 when D9, the D14–D16 clock
+checks, and (Z4) also hold. In constructing R_cert, the verifier unions roles
+over all reachable descendants, includes every designated A-move including
+OR-COMPLETION, treats WIN/LOSS continuation cells as leaf-entry
+witness-empty roles, takes the maximum rank over live roles sharing a cell,
+and forms no band after the r = 0 deadline check. Defender-completion windows
+remain on E^D (or the conservative B) clock. *Proof.* These requirements are
+exactly the four components and three labels of D11; apply T4 and T3. ∎
+
+**D17 (transition-inclusive substitution envelope).** An alternative to
+the global reachable-descendant union may annotate every ghost-legal
+dismissal d at N with a searched substitute
+
+  φ_N(d) = s ∈ S(N),
+
+whose exact child is C_s. A nonempty fallback F(N) ⊆ S(N) is declared
+independently of these annotations; in particular, S(N) is not defined
+circularly as "only replies with no safe substitute." The selected envelope
+has the following verifier data and requirements.
+
+1. Its transition budget is B̂(N,d,s) := 1 + B(C_s), including the current
+   real/ghost defender ply and every reachable LOSS remainder.
+2. Its obligations are the union of the roles at **all** reachable
+   descendants of C_s, not one leaf or one selected continuation.
+3. The real cell d itself avoids those obligation cells and every
+   transition-dangerous completion empty.
+4. For a child obligation y with rank r_{C_s}(y) and
+   y ∉ Legal(P_N) ∪ Stones(P_N), the parent seed test is
+   d(d,y) > 8r_{C_s}(y), equivalently radius 8((1+r_{C_s}(y))−1). Direct
+   occupation d = y is separately forbidden.
+5. With B̂, for every D-alive W with cnt_D(W,P_N) ≥ 1, the touched test
+   forbids d ∈ E(W,P_N) whenever cnt_D(W,P_N) + 1 + B(C_s) ≥ 6; for every
+   all-empty W, the virgin test forbids a seed with d(d,W) ≤ 8(B̂−6) when
+   B̂ ≥ 6. The exact exposure form instead sets
+   Ê^D(W) := 1 + E_{C_s}^D(W), uses cnt_D(W,P_N) + Ê^D(W) ≥ 6 for a touched
+   W-fill, and uses d(d,W) ≤ 8(Ê^D(W)−6) with Ê^D(W) ≥ 6 for an all-empty W.
+   The touched and virgin clauses are both mandatory for the selected clock.
+6. F(N), and hence S(N), stays nonempty independently of whether any
+   dismissal has a safe substitute.
+7. For a ghost-legal A3 dismissal the ghost plays φ_N(d). A2 may use any
+   searched filler because A2 creates no new X-stone. A ghost-illegal A3
+   inherits the envelope of the earlier ghost-legal seed that supports its
+   real legality and may use any searched filler inside the current reachable
+   subtree; it does not start a child-only clock.
+8. The envelope protects every reachable LOSS witness-empty role through
+   leaf entry, while B̂/Ê^D count the leaf's b placements for
+   defender-completion and defender-own-win exclusion.
+
+The simpler default-child form declares f(N) ∈ F(N) and uses C_{f(N)} for
+every ghost-legal dismissal, but it must satisfy the same transition-inclusive
+tests; merely replacing a whole-tree obligation union by a child union is
+insufficient.
+
+**T9 (branch-indexed substitution soundness). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* T3 remains valid if an AND node's
+global D11 dismissal tests are replaced, dismissal by dismissal, by a valid
+D17 envelope. The same holds for the repaired default-child form.
+
+*Proof.* Real d and ghost s consume the same single D4 defender ply, so the
+clock and mover/budget remain synchronized. Condition 3 supplies C1 for the
+new X-stone. Conditions 4 and 5 supply C3 and C2 with the current transition
+included. Thereafter all ghost nodes lie among the reachable descendants of
+C_s. A1 may take any searched edge inside that set. A2 adds no X-stone and
+may take any filler. At a later ghost-legal A3, its new selected descendant
+set is nested inside the earlier one; at a ghost-illegal A3, the causal
+legality chain returns to an earlier tested ghost-legal seed and inherits
+that envelope. Thus every earlier X-stone continues to avoid all current
+roles, and L9′ applies with the transition rank. The exposure argument L12
+applies with B̂ or Ê^D; condition 8 covers the post-leaf portion. Clause
+(Z4), the compressed witness-mask transfer, and all terminal cases of T3 are
+unchanged. Hence the coupled real play either wins earlier or resolves on
+the selected reachable path. ∎
+
+The `+1` in D17 is mandatory in both channels. For C3, let N have b = 2,
+let legal d be distance 8 from a ghost-illegal future obligation y, and let
+C_s have one defender placement before a legal, shared A-setup a supplies
+(Z4) and makes designated y legal. Then r_{C_s}(y) = 1. A child-only radius
+8(r−1) = 0 permits d; real d
+legalizes y and the remaining defender placement occupies it. The parent
+radius 8r = 8 forbids d. For C2, let a D-alive W have two D-stones at N,
+with d ∈ W, s ∉ W, and B(C_s) = 3. The child-only test reads 2+3 = 5, but
+real d plus three later W-fills completes W. The transition-inclusive test
+reads 2+1+3 = 6 and forbids the dismissal.
+
+**L14 (internal own-win diagnostic is redundant under the completion
+zone). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* Under D11's completion-zone
+requirement and D9's ban on defender-terminal edges, an internal AND node
+cannot have a D-alive count-5 window, nor a count-4 window at b = 2.
+
+*Proof.* A count-5 touched window has E_N^D(W) ≥ 1, so its legal last empty
+lies in Z_touch and must be searched; its exact child is defender-terminal,
+forbidden by D9. At b = 2, a count-4 touched window has exposure at least
+two before A can move, so both empties are searched. After either first
+fill, the b = 1 child has count 5. It cannot be a LOSS leaf because the
+mandatory leaf check fails; if internal, its last empty is searched and
+gives the same forbidden terminal edge. ∎ The internal check remains a
+useful diagnostic. It remains logically necessary at LOSS leaves and an
+explicit premise of T6, whose kernel has no completion guard.
+
+**D18 (finite acyclic certificate DAG).** A D9 certificate may instead be a
+finite rooted acyclic graph provided every shared node has one exact D9
+label: the same position, mover/budget, designated OR action or AND
+searched-successor map, leaf witness data, and one consistent path clock.
+Obligations at a DAG node are unions over all reachable descendants. Local
+budgets, ranks, and exposures satisfy their inequalities on every outgoing
+edge. Coupling histories X, Y, X̂ remain path-local.
+
+**T10 (DAG unfolding). [PROVEN]**
+*(R5-adopted; round-6 confirmation recorded in §13.)* Every D18 DAG satisfying the
+ordinary D11 rules or the D17 substitution rules has the corresponding T3
+soundness conclusion.
+
+*Proof.* A finite acyclic graph has finitely many root-to-node paths. Unfold
+one copy of each shared node along each such path. The exact label and
+consistent-clock conditions make the result a finite D9 tree with the same
+legal transitions, terminal data, and local-clock inequalities. Reachability
+is nested along every edge, so reachable-descendant obligation unions and
+protection monotonicity are preserved. Apply T3 (or T9) to the unfolding;
+its X/Y/X̂ histories are precisely the required path-local histories. ∎
+
+The solver may therefore search with R_search, a smaller heuristic, or a
+D17-aware generator. At verification it must either establish the ordinary
+R_cert coverage plus (Z4), or validate every D17 annotation, while retaining
+an independently nonempty searched fallback. Any failure yields UNKNOWN.
+Search trimming affects completeness only; a verified WIN remains sound.
 
 ---
 
@@ -638,20 +843,27 @@ regions are not ruled out but cannot be position-independent.
 
 ## 9. What the theorems deliver, quantitatively
 
-- The solver's defender generator is R(P, D) (§7): measured mean 147 cells
-  vs 302 legal on random midgame positions (survey doc §9), smaller in
-  forced regions, provably sufficient per T3/T4 once the verifier checks
-  (Z1), (Z2), (Z4), (Z5) on the certificate.
-- Fully-forcing certificates (T6): defender sets = hitting cells plus the
-  certificate's own core cells, at any depth — the deep-tunnel regime that
-  motivated the program.
-- D ≥ 6 certificates: the completion guard covers every legal cell in any
-  D-alive window, leaving only no-D-alive-window interior cells dismissible
-  — the G2 boundary is a theorem, not a caveat.
+- The exact ordinary verifier zone is the finite ranked union
+  Z_dir ∪ Z_seed ∪ Z_touch ∪ Z_virgin. It has no mandatory current-hitting
+  term. Cell roles use their own deadlines; touched windows have no frontier
+  term; virgin windows use radius 8(E^D−6), which is radius 8 at E^D = 7.
+- Fully forcing certificates (T6) search the extendable-hit kernel K_b and
+  no original obligation term. Kernel-governed internal nodes require
+  mhs ≤ b and the explicit `¬own_win_now` premise; mhs < b performs no
+  pruning, while mhs = b can strictly reduce the hitting-cell set.
+- LOSS leaves need at most 3 witness windows at b = 1 and 6 at b = 2.
+  Pathwise clocks and finite DAG sharing do not enlarge a selected path's
+  local budget; shared nodes retain one exact label and clock.
 - P3 commutation (§11) additionally halves turn-level branching by
   unordered-pair deduplication, orthogonally to the zone.
 
-**Mechanized validation of the closure (T7), executed** (script
+The predecessor D-based search heuristic measured a mean 147 cells versus
+302 legal cells on random midgame positions (survey doc §9). Those numbers
+describe the conservative search generator, not the new certificate-relative
+ranked verifier zone.
+
+**Historical mechanized validation of the search heuristic, executed**
+(script
 `scripts/_tss_moveset_zone_experiments.py`, mini-model validated
 move-for-move against `hexo_engine`): (i) the closure-restricted solver
 does **not** claim the engineered junction position (the known-adversarial
@@ -660,7 +872,8 @@ G1 instance): the junction cell is in the closure and the defender survives
 positions, 52 closure-restricted WIN claims, **0 divergences** against the
 full legal move set at matched horizon (139 s); the earlier r=2 experiments
 (survey doc §9) provide the negative controls — the same harness *does*
-produce false WINs for unsound restrictions.
+produce false WINs for unsound restrictions. This is search-behavior
+evidence for the predecessor heuristic, not a machine proof of revised T7.
 
 ---
 
@@ -715,8 +928,8 @@ premises — see §13). Statement numbers refer to that file.
   double-placements birth 36 one-stone windows, Φ jumps to 4/√3 > 1);
   "no window with ≤ 2 empties" does not repair it; Φ = 1 does not suffice.
 - **Move-set compatibility.** Every positive-reduction greedy placement
-  lies in an attacker-touched alive window (L4 there), hence inside this
-  document's closure set. Mandatory placements with no monitored window
+  lies in an attacker-touched alive window (L4 there), hence inside D13's
+  A-touched heuristic/candidate term. Mandatory placements with no monitored window
   available are **fillers** — one or both placements of a defender turn may
   be fillers (Cex. 2 and the review R1 correction) — and the certified-node
   strategy must permit arbitrary legal fillers. Dismissal soundness (T3) is
@@ -777,20 +990,21 @@ file):
 
 ## 12. Open problems
 
-1. **Sharpened budget (F + H_W).** T4 counts *all* defender placements
-   before the horizon. The sharper count — quiet placements F plus
-   per-window forced-hit capacity H_W — requires per-branch worst-case
-   bookkeeping over the certificate DAG and remains open; T3 is sound
-   without it, at the cost of wider zones for deep loose certificates.
-2. **Sharper frontier bands.** The (Z5) band radius 8·D_N is worst-case;
-   chains cost the defender tempo the completion guard already restricts,
-   and a joint tempo-and-distance accounting should shrink the band
-   substantially. Unwritten.
+1. **Sharpened budget (F + H_W).** B and E^D still count every defender
+   placement before the relevant local resolution or exposure stop. The
+   sharper debit — quiet placements F plus per-window forced-hit capacity
+   H_W — requires branchwise worst-case bookkeeping; no theorem here proves
+   that compulsory hits are unavailable for filling a chosen W. It remains
+   open.
+2. **Resolved — frontier tempo accounting.** D15's ranked obligation radius
+   8(r−1) (uniformly 8(B−1)) and D16's touched/virgin split, including the
+   sharp virgin radius 8(E^D−6), resolve the former band-sharpening problem.
 3. **Pairing at the threshold.** T8.1 leaves k = 7, g = 3 open (density
    exactly 1); irrelevant to Hexo (k = 6) but of independent interest.
 4. **Formalization.** All objects here are finite combinatorics; a
    Lean/Coq formalization of §§1–8 is feasible and would yield a verified
-   reference checker for (Z1), (Z2), (Z4), (Z5).
+   reference checker for (Z2), (Z4), (Z5′), the B/E^D/r inequalities,
+   transition envelopes, and DAG label/clock consistency.
 
 ---
 
@@ -897,3 +1111,24 @@ non-dangling (handled by Step O); the T6 same-T and no-double-count steps
 verified. Final tag ruling adopted verbatim on T3, T4, T5, T6, T7 (each
 theorem's caveat is printed at its statement). Remaining Z3 mentions occur
 only historically in this log, by design.
+
+**Round 5 (tightenings review, 2026-07-14).** External-model claims in
+`docs/_T3_TIGHTENINGS_REVIEW_CLAIMS.md` received an independent Claude
+review and a Codex ultra hostile review, recorded in
+`docs/_T3_TIGHTENINGS_REVIEW_ROUND1.md`. Final verdicts:
+**8 CONFIRMED, 4 CONFIRMED-WITH-REPAIR, 0 REFUTED**; no error was found in
+the prior normative statements. This revision adopts all twelve items, with
+the report controlling the claims document on disagreement and all four
+prescribed repairs installed.
+
+**Round 6 (Codex ultra, hostile confirmation of the round-5 revision,
+2026-07-14).** Full report in `docs/_T3PLUS_ROUND6_CONFIRMATION.md`. All
+twelve substantive adoptions and all four controlling repair installations
+ruled **APPLIED-CORRECTLY**; no mathematical proof repair prescribed.
+Untouched-section integrity verified against the pre-revision text (D1–D8,
+§8, §§10–11, historical log entries). Two mechanical defects found and
+fixed in this revision: a malformed sentence at T4 (replaced with the
+review's exact prescribed wording) and line-terminator damage on the
+Round-4 log entry (endings renormalized). With those repairs the pass rules
+the revised statements confirmed at PROVEN quality; the per-statement
+provisional caveats were dropped accordingly.

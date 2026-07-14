@@ -13,21 +13,29 @@ cannot cause a false attacker win to pass verification.  This separation
 between completeness and soundness holds regardless of the heuristic used to
 generate the searched replies.
 
-The restriction must depend on a finite horizon.  No fixed static set is
-sufficient for every future continuation on the unbounded board.  A
-certificate instead states its own placement horizon and carries the zone
-obligations needed up to that horizon.
+The restriction is finite and certificate-relative.  Each node carries a
+local upper bound on the remaining defender placements.  Each future attacker
+placement or leaf-witness empty is a live obligation with its own deadline.
+Direct obligations, ranked seed guards, touched-window empties, and virgin
+window seed bands form the certified zone.  This local accounting gives the
+resolution bound of the selected certificate path.  No fixed static set is
+sufficient for every continuation on the unbounded board.
 
 The paper first gives the formal game model in \cref{sec:game} and the
 locality lemmas in \cref{sec:geometry}.  It then defines zone-carrying
-certificates in \cref{sec:certificates} and proves horizon-parameterized
-dismissal soundness in \cref{sec:main-theorem}.  The computable constructions
-of \cref{sec:computable-zones} include a measured generator mean of 147 cells,
-compared with 302 legal cells.  The remaining layers establish the
-impossibility of a global pairing defense in \cref{sec:no-pairing}, develop
-potential-function certificates in \cref{sec:potential}, give local
-domination patterns in \cref{sec:domination}, and report mechanized validation
-in \cref{sec:validation}.
+certificates in \cref{sec:certificates} and proves pathwise dismissal soundness
+in \cref{sec:main-theorem}.  The constructions of
+\cref{sec:computable-zones} give the ranked zone, an extendable-hit kernel,
+sparse LOSS witnesses, branch-indexed substitution envelopes, and finite DAG
+certificates.  One open problem from the first version, the frontier-band
+accounting, is resolved by the ranked deadline and touched--virgin exposure
+analysis.  The same section distinguishes the certified zone from a measured
+predecessor generator whose mean size was 147 cells, compared with 302 legal
+cells.  The remaining layers establish the impossibility of a global pairing
+defense in \cref{sec:no-pairing}, develop potential-function certificates in
+\cref{sec:potential}, give local domination patterns in
+\cref{sec:domination}, and report mechanized evidence in
+\cref{sec:validation}.
 
 Threat-space search and proof-number methods provide the search setting for
 these certificates \cite{allis-1994,nagai-2002}.  Pairing strategies and the

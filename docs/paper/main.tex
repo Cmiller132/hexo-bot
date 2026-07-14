@@ -13,12 +13,16 @@
 
 \begin{abstract}
 Threat-space search in Hexo has large defender branching because every legal
-reply must ordinarily be considered.  We develop a horizon-parameterized
-certificate that restricts defender replies while preserving a proved
-attacker win over the full legal move set.  Companion results establish the
-impossibility of a global pairing defense, a potential-function layer for
-blocking certificates, local domination patterns, and mechanized validation
-of the finite claims and move-set closure.
+reply must ordinarily be considered.  We give a certified restriction based
+on local defender budgets, cell-ranked obligation guards, and separate
+completion guards for touched and virgin windows.  A verifier accepting these
+conditions preserves an attacker win over the full legal move set and obtains
+the resolution bound of the selected certificate path.  Further results give
+an extendable-hit kernel for forced regions, sparse LOSS witnesses,
+branch-indexed substitution, and finite certificate DAGs.  Companion results
+cover global pairing impossibility, potential-function blocking certificates,
+local domination patterns, and mechanized evidence for the predecessor search
+heuristic.
 \end{abstract}
 
 \input{sections/01-introduction}
@@ -36,7 +40,7 @@ of the finite claims and move-set closure.
 \input{sections/99-appendix-notation}
 
 \section*{Acknowledgments}
-The underlying proof documents were drafted and adversarially reviewed with the assistance of AI systems (Claude and GPT-family models) and machine-checked where stated.
+The underlying proof documents were drafted and adversarially reviewed with the assistance of AI systems (Claude and GPT-family models), machine-checked where stated, and strengthened in response to an external round-5 review.
 
 \bibliographystyle{hexopaper}
 \bibliography{refs}

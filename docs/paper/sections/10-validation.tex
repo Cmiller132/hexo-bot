@@ -2,8 +2,8 @@
 \label{sec:validation}
 
 The validation harness uses a mini-model solver that was checked
-move-for-move against the \emph{hexo\_engine} implementation.  The solver machine-checks the
-finite claims used by the closure experiments.
+move-for-move against the \emph{hexo\_engine} implementation.  These runs
+tested the predecessor closure as a search generator.
 
 Two closure experiments were executed.  First, the closure-restricted solver
 did not claim the engineered junction position.  The junction cell was in the
@@ -14,7 +14,8 @@ move set at the matched horizon; the run took 139 seconds.  As a negative
 control, the earlier radius-2 experiments used the same harness and produced
 false \textsc{win} claims for unsound restrictions.
 
-These experiments are consistency checks between the implemented closure and
-\cref{thm:T7}.  They are not part of the proofs of
-\cref{thm:T3,thm:T4,thm:T7}.  The separate machine-verification status of the
-domination patterns is summarized in \cref{sec:domination}.
+These experiments are search-behavior evidence for the predecessor heuristic.
+They do not validate the revised ranked closure in \cref{thm:T7} and are not
+part of the proofs of \cref{thm:T3,thm:T4,thm:T7}.  The separate
+machine-verification status of the domination patterns is summarized in
+\cref{sec:domination}.

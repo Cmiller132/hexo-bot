@@ -2,29 +2,28 @@
 \label{sec:open-problems}
 
 \paragraph{Sharpened budget.}
-The completion guard in \cref{thm:T4} counts every defender placement before
-the horizon.  A sharper budget would count quiet placements $F$ together with
-a per-window forced-hit capacity $H_W$.  Proving this bound requires
-per-branch worst-case bookkeeping over the certificate DAG.  The soundness
-result in \cref{thm:T3} does not require the sharpening, at the cost of wider
-zones for deep loose certificates.
+The local budget $B$ and exposure $E^\D$ still count every defender placement
+before the relevant local resolution or exposure stop.  A sharper debit would
+combine quiet placements $F$ with a per-window forced-hit capacity $H_W$.
+This requires branchwise worst-case bookkeeping.  No theorem here proves that
+compulsory hits are unavailable for filling a selected window, so the problem
+remains open.
 
-\paragraph{Sharper frontier bands.}
-The frontier guard \cref{zone:Z5} uses the worst-case radius $8D_N$ needed by
-the chain argument in \cref{lem:L9}.  Each link also costs defender tempo, and
-the completion guard already limits that tempo.  A joint accounting of time
-and distance should shrink the band substantially; that accounting is
-unwritten.
+\paragraph{Resolved frontier accounting.}
+The role radius $8(r-1)$, uniformly $8(B-1)$, and the touched--virgin split
+resolve the earlier band-accounting problem.  The virgin radius
+$8(E^\D-6)$ is sharp at exposure $7$.
 
 \paragraph{Pairing at the threshold.}
-The density bound in \cref{cor:T8.1} leaves the case $k=7$ and $g=3$ open,
-where the required matched density is exactly one.  This threshold case does
-not affect Hexo, whose winning length is $k=6$, and
-\cref{thm:T8} already rules out the required Hexo pairing.  Existence at the
-threshold remains unsettled.
+The density bound in \cref{cor:T8.1} leaves $k=7$ and $g=3$ open, where the
+required matched density is exactly one.  This threshold case does not affect
+Hexo, whose winning length is $k=6$.  Existence at the threshold remains
+unsettled.
 
 \paragraph{Formalization.}
-The model and results through \cref{thm:T8} are finite combinatorics and are
-feasible to formalize in Lean or Coq.  Such a formalization would yield a
-verified reference checker
-for \cref{zone:Z1,zone:Z2,zone:Z4,zone:Z5}.
+The model and results through \cref{thm:T10} are finite combinatorics and are
+feasible to formalize in Lean or Coq.  Such a formalization would provide a
+reference checker for \cref{zone:Z2,zone:Z4},
+\hyperref[zone:Z5prime]{clause \textup{(Z5$'$)}}, the $B$, $E^\D$, and $r$
+inequalities, transition-inclusive envelopes, and DAG label and clock
+consistency.

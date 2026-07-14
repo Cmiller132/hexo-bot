@@ -1,10 +1,9 @@
 \section{Zone-carrying certificates}
 \label{sec:certificates}
 
-At an AND node, the solver may face hundreds of legal defender replies.  We
-want a searched set at each such node for which every omitted reply carries a
-proof of dismissal.  No unbounded static set can provide this guarantee, so
-the construction is parameterized by the certificate's own placement horizon.
+At an AND node, the solver may face hundreds of legal defender replies.  A
+zone-carrying certificate gives each omitted reply a checkable dismissal
+argument tied to the remaining certificate.
 
 \subsection{Transfer lemmas}
 
@@ -17,30 +16,21 @@ Let $P'=P\mathbin{\pm}\{x\}$ differ from $P$ by one stone at the cell $x$.
 Every game-relevant predicate difference between $P$ and $P'$ is confined to
 the following channels:
 \begin{enumerate}[label=\textup{(C\arabic*)}]\upshape
-  \item the occupancy of $x$, including its availability as a move and its
-    ownership;
-  \item the masks of the $18$ windows containing $x$, and hence every
-    window-mask-derived predicate: completion, alive or dead status, threat
-    status, $\ownwinnow$, $\hit$, and $\mhs$;
+  \item the occupancy and ownership of $x$;
+  \item the masks of the $18$ windows containing $x$, and hence completion,
+    alive or dead status, threats, $\ownwinnow$, $\hit$, and $\mhs$; and
   \item the legality frontier
-    \[
-      \{c:\dist(c,x)\le 8\}\setminus\operatorname{dom}\sigma,
-    \]
-    whose cells may gain or lose a legality justification through $x$.
+    $\{c:\dist(c,x)\le8\}\setminus\operatorname{dom}\sigma$.
 \end{enumerate}
 \end{lemma}
 
 \begin{proof}
-By \cref{def:D4}, the transition relation depends on occupancy at the placed
-cell, the legality predicate, and the window masks used for termination.  By
-\cref{def:D5,def:D6}, every tactical predicate is a function of window masks.
-Only windows containing $x$ change masks.  By \cref{def:D4}, only cells within
-distance $8$ of $x$ can gain or lose a legality justification through $x$.
-There are no other state components.
+The transition rule depends on occupancy at the placed cell, legality, and
+the masks used for termination.  The tactical predicates are functions of
+window masks, which change only for windows containing $x$.  Legality
+justifications change through $x$ only within distance $8$.  There are no
+other state components.
 \end{proof}
-
-Thus a transfer argument is complete exactly when it accounts for occupancy,
-incident-window masks, and the legality frontier.
 
 Permanence lets later witnesses be interpreted at earlier points of the same
 play.
@@ -62,31 +52,25 @@ completion events used later in the proof.
 \begin{lemma}[Inert-extension transfer]
 \label{lem:L5}
 Let $P'=P+X$, where $X$ is a finite set of defender stones.  Let
-$\mathcal W$ be a set of windows and $C$ a set of cells such that
-\begin{enumerate}[label=\textup{(\roman*)}]\upshape
-  \item no $x\in X$ lies in any $W\in\mathcal W$; and
-  \item $X\cap C=\varnothing$.
-\end{enumerate}
-Then:
+$\mathcal W$ be a set of windows and $C$ a set of cells such that no member of
+$X$ lies in a member of $\mathcal W$ and $X\cap C=\varnothing$.  Then:
 \begin{enumerate}[label=\textup{(\alph*)}]\upshape
   \item every cell of $C$ empty in $P$ is empty in $P'$;
   \item every $W\in\mathcal W$ has identical masks in $P$ and $P'$;
-  \item $\Legal(P)\setminus X\subseteq\Legal(P')$; in particular, every
-    cell of $C$ legal in $P$ is legal in $P'$; and
+  \item $\Legal(P)\setminus X\subseteq\Legal(P')$, so every cell of $C$
+    legal in $P$ is legal in $P'$; and
   \item the $\A$-complete windows of $P'$ are exactly the $\A$-complete
-    windows of $P$ that are disjoint from $X$.
+    windows of $P$ disjoint from $X$.
 \end{enumerate}
-Consequently, an $\A$-completion on a window known to be disjoint from $X$
-transfers from $P$ to $P'$, and every $\A$-completion in $P'$ was available
-in $P$.
+Thus an $\A$-completion on an $X$-free window transfers from $P$ to $P'$, and
+every $\A$-completion in $P'$ was available in $P$.
 \end{lemma}
 
 \begin{proof}
-Parts (a) and (b) follow from occupancy and incident-window masks in
-\cref{lem:L3}.  For (c), adding stones can only add legality justifications,
-while occupancy removes precisely the cells of $X$.  For (d), an
-$\A$-complete window must contain no defender stone.  Windows meeting $X$ are
-blocked in $P'$, and the masks of the other windows agree.
+Parts (a) and (b) follow from occupancy and incident-window masks.  Adding
+stones can only add legality justifications, while occupancy removes the
+cells of $X$.  An $\A$-complete window contains no defender stone, so windows
+meeting $X$ are blocked in $P'$ and the other masks agree.
 \end{proof}
 
 Deleting defender stones is monotone for attacker tactics, but it requires a
@@ -96,390 +80,426 @@ separate legality condition for attacker placements.
 \label{lem:L6}
 Let $P''=P-Y$, where $Y$ is a finite set of defender stones of $P$.  Then:
 \begin{enumerate}[label=\textup{(\alph*)}]\upshape
-  \item every $\A$-threat window of $P$ is an $\A$-threat window of $P''$,
-    so $\mhs(P'')\ge\mhs(P)$ for the defender and defender
+  \item every $\A$-threat of $P$ is an $\A$-threat of $P''$, so
+    $\mhs(P'')\ge\mhs(P)$ for the defender and defender
     $\lambda^1$-\textsc{loss} verdicts transfer from $P$ to $P''$;
   \item every $\A$-complete window of $P$ is $\A$-complete in $P''$;
-  \item a cell empty in $P$ is empty or newly empty in $P''$, never newly
-    occupied; and
-  \item legality may shrink.  A deletion argument must therefore satisfy
-    \emph{well-formed legality}: every attacker placement on which it relies
-    lies within distance $8$ of a stone not in $Y$.  In the applications
-    below, it lies within distance $3$ of an attacker stone, as follows
-    automatically for threat-creating moves from \cref{thm:T2}, or it lies
-    within distance $8$ of a root stone.
+  \item a cell empty in $P$ is empty or newly empty in $P''$; and
+  \item legality may shrink.  Every relied-upon attacker placement must be
+    within distance $8$ of a stone outside $Y$.  In the uses below it is
+    within distance $3$ of an attacker stone, as supplied for threat creation
+    by \cref{thm:T2}, or within distance $8$ of an unaffected root stone.
 \end{enumerate}
 \end{lemma}
 
 \begin{proof}
-Deleting defender stones can only revive attacker windows, proving (a) and
-(b).  Part (c) follows from \cref{def:D3}.  Part (d) follows from the legality
-rule in \cref{def:D4}; the stated witness restores the legality-frontier
-channel of \cref{lem:L3} for every relied-upon cell.
+Deleting defender stones can only revive attacker windows and cannot remove
+an attacker completion.  Emptiness follows from \cref{def:D3}.  The last
+condition restores the legality-frontier channel after deletion.
 \end{proof}
 
-Completion counting bounds which defender windows can matter before a fixed
-horizon.
+Completion counting isolates the defender placements relevant to one
+window.
 
 \begin{lemma}[Completion counting]
 \label{lem:L7}
 If $\cnt_\D(W,P)=s$ and the defender makes at most $D$ placements at plies
-strictly before $T$, then no play makes $W$ $\D$-complete before ply $T$
-unless $s+D\ge6$.
+strictly before $T$, then $W$ cannot become $\D$-complete before $T$ unless
+$s+D\ge6$.
 \end{lemma}
 
 \begin{proof}
-A $\D$-completion needs six defender stones in $W$.  At most $s$ are present
-in $P$, and at most $D$ more can be placed before $T$.
+A completion needs six defender stones in $W$.  At most $s$ are present in
+$P$, and at most $D$ more can be placed before $T$.
 \end{proof}
 
-\subsection{Certificate grammar}
+\subsection{Certificate grammar and local clocks}
 
-A certificate records both the searched game tree and verifier-checkable
-witness data at every way in which that tree can resolve.
+A certificate records the searched tree and checkable witness data for every
+way in which a selected path can resolve.
 
 \begin{definition}[Certificate grammar]
 \label{def:D9}
-A \emph{certificate} $\mathcal C$ for ``$\A$ wins from $P_0$ by horizon $T$,''
-where $T$ is an absolute ply index, is a finite tree whose nodes carry a
-position and mover/budget.  The verifier checks every clause of the following
-grammar syntactically.
+A \emph{certificate} $\mathcal C$ for ``$\A$ wins from $P_0$'' is a finite
+rooted tree whose nodes have exact positions and mover/budget labels.  The
+root is $P_0$ and is nonterminal.  The verifier recomputes each path-derived
+ply clock; leaf-ply is the index of the last placement on the path to a leaf.
+Every edge is the exact legal successor under \cref{def:D4}, and no edge is
+defender-terminal.  Every maximal node has one of these types.
 \begin{itemize}
-  \item The root position is $P_0$ and is nonterminal.  Every node has a
-    path-derived clock equal to the root ply plus its depth.  The verifier
-    recomputes this clock.  Every resolution label refers to it, and
-    \emph{leaf-ply} is the index of the last placement completed on the path
-    to a leaf.
-  \item Every child is the exact successor, under \cref{def:D4}, of the
-    placement on its edge.  Every placement is legal at its parent.  No edge
-    is defender-terminal; a searched defender reply that completes a defender
-    window makes the certificate invalid.
-  \item Every maximal node is typed.  An OR node whose designated placement
-    completes is itself an \emph{OR-COMPLETION leaf}.  Every internal AND
-    node has a nonempty searched set.  At every AND node, and again at every
-    LOSS leaf, the verifier checks that $\ownwinnow$ is false for the
-    defender.
-  \item An \emph{OR node}, at which $\A$ places, has one designated
-    placement.  If it completes a window, the node names the witness window
-    $W^*$ and the completion ply.  Otherwise it has the successor as its one
-    child.
-  \item An \emph{AND node} $N$, at which $\D$ places with budget $b$, carries
-    a searched set $S(N)$ of legal replies, one child for each searched reply,
-    and a dismissal claim for every other legal reply.
-  \item A \emph{WIN leaf}, at which $\A$ is to place, is a verifier-checked
-    $\ownwinnow$ position.  It names an $\A$-alive witness window with count
-    $5$ for either budget, or count $4$ when $b=2$.  Completion therefore
-    occurs within the attacker's current turn with no intervening defender
-    placement.  The leaf names its witness window or windows and a resolution
-    ply at most $T$.
-  \item A \emph{LOSS leaf}, at which $\D$ is to place with budget $b$ and has
-    a $\lambda^1$-\textsc{loss}, names a witness family $\mathcal T$ of
-    $\A$-threat windows whose empty sets have hitting number greater than
-    $b$.  The verifier re-derives this fact and rechecks that
-    $\ownwinnow$ is false.  Its continuation contract is adaptive: for every
-    complete, nonterminal remainder $H$ of the defender's current turn,
-    consisting of exactly $b$ placements unless the game ends earlier, some
-    $W_H\in\mathcal T$ survives because its empty-cell set at the leaf is
-    disjoint from $H$.  The
-    attacker then completes the at most two empty cells of $W_H$ during the
-    following turn.  The defender places at plies
-    $\text{leaf-ply}+1,\ldots,\text{leaf-ply}+b$, and the attacker places at
-    $\text{leaf-ply}+b+1$ and, for a count-$4$ witness,
-    $\text{leaf-ply}+b+2$.  The declared worst-case resolution ply is
-    $\text{leaf-ply}+b+2\le T$.  The leaf names no fixed placement list;
-    the contract quantifies over $H$.
+  \item An \emph{OR-COMPLETION leaf}, with $\A$ to place, names one
+    designated placement, its $\A$-complete witness window, and its completion
+    ply.
+  \item A \emph{WIN leaf}, with $\A$ to place, is a verifier-checked
+    $\ownwinnow$ position.  It names $\A$-alive count-$5$ witness windows for
+    either budget, or count-$4$ witnesses when the budget is $2$, and declares
+    resolution within the current attacker turn.
+  \item A \emph{LOSS leaf}, with $\D$ to place and budget $b$, names an
+    $\A$-threat family $\mathcal T$ whose empty-set family has transversal
+    number $\tau(\mathcal T)>b$, and carries a verifier-checked
+    $\neg\ownwinnow$ fact.  For every complete nonterminal remainder $H$ of
+    the defender turn, consisting of exactly $b$ placements unless the game
+    ends earlier, some $W_H\in\mathcal T$ satisfies
+    $E(W_H,P_L)\cap H=\varnothing$.  The attacker then fills its at most two
+    empties.  The declared worst-case resolution is leaf-ply${}+b+2$.
+    The verifier may require $|\mathcal T|\le3$ for $b=1$ and
+    $|\mathcal T|\le6$ for $b=2$, by \cref{lem:L13}.
 \end{itemize}
-The horizon $T$ is the maximum resolution ply over the tree.  Every
-$\lambda^1$ fact at a leaf is tied to named windows and a checkable
-continuation contract.
+An internal OR node has one designated attacker placement and its exact
+child.  An internal AND node $N$ has a nonempty searched set $S(N)$ of legal
+replies, one exact child per searched reply, and a dismissal claim for every
+other legal reply.  The verifier retains the internal defender
+$\neg\ownwinnow$ check as a diagnostic.  It is derivable under the completion
+zone by \cref{lem:L14}, but remains mandatory at LOSS leaves and an explicit
+premise of \cref{thm:T6}.  Every resolution is finite, and the global horizon
+$T$ is the maximum declared resolution over all root-to-leaf paths.
+Finite consistently labelled DAGs are admitted by \cref{def:D18,thm:T10}.
 \end{definition}
 
-\begin{figure}[tbp]
-  \centering
-  \begin{tikzpicture}[
-      or/.style={circle,draw,minimum size=6.5mm,inner sep=0pt},
-      and/.style={rectangle,draw,minimum size=6.5mm,inner sep=0pt},
-      leafwin/.style={rectangle,rotate=45,draw,fill=black,
-        minimum size=3.6mm,inner sep=0pt},
-      leafloss/.style={rectangle,rotate=45,draw,fill=white,
-        minimum size=3.6mm,inner sep=0pt},
-      every edge/.style={draw,line width=.65pt}]
-    \node[or] (o) at (0,0) {};
-    \node at (0,.58) {OR node};
-    \node[and] (a) at (0,-1.55) {};
-    \node[anchor=west] at (.58,-1.55) {AND node};
-    \draw (o) -- node[right=2mm,font=\scriptsize] {designated placement} (a);
-    \node[leafwin] (w) at (-2.2,-3.3) {};
-    \node[font=\scriptsize] at (-2.2,-3.82) {WIN leaf};
-    \node[leafloss] (l) at (0,-3.3) {};
-    \node[font=\scriptsize] at (0,-3.82) {LOSS leaf};
-    \node[leafwin] (w2) at (2.2,-3.3) {};
-    \draw (a) -- node[left=1mm,font=\scriptsize] {searched} (w);
-    \draw (a) -- node[right=1mm,font=\scriptsize] {searched} (l);
-    \draw (a) -- (w2);
-    \begin{scope}
-      \clip (1.15,-1.8) -- (3.15,-2.45) -- (2.05,-3.02) -- cycle;
-      \fill[black!7] (1.15,-1.8) -- (3.15,-2.45) -- (2.05,-3.02) -- cycle;
-      \foreach \x in {-.5,-.25,...,4}{
-        \draw[black!48,line width=.35pt] (\x,-3.3) -- ++(2.0,2.0);
-      }
-    \end{scope}
-    \draw (1.15,-1.8) -- (3.15,-2.45) -- (2.05,-3.02);
-    \node[anchor=west,font=\scriptsize] at (3.22,-2.45)
-      {dismissed replies};
-  \end{tikzpicture}
-  \caption{Schematic certificate tree.  Solid branches are searched replies;
-  the hatched wedge represents the legal replies covered by a dismissal
-  claim.  Circles denote OR nodes, squares denote AND nodes, and diamonds
-  denote typed leaves.}
-  \label{fig:cert-tree}
-\end{figure}
+The remaining defender work below a node is measured locally rather than by
+the maximum resolution elsewhere in the tree.
 
-The core collects every cell whose masks or occupancy are used by a future
-certificate witness.
+\begin{definition}[Admissible local defender budget]
+\label{def:D14}
+The exact local budget $B(N)$, in defender placements, is given by
+\[
+\begin{aligned}
+B(\text{OR-COMPLETION})&=B(\text{WIN})=0,&
+B(\text{LOSS},b)&=b,\\
+B(\text{OR})&=B(\text{child}),&
+B(\text{AND})&=1+\max_C B(C).
+\end{aligned}
+\]
+The two placements of a defender turn are two edges, and a LOSS leaf adds its
+remaining $b$ placements.  A verifier may instead accept any nonnegative
+integral labels satisfying $B(L)\ge b$ at LOSS leaves,
+$B(N)\ge B(C)$ on OR edges, and $B(N)\ge1+B(C)$ on AND edges.
+\end{definition}
 
-\begin{definition}[Certificate core]
+\begin{remark}
+The first version of this paper required the global horizon count
+$\DefCount(P_N,T)$; that requirement was since shown unnecessary.
+\end{remark}
+
+Only future attacker placements and leaf-entry witness empties must remain
+unoccupied by dismissed defender stones.
+
+\begin{definition}[Compressed obligations]
 \label{def:D10}
-For a node $N$, define $\operatorname{core}(\mathcal C,N)$ as the union over
-the subtree rooted at $N$ of
-\begin{enumerate}[label=\textup{(\roman*)}]\upshape
-  \item every cell of every named witness window, including OR completions,
-    WIN leaves, and LOSS-leaf families; and
-  \item every attacker placement cell, including leaf-continuation
-    placements.
+Write $E(W,P)=W\setminus\Stones(P)$.  A \emph{live obligation role} below
+$N$ is one of two types:
+\begin{enumerate}[label=\textup{(\arabic*)}]\upshape
+  \item a future designated certificate attacker placement, including an
+    OR-COMPLETION placement; or
+  \item a triple $(L,W,y)$ for a named WIN or LOSS witness $W$ at a leaf $L$
+    and a cell $y\in E(W,P_L)$.
 \end{enumerate}
+Witness-empty roles represent every possible leaf continuation placement,
+including the adaptive LOSS choice.  If $\Omega(N)$ is the set of all such
+roles at reachable descendants, define
+\[
+  \operatorname{Obl}(\mathcal C,N)=\Prot(N)
+  :=\left\{y:\begin{array}{c}\text{some live role in }\Omega(N)\\[-1mm]
+    \text{is carried by }y\end{array}\right\}.
+\]
+An attacker-placement role is live through its check immediately before the
+OR step.  A witness-empty role is live through its check at leaf entry.  Each
+is discharged immediately afterward.  Reachable-descendant nesting gives
+$\Prot(M)\subseteq\Prot(N)$ whenever $M$ descends from $N$.
 \end{definition}
 
-The protected set adds every defender window that can still complete within
-the certificate horizon.  Its four conditions cover tactical consistency,
-witness preservation, frontier growth, and attacker legality.
+\begin{remark}
+The first version of this paper protected every cell of each witness window;
+that requirement was since shown unnecessary.
+\end{remark}
+
+Different cells can be needed at different depths, so each role has its own
+defender-placement deadline.
+
+\begin{definition}[Cell-specific deadlines]
+\label{def:D15}
+The deadline of a role $\rho$ is its designated attacker placement or, for a
+WIN or LOSS witness-empty role, leaf entry.  At a node $N$ from which $\rho$
+is reachable, $r_N(\rho)$ is an integral upper bound on defender placements
+before that deadline.  Exact ranks count the maximum number of AND edges on a
+reachable path.  The verifier checks $r=0$ at the deadline,
+$r_N(\rho)\ge r_C(\rho)$ across an OR edge, and
+$r_N(\rho)\ge1+r_C(\rho)$ across an AND edge while the role is live.  For a
+cell carrying several roles, put
+\[
+  r_N(y)=\max\{r_N(\rho):\rho\in\Omega(N)\text{ is carried by }y\}.
+\]
+A role is discharged only after its $r=0$ deadline check.  A seed band is
+formed only at an internal AND node with $r_N(y)\ge1$.  LOSS witness empties
+are protected only through leaf entry; their adaptive contract controls the
+remaining $b$ placements.  Defender-completion windows use
+\cref{def:D14,def:D16}, not role ranks.  The uniform admissible choice is
+$r_N(\rho)=B(N)$ before the deadline.
+\end{definition}
+
+Completion risk also has a separate local clock for every window.
+
+\begin{definition}[Per-window defender exposure]
+\label{def:D16}
+For each window $W$, let $E_Q^\D(W)$ be the maximum number of future defender
+placements before the certificate attacker wins or first places in $W$.  Its
+exact recurrence is
+\[
+E_Q^\D(W)=
+\begin{cases}
+0,&Q\text{ is WIN or OR-COMPLETION},\\
+b,&Q\text{ is LOSS with defender budget }b,\\
+0,&Q\text{ is an OR whose move enters }W,\\
+E_C^\D(W),&Q\text{ is any other ordinary OR},\\
+1+\max_C E_C^\D(W),&Q\text{ is an internal AND}.
+\end{cases}
+\]
+If $W$ is already not alive for $\D$, set $E_Q^\D(W)=0$.  An attacker move
+\emph{enters} $W$ when $W$ becomes permanently not alive for $\D$; it need
+not become dead.  Overlapping windows have separate clocks.  The stopping
+attacker placement is also a live obligation, so the obligation zone keeps
+the stop playable in the real game.
+\end{definition}
+
+The local labels decrease along every selected path and preserve the relevant
+stone-count bounds.
+
+\begin{lemma}[Local-clock and nesting facts]
+\label{lem:L11}
+If a descendant $M$ is reached from $N$ after $k$ defender placements, then
+\[
+\begin{gathered}
+B(M)+k\le B(N),\\
+\cnt_\D(W,P_M)+B(M)\le\cnt_\D(W,P_N)+B(N).
+\end{gathered}
+\]
+Every selected path below $N$, including a LOSS remainder, contains at most
+$B(N)$ defender placements before its declared attacker resolution.  For
+every still-live role $\rho$,
+$r_M(\rho)+k\le r_N(\rho)$.  Before the attacker enters $W$,
+\[
+\begin{gathered}
+E_M^\D(W)+k\le E_N^\D(W),\\
+\cnt_\D(W,P_M)+E_M^\D(W)
+ \le\cnt_\D(W,P_N)+E_N^\D(W).
+\end{gathered}
+\]
+Also $E_N^\D(W)\le B(N)$, every exact rank
+$r_N^*(\rho)\le B(N)$, and $\Prot(M)\subseteq\Prot(N)$.
+\end{lemma}
+
+\begin{proof}
+Sum the verifier inequalities along the path.  Each AND edge contributes one
+and each OR edge contributes zero; the AND maximum covers the selected child,
+and the LOSS bound covers its remainder.  A window gains at most one defender
+stone per counted defender edge.  The exposure recurrence gives the analogous
+inequalities until its stop and is bounded pointwise by the budget recurrence.
+An exact role deadline occurs no later than the path resolution.  The last
+claim is reachable-descendant inclusion.
+\end{proof}
+
+The zone separates obligation occupancy from the two forms of completion
+risk.  Touched windows need no frontier term; virgin windows need a seed band.
 
 \begin{definition}[Zone-carrying certificate]
 \label{def:D11}
-At an AND node $N$ with position $P_N$, put
+For $d(c,W)=\min_{w\in W}d(c,w)$ and
+$B_r(U)=\{c:\exists u\in U,\ d(c,u)\le r\}$, define at each internal AND
+node $N$
 \[
-  D_N:=\DefCount(P_N,T)
+\begin{aligned}
+Z_{\rm dir}(N)&=\Prot(N)\cap\Legal(P_N),\\
+Z_{\rm seed}(N)&=\bigcup_{\substack{y\in\Prot(N)\setminus
+  (\Legal(P_N)\cup\Stones(P_N))\\ r_N(y)\ge1}}
+  \left(\Legal(P_N)\cap B_{8(r_N(y)-1)}(\{y\})\right),\\
+Z_{\rm touch}(N)&=\bigcup\left\{E(W,P_N):
+  \begin{array}{l}W\text{ is alive for }\D,\ \cnt_\D(W,P_N)\ge1,\\[-1mm]
+  \cnt_\D(W,P_N)+E_N^\D(W)\ge6\end{array}\right\},\\
+Z_{\rm virgin}(N)&=\left\{c\in\Legal(P_N):
+  \begin{array}{l}\text{some all-empty window }W\text{ has }E_N^\D(W)\ge6,\\[-1mm]
+  d(c,W)\le8(E_N^\D(W)-6)
+  \end{array}\right\}.
+\end{aligned}
 \]
-and define
-\[
-\begin{split}
-  \Prot(N)={}&\operatorname{core}(\mathcal C,N)\\
-  &{}\cup\!\bigcup\left\{
-    E(W,P_N):
-    \begin{array}{l}
-      W\text{ is alive for }\D\text{ at }P_N,\\[-1mm]
-      \cnt_\D(W,P_N)+D_N\ge6
-    \end{array}
-  \right\},
-\end{split}
-\]
-where $E(W,P)$ is the set of empty cells of $W$ in $P$.  For a cell set
-$U$, let
-\[
-  B(r;U)=\{c:\exists y\in U,\ \dist(c,y)\le r\}.
-\]
-The certificate is \emph{zone-carrying} if every AND node $N$ satisfies:
+Every cell of $Z_{\rm touch}$ is legal by \cref{lem:L1}.  The certificate is
+\emph{zone-carrying} when $S(N)$ is independently nonempty at every internal
+AND node and the following clauses hold.
 \begin{enumerate}[label=\textup{(Z\arabic*)}]\upshape
-  \item \label{zone:Z1}
-    $S(N)$ contains the legal empty cells of every $\A$-threat window of
-    $P_N$.  This condition is retained as a redundant safeguard for interior
-    $\lambda^1$ consistency: a current threat need not occur in any later
-    witness family, and hitting cells are already the solver's first
-    candidates.
+  \setcounter{enumi}{1}
   \item \label{zone:Z2}
-    $S(N)\supseteq\Prot(N)\cap\Legal(P_N)$.  Thus every protected legal cell
-    is searched.
-  \setcounter{enumi}{4}
-  \item \label{zone:Z5}
-    \[
-      S(N)\supseteq \Legal(P_N)\cap
-      B\!\left(8D_N;
-        \Prot(N)\setminus(\Legal(P_N)\cup\Stones(P_N))
-      \right).
-    \]
-    A defender has at most $D_N$ placements before the horizon, and each can
-    extend legality by at most $8$.  The horizon-scaled band closes the
-    multi-hop corridor in which successive dismissed stones approach
-    protected territory while later links are ghost-illegal.  The band is
-    empty when $\Prot(N)\subseteq\Legal(P_N)\cup\Stones(P_N)$.
+    $S(N)\supseteq Z_{\rm dir}(N)\cup Z_{\rm touch}(N)\cup
+    Z_{\rm virgin}(N)$.
   \setcounter{enumi}{3}
   \item \label{zone:Z4}
-    Every attacker placement in the subtree of $N$ is within distance $8$ of
-    an attacker stone of its predecessor position or of a stone of $P_0$.
-    This condition preserves the legality of attacker placements when
-    defender stones are deleted.  It is automatic for threat-creating
-    generators by \cref{thm:T2}.
+    Every certificate attacker placement, including a placement allowed by a
+    leaf contract, lies within distance $8$ of an attacker stone in its
+    predecessor position or of a root stone unaffected by the coupling.
 \end{enumerate}
-
-When $D_N\le5$, both terms of $\Prot(N)$ are finite and verifier-enumerable:
-a completion-guard window has at least one defender stone and is therefore
-touched.  When $D_N\ge6$, every all-empty window qualifies.  Hence
-$\Prot(N)\cap\Legal(P_N)$ contains every legal cell in any window alive for
-$\D$, and the frontier condition also covers its band.  The only remaining
-dismissible cells are deep-interior cells lying in no $\D$-alive window;
-every window through such a cell is attacker-touched or dead, so the cell can
-never contribute to a defender completion by \cref{lem:L4,lem:L7}.  This is
-  the exact boundary of the large-budget case $D_N\ge6$, not a claim that pruning always
-vanishes.
+\begin{enumerate}[label=\textup{(Z5$'$)}]\upshape
+  \setcounter{enumi}{4}
+  \item \label{zone:Z5prime}
+    $S(N)\supseteq Z_{\rm seed}(N)$.
+\end{enumerate}
+With the uniform choice $r_N(y)=B(N)$, clause \textup{(Z5$'$)} becomes
+\[
+S(N)\supseteq\Legal(P_N)\cap B_{8(B(N)-1)}
+  \bigl(\Prot(N)\setminus(\Legal(P_N)\cup\Stones(P_N))\bigr).
+\]
+All four components are finite and verifier-enumerable.  The virgin query is
+inverted from each legal candidate over the finite radius allowed by
+$E_N^\D(W)\le B(N)$.
 \end{definition}
+
+\begin{remark}
+The first version of this paper required current threat-hitting cells as
+clause \textup{(Z1)}; that requirement was since shown unnecessary.
+\end{remark}
 
 \begin{figure}[tbp]
   \centering
-  \begin{tikzpicture}[scale=.35]
+  \begin{tikzpicture}[scale=.32]
     \HexBoardRange{0}{0}{5}
-    % Hitting cells: empties of the horizontal four-stone threat.
-    \foreach \q/\r in {0/0,3/0}{
-      \path[fill=black!12,draw=none] \HexAt{\q}{\r}
-        ++(30:.93) \foreach \angle in {150,210,270,330,30}
-        {-- ++(\angle:.93)} -- cycle;
-    }
-    % Protected cells: named witness and completion-guard window empties.
-    \foreach \q/\r in {1/-2,1/-1,1/1,1/2,-1/3,0/2,2/0,3/-1}{
-      \path[fill=black!27,draw=none] \HexAt{\q}{\r}
-        ++(30:.93) \foreach \angle in {150,210,270,330,30}
-        {-- ++(\angle:.93)} -- cycle;
-    }
-    % Frontier band cells near the edge of the patch.
-    \foreach \q/\r in {-5/1,-5/2,-5/3,-4/4,-3/5,-2/5,-1/5,0/5,1/4}{
-      \path[fill=black!43,draw=none] \HexAt{\q}{\r}
-        ++(30:.93) \foreach \angle in {150,210,270,330,30}
-        {-- ++(\angle:.93)} -- cycle;
-    }
-    \HexAttacker{-2}{0}\HexAttacker{-1}{0}
-    \HexAttacker{1}{0}\HexAttacker{2}{0}
-    \HexAttacker{0}{1}\HexAttacker{0}{-1}
-    \HexDefender{-1}{2}\HexDefender{2}{-2}\HexDefender{3}{1}
+    \foreach \q/\r in {-2/0,-1/0}{\HexShadeCell[zone direct]{\q}{\r}}
+    \foreach \q/\r in {-5/2,-4/2,-4/3}{\HexShadeCell[zone seed]{\q}{\r}}
+    \foreach \q/\r in {1/-1,2/-1,3/-1}{\HexShadeCell[zone touched]{\q}{\r}}
+    \foreach \q/\r in {2/2,3/2,3/1,4/1}{\HexShadeCell[zone virgin]{\q}{\r}}
+    \HexAttacker{-3}{0}\HexAttacker{0}{0}
+    \HexDefender{0}{-1}\HexDefender{4}{-1}
   \end{tikzpicture}
 
   \vspace{1ex}
-  \begin{tabular}{@{}cl@{\qquad}cl@{\qquad}cl@{}}
-    \tikz\draw[fill=black!12] (0,0) rectangle (.42,.22); & hitting cells &
-    \tikz\draw[fill=black!27] (0,0) rectangle (.42,.22); & protected cells &
-    \tikz\draw[fill=black!43] (0,0) rectangle (.42,.22); & frontier band
+  \begin{tabular}{@{}cl@{\qquad}cl@{}}
+    \HexLegendSwatch[zone direct] & direct obligation &
+    \HexLegendSwatch[zone seed] & ranked seed guard \\
+    \HexLegendSwatch[zone touched] & touched-window empty &
+    \HexLegendSwatch[zone virgin] & virgin seed radius
   \end{tabular}
-  \caption{Schematic anatomy of a zone.  The light cells hit the central
-  attacker threat; the middle shade represents empties of a named witness
-  window and a completion-guard window; the dark band marks frontier cells.
+  \caption{Schematic ranked zone.  Direct obligation cells form
+  $Z_{\rm dir}$.  A currently illegal obligation uses radius
+  $8(r_N(y)-1)$, uniformly $8(B(N)-1)$.  Touched completion windows contribute
+  their empties when $\cnt_\D+E_N^\D\ge6$.  An all-empty window with exposure
+  at least $6$ contributes legal seeds within radius $8(E_N^\D-6)$.
   Filled disks are attacker stones and open disks are defender stones.}
   \label{fig:zone-anatomy}
 \end{figure}
 
-Protected cells can disappear under descent, but new protected cells cannot
-appear.
+The ranked seed guard prevents the first real-only occupation of a protected
+cell, which is the property used by the coupling.
 
-\begin{proposition}[Monotonicity of protection]
-\label{prop:prot-mono}
-If $M$ is a descendant AND node of $N$, then
-$\Prot(M)\subseteq\Prot(N)$.
-\end{proposition}
-
-\begin{proof}
-The core is a subtree union and is monotone under descent.  Along the play
-from $N$ to $M$, $\cnt_\D(W,\cdot)$ increases by the number of intervening
-defender placements in $W$, while $\DefCount(\cdot,T)$ decreases by the
-number of all intervening defender placements, which is at least as large.
-Their sum is nonincreasing.  A window qualifying at $M$ therefore
-qualified at $N$, and its empty set at $M$ is a subset of its empty set at
-$N$.
-\end{proof}
-
-The frontier guard must also cover dismissed stones that become legal only
-through earlier dismissed stones.
-
-\begin{lemma}[Frontier chain closure]
-\label{lem:L9}
-\upshape
-In the coupling of \cref{thm:T3}, let $N(x)$ denote the node at which an
-$X$-stone $x$ is introduced.  Call $x$ \emph{frontier-clear} if
+\begin{lemma}[First protected occupation]
+\label{lem:L9prime}
+Suppose direct legal protected cells are searched and every ghost-legal
+dismissal $x$ at $N$ lies outside radius $8(B(N)-1)$ of
 \[
-  \dist(x,y)>8D(N(x))
-  \quad\textup{for every }y\in
-  \Prot(N(x))\setminus
-  (\Legal(P(N(x)))\cup\Stones(P(N(x)))),
+  \Prot(N)\setminus(\Legal(P_N)\cup\Stones(P_N)).
 \]
-where $D(M)=D_M$ and $P(M)=P_M$ for a node $M$.
-Then:
-\begin{enumerate}[label=\textup{(\alph*)}]\upshape
-  \item if every ghost-legal dismissed stone is frontier-clear, as enforced
-    by \cref{zone:Z5}, then every ghost-illegal dismissed stone is
-    frontier-clear; and
-  \item for every AND node $N$ visited by the coupling, no ghost-empty cell of
-    $\Prot(N)\setminus(\Legal(P_N)\cup\Stones(P_N))$ ever becomes legal in
-    the real game while remaining illegal in the ghost.
-\end{enumerate}
+Then no defender placement creates a real-only stone in the current protected
+set.  In the ranked form, replace $B(N)$ for each target $y$ by its maximum
+live role rank $r_N(y)$; the conclusion holds through that role's deadline.
 \end{lemma}
 
 \begin{proof}
-Any ghost-empty cell that is real-legal but ghost-illegal has an $X$-stone as
-a legality witness.  Shared root stones, attacker stones, and searched
-placements occur in both positions.  Cells of $Y$ are ghost-occupied and do
-not occur in the applications of this lemma.  Inductively, the real legality
-of an $X$-stone traces through a chain
-$x_0,x_1,\ldots,x_m$ of $X$-stones, where $x_0$ is legal through a shared
-stone and consecutive links have distance at most $8$.
-
-For (a), suppose a ghost-illegal $x_j$, with $j\ge1$, is not frontier-clear.
-There is a protected but not-yet-legal cell $y$ at $N(x_j)$ with
-$\dist(x_j,y)\le8D(N(x_j))$.  The prefix of the chain gives
-$\dist(x_0,x_j)\le8j$.  The stones $x_1,\ldots,x_j$ are later defender
-placements, so
+Assume that the first violation is a defender placement at $y$.  If $y$ is
+ghost-legal, then $y\in Z_{\rm dir}$ and is searched, so it is placed in both
+games.  Otherwise trace its real-only legality witness backward through
+real-only defender stones to the first ghost-legal dismissed seed $x_0$.  If
+$y$ is the $p$th defender placement in this chain, counting $x_0$, there are
+at most $p-1$ radius-$8$ links and
 \[
-  j\le D(N(x_0))-1,
-  \qquad
-  D(N(x_j))\le D(N(x_0))-j.
+  d(x_0,y)\le8(p-1).
 \]
-By \cref{prop:prot-mono} and monotonic growth of ghost legality, $y$ was also
-protected but not legal at $N(x_0)$.  Therefore
-\[
-  \dist(x_0,y)
-  \le8j+8(D(N(x_0))-j)
-  =8D(N(x_0)),
-\]
-contradicting the frontier-clear property of the ghost-legal stone $x_0$.
-
-For (b), suppose such a protected cell $y$ becomes real-legal while
-ghost-illegal.  It is within distance $8$ of the last chain stone $x_m$.
-Every defender placement before $T$ has $D(N(x_m))\ge1$, so
-\[
-  \dist(x_m,y)\le8\le8D(N(x_m)),
-\]
-contradicting part (a).
+Protection nesting puts $y\in\Prot(N_{x_0})$.  At the violation it is still
+ghost-empty and ghost-illegal.  Ghost legality of an unoccupied cell is
+monotone, and permanence makes it a non-stone at $N_{x_0}$.  The local budget
+gives $p\le B(N_{x_0})$; in the ranked form, the still-live role gives
+$p\le r_{N_{x_0}}(y)$.  Thus $x_0$ lay in the applicable seed band, contrary
+to its dismissal.
 \end{proof}
 
-The repository proof document states part~(b) without the ghost-empty
-restriction; only the restricted form above is used, in step~A3.
+The uniform radius is sharp: a ghost-legal seed can be followed by $B-1$
+successive distance-$8$ placements, with the protected target last.
 
-The proof will compare the actual play with a certificate walk using
-canonical difference sets rather than an order relation between positions.
+\begin{remark}
+The first version of this paper required an $8\DefCount(P_N,T)$ frontier band;
+that requirement was since shown unnecessary.
+\end{remark}
+
+The proof compares the actual play with a certificate walk using canonical
+defender-stone differences.
 
 \begin{definition}[Real--ghost coupling]
 \label{def:D12}
-The proof of \cref{thm:T3} couples a real position $R$ to a ghost position
-$G$ on $\mathcal C$.  The positions have the same ply index, mover, and
-budget, and have identical attacker stones.  Define the canonical, disjoint
-defender-stone differences.  For a position
-$Q=(\sigma_Q,m_Q,b_Q)$, write
+The real position $R$ and ghost position $G$ have equal ply, mover, and
+budget, and identical attacker stones.  Define
 \[
-\begin{aligned}
-  \Stones_\D(Q)&:=\{c\in\operatorname{dom}\sigma_Q:\sigma_Q(c)=\D\},\\
-  X&=\Stones_\D(R)\setminus\Stones_\D(G),&
-  Y&=\Stones_\D(G)\setminus\Stones_\D(R).
-\end{aligned}
+X=\Stones_\D(R)\setminus\Stones_\D(G),\qquad
+Y=\Stones_\D(G)\setminus\Stones_\D(R).
 \]
-The coupling maintains these invariants at every visited node $N$:
-\begin{enumerate}[label=\textup{(\roman*)}]\upshape
-  \item every $x\in X$ entered at a dismissal step whose node certified
-    $x\notin\Prot$;
-  \item every $y\in Y$ entered as a ghost filler, which is a searched
-    placement of its node;
-  \item $X\cap\Prot(N)=\varnothing$, by part (i) and
-    \cref{prop:prot-mono}; and
-  \item every $x\in X$ is frontier-clear.  Condition \cref{zone:Z5} enforces
-    this for ghost-legal dismissals.  The chain closure in \cref{lem:L9}
-    passes it to ghost-illegal dismissals.
-\end{enumerate}
-A dismissal-history set $\widehat X\supseteq X$ records every cell ever added
-to $X$ and never removes a cell.  It is used when the completion argument
-must remember an earlier dismissal after the canonical difference has
-changed.
+The maintained invariants are: every $x\in X$ entered at a dismissal whose
+ordinary zone test or selected \cref{def:D17} envelope certified it outside
+the live obligations; every $y\in Y$ entered as a searched ghost filler; and
+$X\cap\Prot(N)=\varnothing$ at each visited node.  The previous lemma supplies
+the last invariant for ghost-illegal dismissals, and obligation nesting
+preserves it after descent.  A history $\widehat X\supseteq X$ contains every
+cell ever added to $X$ and never deletes cells.  For every window $W$,
+\begin{equation}
+\cnt_\D(W,R)=\cnt_\D(W,G)+|X\cap W|-|Y\cap W|
+ \le\cnt_\D(W,G)+|\widehat X\cap W|.
+\tag{MI}\label{eq:MI}
+\end{equation}
 \end{definition}
+
+The touched--virgin split excludes every real defender completion before the
+mapped attacker stop, including mixed legality chains.
+
+\begin{lemma}[Split completion safety]
+\label{lem:L12}
+In the coupling of \cref{def:D12}, under \cref{zone:Z2,zone:Z4} and
+\hyperref[zone:Z5prime]{clause \textup{(Z5$'$)}}, no real defender play
+completes a fixed window $W$ before the mapped certificate attacker wins or
+first enters $W$.
+\end{lemma}
+
+\begin{proof}
+Suppose $W$ is first completed in the real game before that stop.  Shared
+attacker stones and permanence make it alive for $\D$ throughout the relevant
+ghost prefix.  If no $W$-cell was ever dismissed, then
+$\widehat X\cap W=\varnothing$ and \eqref{eq:MI} forces the ghost line to have
+at least the real defender count.  This contradicts the exact successors and
+the ban on defender-terminal edges.
+
+Otherwise let $x\in W$ be the first ever-dismissed real-only fill, at $N$.
+If the ghost already has a defender stone in $W$, every empty of $W$ is
+ghost-legal.  Before $x$, \eqref{eq:MI} bounds the real count by the ghost
+count.  The real placements from $x$ through completion are covered by
+$E_N^\D(W)$, so
+\[
+  \cnt_\D(W,P_N)+E_N^\D(W)\ge6.
+\]
+The cell $x$ lies in $Z_{\rm touch}$ and should have been searched.
+
+Suppose instead that the ghost window is virgin.  If $x$ is ghost-legal, all
+six fills remain in the exposure count.  Hence $E_N^\D(W)\ge6$ and
+$d(x,W)=0$, so $x\in Z_{\rm virgin}$.  If $x$ is ghost-illegal, trace its
+real-only legality chain to the first ghost-legal dismissed seed $x_0$.  With
+$j$ radius-$8$ links before the chain reaches $W$,
+\[
+  d(x_0,W)\le8j,\qquad E_{N_{x_0}}^\D(W)\ge j+6.
+\]
+The second inequality counts the seed and chain tempo and all six fills before
+the exposure stop.  Thus $x_0\in Z_{\rm virgin}$.  A searched fill that
+touches $W$ moves later nodes to the touched case.  Independent seeds,
+interleaving, and overlapping windows are covered by the causal chain for the
+first dismissed fill of each window.  The live obligation for the
+attacker-in-$W$ move keeps the exposure stop valid in the real game.
+
+At a LOSS remainder, the coupling stops at leaf entry.  If $W$ has an
+ever-dismissed fill, the same count remains valid because the exposure
+includes the leaf's $b$ placements.  If it has none, \eqref{eq:MI} at the leaf
+bounds the real count by the ghost count.  The mandatory leaf
+$\neg\ownwinnow$ check bounds the latter by $3$ at $b=2$ and $4$ at $b=1$,
+so the remaining $b$ placements reach at most $5$.
+\end{proof}
+
+The virgin radius is sharp at exposure $7$: a legal seed at distance $8$ can
+be followed by the first window fill and the five remaining fills.

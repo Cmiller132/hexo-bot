@@ -21,6 +21,10 @@
     minimum size=5.8mm,inner sep=0pt},
   distance annotation/.style={<->,>=Stealth,line width=.65pt,shorten <=2pt,
     shorten >=2pt},
+  zone direct/.style={fill=black!18,draw=black,line width=.35pt},
+  zone seed/.style={fill=black!38,draw=black,line width=.35pt},
+  zone touched/.style={fill=black!62,draw=black,line width=.35pt},
+  zone virgin/.style={fill=white,draw=black,densely dashed,line width=1.1pt},
 }
 
 % \HexAt{q}{r}: expands to the Cartesian center of axial cell (q,r).
@@ -86,10 +90,8 @@
 \newcommand{\HexMark}[4]{%
   \ifstrequal{#3}{dot}{\fill \HexAt{#1}{#2} circle (1.6pt);}{%
     \ifstrequal{#3}{cross}{%
-      \begin{scope}[shift={\HexAt{#1}{#2}}]
-        \draw[line width=.9pt] (-.18,-.18) -- (.18,.18);
-        \draw[line width=.9pt] (-.18,.18) -- (.18,-.18);
-      \end{scope}}{%
+      \draw[line width=.9pt] \HexAt{#1}{#2} ++(-.18,-.18) -- ++(.36,.36);
+      \draw[line width=.9pt] \HexAt{#1}{#2} ++(-.18,.18) -- ++(.36,-.36);}{%
       \node[font=\scriptsize,fill=white,inner sep=1pt] at \HexAt{#1}{#2} {#4};}%
   }%
 }
@@ -105,6 +107,19 @@
 \newcommand{\HexDistance}[5]{%
   \draw[distance annotation] \HexAt{#1}{#2} --
     node[midway,fill=white,inner sep=1.5pt,font=\scriptsize]{#5} \HexAt{#3}{#4};%
+}
+
+% \HexShadeCell[style]{q}{r}: highlights one cell with a named TikZ style.
+% Example: \HexShadeCell[zone seed]{1}{0}
+\newcommand{\HexShadeCell}[3][zone direct]{%
+  \path[#1] \HexAt{#2}{#3}
+    ++(30:.93) \foreach \angle in {150,210,270,330,30}{-- ++(\angle:.93)} -- cycle;
+}
+
+% \HexLegendSwatch[style]: draws a compact swatch for a figure legend.
+% Example: \HexLegendSwatch[zone touched]
+\newcommand{\HexLegendSwatch}[1][zone direct]{%
+  \tikz[baseline=-.5ex]\path[#1] (0,0) rectangle (.42,.22);%
 }
 
 % Local string comparison without imposing an additional package on the paper.
