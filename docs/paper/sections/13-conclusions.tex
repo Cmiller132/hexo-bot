@@ -1,0 +1,239 @@
+\section{Conclusions}
+\label{sec:conclusions}
+
+\subsection{What this paper establishes, in plain language}
+
+Hexo gives a player two stone placements on an ordinary turn.  A line of six
+wins as soon as its last stone is placed.  The board is unbounded, but a legal
+placement must lie within distance eight of an existing stone.  These rules
+create a search problem with a local tactical goal and a broad legal reply
+set.  A midgame defender node may have hundreds of legal cells.  Checking all
+of them at every level is often the main cost of a threat-space search.
+
+The basic result is a safe way to omit some of those cells.  The omission is
+not justified by distance alone.  It is justified by a finite certificate.
+The certificate records the attacker's planned placements, the empties needed
+by terminal threat witnesses, the number of defender opportunities before
+each use, and the windows in which a hidden defender stone could complete a
+line.  A verifier forms a zone from those records.  Direct obligations are
+searched.  A future obligation that is not yet legal receives a seed band
+wide enough to cover every possible radius-eight relay.  Defender-alive
+windows receive separate guards according to whether they already contain a
+defender stone or are still empty.
+
+The dismissal theorem says that a certificate passing these checks survives
+every legal defender reply, including replies outside the searched set.  Its
+proof follows a real game and a ghost game together.  The real game contains
+the omitted reply.  The ghost game contains a searched filler and follows the
+certificate.  The zone prevents the first omitted stone from occupying a
+future required cell or completing a defender window.  The attacker therefore
+reaches the same certified resolution, or a permitted adaptive LOSS
+resolution, by the declared placement horizon.  Search trimming can still
+miss an attacker win.  It cannot turn a losing attack into an accepted win
+when the verifier enforces the certificate conditions.
+
+The zone can be computed with cell-specific deadlines and window-specific
+exposures.  This is no larger than assigning every object the full certificate
+depth, and can be smaller.  A tight current threat family admits a different reduction.  At a
+protected forcing gate, an exact copied defender hit does not create a
+real-only legality frontier.  The debited clocks remove that opportunity from
+the relevant seed band and charge it to a selected window only when the hit
+lies in that window.  A defender that refuses the gate is handled by an
+explicit escape contract.  This result is conditional on exact copying and
+the gate checkpoint.  It does not reduce the global scalar budget and does
+not make a substituted hit free.
+
+Terminal LOSS certificates also have a bounded description.  With one
+defender placement left, three threat windows suffice.  With two placements
+left, five suffice.  The triangle and five-cycle families show that these
+caps are exact for the named-window witness format.  The result reduces proof
+data without changing the universal survivor condition.
+
+Two global defenses have exact boundaries.  A position-independent pairing
+cannot cover every length-six window on the three-axis hex lattice.  At
+length seven, a periodic perfect matching exists, covers every window exactly
+once, and has minimum period index twelve among periodic constructions.  The
+potential method gives sound fixed-family, finite-horizon, and finite-region
+blocking certificates at base $\sqrt3$.  It does not give a global dynamic
+greedy defense: an exact 124-branch enumeration gives a fixed attacker line
+that defeats every greedy tie-breaking from a position with $\Phi<1$.  A
+non-greedy global defense from every such position is not ruled out.
+
+The resulting rule is concrete.  A solver may skip a reply only with a
+checked reason tied to the selected proof.  Exact-copy gates, three/five LOSS
+witnesses, fixed-family potential bounds, and the narrow domination patterns
+provide such reasons under their premises.  Distance-only pruning,
+unrestricted dynamic greedy, and a global pairing for length six do not.
+
+\subsection{Results and limits}
+
+\Cref{tab:conclusion-results} separates the result consumed by a verifier
+from its main limit.  The detailed quantitative boundary is the limit map in
+\cref{sec:tightness}.
+
+\begin{table}[tbp]
+  \centering
+  \caption{Results and their operative limits.}
+  \label{tab:conclusion-results}
+  \small
+  \renewcommand{\arraystretch}{1.1}
+  \begin{tabular}{@{}p{.25\textwidth}p{.32\textwidth}p{.33\textwidth}@{}}
+    \toprule
+    Layer & Established result & Operative limit \\
+    \midrule
+    Dismissal & A valid zone certificate preserves the attacker win against
+      every legal defender reply by its horizon. & The result is
+      certificate-relative and may lose search completeness. \\
+    Ranked zones & Exact role ranks and per-window exposures determine finite
+      direct, seed, touched, and virgin terms. & Uniform-band and full-union
+      virgin sharpness remain open. \\
+    Forced-hit gates & Protected exact-copy gates permit $f$ and $Q^{\D}$
+      hazard debits. & No scalar $B$ debit, free D17 substitution, automatic
+      net shrinkage, or slack-pressure debit is proved. \\
+    LOSS witnesses & Three windows suffice at $b=1$ and five at $b=2$. & The
+      lower examples pin the named-window witness representation. \\
+    Pairing & No global covering matching exists for $k=6$; a minimal-index
+      periodic construction exists for $k=7$. & Position-dependent partial
+      pairings are not excluded. \\
+    Potential & Fixed-family and finite-region inequalities certify blocking;
+      finite horizons admit explicit bounds. & Dynamic touched-window greedy
+      fails globally; the raw non-greedy claim is open. \\
+    Domination & P1, P2, and P3 permit checked local quotienting. & Their
+      frontier, dead-spoke, initial-legality, and singleton-nonwin premises
+      are mandatory. \\
+    Machine checks & Pairing and the greedy counterexample have exhaustive
+      finite enumerations; other runs test named calculations or samples. &
+      Search experiments and randomized spot checks are not theorem proofs. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Rule constants such as window length six, eighteen incident windows, and the
+radius-eight legality step are not tuning parameters.  Within the certificate
+format, $8(r-1)$, the LOSS deadline $p_{\rm leaf}+b+2$, the three/five witness
+caps, and the leaf-entry and OR-COMPLETION deadlines have attained or absolute
+boundaries.  Scalar path maxima, transition charges, and exact-kernel tests
+are instead framework-relative; indexed fields or another grammar may encode
+the same hazards differently.
+
+The uniform $8(B-1)$ wrapper and full-union virgin radius remain open.  The
+gate calculus is partial: it debits exact copied hits from named hazards, but
+an escape, LOSS remainder, or substitution retains the full clock.  Added
+checkpoint roles may offset a smaller radius.  Neither a fixed-window equality
+nor a hazard debit promises a smaller total set at every node.
+
+\subsection{Implications for solvers}
+
+A df-pn implementation can separate search from verification.  Search may
+use any move ordering or candidate generator.  It may start with the measured
+radius-three and attacker-touched predecessor set, use threat incidence for
+ordering, or learn a proposal distribution.  When that search finds a
+candidate win, a compiler attaches the finite grammar, exact child map,
+obligations, clocks, window data, and terminal witnesses.  An independent
+verifier then checks the theorem selected at each defender node.  Failure of
+one check yields an unverified or unknown result, not an attacker win.
+
+At an ordinary node, the verifier recomputes legality and masks, then checks
+protected cells, ranks, window exposures, searched-set containment, attacker
+legality, terminal data, and the horizon.  A DAG also needs one consistent
+position, phase, label, and clock assignment at each shared node.
+Branch-indexed substitution uses its transition-inclusive envelope.
+
+Deep certificates gain most from exact labels.  A uniform band uses the
+largest remaining defender budget around every future carrier.  A ranked band
+uses only the defender opportunities before that carrier's own deadline.
+Windows that the attacker enters early stop their exposure clocks.  A DAG can
+share repeated suffixes without increasing the selected path budget.  These
+reductions target the part of the proof where a coarse horizon creates the
+largest spatial bands.
+
+Forcing lines admit an additional node type.  The verifier first checks the
+named current threat masks, $\tau(F_Q)=b$, and the absence of an immediate
+defender win.  It protects every threat empty through that checkpoint.  It
+then searches exactly the extendable-hit kernel.  A kernel reply is copied at
+the same cell and cannot use D17 substitution.  A reply outside the kernel
+abandons the old subtree and invokes the finite escape contract with deadline
+$p(Q)+b+2$.  Ordinary descendants may use the debited clocks.  A loose threat
+family with $\tau(F_Q)<b$ does not qualify for this reduction.
+
+At a LOSS leaf, the compiler may retain at most three or five windows.  The
+verifier still checks their masks, completion legality, universal survivor
+condition, and defender non-win diagnostic.  The cap does not validate a
+heuristic threat list.
+
+No fixed partner table covers length six.  Potential checks apply to their
+fixed-family or finite-region premises; dynamic danger is otherwise an
+ordering heuristic.  P1, P2, and P3 also retain their frontier, dead-spoke,
+initial-legality, and singleton-nonwin checks.  Ordered intermediate nodes
+remain when a certificate depends on them.
+
+The measured 147-cell predecessor set against roughly 302 legal cells is a
+generator target, not a theorem zone.  Learned proposals and node caps have
+the same status.  They may shorten search, while only an accepted verifier
+rule reduces the defender set in the proof.
+
+\subsection{Future work}
+
+\paragraph{Broader gate debits.}
+The forced-hit result leaves four connected questions.  A target-independent
+scalar budget smaller than $B$ would shrink every coarse wrapper, but it must
+cover terminal ordering, LOSS remainders, and every window at once.  A
+substituted hit can change the legality frontier even when it answers the same
+threat, so a sound D17 debit needs a stronger domination or frontier-inertness
+certificate.  Checkpoint roles may offset the saved hazard radius, and a
+tight-gate theorem alone does not prove net searched-set shrinkage.  A family
+with transversal number below the placement budget also leaves a quiet move;
+a finite residual-state account for that slack could extend the gate method.
+Resolving these questions would determine when forcing pressure produces a
+predictable end-to-end branch reduction.
+
+\paragraph{Uniform and full-union geometry.}
+The uniform $8(B-1)$ obligation wrapper may contain slack not present in the
+exact ranks.  A smaller bound would simplify certificates that do not carry
+cell-specific deadlines.  It requires either a complete equality family or a
+role-and-turn theorem showing that a ghost-illegal carrier always has less
+than the full budget.  The full-union virgin radius has a different obstacle:
+overlap among the eighteen incident windows can select a seed that the target
+window no longer selects.  A solution would either construct certificates
+excluding every competing term or prove that overlap always yields a smaller
+safe union.
+
+\paragraph{Potential boundary.}
+Five questions remain distinct.  GAP-RAW asks whether every nonterminal
+defender-FirstStone position with $\Phi<1$ has some non-greedy forever
+defense.  GAP-GLOBAL-RENEWAL asks for an invariant that absorbs the stream of
+new touched windows.  GAP-AMORTIZED-ABANDONMENT asks whether killed or
+abandoned targets can fund that renewal without a divergent virgin sum.
+GAP-DYNAMIC-PAIRING asks whether pairs chosen with the position can complement
+the potential account even though a static global pairing is impossible.
+GAP-FINITE-CUTOFF asks for an a priori horizon bound for a finite witness to
+failure or survival.  A solution to the last question would turn the
+K\"onig-style finite reduction into a bounded decision procedure.
+
+\paragraph{Domination and local enumeration.}
+The P1 and P2 premises are deliberately narrow.  A richer causal boundary
+state could track unmatched frontier chains and live mask differences for a
+fixed horizon.  Such a state may certify more dead-cell replacements or more
+interchangeable hits.  It must preserve early terminality, actor-directed
+legal inclusion, and every crossing window.  Running the full MV-P1, MV-P2,
+and MV-P3 quotient specifications would add independent exhaustive checks of
+the present local patterns.  It would not by itself prove a broader pattern.
+
+\paragraph{Formalization.}
+The certificate objects are finite.  Positions have finite occupancy,
+windows queried by a certificate form finite families, transversal tests have
+budgets at most two, and the tree or DAG is finite.  These features make a
+Lean or Coq reference checker feasible.  A practical order is to formalize
+axial distance and windows, the phase machine and terminal order, the D9
+grammar, and the scalar recurrences.  The real--ghost coupling, ranked
+first-bad-event proof, transition envelopes, and gate escape proof can then be
+layered on those definitions.
+
+The work is substantial.  The unbounded board requires careful finite-support
+lemmas.  LOSS leaves quantify over a finite but adaptive defender remainder.
+DAG sharing needs path clocks and label consistency.  Gate checkpoints add a
+two-phase protected set and a separate escape horizon.  Potential boundary
+results use exact algebraic comparisons and a compactness argument.  A
+formalization would give a small trusted verifier and expose omitted scope
+conditions, but it would not certify the search heuristics or settle the OPEN
+rows without new mathematics.

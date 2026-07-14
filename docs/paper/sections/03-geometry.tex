@@ -1,93 +1,252 @@
-\section{Elementary geometry}
+\section{Locality and elementary geometry}
 \label{sec:geometry}
 
-The first bound relates the number of stones in a window to the maximum gap
-from an empty cell to those stones.
+The certificate proof uses two kinds of locality.  A six-cell window has
+small diameter, while a new stone changes legality only within radius eight.
+The first group of statements controls tactics inside one window.  The second
+group lists every channel that must be checked when two positions differ.
+Complete derivations are recorded in the companion proof
+\cite{hexobot-companions}.
+
+A line segment with many stones has few empty cells.  The farthest empty
+cannot be farther from all stones than the number of empties permits.
 
 \begin{lemma}[Packing bound]
 \label{lem:L1}
 In a window with $k\ge1$ stones of one colour and no stones of the other,
-every empty cell of the window is within distance $6-k$ of a same-window
-stone.  The bound is tight.
+every empty cell is within distance $6-k$ of a same-window stone.  The bound
+is tight.
 \end{lemma}
 
-\begin{proof}
-Index the cells $0,\ldots,5$ along the window axis.  Let $e$ be empty, and let
-$\delta$ be its axis-distance from a nearest in-window stone.  The $\delta$
-cells from $e$ toward that stone, including $e$ and excluding the stone, are
-empty and lie in the window.  There are $6-k$ empty cells in total, so
-$\delta\le6-k$.  By \cref{fact:F1}, axis-distance agrees with hex distance
-for these cells.  For tightness, put the stones at offsets
-$6-k,\ldots,5$ and take $e$ at offset $0$.
+\begin{proof}[Proof sketch]
+Index the window cells from $0$ to $5$ along its axis.  If an empty cell has
+nearest in-window stone at axis distance $\delta$, then that cell and the
+$\delta-1$ cells between them are empty.  Hence $\delta\le6-k$.  Axis distance
+equals hex distance inside a window by \cref{fact:F1}.  Stones at offsets
+$6-k,\ldots,5$ and an empty at offset $0$ attain equality.
 \end{proof}
 
-Figure~\ref{fig:packing} displays the extremal arrangement and a concrete
-$k=3$ instance of the general formula.
+\begin{plainterms}
+Four stones in a live window put every remaining cell within distance two.
+Three stones give distance three.  These two substitutions drive most of the
+local tactical bounds.
+\end{plainterms}
 
 \begin{figure}[tbp]
   \centering
-  \begin{tikzpicture}[scale=.68]
-    \HexPatch{0/0,1/0,2/0,3/0,4/0,5/0}
-    \HexWindow[window one]{0}{0}{1}{0}
-    \HexAttacker{3}{0}\HexAttacker{4}{0}\HexAttacker{5}{0}
-    \node[inner sep=0pt] at (2.598,1.52)
-      {$\overbrace{\hspace{3.53cm}}$};
-    \node[font=\scriptsize] at (2.598,2.08) {$d=6-k=3$};
-    \node[font=\scriptsize] at (0,-1.35) {$e$};
-    \foreach \q in {0,...,5}{
-      \node[font=\scriptsize,yshift=-13mm] at \HexAt{\q}{0} {$\q$};
-    }
-  \end{tikzpicture}
-  \caption{The tightness configuration for the packing bound, shown at
-  $k=3$.  In general the $k$ stones occupy offsets $6-k$ through $5$, while
-  the empty cell at offset $0$ is at distance $6-k$ from the nearest stone.}
+  \begin{subfigure}[t]{.47\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=.48]
+      \HexPatch{0/0,1/0,2/0,3/0,4/0,5/0}
+      \HexWindow[window one]{0}{0}{1}{0}
+      \HexAttackerList{3/0,4/0,5/0}
+      \HexMark{0}{0}{cross}{}
+      \HexDistance{0}{0}{3}{0}{$6-k=3$}
+    \end{tikzpicture}
+    \caption{The equality case for $k=3$.}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[t]{.47\textwidth}
+    \centering
+    \begin{tikzpicture}[scale=.48]
+      \HexPatch{0/0,1/0,2/0,3/0,4/0,5/0}
+      \HexWindow[window two]{0}{0}{1}{0}
+      \HexAttackerList{2/0,3/0,4/0,5/0}
+      \HexMark{0}{0}{cross}{}
+      \HexDistance{0}{0}{2}{0}{$6-k=2$}
+    \end{tikzpicture}
+    \caption{The threat case for $k=4$.}
+  \end{subfigure}
+  \caption{The packing bound and its tight configurations.  A cross marks the
+  empty cell at offset zero.}
   \label{fig:packing}
 \end{figure}
 
-A mixed set of occupied and empty cells on a finite line segment must change
-state across some adjacent pair.
+Whenever a window contains at least one stone and at least one empty, the
+boundary between occupied and empty offsets gives an adjacent pair.
 
 \begin{lemma}[Boundary pair]
 \label{lem:L2}
 Any window containing at least one stone and at least one empty cell has an
-empty cell at distance $1$ from a same-window stone.
+empty cell at distance one from a same-window stone.
 \end{lemma}
 
-\begin{proof}
-The six cells are consecutive on a line.  The stone cells form a nonempty
-proper subset of this sequence.  At a boundary of that subset, a stone and an
-empty cell are consecutive.  Their hex distance is $1$ by
-\cref{fact:F1}.
+\begin{proof}[Proof sketch]
+The occupied offsets form a nonempty proper subset of a six-cell line.  At a
+boundary of this subset, an occupied offset and an empty offset are adjacent.
+Their axis distance and hex distance are one.
 \end{proof}
 
-The packing bound places all tactics that can resolve within the current turn
-near stones already on the board.
+The packing bound places every current tactical answer close to a stone that
+already supports the same window.
 
 \begin{theorem}[Single-turn tactical locality]
 \label{thm:T1}
 Every placement that completes a win within the current turn, and every empty
-cell of every threat window, lies within distance $2$ of an existing stone.
+cell of every threat window, lies within distance two of an existing stone.
 \end{theorem}
 
-\begin{proof}
-Completion within at most two placements requires a window with at least four
-stones of the mover already present.  Apply \cref{lem:L1} with $k=4$ to its
-empty cells.  A threat window also has at least four stones by
-\cref{def:D5}, so the same bound applies to every one of its empty cells.
+\begin{proof}[Proof sketch]
+A completion using at most two placements starts from an alive window with at
+least four stones of that player.  A threat has the same count lower bound by
+\cref{def:D5}.  Apply \cref{lem:L1} with $k=4$.
 \end{proof}
 
-Creating a threat can start one cell farther away because the placement need
-only raise an existing three-stone window to count four.
+\begin{plainterms}
+Immediate wins and direct threat answers are always legal after the opening.
+They lie inside the smaller radius-two neighborhood, even though the game
+allows radius-eight placements.
+\end{plainterms}
+
+Creating a new threat needs three earlier stones in its witness window.  This
+gives the radius used by the common local candidate generator.
 
 \begin{theorem}[Threat-creation locality]
 \label{thm:T2}
-A placement creating an $X$-threat lies within distance $3$ of an $X$ stone.
-The bound is tight.
+A placement that creates an $X$-threat lies within distance three of an
+existing $X$ stone.  The bound is tight.
 \end{theorem}
 
-\begin{proof}
-Immediately before the placement, the window that becomes an $X$-threat held
-at least three $X$ stones.  Apply \cref{lem:L1} with $k=3$ to the placement
-cell.  For tightness, place $X$ stones at offsets $3,4,5$ of a window and make
-the threat-creating placement at offset $0$.
+\begin{proof}[Proof sketch]
+Immediately before the placement, its witness window contains at least three
+$X$ stones.  Apply \cref{lem:L1} with $k=3$.  Stones at offsets $3,4,5$ and a
+placement at offset $0$ attain distance three.
 \end{proof}
+
+\begin{plainterms}
+Radius three contains every move that turns an existing three-stone support
+into a threat.  It does not contain every setup move in a long certificate.
+A fourth future setup placement can enter a window that is empty at the
+current node.
+\end{plainterms}
+
+\subsection{The three causal channels}
+
+A transfer argument compares positions that differ by one or more defender
+stones.  The next lemma gives a complete checklist for the one-stone step.
+
+\begin{lemma}[Difference accounting]
+\label{lem:L3}
+Let $P'=P\mathbin{\pm}\{x\}$ differ from $P$ by one stone at cell $x$.  Every
+game-relevant predicate difference is confined to the following channels:
+\begin{enumerate}[label=\textup{(C\arabic*)}]
+  \item occupancy and ownership of $x$;
+  \item the masks of the eighteen windows containing $x$, including every
+  completion, alive/dead, threat, $\ownwinnow$, $\hit$, and $\mhs$ predicate;
+  \item the legality frontier
+  $\{c:\dist(c,x)\le8\}\setminus\operatorname{dom}\sigma$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}[Proof sketch]
+The transition rule reads occupancy at the move cell, the legality predicate,
+and incident window masks.  All tactical predicates are functions of window
+masks.  A stone changes only its eighteen incident masks and supplies legality
+only inside its radius-eight ball.  The position has no other mutable state.
+\end{proof}
+
+\begin{plainterms}
+Matching threat counts is not enough.  A valid simulation must also preserve
+the cells needed later and explain any new legal cells.  The main coupling and
+the domination patterns use this same checklist.
+\end{plainterms}
+
+Stones never leave the board.  This gives the direction in which window states
+can change along a play.
+
+\begin{lemma}[Permanence]
+\label{lem:L4}
+Window masks are coordinatewise nondecreasing along every play.  Dead windows
+remain dead.  A window alive for $X$ at ply $t$ is alive for $X$ at every
+earlier ply.
+\end{lemma}
+
+\begin{proof}[Proof sketch]
+Each transition adds one stone and removes none.  A mixed-colour mask cannot
+lose either colour.  If an opponent stone had occupied a window earlier, it
+would still occupy it at ply $t$.
+\end{proof}
+
+Adding defender stones away from named cells and windows is safe in a
+particular direction.  The exact completion clause prevents an invalid
+monotonicity shortcut.
+
+\begin{lemma}[Inert-extension transfer]
+\label{lem:L5}
+Let $P'=P+X$, where $X$ is a finite set of defender stones.  Let
+$\mathcal W$ be a set of windows and $C$ a set of cells such that no
+$x\in X$ lies in a member of $\mathcal W$ and $X\cap C=\varnothing$.  Then:
+\begin{enumerate}[label=\textup{(\alph*)}]
+  \item every cell of $C$ empty in $P$ is empty in $P'$;
+  \item every $W\in\mathcal W$ has identical masks in $P$ and $P'$;
+  \item $\Legal(P)\setminus X\subseteq\Legal(P')$, and every cell of $C$
+  legal in $P$ is legal in $P'$;
+  \item the $\A$-complete windows of $P'$ are exactly the $\A$-complete
+  windows of $P$ that avoid $X$.
+\end{enumerate}
+Thus an attacker completion on a window known to avoid $X$ transfers from
+$P$ to $P'$, and every attacker completion in $P'$ was available in $P$.
+\end{lemma}
+
+\begin{proof}[Proof sketch]
+The first two parts are occupancy and mask equality.  Added stones can add
+legality support, while their occupied cells leave the legal set.  A window
+completed by the attacker must contain no defender stone, so exactly the
+$X$-free completions remain.
+\end{proof}
+
+\begin{plainterms}
+Extra defender stones can make more moves legal, but they can also block an
+attacker window.  Transfer is valid only for named cells and windows that
+avoid those stones.
+\end{plainterms}
+
+Deleting defender stones helps attacker masks but can remove the only support
+that made a later attacker placement legal.
+
+\begin{lemma}[Deletion monotonicity and well-formed legality]
+\label{lem:L6}
+Let $P''=P-Y$, where $Y$ is a finite set of defender stones of $P$.  Then:
+\begin{enumerate}[label=\textup{(\alph*)}]
+  \item every attacker threat of $P$ is an attacker threat of $P''$, so the
+  defender's $\mhs(P'')\ge\mhs(P)$ and defender $\lambda^1$ LOSS verdicts
+  transfer from $P$ to $P''$;
+  \item attacker-complete windows of $P$ are attacker-complete in $P''$;
+  \item a cell empty in $P$ is empty or newly empty in $P''$;
+  \item legality may shrink.  Every relied-upon attacker placement must be
+  within distance eight of a stone outside $Y$.  In the uses below it is
+  within distance three of an attacker stone, as in \cref{thm:T2}, or within
+  distance eight of an unaffected root stone.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}[Proof sketch]
+Deleting defender stones cannot kill an attacker threat or completion.  It
+can only make occupied cells empty.  It can also delete a legality witness,
+which is why the last condition is independent of mask monotonicity.
+\end{proof}
+
+\begin{plainterms}
+Removing defender stones makes the attack no weaker inside existing windows.
+It can still make an attacker move illegal.  Every deletion argument must name
+an attacker or root stone that continues to justify that move.
+\end{plainterms}
+
+The final elementary count separates stones already in a window from defender
+placements that remain before a deadline.
+
+\begin{lemma}[Completion counting]
+\label{lem:L7}
+If $\cnt_\D(W,P)=s$ and the defender makes at most $D$ placements at plies
+strictly before $T$, then $W$ cannot become defender-complete before $T$
+unless $s+D\ge6$.
+\end{lemma}
+
+\begin{proof}[Proof sketch]
+A defender completion contains six defender stones.  At most $s$ are present
+at $P$, and at most $D$ further stones can be placed before $T$.
+\end{proof}
+
+These lemmas do not by themselves define a safe reply set.  The certificate
+must say which cells and windows are relevant, and it must attach a deadline
+to each one.  That data is introduced next.

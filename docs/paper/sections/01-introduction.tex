@@ -1,46 +1,181 @@
-\section{Introduction}
+\section{Introduction and reader's guide}
 \label{sec:introduction}
 
-A df-pn threat-space solver must, at a defender AND node, in principle
-consider every legal reply.  In Hexo this means every empty cell within hex
-distance 8 of any existing stone, often hundreds of cells.  Enumerating these
-replies dominates the cost of the search.
+Hexo is played on an unbounded hexagonal grid.  A player wins by occupying
+six consecutive cells on one of the three grid axes.  After the opening move,
+each turn normally contains two placements.  A move is legal when it is close
+to some stone already on the board.  The legal region therefore grows with
+the position.  A distant placement can matter later even when it does not
+touch a current threat.
 
-The restriction studied here is \emph{certified}: every omitted defender
-reply has a verifier-checkable proof of sound dismissal.  Search trimming may
-cause the solver to miss an attacker win, so it can reduce completeness.  It
-cannot cause a false attacker win to pass verification.  This separation
-between completeness and soundness holds regardless of the heuristic used to
-generate the searched replies.
+This paper studies the defender nodes of threat-space search.  Threat-space
+search follows forcing attacking moves and asks whether every defense still
+leads to a win.  The natural OR nodes are often narrow because the search has
+chosen one attacking continuation.  The AND nodes are wide.  A midgame node
+can have hundreds of legal defender replies.  Testing all of them at every
+depth can dominate the search even when the tactical line itself is short.
+This is the main branching problem addressed here.
 
-The restriction is finite and certificate-relative.  Each node carries a
-local upper bound on the remaining defender placements.  Each future attacker
-placement or leaf-witness empty is a live obligation with its own deadline.
-Direct obligations, ranked seed guards, touched-window empties, and virgin
-window seed bands form the certified zone.  This local accounting gives the
-resolution bound of the selected certificate path.  No fixed static set is
-sufficient for every continuation on the unbounded board.
+The usual local shortcut is unsafe.  A defender stone outside the visible
+threats can expand the radius-eight legality frontier.  Later stones can use
+that new support to reach a cell required by the attacking line.  The same
+remote play can also start a run that completes before the planned attack.
+A sound restriction must account for occupancy, the windows changed by a
+stone, and the legality frontier created by that stone.  A rule based only on
+the current threat cells misses two of those effects.
 
-The paper first gives the formal game model in \cref{sec:game} and the
-locality lemmas in \cref{sec:geometry}.  It then defines zone-carrying
-certificates in \cref{sec:certificates} and proves pathwise dismissal soundness
-in \cref{sec:main-theorem}.  The constructions of
-\cref{sec:computable-zones} give the ranked zone, an extendable-hit kernel,
-sparse LOSS witnesses, branch-indexed substitution envelopes, and finite DAG
-certificates.  One open problem from the first version, the frontier-band
-accounting, is resolved by the ranked deadline and touched--virgin exposure
-analysis.  The same section distinguishes the certified zone from a measured
-predecessor generator whose mean size was 147 cells, compared with 302 legal
-cells.  The remaining layers establish the impossibility of a global pairing
-defense in \cref{sec:no-pairing}, develop potential-function certificates in
-\cref{sec:potential}, give local domination patterns in
-\cref{sec:domination}, and report mechanized evidence in
-\cref{sec:validation}.
+The remedy is a certificate.  A certificate is a finite attacking strategy
+tree with exact positions, legal transitions, terminal witnesses, and a
+declared resolution time.  It also records which future cells must remain
+available.  A separate verifier checks the tree.  Search may use aggressive
+move ordering or incomplete candidate generation, but a claimed win is
+accepted only when the certificate covers every omitted defender reply.
+This separates fast discovery from trusted verification.
 
-Threat-space search and proof-number methods provide the search setting for
-these certificates \cite{allis-1994,nagai-2002}.  Pairing strategies and the
-potential method are standard tools for positional games
-\cite{erdos-selfridge-1973,beck-2008}.
+The central result gives a sound coverage test for each ordinary defender
+node.  Its mandatory zone has four parts.  Direct obligations protect cells
+that are already legal.  Ranked seed guards stop a remote reply from opening a
+chain into an obligation before its deadline.  Touched-window guards protect
+windows that already contain a defender stone and can complete in time.
+Virgin-window guards cover a legal seed that can reach and fill an empty
+window before the attack resolves.  Each obligation and each window uses a
+local clock.  A deeper certificate can therefore protect more territory than
+a shallow certificate, while unrelated long branches do not inflate every
+node.
 
-The full internal proof documents, review history, and validation scripts are
-available in the repository \cite{hexobot-companions}.
+The proof compares a real play with a ghost walk through the certificate.  A
+searched defender reply is copied.  An omitted reply is placed only on the
+real board, while a searched filler is placed on the ghost board.  The two
+positions can then differ in defender stones but continue to share attacker
+stones, ply, mover, and budget.  The four-part zone prevents those differences
+from occupying a required attacker cell or completing a defender window
+before the mapped resolution.  Terminal witnesses then transfer from the
+ghost path to the real play.
+
+Some forcing nodes permit a smaller hazard count.  If the current threats
+force the defender to choose from a tight hitting kernel, an exact copied hit
+does not create a real-only legality frontier.  The gate calculus debits that
+hit from the role clock and charges it to a particular defender window only
+when the hit lies in that window.  An ignored gate keeps the full cost of the
+remaining defender turn, because the defender may try to win before the
+attacker uses a surviving threat.  This is a proved, target-specific debit.
+It does not reduce the general path budget, assign zero cost to a substituted
+reply, or guarantee that every final searched set becomes smaller.
+
+Several finite results sharpen the certificate format.  A LOSS leaf needs at
+most three threat windows when one defender placement remains and at most five
+when two remain.  Both caps are attained by Hexo configurations.  A separate
+kernel theorem handles fully forced regions entered with identical real and
+ghost positions.  Transition envelopes allow a dismissal to select a
+particular searched child, but they must include the current transition.
+Finite acyclic certificate graphs are sound when shared labels and clocks are
+consistent.
+
+The pairing result locates an exact lattice threshold.  No position-independent
+matching can put a defensive pair inside every length-six Hexo window.  The
+density obstruction becomes equality at length seven, where an index-twelve
+periodic perfect matching covers every window exactly once.  The construction
+is minimal among periodic constructions.  This closes the global static
+pairing question for the Hexo board while leaving position-dependent local
+pairings available as search devices.
+
+The potential layer describes a different defensive certificate.  A weighted
+sum over attacker-touched live windows can block a fixed family forever when
+the defender moves first and the sum is below one.  The same scalar applied to
+the changing family protects a finite horizon, not an unrestricted game.
+Newly touched windows add mass.  An exhaustive 124-branch calculation shows
+that every dynamic greedy tie-breaking rule can lose from a position below
+the threshold.  A short clean-escape proof also shows that no defense can
+preserve that raw sublevel set at every turn.  Finite-horizon extensions and a
+finite reduction remain valid.  The existence of a different non-greedy
+forever defense is open.
+
+Local domination gives three additional solver rules.  A dead-cell reply can
+be dismissed when its named substitute has no new legality frontier.  Two
+hits of one threat can be interchangeable under dead-spoke and support
+conditions.  Two placements of the same turn commute when both were legal at
+turn start and neither first placement wins.  These rules are independent of
+the ranked zone and can reduce branching before certificate verification.
+
+The limit map separates absolute game constants from bounds that are final
+only inside a named certificate or potential framework.  It records which
+thresholds are attained, which are merely sufficient, and which questions
+remain open.  This prevents a local verifier bound from being read as a
+position-independent law of the game.
+
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}
+    \begin{scope}[xshift=-7.0cm,scale=.39]
+      \HexBoardRange{0}{0}{3}
+      \HexAttackerList{-2/0,-1/0,0/0,1/0}
+      \HexDefenderList{-2/2,2/-2}
+      \HexShadeList[zone direct]{2/0,3/0}
+      \node[font=\scriptsize,align=center] at (0,-7.0)
+        {one tactical position\\many legal replies};
+    \end{scope}
+    \draw[->,>=Stealth,line width=.8pt] (-4.35,0) -- (-2.75,0);
+    \node[font=\scriptsize,above] at (-3.55,0) {search};
+    \begin{scope}[xshift=-.65cm,yshift=.35cm]
+      \node[cert node] (r) {exact AND node};
+      \node[cert node,below left=7mm and 5mm of r] (c1) {searched\\reply};
+      \node[cert node,below right=7mm and 5mm of r] (c2) {searched\\reply};
+      \draw[cert edge] (r)--(c1);
+      \draw[cert edge] (r)--(c2);
+      \node[font=\scriptsize,align=center] at (0,-2.25)
+        {finite certificate\\with clocks and witnesses};
+    \end{scope}
+    \draw[->,>=Stealth,line width=.8pt] (1.55,0) -- (3.05,0);
+    \node[font=\scriptsize,above] at (2.3,0) {verify};
+    \begin{scope}[xshift=5.2cm]
+      \node[draw,text width=3.35cm,minimum height=2.45cm,align=left,
+        font=\scriptsize] (z) {direct obligations\\ranked seed guards\\
+        touched-window guards\\virgin-window guards};
+      \node[font=\scriptsize,align=center,below=3mm of z]
+        {verified coverage of every omission};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{Orientation.  Search proposes a finite attacking certificate.
+  Verification reconstructs the obligations and clocks that justify the
+  omitted defender replies.}
+  \label{fig:orientation}
+\end{figure}
+
+\subsection{How to read the paper}
+
+The formal development starts in \cref{sec:game}.  The companion directory
+contains the longer derivations and the records of finite checks
+\cite{hexobot-companions}.  The paper gives complete proofs for the dismissal
+theorem, the ranked-zone reading, the gate soundness theorem, the sparse
+witness theorem, the pairing threshold, and the short boundary results proved
+here.  Other supporting statements are given with proof
+sketches and a companion citation.
+
+\begin{table}[tbp]
+  \centering
+  \small
+  \begin{tabular}{@{}p{.20\linewidth}p{.31\linewidth}p{.39\linewidth}@{}}
+    \toprule
+    Purpose & Main route & Optional material on a first pass \\
+    \midrule
+    Solver implementation &
+      \cref{sec:game,sec:certificates,sec:main-theorem,sec:computable-zones,sec:gates,sec:validation,sec:conclusions} &
+      The density proof in \cref{sec:pairing} and the detailed potential
+      boundary in \cref{sec:potential}. \\
+    Combinatorial results &
+      \cref{sec:geometry,sec:witnesses,sec:pairing,sec:potential,sec:tightness} &
+      The verifier data structures in \cref{sec:certificates,sec:computable-zones}. \\
+    General orientation &
+      This section, \cref{sec:game,sec:main-theorem,sec:gates,sec:conclusions} &
+      Proof details in \cref{sec:certificates,sec:potential} and the
+      crosswalk in \cref{sec:appendix}. \\
+    \bottomrule
+  \end{tabular}
+  \caption{Reader routes through the paper.}
+  \label{tab:reader-routes}
+\end{table}
+
+Threat-space search and df-pn supply the algorithmic setting
+\cite{allis-1994,nagai-2002}.  The conclusions return to implementation and
+state which tests are safe, which reductions are conditional on extra
+certificate data, and which questions remain heuristic.

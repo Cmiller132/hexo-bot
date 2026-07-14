@@ -1,0 +1,334 @@
+\section{Pairing on the hex lattice}
+\label{sec:pairing}
+
+A pairing strategy fixes disjoint pairs of cells before play.  Whenever the
+attacker occupies one member of a pair, the defender takes the other.  Such a
+strategy blocks a target window when that window contains both members of at
+least one pair.  The method would reduce a reply choice to one cell, but the
+density required by the three hex-lattice axes is too high for length-six
+windows.  Length seven is the exact periodic threshold.
+
+For this section only, a \emph{length-$k$ window} is a set of $k$ consecutive
+cells on one of the three axes.  A partial matching is a set of unordered cell
+pairs in which each cell occurs at most once.  A matching \emph{covers} a
+window if both endpoints of one of its pairs lie in that window.
+
+\subsection{The length-six obstruction}
+
+The first theorem counts the matched cells demanded separately by the three
+axis directions.  A cell matched along one direction cannot also meet the
+demand from either of the other two directions.
+
+\begin{theorem}[No pairing]
+\label{thm:T8}
+There is no partial matching $M$ of the axial hex lattice such that every
+length-six window contains both cells of a pair in $M$.
+\end{theorem}
+
+\begin{plainterms}
+A position-independent pairing cannot draw Hexo by itself.  Each axis needs
+more than two fifths of the cells to be matched along that axis, while a cell
+can belong to only one pair.  The three demands exceed the available cells.
+The obstruction concerns a global matching; it does not forbid a partial
+pairing inside a certified finite region.
+\end{plainterms}
+
+\begin{proof}
+Discard every pair that is contained in no length-six window.  This removes
+all non-axis-aligned pairs and every axis pair whose endpoints have axis
+distance greater than five.  The covering property is unchanged.
+
+Fix one physical axis line and identify its cells with the integers.  A pair
+with endpoints $p$ and $p+\delta$, where $1\leq\delta\leq5$, lies in exactly
+the windows whose start $s$ satisfies
+\[
+ p+\delta-5\leq s\leq p.
+\]
+It therefore covers $6-\delta\leq5$ consecutive window starts.  If pairs are
+ordered by their left endpoints, the intervals of starts covered by
+consecutive pairs cannot have a gap.  Hence
+\[
+ p_{i+1}-p_i\leq 6-\delta_{i+1}\leq5.
+\]
+A line segment of $L$ cells contains $L-5$ internal length-six windows and
+therefore needs at least $(L-5)/5$ pairs whose endpoints lie in that segment.
+Those pairs account for at least $2(L-5)/5$ matched cells along this axis.
+
+Let
+\[
+ B_R=\{x:\dist(x,0)\leq R\},
+ \qquad |B_R|=3R^2+3R+1.
+\]
+For any one axis, $B_R$ meets $2R+1$ line segments, and their lengths sum to
+$|B_R|$.  Summing the preceding lower bound over those segments and then over
+the three axes gives
+\[
+ \text{matched-cell incidences in }B_R
+ \ \geq\ \frac65|B_R|-6(2R+1).
+\]
+Every matched cell contributes to exactly one axis, namely the axis of its
+pair.  A partial matching thus supplies at most $|B_R|$ such incidences.  At
+$R=20$, the ball has $1261$ cells, whereas the lower bound is
+\[
+ \frac65(1261)-6(41)=1267.2>1261.
+\]
+This is a contradiction.
+\end{proof}
+
+The same density calculation gives a threshold for any translation-invariant
+line system with negligible boundary.  The hypotheses below state the
+geometric setting needed by the count; they do not refer to an arbitrary graph
+called a grid.
+
+\begin{corollary}[Translation-invariant line grids]
+\label{cor:T8.1}
+Consider $k$-in-a-row on a point lattice with $g$ pairwise nonparallel,
+translation-invariant line directions.  Suppose that every lattice line is
+equipped with length-$k$ windows at all integer offsets and that lattice balls
+have boundary-to-volume ratio tending to zero.  If a partial matching covers
+every length-$k$ window, then
+\[
+ g\frac{2}{k-1}\leq1,
+ \qquad\text{and hence}\qquad k\geq2g+1.
+\]
+\end{corollary}
+
+\begin{plainterms}
+Each direction asymptotically consumes a fraction $2/(k-1)$ of all cells.
+Boundary cells cannot repair an excessive total because their proportion
+tends to zero.  For the three hex axes the first possible length is seven, so
+Hexo's target length six falls one cell below the pairing threshold.
+\end{plainterms}
+
+\begin{proof}
+Discard pairs that lie in no target window.  On a fixed direction, a pair at
+axis distance $\delta\in\{1,\ldots,k-1\}$ is contained in exactly
+$k-\delta\leq k-1$ window starts.  In a large finite set, all but a boundary
+term of its internal windows must therefore be covered by at least one pair
+per $k-1$ window starts.  Each such pair uses two cells.  The matched-cell
+density required for that direction is at least $2/(k-1)$ after division by
+the volume and passage along a boundary-to-volume sequence.
+
+Pairs assigned to distinct directions have disjoint endpoints because the
+pair family is a matching.  Adding the $g$ lower densities gives
+$2g/(k-1)\leq1$.  Rearrangement gives $k\geq2g+1$.
+\end{proof}
+
+For comparison, four square-grid directions give the necessary bound
+$k\geq9$, consistent with the standard pairing construction for nine in a
+row.  Three hex-grid directions give $k\geq7$.  The next theorem attains that
+bound on the hex lattice.
+
+\subsection{The threshold construction}
+
+The construction uses a quotient with twelve cell orbits.  Six unit pairs
+match those orbits, two pairs in each direction.  Their lifts select one unit
+edge phase out of every six on every physical axis line.
+
+\begin{theorem}[Threshold pairing at $k=7$]
+\label{thm:T8.2}
+On the three-axis hex lattice there is a periodic perfect matching such that
+every length-seven window contains exactly one matched pair.  It has a period
+lattice of index $12$, and no periodic construction has smaller index.
+\end{theorem}
+
+\begin{plainterms}
+Increasing the target length from six to seven makes a global pairing
+possible.  The twelve-cell tile below matches every cell once and places one
+pair in every seven-cell window.  The index bound says that no smaller
+periodic tile can do the same job.  This theorem locates the threshold; it does
+not provide a pairing defense for length-six Hexo.
+\end{plainterms}
+
+\begin{proof}
+Write the three positive axis steps as
+\[
+ H=(1,0),\qquad V=(0,1),\qquad D=(1,-1).
+\]
+Take the period lattice
+\[
+ \Lambda=\langle(2,2),(0,6)\rangle
+ =\{(2m,2m+6n):m,n\in\mathbb Z\}.
+\]
+Its determinant has absolute value $12$, and
+\[
+ F=\{0,1\}\times\{0,1,2,3,4,5\}
+\]
+is a fundamental domain.  Take every simultaneous $\Lambda$-translate of the
+following six pairs:
+\[
+\begin{array}{c@{\qquad}l}
+H &(0,0){-}(1,0),\quad (0,1){-}(1,1),\\
+V &(0,3){-}(0,4),\quad (1,3){-}(1,4),\\
+D &(1,2){-}(2,1),\quad (1,5){-}(2,4).
+\end{array}
+\tag{9.1}
+\]
+
+\begin{figure}[tb]
+\centering
+\begin{tikzpicture}[scale=.46]
+  % Three copies of the fundamental domain under translation by (2,2).
+  \HexPatch{-2/-2,-2/-1,-2/0,-2/1,-2/2,-2/3,
+    -1/-2,-1/-1,-1/0,-1/1,-1/2,-1/3,
+    0/0,0/1,0/2,0/3,0/4,0/5,
+    1/0,1/1,1/2,1/3,1/4,1/5,
+    2/2,2/3,2/4,2/5,2/6,2/7,
+    3/2,3/3,3/4,3/5,3/6,3/7,
+    0/-1,2/1,4/3,4/6}
+  \HexShadeList[window one]{0/0,0/1,0/2,0/3,0/4,0/5,
+    1/0,1/1,1/2,1/3,1/4,1/5}
+  % A few translated pairs show continuation beyond the central tile.
+  \HexPair[draw=black!62,line width=1.5pt]{-2}{-2}{-1}{-2}
+  \HexPair[draw=black!62,line width=1.5pt]{-2}{-1}{-1}{-1}
+  \HexPair[draw=black!62,dashed,line width=1.5pt]{-2}{1}{-2}{2}
+  \HexPair[draw=black!62,dashed,line width=1.5pt]{-1}{1}{-1}{2}
+  \HexPair[draw=black!62,densely dotted,line width=1.5pt]{-1}{0}{0}{-1}
+  \HexPair[draw=black!62,densely dotted,line width=1.5pt]{-1}{3}{0}{2}
+  \HexPair[pair horizontal]{0}{0}{1}{0}
+  \HexPair[pair horizontal]{0}{1}{1}{1}
+  \HexPair[pair vertical]{0}{3}{0}{4}
+  \HexPair[pair vertical]{1}{3}{1}{4}
+  \HexPair[pair diagonal]{1}{2}{2}{1}
+  \HexPair[pair diagonal]{1}{5}{2}{4}
+  \HexPair[draw=black!62,line width=1.5pt]{2}{2}{3}{2}
+  \HexPair[draw=black!62,line width=1.5pt]{2}{3}{3}{3}
+  \HexPair[draw=black!62,dashed,line width=1.5pt]{2}{5}{2}{6}
+  \HexPair[draw=black!62,dashed,line width=1.5pt]{3}{5}{3}{6}
+  \HexPair[draw=black!62,densely dotted,line width=1.5pt]{3}{4}{4}{3}
+  \HexPair[draw=black!62,densely dotted,line width=1.5pt]{3}{7}{4}{6}
+  \node[font=\scriptsize,align=center] at \HexAt{-.5}{-2.9}
+    {$F-(2,2)$};
+  \node[font=\scriptsize,align=center] at \HexAt{.5}{5.9}
+    {central $F$};
+  \node[font=\scriptsize,align=center] at \HexAt{2.5}{7.9}
+    {$F+(2,2)$};
+  \node[font=\scriptsize,anchor=west] at (13.7,-1.1)
+    {\tikz\draw[pair horizontal] (0,0)--(.7,0);\; $H$};
+  \node[font=\scriptsize,anchor=west] at (13.7,-1.8)
+    {\tikz\draw[pair vertical] (0,0)--(.7,0);\; $V$};
+  \node[font=\scriptsize,anchor=west] at (13.7,-2.5)
+    {\tikz\draw[pair diagonal] (0,0)--(.7,0);\; $D$};
+\end{tikzpicture}
+\caption{The index-$12$ pairing tile.  The softly shaded cells are the
+fundamental domain $F$.  The six dark pairs are the representatives in
+\textup{(9.1)}; lighter pairs are translates by $\pm(2,2)$.  Diagonal
+representatives cross the displayed fundamental-domain boundary, as required
+by the quotient matching.}
+\label{fig:pairing-tile}
+\end{figure}
+
+To prove that the lifted pairs form a matching, use the quotient map
+\[
+ \phi(q,r)=(q\bmod2,\ r-q\bmod6)
+ \colon\mathbb Z^2\longrightarrow\mathbb Z_2\times\mathbb Z_6.
+\]
+Its kernel is $\Lambda$.  The endpoints in (9.1) have the following images:
+\[
+\begin{array}{c@{\qquad}l}
+H &(0,0){-}(1,5),\quad (0,1){-}(1,0),\\
+V &(0,3){-}(0,4),\quad (1,2){-}(1,3),\\
+D &(1,1){-}(0,5),\quad (1,4){-}(0,2).
+\end{array}
+\]
+These are the twelve distinct elements of
+$\mathbb Z_2\times\mathbb Z_6$.  Every lattice cell is therefore incident
+with exactly one lifted pair.
+
+The three axis steps map under $\phi$ to
+\[
+ (1,5),\qquad(0,1),\qquad(1,4).
+\]
+Each image has order six.  Each axis direction consequently forms two
+six-cycles on the twelve quotient cells.  The construction selects one edge
+on each of those six cycles.  Equivalently, the horizontal pair starts on the
+two line orbits are $(6n,0)$ and $(6n,1)$, the vertical starts are
+$(0,3+6n)$ and $(1,3+6n)$, and both diagonal line orbits have starts with
+$q\equiv1\pmod6$.  Thus every physical line has one selected unit-edge phase
+modulo six.  A length-seven window has six consecutive internal unit edges,
+so it contains exactly one selected pair.
+
+It remains to prove periodic minimality.  We first record the equality forced
+on any periodic covering.  Pass, if needed, to a period sublattice whose
+quotient is injective on every set of diameter at most six.  Let that quotient
+have $N$ cell orbits and $P$ pair orbits.  Discard pairs lying in no
+length-seven window.  A remaining pair is axis-aligned at distance
+$\delta\in\{1,\ldots,6\}$ and lies in $7-\delta\leq6$ window orbits.  There
+are $3N$ window orbits.  Counting pair--window incidences gives
+\[
+ 3N\leq\sum_e(7-\delta_e)\leq6P\leq3N.
+\tag{9.2}
+\]
+The last inequality is $2P\leq N$.  Equality holds throughout.  Hence every
+cell is matched, every pair is a unit pair, every window contains exactly one
+pair, and each axis has $N/6$ pair orbits.
+
+On one physical line, let $x_s\in\{0,1\}$ indicate that the unit edge starting
+at $s$ is selected.  Exact coverage gives
+\[
+ \sum_{i=0}^{5}x_{s+i}=1
+ \qquad\text{for every }s.
+\]
+Subtracting the equation at $s+1$ from the equation at $s$ yields
+$x_s=x_{s+6}$.  Exactly one residue class modulo six is selected, and this
+indicator has least positive period six.
+
+Return to any period lattice for the same pairing.  The order of each axis
+step in its quotient must be divisible by six, since translation by that
+order preserves the line indicator.  The quotient index $N$ is therefore
+divisible by six.  If $N<12$, then $N=6$.  An abelian group of order six is
+cyclic, and its only elements of order six are $g$ and $-g$.  The difference
+of two such elements has order at most three.  The third hex-axis step is the
+difference of the first two, yet it too must have order six.  This
+contradiction proves that index twelve is minimal.
+\end{proof}
+
+\subsection{Finite verification of the periodic search}
+
+The quotient proof reduces the periodic search to six phase variables, one
+for each of the two line cycles in each of the three directions.  Each
+variable has six possible phases.  An exact-cover row consists of one
+line-cycle constraint and the two endpoint constraints of the selected edge.
+The resulting instance has $36$ rows and $18$ columns: six line-cycle columns
+and twelve cell columns.
+
+The mechanical check exhausts all $6^6=46{,}656$ phase assignments.  An MRV
+Algorithm~X traversal visits exactly $419$ recursive states and finds $120$
+labelled solutions.  A separate direct traversal of all $46{,}656$ phase
+tuples also finds $120$, including the construction above.  The exact
+structural checks are recorded in \cref{tab:pairing-checks}.
+
+\begin{table}[tb]
+\centering
+\caption{Exact checks for the index-$12$ pairing.}
+\label{tab:pairing-checks}
+\begin{tabular}{lr}
+\toprule
+quantity & result\\
+\midrule
+pair orbits & $6$\\
+quotient cell orbits checked & $12$\\
+quotient cell-incidence histogram & $\{1:12\}$\\
+quotient start/axis window orbits checked & $36$\\
+quotient contained-pair histogram & $\{1:36\}$\\
+cells checked in $[-30,30]^2$ & $3721$\\
+finite-patch cell-incidence histogram & $\{1:3721\}$\\
+finite-patch windows checked & $11163$\\
+finite-patch contained-pair histogram & $\{1:11163\}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The quotient checks are exhaustive rather than samples.  Translation by
+$\Lambda$ preserves the matching and all three directions, so every cell is
+equivalent to one of the twelve quotient cells and every window is equivalent
+to one of the $12\cdot3=36$ quotient windows.  The finite patch is a separate
+implementation check.  The exact-cover encoding, direct enumeration, quotient
+trace, and patch check are documented with the companion proofs
+\cite{hexobot-companions}.
+
+The two threshold theorems leave a narrow implementation conclusion.  A
+global static pairing is unavailable for Hexo, but partial pairings remain
+available inside position-dependent certified regions.  The index-$12$
+construction applies to the neighboring length-seven game and shows that the
+density inequality in \cref{cor:T8.1} is attained at $g=3$.

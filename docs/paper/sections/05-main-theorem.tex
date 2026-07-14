@@ -1,47 +1,12 @@
-\section{Pathwise dismissal soundness}
+\section{Main theorem: dismissal soundness}
 \label{sec:main-theorem}
 
-The proof runs the real attacker strategy beside a ghost walk that stays on
-certificate branches.  The two positions remain synchronized in ply, mover,
-and budget while their defender stones may differ.
-
-\begin{figure}[tbp]
-  \centering
-  \begin{tikzpicture}[scale=.39]
-    \begin{scope}[xshift=-8.2cm]
-      \HexBoardRange{0}{0}{3}
-      \HexAttacker{-1}{0}\HexAttacker{0}{0}\HexAttacker{1}{-1}
-      \HexDefender{-1}{1}\HexDefender{2}{-1}
-      \node[defender stone,fill=black!30] at \HexAt{1}{1} {};
-      \HexMark{1}{1}{cross}{}
-      \node[font=\small] at (0,-6.8) {real game};
-    \end{scope}
-    \begin{scope}[xshift=8.2cm]
-      \HexBoardRange{0}{0}{3}
-      \HexAttacker{-1}{0}\HexAttacker{0}{0}\HexAttacker{1}{-1}
-      \HexDefender{-1}{1}\HexDefender{2}{-1}\HexDefender{-2}{0}
-      \node[font=\small] at (0,-6.8) {ghost game};
-    \end{scope}
-  \end{tikzpicture}
-
-  \vspace{1ex}
-  \begin{tabular}{@{}cl@{\qquad}cl@{}}
-    \tikz\node[attacker stone,minimum size=3.7mm] {}; & attacker stone &
-    \tikz\node[defender stone,minimum size=3.7mm] {}; & shared defender stone \\
-    \tikz{\node[defender stone,fill=black!30,minimum size=3.7mm] {};
-      \draw[line width=.8pt] (-.12,-.12)--(.12,.12);
-      \draw[line width=.8pt] (-.12,.12)--(.12,-.12);} &
-      $X$ (real only) &
-    \tikz\node[defender stone,minimum size=3.7mm] {}; & $Y$ (ghost only)
-  \end{tabular}
-  \caption{The coupling has shared attacker stones and canonical defender
-  differences.  The set $X$ contains dismissed real-only stones, while $Y$
-  contains searched ghost-only fillers.}
-  \label{fig:ghost-coupling}
-\end{figure}
-
-The main result transfers the selected certificate path to every legal real
-defender play.
+The certificate controls a ghost play, not the defender's actual choices.
+The proof compiles its designated OR moves into a real attacker strategy and
+maps every real defender placement to one certificate AND edge.  Direct
+obligations preserve attacker moves, ranked seed guards preserve future
+occupancy, and the completion guards prevent a defender win during the
+mapping.
 
 \begin{theorem}[Local-clock, pathwise dismissal soundness]
 \label{thm:T3}
@@ -49,104 +14,157 @@ defender play.
 Let $\mathcal C$ obey \cref{def:D9,def:D10,def:D11,def:D12,def:D14,def:D15,def:D16}
 and be zone-carrying under \cref{zone:Z2,zone:Z4} and
 \hyperref[zone:Z5prime]{clause \textup{(Z5$'$)}}.  For every real defender
-play against the compiled attacker strategy, either the real attacker
-wins strictly earlier than the mapped ghost resolution, or the play maps to a
-finite certificate path and $\A$ completes by that path's declared resolution.
-Consequently $\A$ wins by the global maximum $T$, and every certified
-dismissal is sound.
+play against the compiled attacker strategy, either the real attacker wins
+strictly earlier than the mapped ghost resolution, or the play maps to a
+finite certificate path and $\A$ completes by that path's declared
+resolution.  Consequently $\A$ wins by the global maximum $T$, and every
+certified dismissal is sound.
 \end{theorem}
+
+\begin{plainterms}
+The real defender may play any legal cell, including one omitted from the
+certificate.  The ghost consumes a searched reply on the same ply and keeps
+following the finite certificate.  The theorem says that the resulting board
+differences cannot remove a required attacker move or create a defender win
+before the recorded attacker resolution.
+\end{plainterms}
 
 \begin{proof}
 Couple the real position $R$, initially $P_0$, to a ghost walk $G$ on
-$\mathcal C$, maintaining \cref{def:D12}.  Process a typed leaf as soon as it
-is reached.
+$\mathcal C$.  Maintain equal ply, mover, and budget, identical attacker
+stones, and the canonical sets $X$, $Y$, and $\widehat X$ from
+\cref{def:D12}.  Process a typed leaf immediately when the ghost walk reaches
+it.
 
 \medskip\noindent
-\textbf{Step O (OR node, designated placement $c$).}
-The live placement role puts $c$ in $\Prot$ at every current ancestor, so
-$c\notin X$.  Ghost emptiness gives $c\notin Y$.  Thus $c$ is real-empty.
-Clause \cref{zone:Z4} supplies a shared attacker or root legality witness.
-Play $c$ in both games.
+\textbf{Step O: an OR node with designated placement $c$.}
+The live placement role puts $c$ in $\Prot$ at every current ancestor.  The
+invariant $X\cap\Prot=\varnothing$ gives $c\notin X$.  The ghost position
+leaves $c$ empty, so $c\notin Y$: a cell in $Y$ is ghost-occupied.  It follows
+that $c$ is empty in the real position.  Clause \cref{zone:Z4} supplies an
+attacker stone or unaffected root stone that is a legality witness in both
+positions.  The compiled strategy therefore places $c$ in both games.  Their
+attacker-stone sets remain identical.
 
-At an OR-COMPLETION, the other five cells of the named window are shared
-attacker stones.  The ghost window contains no defender stone, hence no
-$Y$-cell, and $c$ is not an $X$-cell.  The real placement completes the same
-window at the declared ply.  If the real placement instead completes another
-window that the ghost does not, \cref{lem:L5,lem:L6} give an immediate,
-strictly earlier real attacker win.  Otherwise discharge the role after its
-deadline check and descend to the exact child.
+Suppose the OR step is an OR-COMPLETION leaf.  Immediately before $c$, the
+other five cells of its named window are shared attacker stones.  The window
+is attacker-complete in the ghost after $c$, so it had no ghost defender
+stone before the move and contains no $Y$-cell.  The cell $c$ is not in $X$.
+The same placement therefore completes the same real window at the declared
+ply.  If the real placement completes another window that is not complete in
+the ghost, the extension and deletion transfers of
+\cref{lem:L5,lem:L6} make it an immediate, strictly earlier real attacker win.
+In either event the theorem's conclusion holds.  At an ordinary OR node,
+discharge the placement role after its deadline check and descend to the
+exact child.
 
 \medskip\noindent
-\textbf{Step A (AND node $N$, real defender placement $d$).}
-Exactly one of three cases holds: $d$ is ghost-occupied, ghost-empty and
-searched, or ghost-empty and unsearched.
+\textbf{Step A: an AND node $N$ and a real defender placement $d$.}
+Exactly one of three cases applies.  The cell $d$ is ghost-occupied, it is
+ghost-empty and searched, or it is ghost-empty and unsearched.  Before the
+cases, fix the following operation for any step on which the ghost cannot
+copy $d$.
 
 \smallskip\noindent
 \emph{Filler subroutine.}
-When the ghost must consume a defender ply without copying $d$, choose any
-$d_0\in S(N)$.  Independent nonemptiness is part of the certificate checks.
-The cell is ghost-empty and ghost-legal.  If $d_0\in X$, the ghost placement
-removes it from $X$; otherwise it adds $d_0$ to $Y$.  Recompute the canonical
-differences.  A new $Y$-cell is a searched filler and $X$ only shrinks.
+Choose any $d_0\in S(N)$.  Such a cell exists independently of the current
+real reply by \cref{def:D9,def:D11}.  It is empty and legal in the ghost
+position.  If $d_0\in X$, placing it in the ghost removes $d_0$ from $X$.
+Otherwise the placement adds $d_0$ to $Y$.  Recompute the canonical
+differences after the move.  Every new $Y$-cell is a searched ghost filler,
+and this operation can only shrink $X$.
 
 \smallskip\noindent
-\textbf{A1.}
-If $d$ is ghost-empty and searched, both games play $d$ and descend to its
-exact child.  The difference sets do not change.
+\textbf{Case A1: $d$ is ghost-empty and searched.}
+Both games place at $d$ and the ghost descends to its exact certificate child.
+The two placements add the same defender stone, so $X$ and $Y$ do not change.
+Ply, mover, and budget advance identically under \cref{def:D4}.
 
 \smallskip\noindent
-\textbf{A2.}
-If $d$ is ghost-occupied, then $d\in Y$.  The real placement removes it from
-$Y$.  Run the filler subroutine and descend to the filler child.
+\textbf{Case A2: $d$ is ghost-occupied.}
+The attacker stones are shared and $d$ is empty in the real position.  Thus
+$d\in Y$.  The real placement cancels this difference and removes $d$ from
+$Y$.  Run the filler subroutine in the ghost and descend to the exact child
+of the selected filler.  The two games again consume one defender placement
+and retain the same mover and budget.
 
 \smallskip\noindent
-\textbf{A3.}
-Suppose $d$ is ghost-empty and unsearched.  If it is ghost-legal and
-protected, then $d\in Z_{\rm dir}\subseteq S(N)$, a contradiction.  A
-ghost-legal dismissal is therefore outside $\Prot$ and, because it is outside
-$Z_{\rm seed}$, satisfies \cref{lem:L9prime}.  If $d$ is ghost-illegal, that
-lemma says its placement cannot create the first real-only protected stone.
-It is again outside the current $\Prot$.  The real game plays $d$ and adds it
-to $X$ and $\widehat X$.  Run the filler subroutine and descend.  First
-protected occupation and obligation nesting preserve
-$X\cap\Prot=\varnothing$.  This accounts for occupancy and the legality
-frontier.  Split completion safety, \cref{lem:L12}, excludes a real defender
-completion before the mapped attacker stop.
+\textbf{Case A3: $d$ is ghost-empty and unsearched.}
+First suppose $d$ is ghost-legal.  If it were protected, then
+$d\in\Zdir(N)$, and \cref{zone:Z2} would put it in $S(N)$.  Hence a
+ghost-legal dismissal is outside the current protected set.  It is also
+outside $\Zseed(N)$, so it satisfies the seed hypothesis of
+\cref{lem:L9prime} for every protected cell that is not yet ghost-legal.
+
+Now suppose $d$ is ghost-illegal.  Its real legality must come from a chain of
+real-only defender stones.  The first protected-occupation lemma says that
+placing it cannot be the first real-only occupation of a currently protected
+cell.  It is therefore outside the current protected set in this case as
+well.
+
+The real game places at $d$.  Add $d$ to $X$ and to the monotone history
+$\widehat X$.  Run the filler subroutine and descend to its child.  The ranked
+seed argument and reachable-obligation nesting preserve
+$X\cap\Prot=\varnothing$.  Occupancy is accounted for by the canonical
+update, and the radius-$8$ chain accounts for the legality frontier.  These
+are channels C1 and C3 of \cref{lem:L3}.  The fixed-window conclusion of
+\cref{lem:L12} accounts for channel C2: no real defender window completes
+before the mapped attacker wins or first enters that window.
 
 \medskip\noindent
-\textbf{WIN leaf.}
-Let $W$ be a named attacker-alive witness.  Its ghost attacker stones are
-shared.  Every other cell is in $E(W,P_L)$ and has a live witness-empty role,
-so it is $X$-free at leaf entry.  Attacker-aliveness excludes ghost defender
-stones and hence $Y$-cells.  The real and ghost masks and empty sets agree.
-By \cref{lem:L1}, the one or two empties lie within distance $2$ of shared
-attacker stones.  They are real-legal and remain empty.  The attacker fills
-them with no intervening defender placement and completes by the declared
-resolution.
+\textbf{A WIN leaf.}
+Let $W$ be a named attacker-alive witness.  Every ghost attacker stone in
+$W$ is shared.  Each other cell of $W$ belongs to $E(W,P_L)$ and carries a
+live witness-empty role, so it is not in $X$ at leaf entry.  Since $W$ is
+attacker-alive in the ghost, it contains no ghost defender stone and hence no
+$Y$-cell.  The complete real and ghost masks of $W$, including their empty
+sets, agree at leaf entry.
+
+The witness has one empty when its count is $5$, or two empties when its count
+is $4$ and the attacker budget is $2$.  By \cref{lem:L1}, these empties lie
+within distance $2$ of permanent shared attacker stones.  They are legal in
+the real position, remain empty, and can be filled without an intervening
+defender placement.  The real attacker completes $W$ within the current turn
+and by the leaf's declared resolution.
 
 \medskip\noindent
-\textbf{LOSS leaf.}
-The same compressed-obligation argument makes the real and ghost masks and
-empty sets identical for every $W\in\mathcal T$ at leaf entry.  Thus the real
-transversal number is the checked value $\tau(\mathcal T)>b$.
+\textbf{A LOSS leaf.}
+Apply the same compressed-obligation argument to every $W\in\mathcal T$.
+All attacker stones are shared, every ghost empty of $W$ is protected through
+leaf entry and is therefore $X$-free, and attacker-aliveness excludes a
+$Y$-cell.  Thus the real and ghost masks and empty sets of every named witness
+agree at leaf entry.  The real empty-set family has the checked transversal
+number
+\[
+  \tau(\mathcal T)>b.
+\]
 
-A real defender $\ownwinnow$ is impossible.  If its witness window has no
-ever-dismissed fill, \eqref{eq:MI}, the shared attacker mask, and the equal
-budget transfer the predicate to the ghost, contrary to the mandatory leaf
-check.  If it has an ever-dismissed fill, the first-dismissal exposure
-argument of \cref{lem:L12} includes the LOSS leaf's $b$ placements and
-precludes completion within the current defender turn.
+The real defender cannot satisfy $\ownwinnow$ at this leaf.  Consider a
+putative defender witness window.  If it has no ever-dismissed fill, the mask
+inequality \eqref{eq:MI}, the shared attacker mask, and the equal budget
+transfer the same immediate-win predicate to the ghost, contrary to the
+mandatory leaf check.  If it has an ever-dismissed fill, the first-dismissal
+and exposure argument in \cref{lem:L12} includes all $b$ placements remaining
+at the LOSS leaf and precludes completion during the current defender turn.
 
-Discharge the leaf roles and let the real defender choose any complete
-nonterminal remainder $H$.  Since $|H|\le b<\tau(\mathcal T)$, some
-$W_H\in\mathcal T$ has $E(W_H,P_L)\cap H=\varnothing$.  It remains alive for
-$\A$.  Its at most two surviving empties lie within distance $2$ of shared,
-permanent attacker stones, so the attacker completes it in the following turn
-by leaf-ply${}+b+2$.  No protection is needed after leaf entry; the adaptive
-quantifier over $H$ supplies the surviving witness.
+After the leaf-entry checks, discharge the witness-empty roles.  Let the real
+defender choose any complete nonterminal remainder $H$ of its turn.  Since
+$|H|\le b<\tau(\mathcal T)$, this set of placements cannot hit every named
+empty set.  There is some $W_H\in\mathcal T$ with
+\[
+  E(W_H,P_L)\cap H=\varnothing.
+\]
+The window remains alive for $\A$.  It has at most two surviving empties, and
+\cref{lem:L1} places them within distance $2$ of permanent shared attacker
+stones.  The attacker fills them during the following turn and completes
+$W_H$ by leaf-ply${}+b+2$.  No obligation protection is needed after leaf
+entry; the universal choice of $W_H$ supplies a witness that survived the
+actual remainder.
 
-Every nonterminal step descends the finite certificate.  In the absence of an
-earlier real attacker win, the coupled play reaches one of these terminal
-transfers and resolves by that selected path's declared ply.  The global $T$
-is their maximum.
+Every nonterminal operation descends one edge of the finite certificate.
+Thus, unless the real attacker has already won strictly earlier, the coupled
+play reaches an OR-COMPLETION, WIN, or LOSS transfer and resolves by that
+path's declared ply.  The global $T$ is the maximum of these declared
+resolutions.  The compiled strategy wins against every legal real defender
+play by $T$.
 \end{proof}

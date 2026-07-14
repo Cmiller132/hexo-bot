@@ -2,7 +2,7 @@
 \ProvidesPackage{hexfig}[2026/07/14 Reusable axial-coordinate Hexo figures]
 
 \RequirePackage{tikz}
-\usetikzlibrary{arrows.meta,positioning}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds,shapes.geometric}
 
 \definecolor{HexGrid}{RGB}{115,119,122}
 \definecolor{HexAttack}{RGB}{45,48,50}
@@ -25,6 +25,18 @@
   zone seed/.style={fill=black!38,draw=black,line width=.35pt},
   zone touched/.style={fill=black!62,draw=black,line width=.35pt},
   zone virgin/.style={fill=white,draw=black,densely dashed,line width=1.1pt},
+  real only/.style={regular polygon,regular polygon sides=4,fill=black,
+    draw=black,minimum size=4.6mm,inner sep=0pt,rotate=45},
+  ghost only/.style={circle,fill=white,draw=black,densely dashed,
+    line width=1pt,minimum size=5.2mm,inner sep=0pt},
+  pair horizontal/.style={draw=black,line width=2.2pt},
+  pair vertical/.style={draw=black,line width=2.2pt,dashed},
+  pair diagonal/.style={draw=black,line width=2.2pt,densely dotted},
+  cert node/.style={draw=black,rounded corners=1.5pt,align=center,
+    inner sep=3pt,font=\scriptsize,fill=white},
+  cert gate/.style={cert node,line width=1.1pt},
+  cert escape/.style={->,>=Stealth,dashed,line width=.8pt},
+  cert edge/.style={->,>=Stealth,line width=.8pt},
 }
 
 % \HexAt{q}{r}: expands to the Cartesian center of axial cell (q,r).
@@ -74,6 +86,18 @@
 % Example: \HexDefender{0}{1}
 \newcommand{\HexDefender}[2]{\node[defender stone] at \HexAt{#1}{#2} {};}
 
+% \HexAttackerList{q1/r1,q2/r2,...}: places several attacker stones.
+% Example: \HexAttackerList{0/0,1/0,2/0}
+\newcommand{\HexAttackerList}[1]{%
+  \foreach \q/\r in {#1}{\HexAttacker{\q}{\r}}%
+}
+
+% \HexDefenderList{q1/r1,q2/r2,...}: places several defender stones.
+% Example: \HexDefenderList{0/1,1/1}
+\newcommand{\HexDefenderList}[1]{%
+  \foreach \q/\r in {#1}{\HexDefender{\q}{\r}}%
+}
+
 % \HexWindow[style]{start-q}{start-r}{axis-q}{axis-r}: highlights six cells.
 % Example: \HexWindow[window two]{-2}{0}{1}{0}
 \newcommand{\HexWindow}[5][window one]{%
@@ -114,6 +138,35 @@
 \newcommand{\HexShadeCell}[3][zone direct]{%
   \path[#1] \HexAt{#2}{#3}
     ++(30:.93) \foreach \angle in {150,210,270,330,30}{-- ++(\angle:.93)} -- cycle;
+}
+
+% \HexShadeList[style]{q1/r1,q2/r2,...}: shades several named cells.
+% Example: \HexShadeList[zone touched]{0/0,1/0}
+\newcommand{\HexShadeList}[2][zone direct]{%
+  \foreach \q/\r in {#2}{\HexShadeCell[#1]{\q}{\r}}%
+}
+
+% \HexPair[style]{q1}{r1}{q2}{r2}: draws one matched cell pair.
+% Example: \HexPair[pair horizontal]{0}{0}{1}{0}
+\newcommand{\HexPair}[5][pair horizontal]{%
+  \draw[#1,shorten <=2.2mm,shorten >=2.2mm]
+    \HexAt{#2}{#3} -- \HexAt{#4}{#5};%
+  \fill \HexAt{#2}{#3} circle (1.5pt);%
+  \fill \HexAt{#4}{#5} circle (1.5pt);%
+}
+
+% \HexRealOnly{q}{r}: marks a defender stone present only on the real board.
+% Example: \HexRealOnly{1}{0}
+\newcommand{\HexRealOnly}[2]{\node[real only] at \HexAt{#1}{#2} {};}
+
+% \HexGhostOnly{q}{r}: marks a defender stone present only on the ghost board.
+% Example: \HexGhostOnly{0}{1}
+\newcommand{\HexGhostOnly}[2]{\node[ghost only] at \HexAt{#1}{#2} {};}
+
+% \HexCellText{q}{r}{text}: puts compact text at a cell centre.
+% Example: \HexCellText{0}{0}{$h$}
+\newcommand{\HexCellText}[3]{%
+  \node[font=\scriptsize,inner sep=.5pt] at \HexAt{#1}{#2} {#3};%
 }
 
 % \HexLegendSwatch[style]: draws a compact swatch for a figure legend.

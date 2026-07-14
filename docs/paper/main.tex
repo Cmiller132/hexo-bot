@@ -12,18 +12,18 @@
 \maketitle
 
 \begin{abstract}
-Threat-space search in Hexo has large defender branching because every legal
-reply must ordinarily be considered.  We give a certified restriction based
-on local defender budgets, cell-ranked obligation guards, and separate
-completion guards for touched and virgin windows.  A verifier accepting these
-conditions preserves an attacker win over the full legal move set and obtains
-the resolution bound of the selected certificate path.  Further results give
-an extendable-hit kernel for forced regions, sparse LOSS witnesses,
-branch-indexed substitution, and finite certificate DAGs.  Companion results
-cover global pairing impossibility, potential-function blocking certificates,
-local domination patterns, and mechanized evidence for the predecessor search
-heuristic.
+Threat-space search in Hexo has large defender branching because a legal
+reply may be far from the current tactics.  We give finite certificates that
+restrict those replies without changing a verified attacker win.  The main
+result is a horizon-parameterized dismissal theorem with ranked obligation
+guards and separate completion guards.  Exact-copy forcing gates permit a
+target-specific debit, while sparse LOSS witnesses, a sharp pairing threshold,
+and potential-function bounds describe complementary parts of the search.
+The paper states the verifier contracts, records their proved limits, and
+separates machine-checked finite claims from mathematical proofs.
 \end{abstract}
+
+\tableofcontents
 
 \input{sections/01-introduction}
 \input{sections/02-game}
@@ -31,13 +31,16 @@ heuristic.
 \input{sections/04-certificates}
 \input{sections/05-main-theorem}
 \input{sections/06-computable-zones}
-\input{sections/07-no-pairing}
-\input{sections/08-potential}
-\input{sections/09-domination}
-\input{sections/10-validation}
-\input{sections/11-open-problems}
+\input{sections/07-forced-hit-gates}
+\input{sections/08-sparse-witnesses}
+\input{sections/09-pairing}
+\input{sections/10-potential}
+\input{sections/11-validation}
+\input{sections/12-tightness}
+\input{sections/13-conclusions}
+
 \appendix
-\input{sections/99-appendix-notation}
+\input{sections/99-appendix}
 
 \section*{Acknowledgments}
 The underlying proof documents were drafted and adversarially reviewed with the assistance of AI systems (Claude and GPT-family models), machine-checked where stated, and strengthened in response to an external round-5 review.

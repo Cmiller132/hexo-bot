@@ -1,0 +1,205 @@
+\section{Mechanized validation}
+\label{sec:validation}
+
+The main soundness results are mathematical proofs.  Some auxiliary claims
+also have finite machine checks.  Other computations measure a search
+generator or test a local rule on sampled positions.  These roles are
+different.  This section records the input class, the published count, and
+the conclusion supported by each run.  The scripts and full traces are
+described in the repository companion documents \cite{hexobot-companions}.
+
+\subsection{Search-harness runs}
+
+The compact search model reproduces the engine's coordinates, legality,
+phase machine, per-placement terminal check, and threat masks.  Random replay
+found matching legal sets and terminal decisions after each placement.  No
+aggregate concordance count is published, so this remains implementation
+evidence rather than an exhaustive equivalence proof.
+
+On 400 random positions, the largest observed distances were two for an
+immediate completion or threat hit and three for threat creation.  A separate
+universe measurement found means of about 302 legal cells, 121 radius-three
+cells, and 80 radius-two cells.  The radius-three plus attacker-touched predecessor
+generator later measured about 147 cells against the roughly 302-cell legal
+baseline.  These are measurements, not verifier constants.
+
+The engineered junction position supplies a negative control.  Restricting
+the defender to the radius-two set produced an attacker win after 2,374
+uncapped search nodes.  The run proved all 217 turns of the form
+``mandatory pin hit plus radius-two spare'' losing under that restriction.
+The omitted distance-three junction reply, paired with the same mandatory
+hit, was not refuted by an uncapped search through depth eight.  The
+comparison establishes that radius two is an unsound defender restriction.
+It does not establish that the junction reply is a full-game defender win.
+The defender-side survival probe stops at the first unrefuted child, which is
+valid for non-loss at the tested horizon but not for a LOSS proof.
+
+A comparison on 109 attackable positions found no genuine radius-two versus
+full-set divergence.  One node-cap artifact was re-adjudicated at two million
+nodes and gave the same \textsc{win} verdict in both variants.  A sparse
+failure mode still invalidates a universal pruning rule.
+
+On the engineered junction, the predecessor closure contained the junction
+cell and the defender survived after 1,396 uncapped nodes.  A bounded run on
+91 attackable positions produced 52 restricted \textsc{win} claims, zero
+full-set divergences at the matched horizon, and a time of 139 seconds.  The
+radius-two controls show that the harness can expose an unsound restriction.
+The closure run remains search evidence; it does not prove \cref{thm:T7} or
+replace \cref{thm:T3,thm:T4}.
+
+\begin{table}[tbp]
+  \centering
+  \caption{Published search-harness counts and their scope.}
+  \label{tab:search-validation}
+  \small
+  \renewcommand{\arraystretch}{1.08}
+  \begin{tabular}{@{}p{.22\textwidth}p{.25\textwidth}p{.43\textwidth}@{}}
+    \toprule
+    Run & Published count & Supported conclusion \\
+    \midrule
+    Local-distance sample & 400 positions; maxima 2 and 3 &
+      Confirms the predicted local distances on the sample only. \\
+    Radius-two junction & 2,374 nodes; 217 restricted turns &
+      Gives a concrete false-pruning control for radius two. \\
+    Random radius-two comparison & 109 positions; 0 genuine divergences &
+      Measures rarity in the sample; does not restore soundness. \\
+    Closure junction & 1,396 uncapped nodes &
+      Confirms that the tested closure retains the known junction defense. \\
+    Closure random comparison & 91 positions; 52 claims; 0 divergences;
+      139 seconds &
+      Tests the generator at matched horizons; does not prove ranked-zone
+      coverage. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Domination spot checks}
+
+The domination rules in \cref{sec:computable-zones} have analytic proofs.
+Two finite randomized checks exercise their most error-prone rule channels.
+The turn-commutation check generated 2,997 legal same-mover pairs after
+filtering out every singleton-winning prefix.  It found zero differences in
+the final occupancy, masks, legal support, next phase, or terminal winner.
+The dead-cell check generated 400 adversarial configurations.  The stones
+that make the focal cell dead were placed at large permitted offsets.  It
+found zero violations of the radius-eight frontier containment in
+\cref{lem:Dom-L7}.  The worst cell in the focal radius-eight ball was at
+distance six from an existing stone, leaving a distance margin of two.
+
+These checks are not exhaustive proofs of the domination patterns.  The
+companion gives finite quotient specifications for MV-P1, MV-P2, and MV-P3,
+including 289 marked local geometries for MV-P1 and 81 for MV-P3 after the
+stated local-incidence quotient.  It also counts
+$942{,}779{,}391{,}290$ dead-star colourings up to the dihedral symmetry in
+the MV-P1 regression space.  Those numbers describe prospective enumeration
+spaces.  The full quotient enumerations have not been run.  In particular,
+the 2,997-pair and 400-position checks do not justify dropping the
+frontier-inertness premise of P1, the dead-spoke and support premises of P2,
+or either singleton premise of P3.
+
+\subsection{Four finite-check campaigns}
+
+Four focused campaigns accompany the forced-hit, tightness, pairing, and
+potential results.  The review log records that the repaired
+assertion-enabled checkers exit successfully.  Only the pairing and potential
+reports publish exhaustive state counts.  The tightness and forced-hit
+reports publish the checked predicates but no aggregate assertion count.
+
+\paragraph{Threshold pairing.}
+The pairing checker works on the twelve-cell quotient of the period lattice
+in \cref{thm:T8.2}.  Its exact-cover instance has 36 rows and 18 columns: six
+line-cycle constraints and twelve endpoint constraints.  Direct phase space
+has $6^6=46{,}656$ assignments.  An MRV Algorithm~X traversal exhausted the
+instance in 419 recursive states and found 120 labelled solutions.  A
+separate direct iteration over all 46,656 phase tuples also found 120.  The
+displayed six-pair construction occurs in both enumerations.
+
+The checker verifies six pair orbits and twelve quotient cell orbits.  The
+cell-incidence histogram is $\{1:12\}$.  It verifies 36 quotient
+start-and-axis window orbits, with contained-pair histogram $\{1:36\}$.
+As a redundant finite-patch test, it checks all 3,721 cells in
+$[-30,30]^2$ and all 11,163 length-seven windows starting there.  The two
+patch histograms are $\{1:3721\}$ and $\{1:11163\}$.  Translation by the
+period lattice makes the quotient checks exhaustive for the infinite
+construction.  This computation establishes the stated matching and
+coverage properties and exhausts the six phase variables for that quotient.
+The index-minimality argument is analytic.  The computation does not produce
+a pairing for length six, does not replace the density proof of
+\cref{thm:T8}, and does not rule out position-dependent partial pairings.
+
+\paragraph{Exact-surd greedy refutation.}
+The potential checker represents each value as an integer pair for
+$(a+b\sqrt3)/27$ and compares pairs without floating point.  It includes
+every exact greedy maximizer along the fixed attacker continuation in
+\cref{thm:ES-greedy-refutation}.  The successive input/output state counts
+for the eight defender placements are
+\[
+  1/4,\quad 4/4,\quad 4/12,\quad 12/124,\quad
+  124/242,\quad 242/124,\quad 124/124,\quad 124/124.
+\]
+State deduplication merges only identical coloured boards at the same phase.
+At the last defender placement, 106 states have unique second maximum
+$(-3,1)$ and 18 have unique second maximum $(-2,-1)$.  All 124 branches omit
+the attacker's winning cell.  The checker verifies legality, every
+nonterminal prefix, the exact alive-window profiles, every maximum and tie,
+and one terminal window on all 124 branches.  It also constructs a legal
+39-placement engine history for the enlarged reachable witness and replays
+the same full greedy tree there.
+
+There is no randomness, beam, or depth cutoff in this enumeration.  It proves
+that the named fixed attacker continuation defeats every dynamic-greedy
+tie-breaking on the stated position.  It does not prove that every defender
+strategy loses from every position with $\Phi<1$.  That raw existential
+question remains open.  It also does not weaken the fixed-family and
+finite-region sufficiency theorems, whose target families do not renew in the
+same way.
+
+\paragraph{Tightness checks.}
+The tightness checker publishes the following summary.  The triangle has
+three threats, transversal number two, and minimum witness size three.  The
+five-cycle has five threats, transversal number three, and minimum witness
+size five.  The T6 diagnostic has $K_1=\{k\}$ while the omitted cell is an
+immediate defender completion.  The OR-COMPLETION and leaf-entry deadline
+roles pass their protection checks.  The exact-rank, virgin-radius,
+touched-equality, and T5 local distance/count traces pass.  The report then
+states that all tightness checks passed.  It publishes no aggregate number of
+assertions or configurations.
+
+The checker establishes the listed finite mask, transversal, deadline, and
+arithmetic facts.  The remaining coordinate families and framework-scope
+arguments in the tightness report are prose proofs.  In particular, a
+checked equality for one fixed window does not create a complete
+countercertificate for the full union of zone terms.  The OPEN and relative
+classifications in \cref{sec:tightness} therefore remain part of each result.
+
+\paragraph{Forced-hit review.}
+The forced-hit report gives an eight-stage finite verifier procedure.  It
+recomputes each named threat mask and empty set; checks the transversal number
+and the defender non-win diagnostic; enumerates the kernel; checks exact
+successors and the ban on kernel substitution; propagates checkpoint roles;
+computes the least $f$ and queried $Q^{\D}$ values in reverse topological
+order; enumerates the four debited zone terms at ordinary nodes; and checks
+every escape deadline.  The 15-plus-15 sharpness position separately checks
+all 18 incident windows per stone, nonterminality, and the stated maximum
+defender count.  The report and review log record a successful
+assertion-enabled checker run, but they publish no aggregate count of
+assertions, queried windows, or certificate nodes.
+
+The machine run is a consistency check on finite data and recurrences.  The
+proof of \cref{thm:T11} is analytic and has status \textsc{proven}, not
+\textsc{proven-mech}.  The run does not prove a target-independent reduction
+of $B$, a zero-cost substituted hit, automatic net shrinkage of the final
+searched set, or a debit for slack pressure.  Those nonclaims are part of the
+PARTIAL boundary of the gate calculus.
+
+\subsection{Validation boundary}
+
+The validation layers support different statements.  Exhaustive quotient
+enumeration proves the finite pairing construction.  Exact branch
+enumeration proves the all-ties greedy counterexample.  The tightness and
+forced-hit checkers confirm named finite calculations while their main
+claims remain analytic or scope-qualified.  Randomized domination checks
+test implementations of proven local rules.  Search-harness runs measure a
+candidate generator and supply negative controls.  None of these runs allows
+a verifier to accept an omitted defender reply without the hypotheses of the
+theorem used at that node.

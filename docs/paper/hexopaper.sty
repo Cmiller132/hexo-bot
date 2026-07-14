@@ -1,7 +1,7 @@
 \NeedsTeXFormat{LaTeX2e}
 \ProvidesPackage{hexopaper}[2026/07/14 Hexo paper setup]
 
-\RequirePackage[margin=1in]{geometry}
+\RequirePackage[margin=0.65in]{geometry}
 \RequirePackage{microtype}
 \RequirePackage{amsmath}
 \RequirePackage{amssymb}
@@ -13,6 +13,25 @@
 \RequirePackage{caption}
 \RequirePackage{subcaption}
 \RequirePackage{xcolor}
+
+% Tectonic's cached article class contains the 11pt size file but not the
+% 10pt one.  Use the available class and set a conventional 10/12 body size.
+\makeatletter
+\renewcommand\normalsize{%
+  \@setfontsize\normalsize{10pt}{11.3pt}%
+  \abovedisplayskip 10pt plus 2pt minus 5pt%
+  \abovedisplayshortskip 0pt plus 3pt%
+  \belowdisplayshortskip 6pt plus 3pt minus 3pt%
+  \belowdisplayskip \abovedisplayskip%
+  \let\@listi\@listI}
+% Paragraph columns carry prose; leave a flexible right edge rather than
+% stretching short lines in narrow table cells.
+\let\hex@arrayparboxrestore\@arrayparboxrestore
+\def\@arrayparboxrestore{%
+  \hex@arrayparboxrestore
+  \rightskip=0pt plus 1fil\relax}
+\makeatother
+\AtBeginDocument{\normalsize}
 
 \definecolor{HexLink}{RGB}{42,72,92}
 \definecolor{HexCite}{RGB}{82,66,92}
@@ -37,9 +56,11 @@
 \theoremstyle{remark}
 \newtheorem*{remark}{Remark}
 \newtheorem*{example}{Example}
+\newtheorem*{plainterms}{In plain terms}
 
-\crefname{fact}{fact}{facts}
+\crefname{fact}{Fact}{Facts}
 \Crefname{fact}{Fact}{Facts}
+\crefname{plainterms}{in plain terms}{in plain terms}
 
 \newcommand{\A}{\mathrm{A}}
 \newcommand{\D}{\mathrm{D}}
@@ -49,6 +70,7 @@
 \newcommand{\Stones}{\operatorname{Stones}}
 \newcommand{\Legal}{\operatorname{Legal}}
 \newcommand{\Prot}{\operatorname{Prot}}
+\newcommand{\Obl}{\operatorname{Obl}}
 \newcommand{\mhs}{\operatorname{mhs}}
 \newcommand{\hit}{\operatorname{hit}}
 \newcommand{\ownwinnow}{\operatorname{own\_win\_now}}
@@ -57,11 +79,29 @@
 \newcommand{\axisS}{\mathfrak a_s}
 \newcommand{\DefCount}{\mathfrak D}
 \newcommand{\nonWIN}{\mathrm{nonWIN}}
+\newcommand{\Ball}[2]{B_{#1}(#2)}
+\newcommand{\Rcert}{R_{\mathrm{cert}}}
+\newcommand{\Rsearch}{R_{\mathrm{search}}}
+\newcommand{\Zdir}{Z_{\mathrm{dir}}}
+\newcommand{\Zseed}{Z_{\mathrm{seed}}}
+\newcommand{\Ztouch}{Z_{\mathrm{touch}}}
+\newcommand{\Zvirgin}{Z_{\mathrm{virgin}}}
+\newcommand{\ZdirFH}{Z_{\mathrm{dir}}^{FH}}
+\newcommand{\ZseedFH}{Z_{\mathrm{seed}}^{FH}}
+\newcommand{\ZtouchFH}{Z_{\mathrm{touch}}^{FH}}
+\newcommand{\ZvirginFH}{Z_{\mathrm{virgin}}^{FH}}
+\newcommand{\qedhereplain}{\hfill$\square$}
 
-% The cached Tectonic bundle used for this paper lacks the 6pt Computer Modern
-% math outlines.  Reuse the 8pt script font for nested scripts at 11pt text.
-\DeclareMathSizes{10.95}{10.95}{8}{8}
+% The cached Tectonic bundle contains the complete 10pt Latin Modern family,
+% but not the italic optical-size files used by smaller math styles.  Scale
+% the complete family for scripts so every mathematical alphabet stays intact.
+\DeclareMathSizes{10.95}{10.95}{10}{10}
+\DeclareMathSizes{10}{10}{10}{10}
+\DeclareMathSizes{8}{10}{10}{10}
 
 \setlist{nosep}
 \setlength{\parindent}{1.25em}
 \setlength{\parskip}{0pt}
+\setlength{\emergencystretch}{1em}
+\captionsetup{labelfont=bf}
+\captionsetup[sub]{font=small,justification=raggedright,singlelinecheck=false}

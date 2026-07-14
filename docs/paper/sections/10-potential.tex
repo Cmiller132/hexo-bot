@@ -1,0 +1,921 @@
+\section{The potential layer and its boundary}
+\label{sec:potential}
+
+Pairing tries to assign one permanent response to every target.  A potential
+argument instead assigns a weight to each surviving target and lets the
+defender remove as much weight as possible on each placement.  The argument
+is exact for a fixed finite family of windows.  On the infinite board, a
+separate source term is needed when an attacker stone turns a stone-free
+window into an active target.  This distinction determines which conclusions
+are permanent and which cover only a finite horizon.
+
+Throughout this section the defender is the Breaker in the potential
+calculation.  A real defender completion only ends the game in the defender's
+favor, so ignoring that objective is conservative.  We use
+\[
+ \lambda=\sqrt3.
+\]
+This is the largest exponential base supported by the two-against-two greedy
+comparison of Erd\H{o}s--Selfridge and Beck
+\cite{erdos-selfridge-1973,beck-2008}.
+
+\subsection{Fixed target families}
+
+Within this section, a window is \emph{potential-active} at $P$ when it is
+attacker-touched and defender-free:
+$W\cap A\ne\varnothing$ and $W\cap D=\varnothing$.  This is narrower than
+``alive for $\A$'' in \cref{def:D5}; an all-empty window is not
+potential-active.
+
+The fixed-family potential retains window labels.  Distinct windows continue
+to count separately even if their residual empty sets happen to coincide.
+This makes the danger removed by a defender placement an exact sum.
+
+\begin{definition}[Residual potential and danger]
+\label{def:ES-potential}
+Let $F$ be a finite labelled family of windows.  At a position $P$, let
+\[
+ \mathcal L_F(P)=\{W\in F:W\cap D=\varnothing\}
+\]
+be its surviving labels and put
+\[
+ E_P(W)=W\setminus A.
+\]
+The fixed-family residual potential is
+\[
+ \Psi_F(P)=\sum_{W\in\mathcal L_F(P)}
+                   \lambda^{-|E_P(W)|}.
+\tag{10.1}
+\]
+For an empty cell $x$, its fixed-family danger is
+\[
+ d_F(x;P)=
+ \sum_{\substack{W\in\mathcal L_F(P)\\x\in E_P(W)}}
+       \lambda^{-|E_P(W)|}.
+\tag{10.2}
+\]
+The dynamic touched-window potential is
+\[
+ \Phi(P)=
+ \sum_{\substack{W:W\cap A\ne\varnothing\\W\cap D=\varnothing}}
+       \lambda^{-e_P(W)},
+ \qquad e_P(W)=6-|W\cap A|.
+\tag{10.3}
+\]
+Stone-free windows are absent from \textup{(10.3)}.
+\end{definition}
+
+\begin{plainterms}
+Each unfinished target receives more weight as the attacker fills it.  A
+defender move deletes every target it meets, while an attacker move increases
+the terms of targets it advances.  The dynamic sum omits untouched windows
+because the infinite board contains infinitely many of them; assigning each
+even a fixed positive virgin weight would make the sum diverge.
+\end{plainterms}
+
+For a fixed residual family, a defender placement at $x$ decreases
+$\Psi_F$ by exactly $d_F(x;P)$.  An attacker placement at $x$ multiplies each
+affected term by $\lambda$, and therefore increases the potential by exactly
+$(\lambda-1)d_F(x;P)$.  If all dangers are at most $S$ before an attacker
+placement, every danger after that placement is at most $\lambda S$.
+
+Sequential greedy defense recomputes \textup{(10.2)} before each defender
+placement and takes an empty cell of maximum danger.  Ties follow one fixed
+deterministic order.  If all dangers vanish, the strategy uses a deterministic
+legal filler.  One concrete filler rule chooses an occupied cell with greatest
+$q$ coordinate, breaks ties by greatest $r$, and takes its positive
+$Q$-neighbor.  That neighbor is empty by maximality and is legal at distance
+one.  The rule is recomputed if a second filler is needed.
+
+The next lemma is the numerical core.  Its hypothesis about legal positive
+danger cells holds when every surviving label was potential-active at the
+initial defender epoch.
+
+\begin{lemma}[One fixed-family round]
+\label{lem:ES-round}
+Let the defender make two sequential fixed-family greedy placements, followed
+by the next attacker turn or its terminal prefix.  Suppose every
+positive-danger cell is legal.  If the round reaches the next full defender
+epoch, the fixed-family potential there is no larger than it was at the
+initial defender epoch.  The corresponding upper bound also holds at a
+terminal attacker prefix.
+\end{lemma}
+
+\begin{plainterms}
+The two greedy defender placements remove at least as much potential as the
+next attacker pair can restore.  Recomputing after the first defender move is
+part of the argument, because it supplies two separate maxima.  The equality
+$\lambda^2-1=2$ is the numerical balance behind the result.
+\end{plainterms}
+
+\begin{proof}
+Let $\delta_1$ and $\delta_2$ be the exact reductions on the two defender
+placements.  After both placements, let $S$ be the greatest remaining danger.
+Deleting labels cannot increase danger at another cell.  Each greedy maximum
+was therefore at least $S$, so
+\[
+ \delta_1+\delta_2\geq2S.
+\]
+The first attacker placement adds at most $(\lambda-1)S$.  The second adds at
+most $(\lambda-1)\lambda S$.  Their total increase is at most
+\[
+ (\lambda-1)(1+\lambda)S=(\lambda^2-1)S=2S.
+\]
+The net change is nonpositive.  Omitting a terminal second placement can only
+reduce the increase.
+\end{proof}
+
+The strict terminal threshold is one: a completed labelled target has empty
+residual set and contributes $\lambda^0=1$ by itself.
+
+\begin{theorem}[Fixed-family blocking]
+\label{thm:ES-fixed-family}
+Let $P_0$ be a nonterminal defender-\emph{FirstStone} position, and let $F$ be
+a finite fixed family of windows that are potential-active at $P_0$.  If
+\[
+ \Psi_F(P_0)<1,
+\tag{10.4}
+\]
+then sequential fixed-family greedy defense prevents the attacker from ever
+completing a member of $F$.
+\end{theorem}
+
+\begin{plainterms}
+The theorem protects exactly the targets named at the starting position.  It
+does not automatically enroll a window that is still stone-free there.  The
+full defender turn and the strict inequality are both part of the statement.
+Fillers are permitted once no positive fixed-family danger remains.
+\end{plainterms}
+
+\begin{proof}
+By \cref{lem:ES-round}, induction over full defender epochs keeps
+$\Psi_F\leq\Psi_F(P_0)<1$.  Defender placements only decrease the sum.  If a
+member of $F$ were completed on the second attacker placement, the next-epoch
+potential would be at least one, a contradiction.  If completion occurred on
+the first placement, the one-placement version of the round estimate gives
+\[
+ \Psi_F\leq \Psi_F(P_t)-2S+(\lambda-1)S<1
+\]
+at that placement, again contradicting its completed term of weight one.
+Every alleged win occurs at a finite placement, so induction over finite
+prefixes proves the infinite conclusion.
+\end{proof}
+
+The base $\sqrt3$ is optimal within this comparison.  For a general
+$\lambda>1$, the attacker pair can add $(\lambda^2-1)S$, while two greedy
+defender placements guarantee only $2S$.  Thus $\lambda\leq\sqrt3$ is needed,
+and the largest permitted base minimizes every unfinished-edge weight.  Base
+$2$ is not a substitute: three separated count-four targets have total weight
+$3\cdot2^{-2}=3/4<1$, but the defender kills at most two of them.  The
+inequality in \textup{(10.4)} also cannot be relaxed to equality at the correct
+base.  Three pairwise separated count-four targets have total weight
+$3\lambda^{-2}=1$ and give the same loss.
+
+The theorem is sufficient, not necessary.  A single defender placement can
+kill many labelled targets sharing its cell even when their total weight is at
+least one.  The full-turn premise also matters.  With only one defender
+placement remaining, two separated count-four targets have
+$\Psi_F=2/3<1$; the defender kills one and the attacker completes the other.
+
+\subsection{Birth mass and permanent local certificates}
+
+The family in \cref{thm:ES-fixed-family} is fixed.  Dynamic touched-window
+greedy enrolls targets during play, and their first contribution is not paid
+by the fixed-family round estimate.  The exact missing quantity is their birth
+mass.
+
+Let $P_t$ be the start of a full defender turn.  During the following attacker
+pair, let $N_t$ contain the windows that were stone-free at $P_t$, survived the
+ intervening defender pair, and first became potential-active during that attacker
+pair.  For $W\in N_t$, let $a_t(W)\in\{1,2\}$ be the number of stones from the
+pair that lie in $W$ at the end of the pair or terminal prefix.  Define
+\[
+ C_t=\sum_{W\in N_t}\lambda^{-(6-a_t(W))}.
+\tag{10.5}
+\]
+If $u_{1,t}$ windows are born with one stone and $u_{2,t}$ with two, then
+\[
+ C_t=\frac{u_{1,t}}{9\sqrt3}+\frac{u_{2,t}}9.
+\]
+The initial potential-active cohort obeys the fixed-family round estimate, while the new
+cohort contributes exactly \textup{(10.5)}.  Hence every completed round
+satisfies
+\[
+ \Phi(P_{t+1})\leq\Phi(P_t)+C_t.
+\tag{10.6}
+\]
+
+\begin{theorem}[Cumulative-birth certificate]
+\label{thm:ES-cumulative}
+Let $P_0$ be a nonterminal defender-\emph{FirstStone} position.  Fix the
+tie-breaking and filler policy above and use sequential dynamic touched-window
+greedy from $P_0$.  Suppose there is a constant $B_\infty$ such that, uniformly
+over every legal attacker strategy $\tau$,
+\[
+ \sup_\tau\sum_{t=0}^{\infty}C_t(\tau)\leq B_\infty,
+ \qquad \Phi(P_0)+B_\infty<1.
+\tag{10.7}
+\]
+Then the defender prevents every attacker completion.  More generally, if
+\[
+ \sup_\tau\sum_{t=0}^{T-1}C_t(\tau)\leq B_T,
+ \qquad \Phi(P_0)+B_T<1,
+\tag{10.8}
+\]
+then the first $T$ attacker pairs are safe.
+\end{theorem}
+
+\begin{plainterms}
+New targets may be enrolled, but their total initial weight must be reserved
+in advance.  The bound is uniform over attacker strategies; a small birth sum
+observed on one line is not a certificate.  The theorem is useful when a
+finite region or another argument supplies a finite activation reservoir.
+\end{plainterms}
+
+\begin{proof}
+Before attacker pair $t$, repeated use of \textup{(10.6)} gives
+\[
+ \Phi(P_t)\leq\Phi(P_0)+\sum_{i=0}^{t-1}C_i<1.
+\]
+Apply the one-cycle result proved in \cref{thm:ES-one-cycle} below.  It makes
+pair $t$ safe, after which \textup{(10.6)} advances the bound.  Induction proves
+\textup{(10.8)}.  Under \textup{(10.7)}, the same induction applies to every
+finite prefix produced against every $\tau$.
+\end{proof}
+
+A finite confinement gives a concrete reserve.  Fix a nonterminal
+defender-\emph{FirstStone} position $P_0$ and a finite set $R$ of cells empty
+at $P_0$.  Suppose every future attacker placement lies in $R$.  Put
+\[
+\begin{aligned}
+ \mathcal A_R&=\{W:W\cap D_0=\varnothing,
+   \ W\cap A_0\ne\varnothing,\ W\setminus A_0\subseteq R\},\\
+ \mathcal V_R&=\{W:W\text{ is stone-free at }P_0,\ W\subseteq R\},
+\end{aligned}
+\tag{10.9}
+\]
+and let
+\[
+ \Phi_R(P_0)=\sum_{W\in\mathcal A_R}
+       \lambda^{-e_{P_0}(W)},
+ \qquad N_R=|\mathcal V_R|.
+\]
+For a matching $M$ of vertex-disjoint two-cell subsets of $R$, let $q(M)$ be
+the number of windows in $\mathcal V_R$ containing both cells of some pair in
+$M$, and define
+\[
+ P_R=\max_M q(M),\qquad
+ B_R^*=N_R\lambda^{-5}
+       +P_R(\lambda^{-4}-\lambda^{-5}).
+\tag{10.10}
+\]
+
+\begin{theorem}[Finite-region certificate]
+\label{thm:ES-finite-region}
+Assume the attacker is forever confined to the finite set $R$.  If
+\[
+ \Phi_R(P_0)+B_R^*<1,
+\tag{10.11}
+\]
+then delayed-enrollment region-target greedy prevents every attacker win.  The
+weaker condition
+\[
+ \Phi_R(P_0)+\frac{N_R}{9}<1
+\tag{10.12}
+\]
+is also sufficient.  Every positive-reduction defender placement is an empty
+ cell of a currently potential-active member of
+$\mathcal A_R\cup\mathcal V_R$ and is legal.  Fillers need not lie in $R$.
+\end{theorem}
+
+\begin{plainterms}
+Confinement converts infinitely many possible virgin targets into a finite
+list.  Each such target pays a one-stone birth charge, with an extra charge if
+both of its first attacker stones arrive in one turn.  The theorem does not
+prove confinement; a solver must verify that premise by another certificate.
+\end{plainterms}
+
+\begin{proof}[Proof sketch]
+Every virgin target is enrolled once, with charge $\lambda^{-5}$, or
+$\lambda^{-4}$ when both first stones arrive in one attacker turn.
+Those exceptional birth pairs form a matching in $R$, so at most $P_R$ targets
+receive the larger charge and the total is at most
+$B_R^*\leq N_R\lambda^{-4}=N_R/9$.
+For the potential $\Xi_R$ of the currently potential-active members of
+$\mathcal A_R\cup\mathcal V_R$, delayed greedy gives
+$\Xi_R(P_{t+1})\leq\Xi_R(P_t)+C_t^R$ and the charge gives
+$\sum_tC_t^R\leq B_R^*$.
+The induction of \cref{thm:ES-cumulative} therefore keeps $\Xi_R<1$.
+Confinement places every possible completed window in this target family, and
+every positive-danger cell is a legal empty within distance five of an
+attacker stone.
+The complete charging argument is in the companion
+\cite{hexobot-companions}.
+\end{proof}
+
+For checking \textup{(10.11)}, $P_R$ must be exact or replaced by a proved
+upper bound.  The elementary bound
+\[
+ P_R\leq\min\{N_R,5\lfloor |R|/2\rfloor\}
+\]
+follows because two distinct cells lie together in at most five length-six
+windows.  One exhibited matching gives only a lower bound on $P_R$ and cannot
+be inserted into \textup{(10.10)} as a certificate.
+
+\subsection{Finite-horizon consequences}
+
+Even without a birth reserve, a stone-free length-six window cannot be filled
+in one attacker pair.  This gives the immediate dynamic result.
+
+\begin{theorem}[One-cycle certificate]
+\label{thm:ES-one-cycle}
+If the defender is at \emph{FirstStone} and $\Phi(P_t)<1$, then two sequential
+dynamic touched-window greedy placements prevent an attacker win during the
+immediately following two-placement turn, including its first-placement win
+check.
+\end{theorem}
+
+\begin{plainterms}
+The current active targets are below the fixed-family threshold, so greedy
+blocks them through the next attacker turn.  A target that is still
+stone-free cannot acquire six stones in two placements.  The potential may
+exceed one after those placements, so this is not a permanent certificate.
+\end{plainterms}
+
+\begin{proof}
+Apply \cref{thm:ES-fixed-family} to the potential-active windows at $P_t$.  A window
+outside that cohort either contains a permanent defender stone or is
+stone-free at $P_t$.  The latter receives at most two attacker stones during
+the turn and cannot be completed.
+\end{proof}
+
+Fixing the initial cohort gives a longer horizon because a virgin target
+needs six attacker placements, regardless of where the placements are split
+into turns.
+
+\begin{theorem}[Five-placement certificate]
+\label{thm:ES-five-placement}
+If the defender is at \emph{FirstStone} and $\Phi(P_0)<1$, then the defender
+has a strategy preventing an attacker win during the next five attacker
+placements: two complete attacker turns and the first placement of the third.
+\end{theorem}
+
+\begin{plainterms}
+The defender uses fixed-family greedy on the targets active at the start.
+Those targets stay blocked forever.  Every other live candidate began empty
+and still lacks at least one attacker stone after five future placements.
+The sixth placement is outside this guarantee.
+\end{plainterms}
+
+\begin{proof}
+Let $F$ be the potential-active family at $P_0$ and use fixed-$F$ sequential greedy.
+The initial potential of $F$ is $\Phi(P_0)<1$, so
+\cref{thm:ES-fixed-family} blocks it forever.  A window containing a defender
+stone at $P_0$ remains dead.  Every remaining window was stone-free and has at
+most five attacker stones after five future attacker placements.
+\end{proof}
+
+The three-pair result uses a deliberate defender placement against virgin
+targets and only one greedy placement on the same turn.  The following lemma
+gives the exact cost of that split.
+
+\begin{lemma}[One-greedy amplification]
+\label{lem:ES-one-greedy}
+Let $F$ be a fixed potential-active family at a full defender epoch and write
+$X=\Psi_F$.  Suppose a defender turn consists of one arbitrary legal placement
+followed by one $F$-greedy placement, and then at most two attacker placements.
+At every attacker prefix, including a terminal placement,
+\[
+ \Psi_F\leq\frac32X.
+\tag{10.13}
+\]
+If both attacker placements are nonterminal, this is also the bound at the
+next defender epoch.  If $3X/2<1$, no member of $F$ is completed at either
+placement.
+\end{lemma}
+
+\begin{plainterms}
+One defender placement may be spent on a virgin target rather than on
+fixed-family danger.  The remaining greedy move still limits the fixed-family
+growth to a factor of three halves for that round.  This controlled loss of
+margin permits the three-pair strategy to mix geometric blocking with
+potential defense.
+\end{plainterms}
+
+\begin{proof}
+The arbitrary defender placement leaves a potential $X'\leq X$.  Let the
+greedy placement reduce it by $\delta$, and let $S$ be the greatest remaining
+danger.  Deletion monotonicity and greediness give $S\leq\delta$.  A cell's
+danger is also a subsum of the remaining potential, so
+$S\leq X'-\delta$.  The next attacker pair adds at most $2S$ by the same
+calculation as \cref{lem:ES-round}.  Therefore
+\[
+ \Psi_F^+
+ \leq X'-\delta+2\min\{\delta,X'-\delta\}
+ \leq\frac32X'\leq\frac32X.
+\]
+After only the first attacker placement, its increase is at most
+$(\lambda-1)S\leq2S$, so the same bound holds.  A completed member contributes
+one and contradicts \textup{(10.13)} when $3X/2<1$.
+\end{proof}
+
+The geometry of the first attacker pair identifies every virgin window that
+could be completed on the sixth future attacker placement.  Blocking those
+windows costs zero, one, or two split defender turns according to the pair's
+axis relation.
+
+\begin{theorem}[Three-pair certificate]
+\label{thm:ES-three-pair}
+Let $P_0$ be a nonterminal defender-\emph{FirstStone} position, and let $x,y$
+be the first future attacker pair.  The defender can prevent a win during the
+next three complete attacker turns under the respective conditions
+\[
+ \Phi(P_0)<
+ \begin{cases}
+  1, & x,y\text{ lie in no common window},\\
+  2/3, & x,y\text{ have common-window axis distance }2,3,4,\text{ or }5,\\
+  4/9, & x,y\text{ are axis-adjacent}.
+ \end{cases}
+\tag{10.14}
+\]
+In particular, $\Phi(P_0)<4/9$ unconditionally certifies all three attacker
+turns.
+\end{theorem}
+
+\begin{plainterms}
+A virgin window can first win on the sixth future attacker placement.  Its
+first two attacker cells reveal which virgin windows could contain all six
+placements.  The defender blocks that small common family while retaining
+enough fixed-family potential margin.  Adjacent first cells expose five
+possible windows and require two split defender turns, which accounts for the
+smaller threshold $4/9$.
+\end{plainterms}
+
+\begin{proof}[Proof sketch]
+Let $F$ be the initial potential-active family and $X_t=\Psi_F(P_t)$; the first greedy
+defender pair gives $X_1\leq X_0$, while a virgin sixth-placement completion
+must contain both $x$ and $y$.
+If they share no window, later $F$-greedy pairs suffice.
+At common-window distance $2$ through $5$, write $y=x+dv$ for a signed unit
+axis vector $v$; playing $x+v$ and then one greedy cell hits every eligible
+virgin target and gives $X_2\leq3X_1/2<1$.
+When $x,y$ are adjacent, playing $x-v$ leaves at most
+$W_*=\{x,x+v,\ldots,x+5v\}$, which a later deliberate hit blocks, and two
+one-greedy estimates give $X_3\leq(3/2)^2X_1\leq9X_0/4<1$.
+Thus the initial family remains below threshold and every eligible virgin
+target is hit.
+The companion gives the legality and filler cases in full
+\cite{hexobot-companions}.
+\end{proof}
+
+\subsection{How narrow is the raw threshold?}
+
+For $s\in\{1,\ldots,5\}$ let $n_s$ count potential-active windows with exactly
+$s$ attacker stones.  Then
+\[
+ \Phi=\sum_{s=1}^{5}n_s\lambda^{s-6},
+\]
+with the weights shown in \cref{tab:potential-weights}.
+
+\begin{table}[tb]
+\centering
+\caption{One-window contributions to the dynamic potential.}
+\label{tab:potential-weights}
+\begin{tabular}{cccc}
+\toprule
+attacker stones & empties & exact weight & decimal\\
+\midrule
+$1$ & $5$ & $1/(9\sqrt3)$ & $0.064150$\\
+$2$ & $4$ & $1/9$ & $0.111111$\\
+$3$ & $3$ & $1/(3\sqrt3)$ & $0.192450$\\
+$4$ & $2$ & $1/3$ & $0.333333$\\
+$5$ & $1$ & $1/\sqrt3$ & $0.577350$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+If $I=\sum_{s=1}^{5}s n_s$ is the number of live
+attacker-stone--window incidences, direct substitution gives
+$\lambda^{s-6}/s\geq1/18$, with equality at $s=2$.  Thus
+\[
+ \Phi\geq I/18,
+\]
+and $\Phi<1$ forces $I\leq17$.  Since each attacker stone has eighteen window
+incidences, the raw threshold occurs only after almost all such incidences have
+been killed by defender stones.  It is not a generic opening or middlegame
+condition.
+
+The comparison can be made without floating point.  Set
+\[
+ a=n_1+3n_3+9n_5,
+ \qquad b=n_2+3n_4.
+\]
+Then $\Phi<1$ holds exactly when
+\[
+ b\leq8\qquad\text{and}\qquad a^2<3(9-b)^2.
+\tag{10.15}
+\]
+Indeed, after multiplication by $9\sqrt3$, the inequality is
+$a<\sqrt3(9-b)$.  Its right side must be positive, after which squaring
+preserves the comparison.
+
+\subsection{Dynamic greedy can be forced to lose}
+
+The fixed-family theorem does not prove that repeatedly recomputing the
+dynamic touched family is a global defense.  The next finite counterexample
+branches over every exact greedy maximum.  All maxima are positive, so the
+result is independent of the filler policy.
+
+\begin{theorem}[All-ties greedy refutation]
+\label{thm:ES-greedy-refutation}
+Let
+\[
+ A_0=\{(0,0)\},\qquad D_0=\{(1,0)\},
+\]
+with the defender at \emph{FirstStone}.  Then $\Phi(P_0)<1$.  Against every
+sequential dynamic touched-window greedy defense, the fixed attacker
+continuation
+\[
+\begin{array}{c@{\qquad}l}
+\text{turn }1 &(2,-4),(2,2),\\
+\text{turn }2 &(-5,0),(-4,0),\\
+\text{turn }3 &(-3,0),(-2,0),\\
+\text{turn }4 &(-1,0)
+\end{array}
+\tag{10.16}
+\]
+wins on the first placement of turn $4$.  The completed window is
+$\{(-5,0),(-4,0),\ldots,(0,0)\}$.
+\end{theorem}
+
+\begin{plainterms}
+Greedy is not rescued by choosing ties more carefully.  The verifier branches
+over every maximum-danger reply and reaches the same fixed winning placement
+on all 124 surviving boards.  This refutes the dynamic greedy strategy, not
+the claim that some different defender strategy may survive from every
+position with $\Phi<1$.
+\end{plainterms}
+
+\begin{proof}[Machine-verified finite proof]
+The defender stone $(1,0)$ kills five of the eighteen windows through
+$(0,0)$.  The initial profile is therefore
+$(n_1,n_2,n_3,n_4,n_5)=(13,0,0,0,0)$, and
+\[
+ \Phi(P_0)=\frac{13\sqrt3}{27}
+           =\frac{13}{9\sqrt3}<1,
+\]
+because $13^2=169<243=3\cdot9^2$.  Every attacker placement in
+\textup{(10.16)} is legal on every branch.  The first two are at distance four
+from $(0,0)$, and each later placement is within distance five of an attacker
+stone on the target line.
+
+The verifier represents every potential and danger as an integer pair
+$(a,b)$ denoting $(a+b\sqrt3)/27$.  Comparisons use integer arithmetic.  When
+the coefficients of a difference have opposite signs, the verifier compares
+$a^2$ with $3b^2$; irrationality excludes equality.  It enumerates every
+maximum at each defender placement, merges only identical colored boards at
+the same phase, and then applies the fixed attacker continuation.  The exact
+state counts and maxima are shown in \cref{tab:greedy-branches}.  There is no
+random choice, beam limit, or depth cutoff.
+
+\begin{table}[tb]
+\centering
+\caption{Exhaustive dynamic-greedy branch counts.  Danger values are scaled by
+$27$.}
+\label{tab:greedy-branches}
+\begin{tabular}{crlr}
+\toprule
+defender placement & input boards & exact maximum distribution & output boards\\
+\midrule
+$D0.1$ & $1$ & $5\sqrt3$ & $4$\\
+$D0.2$ & $4$ & $5\sqrt3\ (4)$ & $4$\\
+$D1.1$ & $4$ & $6\sqrt3\ (2),\ 7\sqrt3\ (2)$ & $12$\\
+$D1.2$ & $12$ & $5\sqrt3\ (12)$ & $124$\\
+$D2.1$ & $124$ & $10\sqrt3\ (124)$ & $242$\\
+$D2.2$ & $242$ & $9\sqrt3\ (6),\ 10\sqrt3\ (236)$ & $124$\\
+$D3.1$ & $124$ & $21+4\sqrt3\ (124)$ & $124$\\
+$D3.2$ & $124$ & $3+9\sqrt3\ (106),\ 10\sqrt3\ (18)$ & $124$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The last defender turn contains the trap.  Immediately before $D3.1$, the
+cell $(-6,0)$ lies in five potential-active horizontal windows with attacker counts
+$1,2,3,4,4$.  Hence
+\[
+ 27d(-6,0)=\sqrt3+3+3\sqrt3+9+9=21+4\sqrt3.
+\tag{10.17}
+\]
+The winning cell $(-1,0)$ lies in one count-four window and the count-five
+target, so
+\[
+ 27d(-1,0)=9+9\sqrt3.
+\tag{10.18}
+\]
+Their difference is $12-5\sqrt3>0$, since $12^2>3\cdot5^2$.  Thus every
+branch chooses $(-6,0)$ uniquely.  That stone kills the count-four term at
+$(-1,0)$ and leaves
+\[
+ 27d(-1,0)=9\sqrt3.
+\]
+On 106 boards the unique second maximum is $(-3,1)$ with danger
+$3+9\sqrt3$.  On the other 18 it is $(-2,-1)$ with danger $10\sqrt3$.
+Both exceed $9\sqrt3$.  No greedy branch occupies $(-1,0)$.
+
+\begin{figure}[tb]
+\centering
+\begin{tikzpicture}[scale=.48]
+  \HexRhombus{-6}{2}{-4}{2}
+  \HexWindow[window one]{-5}{0}{1}{0}
+  \HexAttackerList{-5/0,-4/0,-3/0,-2/0,0/0,2/-4,2/2}
+  \HexMark{-6}{0}{cross}{}
+  \HexMark{-1}{0}{cross}{}
+  \node[font=\small,align=center,above=4mm] at \HexAt{-6}{0}
+    {$27d=21+4\sqrt3$\\greedy maximum};
+  \node[font=\small,align=center,below=4mm] at \HexAt{-1}{0}
+    {$27d=9+9\sqrt3$\\winning cell};
+  \node[font=\small,anchor=west] at \HexAt{-2}{.85}
+    {target $W$};
+\end{tikzpicture}
+\caption{The common attacker geometry on all 124 boards immediately before
+$D3.1$.  The attacker set is
+$\{(-5,0),(-4,0),(-3,0),(-2,0),(0,0),(2,-4),(2,2)\}$.  Defender stones are
+omitted because their locations depend on the greedy branch.  The target,
+candidate cells, and displayed danger values are the same on every branch.}
+\label{fig:greedy-trap}
+\end{figure}
+
+The verifier also checks radius-eight legality, the absence of every attacker
+or defender completion before the terminal placement, every potential-active-window
+profile, every exact maximizer, and the terminal window.  At the terminal
+placement all 124 boards have exactly one completed attacker window and hence
+$\Phi\geq1$.  The scheduled attacker cell is absent from every prior
+maximizer union.  This exhausts every dynamic-greedy tie-breaking sequence and
+proves the theorem.  The exact checker and its full profile trace are included
+with the companion proofs \cite{hexobot-companions}.
+\end{proof}
+
+The compact position has unequal material counts, but the same tree occurs in
+a legal engine history.
+
+\begin{proposition}[Reachable greedy witness]
+\label{prop:ES-reachable-greedy}
+There is a legal $39$-placement history ending at a nonterminal defender-
+\emph{FirstStone} position with $20$ attacker stones, $19$ defender stones,
+the same initial profile $(13,0,0,0,0)$, and exactly a translated copy of the
+greedy tree in \cref{thm:ES-greedy-refutation}.
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+Translate the compact core by $(-1,0)$, so its defender stone is the opening
+at $(0,0)$ and its attacker stone is $(-1,0)$.  Let
+\[
+ c=(-11,10),\quad I=B_2(c),\quad
+ R=B_3(c)\setminus B_2(c),\quad g=(-9,8).
+\]
+Here $|I|=19$ and $|R|=18$; after the opening, the attacker takes $(-1,0)$ and
+$g$, then nine cycles alternate two unused cells of $R$ with two unused cells
+of $I\setminus\{g\}$.
+All moves are legal because $d(g,(-1,0))=8$ and every cell of $B_3(c)$ is
+within five of $g$.
+No prefix has a six-run, and the final defender ring blocks every window
+meeting $I$ while distance-six padding isolates the translated tactical core.
+The count is $1+2+9\cdot4=39$ placements with material totals $20$ and $19$.
+The companion checker verifies every prefix and reruns the full greedy tree
+\cite{hexobot-companions}.
+\end{proof}
+
+\subsection{Clean escape and failure of raw renewal}
+
+The greedy counterexample concerns one strategy.  A separate geometric lemma
+shows that no strategy can keep the raw sublevel set $\Phi<1$ invariant at
+every defender epoch.  It still does not give an attacker win against every
+non-greedy defense.
+
+\begin{lemma}[Universal clean escape]
+\label{lem:ES-clean-escape}
+From every finite, nonempty, nonterminal position immediately before an
+attacker turn, the attacker has a legal pair that births exactly $36$ distinct
+one-stone windows.  Its birth mass is
+\[
+ 36\lambda^{-5}=\frac4{\sqrt3}.
+\tag{10.19}
+\]
+\end{lemma}
+
+\begin{plainterms}
+The attacker can move twice toward an unoccupied extreme of the finite board.
+Both local stars are clean and share no target window.  The resulting birth
+mass already exceeds one, so raw current potential cannot renew itself as an
+epoch-by-epoch invariant under any defender policy.
+\end{plainterms}
+
+\begin{proof}
+Put $h(q,r)=q+r$.  Choose an occupied cell $z$ maximizing $h$, and write
+$M=h(z)$.  Play
+\[
+ x=z+(4,4),\qquad y=x+(4,4).
+\]
+Both displacements have hex distance eight, so the placements are legal in
+sequence.  They are empty because their $h$-values exceed $M$.
+
+A horizontal or vertical length-six window through $x$ has minimum $h$ at
+least $h(x)-5=M+3$.  A diagonal window through $x$ has constant
+$h=M+8$.  Every such window was therefore stone-free.  A horizontal or
+vertical window through $y$ has minimum $h$ at least $M+11$, while a diagonal
+window through $y$ has constant $h=M+16$.  Those windows were stone-free even
+after the placement at $x$.  Finally, $y-x=(4,4)$ lies on none of the three
+axes, so $x$ and $y$ share no window.  Each placement births its eighteen
+incident windows, all with one attacker stone.  The $36$ distinct terms have
+total weight
+\[
+ 36(\sqrt3)^{-5}=\frac4{\sqrt3}.
+\]
+\end{proof}
+
+Starting from one defender stone and no attacker stone, $\Phi=0$.  After any
+defender pair, \cref{lem:ES-clean-escape} makes the next defender-epoch
+potential at least $4/\sqrt3>1$.  Repeating the construction on every
+continuing attacker turn creates 36 fresh labels each time.  The cumulative
+birth sum diverges, even though each such label may remain at count one or be
+killed.  Radius-eight mobility alone therefore supplies no summable reserve
+for \cref{thm:ES-cumulative}.
+
+\subsection{Two static repair attempts}
+
+The first no-go result strengthens \cref{thm:T8}.  Finite occupation cannot
+remove enough exceptional windows to make a static matching possible on the
+remaining virgin board.
+
+\begin{proposition}[Finite saturation does not enable static pairing]
+\label{prop:ES-no-static-pairing}
+No partial matching covers all but finitely many length-six windows.  Hence no
+finite initial position admits a static pairing that covers every initially
+virgin target.
+\end{proposition}
+
+\begin{proof}
+Suppose a matching misses at most $K$ windows.  Discard its pairs that lie in
+no length-six window.  Let $B_R$ be the radius-$R$ hex ball, with
+\[
+ |B_R|=3R^2+3R+1.
+\]
+For each axis and $R\geq5$, the $2R+1$ line segments through $B_R$ contain
+\[
+ |B_R|-5(2R+1)
+\]
+length-six windows wholly inside the ball.  Across three axes, at least
+\[
+ 3|B_R|-15(2R+1)-K
+\]
+of these internal windows must be covered.  One matched pair is contained in
+at most five windows on its axis.  The ball therefore contains at least
+\[
+ \frac25\bigl(3|B_R|-15(2R+1)-K\bigr)
+\]
+matched-cell incidences.  A matching supplies at most $|B_R|$, so
+\[
+ |B_R|\leq60R+30+2K.
+\]
+This contradicts $|B_R|=3R^2+3R+1$ for sufficiently large $R$.
+
+If a finite position has occupied support $S$, at most $18|S|$ windows meet
+that support.  Every other window is initially virgin.  A matching covering
+all virgin windows would miss only finitely many windows, contrary to the
+first part.
+\end{proof}
+
+The second no-go result concerns a static additive account that tries to put
+a summable, spatially damped weight on every virgin window while retaining the
+same factor-three two-placement growth comparison.
+
+\begin{proposition}[Static two-tier damping no-go]
+\label{prop:ES-no-static-damping}
+Suppose a nonnegative static per-window account assigns weight $w_s(W)$ when
+$W$ contains $s$ attacker stones.  Assume
+\[
+ \sum_W w_0(W)<\infty,\qquad w_6(W)\geq1,
+\]
+and, for every window,
+\[
+ w_{s+2}(W)\leq3w_s(W),\qquad s=0,2,4.
+\tag{10.20}
+\]
+No such account exists.
+\end{proposition}
+
+\begin{proof}
+For every window, the terminal bound and the three growth inequalities give
+\[
+ 1\leq w_6(W)\leq3w_4(W)\leq9w_2(W)\leq27w_0(W).
+\]
+Thus $w_0(W)\geq1/27$ for each of infinitely many windows.  Their virgin sum
+cannot be finite.
+\end{proof}
+
+The proposition leaves other accounting systems open.  Its hypotheses do not
+cover age-dependent weights, moving centers, cancellation between windows, a
+nonadditive account, or an adaptive pairing whose ownership changes during
+play.
+
+\subsection{Finite reduction and the remaining boundary}
+
+Although the unrestricted question has no known scalar renewal, every fixed
+horizon occupies a finite part of the ideal board.  Compactness then relates
+all finite survival policies to one infinite policy.
+
+\begin{theorem}[Finite-horizon equivalence]
+\label{thm:ES-finite-reduction}
+Fix a finite nonempty position $P$ with occupied support $S_0$ of size $n$, at
+defender-\emph{FirstStone}.  For $h\geq1$, define
+\[
+ R_h=\{x:\dist(x,S_0)\leq32h\}.
+\tag{10.21}
+\]
+Every move in the first $h$ full defender/attacker rounds lies in $R_h$, and
+\[
+ |R_h|\leq n(3072h^2+96h+1).
+\tag{10.22}
+\]
+The defender blocks forever from $P$ if and only if the defender has a
+survival strategy for every finite $h$-round game on $R_h$.  The set $R_h$ is
+a proved move universe through that horizon, not an added board boundary.
+\end{theorem}
+
+\begin{plainterms}
+Every fixed-depth game can be searched exactly on a finite board region.  If a
+survival policy exists at every depth, K\"onig's lemma selects policies whose
+finite restrictions agree and joins them into one infinite strategy.  The
+theorem gives no depth after which survival automatically implies permanent
+safety; checking every horizon restates the infinite problem rather than
+solving it algorithmically.
+\end{plainterms}
+
+\begin{proof}
+The first $h$ rounds contain at most $4h$ placements.  Induct on the future
+placement index $k$.  A legal placement lies within distance eight of an
+occupied cell, so the $k$th placement lies within distance $8k$ of $S_0$.
+Since $k\leq4h$, every move lies in $R_h$.
+
+A radius-$r$ hex ball contains $3r^2+3r+1$ cells.  The union bound over the
+$n$ initial support cells with $r=32h$ gives
+\[
+ |R_h|\leq n\bigl(3(32h)^2+3(32h)+1\bigr)
+ =n(3072h^2+96h+1).
+\]
+The truncated legal game tree is finite, so backward induction decides it.
+
+One implication is immediate: a forever-surviving strategy restricts to a
+survival strategy for each horizon.  For the converse, form a rooted tree of
+finite defender policy tables.  Level $h$ contains the policies that survive
+the $h$-round game, and an edge joins a policy to its restriction at level
+$h-1$.  Every level is finite, every node has finitely many extensions, and
+every level is nonempty by hypothesis.  K\"onig's lemma supplies an infinite
+chain of compatible policies.  Their union is one defender strategy that
+survives every finite prefix and hence blocks forever.  Conversely, if no
+forever strategy exists, some finite level is empty; finite minimax then gives
+an attacker strategy forcing completion within that horizon.
+\end{proof}
+
+The results above leave five separate proof obligations.  They should not be
+collapsed into one generic statement that the potential method is incomplete.
+
+\paragraph{GAP-RAW.}
+\Cref{thm:ES-greedy-refutation} defeats every dynamic touched-window greedy
+tie-breaking, but it gives no attacker strategy against arbitrary non-greedy
+play.  No theorem here proves that a non-greedy forever defense always exists.
+The raw existential statement remains open.
+
+\paragraph{GAP-GLOBAL-RENEWAL.}
+\Cref{thm:ES-five-placement,thm:ES-three-pair} extend the certified horizon,
+but neither returns to a defender epoch satisfying the same raw hypothesis.
+\Cref{lem:ES-clean-escape} proves that no defense can use $\Phi<1$ itself as
+the renewed invariant, even when the starting value is zero.
+
+\paragraph{GAP-AMORTIZED-ABANDONMENT.}
+An online account must discount indefinitely many weak births that the
+attacker abandons, yet remain sound if dormant stones later participate in
+multi-axis forks.  Clean escape produces a positive exact birth debit with no
+maturity promotion.  \Cref{prop:ES-no-static-damping} excludes only the stated
+static factor-three accounts and supplies no history-sensitive refund rule.
+
+\paragraph{GAP-DYNAMIC-PAIRING.}
+\Cref{prop:ES-no-static-pairing} excludes a static matching even after finite
+initial exceptions.  It does not exclude an adaptive response system whose
+pairs or ownership assignments change with the play.
+
+\paragraph{GAP-FINITE-CUTOFF.}
+\Cref{thm:ES-finite-reduction} proves that every loss has a finite witness and
+that each fixed horizon is decidable.  It gives no computable or uniform bound
+$H(P)$ such that survival through $H(P)$ rounds implies survival forever.
+
+The strategy-level nonclaims also affect implementation.  A raw node-local
+$\Phi<1$ test may certify \cref{thm:ES-one-cycle} or seed one of the stated
+finite-horizon strategies.  It must not be converted into an unrestricted
+defender win, draw, or global move-set pruning rule.  Every positive greedy
+move lies in an empty cell of a currently potential-active monitored window and
+is legal.  If no such target remains, one or both mandatory placements can be
+fillers.  A solver implementing a potential-certified strategy must retain a
+legal filler fallback, and it must account for the filler's effect on the
+future radius-eight legality frontier.  Full derivations and the exact finite
+traces appear in the companion proof documents \cite{hexobot-companions}.

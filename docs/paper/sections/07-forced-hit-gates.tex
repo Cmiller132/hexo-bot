@@ -1,0 +1,532 @@
+\section{The forced-hit gate calculus}
+\label{sec:gates}
+
+The ordinary zone charges every future defender placement before a role or
+window deadline.  A tight forcing line contains replies that the defender
+must copy into the certificate or abandon the line.  An exact copied reply
+does not create a real-only frontier stone.  This permits a narrower hazard
+clock.  The escape branch still needs the full remaining defender turn.
+The construction and coordinate checks in this section are recorded in the
+companion proof and forced-hit report \cite{hexobot-companions}.
+
+\subsection{Why pressure alone cannot be debited}
+
+The first example isolates the terminal race.  The current threats appear to
+consume both defender placements, but the defender can ignore them and win
+before the attacker receives a turn.
+
+\begin{example}[Reachable disjoint-hit race]
+Let
+\[
+\begin{aligned}
+W&=\{(0,r):0\le r\le5\},\\
+T_1&=\{(q,-4):0\le q\le5\}, &a&=(5,-4),\\
+T_2&=\{(q,8):-5\le q\le0\}, &b&=(-5,8).
+\end{aligned}
+\]
+The following legal history begins with a defender opening at the origin.
+Each row after the opening is one two-placement turn.
+\begin{center}
+\small
+\begin{tabular}{@{}ccl@{}}
+\toprule
+Plies & Mover & Placements \\
+\midrule
+$0$ & $\D$ & $(0,0)$ \\
+$1$--$2$ & $\A$ & $(0,-4),(1,-4)$ \\
+$3$--$4$ & $\D$ & $(0,1),(-1,-4)$ \\
+$5$--$6$ & $\A$ & $(2,-4),(3,-4)$ \\
+$7$--$8$ & $\D$ & $(0,2),(0,-8)$ \\
+$9$--$10$ & $\A$ & $(4,-4),(-4,8)$ \\
+$11$--$12$ & $\D$ & $(0,3),(1,8)$ \\
+$13$--$14$ & $\A$ & $(-3,8),(-2,8)$ \\
+$15$--$16$ & $\D$ & $(-8,0),(8,-8)$ \\
+$17$--$18$ & $\A$ & $(-1,8),(0,8)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+Every placement is within distance eight of an earlier stone.  No displayed
+prefix completes a window.  The resulting node has defender budget $b=2$ and
+complete attacker threat-empty family
+\[
+\mathcal F=\bigl\{\{a\},\{a,(6,-4)\},
+                    \{b\},\{b,(-6,8)\}\bigr\},
+\qquad \tau(\mathcal F)=2.
+\]
+The singleton sets force every transversal to contain $a$ and $b$, so the
+extendable-hit kernel is exactly $\{a,b\}$.  It is disjoint from $W$.
+The defender may ignore both threats and play
+\[
+u=(0,4),\qquad v=(0,5).
+\]
+Both cells are legal at turn start.  The first raises $\cnt_\D(W)$ to five,
+and the second completes $W$.  Termination occurs before the attacker can use
+either surviving threat.
+\end{example}
+
+The same construction can be translated or reflected, and remote legal
+fillers can be added.  It is not a boundary artifact.  A sound debit must
+distinguish a copied hit from a refusal and must charge the refusal branch for
+the complete remaining turn.  Threat masks also have to agree between the
+real and ghost positions at the gate.  Otherwise a real-only defender stone
+can kill one named threat and reduce the actual pressure.
+
+Substitution raises a separate obstruction.  A real hit and a different
+ghost hit can answer the same threats while creating nonempty $X$ and $Y$
+sets.  The real stone may then support a radius-eight relay that the ghost
+stone does not support.  Such a hit remains an ordinary transition for the
+frontier clock.  Only an exact copied placement receives the gate debit.
+
+\subsection{Protected exact-copy gates}
+
+A gate names the current pressure and protects its masks through an entry
+checkpoint.  It then searches an exact residual-transversal kernel rather
+than an ordinary four-part zone.
+
+\begin{definition}[Protected exact-copy forcing gate]
+\label{def:D19}
+At an internal AND node $Q$ with defender budget $b\in\{1,2\}$, a
+\emph{forcing gate} names a finite family $\mathcal H_Q$ of current attacker
+threat windows.  Put
+\[
+\mathcal F_Q=\{E(U,P_Q):U\in\mathcal H_Q\}.
+\]
+The verifier checks
+\[
+\tau(\mathcal F_Q)=b,
+\qquad \neg\ownwinnow(P_Q).
+\tag{FG1--FG2}
+\]
+For a cell $d$, define
+\[
+\mathcal F_Q\setminus d=\{E\in\mathcal F_Q:d\notin E\},
+\qquad
+K(Q)=\{d\in\Legal(P_Q):\tau(\mathcal F_Q\setminus d)\le b-1\}.
+\]
+For every $U\in\mathcal H_Q$ and $e\in E(U,P_Q)$, add a checkpoint role
+$(Q,U,e)$ to the obligation grammar.  Its deadline is the gate-entry mask
+check immediately before the defender reply.  It belongs to every strict
+ancestor's reachable obligation union and remains protected through that
+check.  Write $\Prot^-(Q)$ for the incoming protected set.  After the
+verifier checks the named ghost masks, the checkpoint roles are discharged
+and the remaining set is $\Prot^+(Q)$.
+
+The searched set at the gate is exactly the finite nonempty set $K(Q)$.  Each
+$d\in K(Q)$ has its exact successor $C_d$, and a continuing real reply is
+copied on that edge.  No substitution envelope is permitted on a kernel
+reply.  A real reply outside $K(Q)$ abandons the original subtree and uses
+the adaptive escape contract of \cref{lem:L15}.
+
+Let $p(Q)$ be the absolute index of the last placement before entry to $Q$.
+The escape deadline is
+\[
+p(Q)+b+2.
+\]
+The certificate horizon is the maximum of its ordinary declared resolutions
+and all reachable escape deadlines.
+\end{definition}
+
+\begin{plainterms}
+The checkpoint makes every named threat the same in the real and ghost
+positions before the gate is used.  A reply inside the kernel is copied at
+the same cell.  A reply outside it discards the old plan and gives the
+attacker a surviving current threat, unless the defender wins first during
+the remainder of the turn.
+\end{plainterms}
+
+\begin{figure}[tbp]
+  \centering
+  \begin{tikzpicture}[node distance=14mm and 14mm]
+    \node[cert gate] (q) {$Q$: gate\\$\tau(\mathcal F_Q)=b$,
+      $\neg\ownwinnow$\\checkpoint masks equal};
+    \node[cert node,below left=of q] (c1) {$C_{d_1}$\\exact child};
+    \node[cert node,below=of q] (c2) {$C_{d_2}$\\exact child};
+    \node[cert node,below right=of q] (esc) {old subtree abandoned\\
+      adaptive surviving threat};
+    \draw[cert edge] (q) -- node[left,font=\scriptsize] {$d_1\in K(Q)$} (c1);
+    \draw[cert edge] (q) -- node[right,font=\scriptsize] {$d_2\in K(Q)$} (c2);
+    \draw[cert escape] (q) -- node[right,font=\scriptsize,align=left]
+      {$d\notin K(Q)$\\deadline $p(Q)+b+2$} (esc);
+    \node[font=\scriptsize,align=center,below=4mm of esc]
+      {attacker completes unless defender\\wins during the current turn};
+  \end{tikzpicture}
+  \caption{Forcing-gate grammar.  Kernel edges are exact copies.  The dashed
+  escape is an adaptive terminal contract, not a substituted certificate
+  child.}
+  \label{fig:forcing-gate}
+\end{figure}
+
+The kernel is nonempty.  If $T$ is a size-$b$ minimum transversal, each
+$d\in T$ leaves $T\setminus\{d\}$ as a transversal of
+$\mathcal F_Q\setminus d$, and \cref{thm:T1} makes $d$ legal.  It is finite
+because a kernel cell must belong to some named empty set.  At $b=1$, one
+threat is enough.  At $b=2$, a subfamily of at most three threats can retain
+transversal number two.
+
+The role clock counts opportunities to create a real-only defender stone.
+An exact gate edge creates none.
+
+\begin{definition}[Forced-hit-debited role ranks]
+\label{def:D20}
+For a role $\rho$ live at $N$, define $f_N(\rho)$ in reverse topological
+order by
+\[
+f_N(\rho)=
+\begin{cases}
+0,&\rho\text{ is at its deadline or no longer reachable},\\
+f_C(\rho),&N\text{ is an ordinary OR and }\rho\text{ remains live},\\
+1+\max_C f_C(\rho),&N\text{ is an ordinary AND node},\\
+\max_{d\in K(N)}f_{C_d}(\rho),&N\text{ is a forcing gate}.
+\end{cases}
+\]
+A child where $\rho$ is not reachable contributes zero.  For a cell carrying
+several live roles, set
+\[
+f_N(y)=\max\{f_N(\rho):\rho\text{ is live at }N\text{ and carried by }y\}.
+\]
+An ordinary AND edge costs one.  An exact gate edge costs zero because its
+defender stone is shared.  An off-kernel reply abandons every old role.
+\end{definition}
+
+\begin{plainterms}
+The value $f$ is not the number of defender plies before resolution.  It
+counts only placements that can extend a real-only legality chain toward a
+protected cell.  Full path length continues to use the local budget $B$.
+\end{plainterms}
+
+A copied gate hit can still harm a defender window when the hit lies inside
+that window.  The exposure recurrence therefore keeps a window-specific
+indicator and a full escape floor.
+
+\begin{definition}[Forced-hit-debited window exposure]
+\label{def:D20a}
+For a forcing gate, write
+\[
+G_N(W)=\max_{d\in K(N)}
+  \bigl(\mathbb{1}[d\in W]+Q_{C_d}^\D(W)\bigr).
+\]
+For every window $W$, define $Q_N^\D(W)$ by
+\[
+Q_N^\D(W)=
+\begin{cases}
+0,&N\text{ is WIN or OR-COMPLETION},\\
+b,&N\text{ is a LOSS leaf with defender budget }b,\\
+0,&N\text{ is an OR whose attacker placement enters }W,\\
+Q_C^\D(W),&N\text{ is any other ordinary OR},\\
+1+\max_C Q_C^\D(W),&N\text{ is an ordinary AND},\\
+\max\{b,G_N(W)\},&N\text{ is a forcing gate}.
+\end{cases}
+\]
+If $W$ is already not alive for the defender, set $Q_N^\D(W)=0$.  The
+maximum at a gate is taken child by child.  Replacing it by independent
+maxima is conservative but can overcount by one.
+
+On a continuing path, let $F$ count every ordinary defender opportunity,
+every remaining defender placement at a LOSS leaf, and all $b$ placements of
+the first off-kernel escape turn.  Let $H_W$ count exact copied gate replies
+whose cells lie in $W$.  The recurrence is the branch-coherent maximum of
+$F+H_W$.  An ordinary reply is counted in $F$ even when it hits a threat.
+\end{definition}
+
+\begin{plainterms}
+A copied hit outside $W$ costs zero to that window.  A copied hit inside $W$
+costs one.  Refusing a gate costs the full remaining turn, and a LOSS leaf
+also costs its full remaining budget.  These cases prevent the race from the
+opening example.
+\end{plainterms}
+
+The ordinary four-part zone now uses the debited hazard clocks.  A gate itself
+does not use these four terms.
+
+\begin{definition}[Ordinary debited zone]
+\label{def:D21}
+At an ordinary internal AND node, define
+\[
+\begin{aligned}
+\ZdirFH(N)&=\Prot(N)\cap\Legal(P_N),\\
+\ZseedFH(N)&=
+ \bigcup_{\substack{y\in\Prot(N)\setminus
+ (\Legal(P_N)\cup\Stones(P_N))\\ f_N(y)\ge1}}
+ \left(\Legal(P_N)\cap\Ball{8(f_N(y)-1)}{\{y\}}\right),\\
+\ZtouchFH(N)&=\bigcup\left\{E(W,P_N):
+ \begin{array}{l}W\text{ is defender-alive},\ \cnt_\D(W,P_N)\ge1,\\
+ \cnt_\D(W,P_N)+Q_N^\D(W)\ge6
+ \end{array}\right\},\\
+\ZvirginFH(N)&=\left\{c\in\Legal(P_N):
+ \begin{array}{l}\text{some all-empty }W\text{ has }Q_N^\D(W)\ge6,\\
+ \dist(c,W)\le8(Q_N^\D(W)-6)
+ \end{array}\right\}.
+\end{aligned}
+\]
+The node searches an independently nonempty superset of the union of these
+four sets.  Its obligation union includes every reachable checkpoint role,
+and clause \textup{(Z4)} is unchanged.  A forcing gate performs its entry
+checks and searches exactly $K(Q)$.
+
+For a fixed augmented certificate,
+\[
+f_N(\rho)\le r_N(\rho),
+\qquad Q_N^\D(W)\le E_N^\D(W).
+\]
+The full $B$, $r$, and $E^\D$ clocks retain their ordinary AND charges at a
+gate.  Checkpoint roles can enlarge $\Prot$ at strict ancestors, so no claim
+is made that the total searched-set size decreases in every certificate.
+\end{definition}
+
+\begin{plainterms}
+The debit can shrink a ranked seed band or a completion guard for a fixed
+augmented certificate.  It does not make the gate an ordinary zone node, and
+it does not discount a general substitution.  Added checkpoint obligations
+can offset the smaller hazard radii.
+\end{plainterms}
+
+\subsection{Transfer at a gate}
+
+The entry checkpoint makes the named threat masks identical.  The residual
+transversal inequality then covers every reply outside the kernel.
+
+\begin{lemma}[Protected gate dichotomy]
+\label{lem:L15}
+On entry to a \cref{def:D19} gate, every named threat window has identical
+real and ghost masks.  For every real legal defender reply $d$, exactly one
+of the following holds.
+\begin{enumerate}[label=\textup{(\arabic*)}]
+  \item If $d\in K(Q)$, then $d$ is shared-empty and ghost-legal.  Both games
+  place at $d$, take the exact child, and leave $X$ and $Y$ unchanged.
+  \item If $d\notin K(Q)$ and the defender does not win during the remaining
+  current turn, the attacker completes a named surviving threat in at most
+  two placements of the following turn, by $p(Q)+b+2$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+Fix $U\in\mathcal H_Q$.  Its attacker stones are shared.  Every ghost empty
+$e\in E(U,P_Q)$ carries a checkpoint role, so $e\notin X$ at the entry
+check.  Since $U$ is attacker-alive in the ghost position, it contains no
+ghost defender stone and hence no $Y$-cell.  The complete real and ghost
+masks of $U$ agree.
+
+If $d\in K(Q)$, then $d$ belongs to a named empty set.  It is shared-empty and
+is legal by \cref{thm:T1}.  The gate supplies its exact child.  This is the
+first case.
+
+Suppose $d\notin K(Q)$.  By definition,
+\[
+\tau(\mathcal F_Q\setminus d)>b-1.
+\]
+Let $H$ be the set of at most $b-1$ later defender placements in the current
+turn.  It cannot meet every member of $\mathcal F_Q\setminus d$.  Some named
+window therefore avoids both $d$ and $H$.  It remains attacker-alive and
+retains its one or two initial empties.  By \cref{lem:L1}, those empties lie
+within distance two of permanent shared attacker stones.  They are legal, and
+the attacker completes the window in the next turn.  The last possible
+attacker placement has index $p(Q)+b+2$.  The game rule allows the defender
+to terminate first during the current turn, which is the alternative retained
+in the statement.  Membership in $K(Q)$ makes the two cases disjoint.
+\end{proof}
+
+The weighted clocks bound the two hazards needed by the coupling.  They also
+remain below the corresponding full clocks.
+
+\begin{lemma}[Weighted hazard bounds]
+\label{lem:L16}
+For every certificate using \cref{def:D19,def:D20,def:D20a,def:D21}:
+\begin{enumerate}[label=\textup{(\arabic*)}]
+  \item on a continuing mapped path, the number of ordinary real-only
+  frontier opportunities before a live role's deadline is at most
+  $f_N(\rho)$;
+  \item for a fixed $W$, before the certificate attacker wins or enters $W$,
+  or before an off-kernel escape resolves, the weighted count of ordinary
+  defender edges, copied gate edges in $W$, and all placements in the first
+  LOSS or escape remainder is at most $Q_N^\D(W)$;
+  \item $f_N(\rho)\le r_N(\rho)$ and $Q_N^\D(W)\le E_N^\D(W)$;
+  \item at a gate, $B(Q)\ge b$, so the full local budget covers every escape
+  remainder.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}[Proof sketch]
+Reverse induction follows the displayed recurrences.  An ordinary AND edge
+can add one $X$-stone and is charged once; a copied gate edge changes neither
+$X$ nor $Y$ and is charged to $W$ exactly when its cell lies in $W$.  LOSS
+and escape remainders retain the full base $b$.  Comparing each clause with
+the ordinary rank and exposure recurrences gives the two inequalities, while
+the nonempty kernel and the $b=2$ successor phase give $B(Q)\ge b$.
+See the companion proof for the child-by-child induction
+\cite{hexobot-companions}.
+\end{proof}
+
+The first-bad-event argument combines the frontier and completion channels.
+
+\begin{lemma}[Debited first-bad-event lemma]
+\label{lem:L17}
+Under \cref{def:D19,def:D20,def:D20a,def:D21}:
+\begin{enumerate}[label=\textup{(\arabic*)}]
+  \item while the real play remains mapped to the certificate, no defender
+  placement creates a real-only stone in the current protected set; old roles
+  are abandoned when an off-kernel escape starts;
+  \item before the mapped certificate attacker or a gate-escape attacker
+  resolves, no real defender play completes a window.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}[Proof sketch]
+For protected occupation, trace a first bad cell back to the last ghost-legal
+dismissed seed.  Copied gate stones are shared and cannot be internal links of
+a real-only chain, so every link is charged by $f$ and the seed lay in
+$\ZseedFH$.  For a first defender completion, separate no-dismissal, touched,
+and virgin cases.  The mask identity handles no-dismissal lines; $Q^\D$
+charges every ordinary fill, every copied hit in the fixed window, and each
+full LOSS or escape remainder.  The touched count or virgin distance
+inequality then places the first dismissed fill or its seed in the applicable
+zone.  The complete first-event analysis is in the companion proof
+\cite{hexobot-companions}.
+\end{proof}
+
+The gate theorem replaces the two ordinary hazard clocks while retaining the
+rest of the certificate grammar.
+
+\begin{theorem}[Exact-copy $F+H_W$ soundness]
+\label{thm:T11}
+Let a finite certificate tree satisfying \cref{def:D9}, or a finite
+certificate DAG satisfying \cref{def:D18}, use \cref{def:D21} at every
+ordinary AND node and \cref{def:D19} at every forcing gate.  Include every
+checkpoint role in the reachable obligation unions, retain clause
+\textup{(Z4)}, retain the full local budget $B$ of \cref{def:D14}, and include
+every gate escape deadline in the global horizon.  Then the compiled attacker
+wins against every real defender play by that horizon.  The debited $f$ and
+$Q^\D$ values are sound replacements for $r$ and $E^\D$ in the ordinary
+debited seed, touched, and virgin terms.
+\end{theorem}
+
+\begin{proof}
+At an ordinary node, run the A1--A3 coupling from \cref{thm:T3}.  Use
+\cref{def:D21,lem:L17} in place of the ordinary protected-occupation and
+completion lemmas.
+
+At a gate, check the incoming masks and discharge the checkpoint roles.
+Lemma~\ref{lem:L15} transfers the named threat family.  A real reply in
+$K(Q)$ is shared-empty, is copied on its exact child, and leaves $X$ and $Y$
+unchanged.  A reply outside $K(Q)$ abandons the mapped subtree.  The second
+part of \cref{lem:L17} excludes a defender completion during the remaining
+turn.  The second case of \cref{lem:L15} then supplies an adaptive surviving
+threat that the attacker completes by the escape deadline.
+
+WIN, LOSS, OR-COMPLETION, and ordinary OR transfers are those of
+\cref{thm:T3}.  A LOSS remainder remains sound because $Q^\D$ charges all
+$b$ placements and the obligation grammar protects every witness empty
+through leaf entry.  A finite tree reaches a typed terminal or its first
+escape.  A finite DAG can be unfolded as in \cref{thm:T10}; the gate labels,
+checkpoint roles, and branch-coherent maxima are preserved.  Hence every real
+play resolves by the augmented horizon.
+\end{proof}
+
+\begin{plainterms}
+The theorem permits a discount only after the gate masks have been protected
+and the real reply is copied at the same cell.  Every refusal is charged as an
+escape, and every ordinary or substituted reply keeps its full transition
+cost.  These conditions preserve the main coupling while making the two
+hazard clocks target-specific.
+\end{plainterms}
+
+An ordinary substitution envelope can coexist with gates, but its transition
+continues to use full clocks.
+
+\begin{theorem}[Substitution-envelope compatibility]
+\label{thm:T11.1}
+The conclusion of \cref{thm:T11} remains valid when an ordinary node's global
+debited-zone tests are replaced by a valid \cref{def:D17} envelope, provided
+the selected reachable-role union includes every future checkpoint role and
+the envelope retains the transition-inclusive $\widehat B$, role ranks, and
+$\widehat E$ tests of \cref{def:D17}.  No debited substitution envelope is
+asserted.
+\end{theorem}
+
+\begin{plainterms}
+An ordinary substitution still creates a real--ghost mismatch on its current
+ply, so it receives no gate discount.  Its full transition clocks must also
+protect every later gate checkpoint.  Omitting either condition would combine
+two individually sound reductions without covering their interaction.
+\end{plainterms}
+
+\begin{proof}[Proof sketch]
+The real reply and ghost substitute create the ordinary $X,Y$ transition, so
+the current unit remains mandatory.  The full envelope covers all three
+causal channels and every later checkpoint role.  Subsequent debited ordinary
+steps satisfy $f\le r$ and $Q^\D\le E^\D$, while a gate retains the full
+envelope inequalities and charges any escape floor.  The nested-envelope
+argument of \cref{thm:T9} then applies \cite{hexobot-companions}.
+\end{proof}
+
+\subsection{The running certificate fires its gate}
+
+The position introduced in \cref{sec:certificates} has defender budget one,
+a singleton threat with empty cell $h=(5,0)$, and kernel $K=\{h\}$.  The
+gate copies $h$.  The attacker then plays $(3,20)$ and $(0,20)$ and reaches a
+defender-budget-two LOSS leaf whose three witness-empty pairs are disjoint.
+Their transversal number is three.
+
+For the defender-alive window
+\[
+W=\{(q,40):0\le q\le5\},
+\]
+the root count is three and $h\notin W$.  The full exposure is
+\[
+E_{\mathrm{root}}^\D(W)=1+2=3,
+\]
+so its touched test reads $3+3=6$.  The gate recurrence instead gives
+\[
+Q_{\mathrm{root}}^\D(W)=\max\{1,0+2\}=2,
+\]
+and the debited test reads $3+2=5$.  The value two is attained when the LOSS
+remainder places at $(3,40)$ and $(4,40)$.  The window reaches count five,
+one of the three LOSS witnesses survives, and the attacker completes that
+witness.  The one-unit debit and the LOSS base two are both used on a legal
+line.
+
+For
+\[
+W'=\{(q,0):5\le q\le10\},
+\]
+the copied hit lies in the queried window.  The later LOSS placements
+$(6,0)$ and $(7,0)$ give
+\[
+Q_{\mathrm{root}}^\D(W')=\max\{1,1+2\}=3.
+\]
+All three placements lie in $W'$ and the count does not reach six.  Omitting
+the indicator for a copied hit inside $W'$ would give two and would undercount
+this line.
+
+\subsection{What remains open}
+
+The exact-copy theorem is proved, but it resolves only the two named hazards
+at protected tight gates.  The broader debit objective remains partial.
+
+\begin{table}[tbp]
+\centering
+\small
+\begin{tabular}{@{}p{.24\linewidth}p{.68\linewidth}@{}}
+\toprule
+Open extension & Present boundary \\
+\midrule
+Target-independent budget & No scalar $B_{FH}<B$ is proved.  Path length,
+LOSS remainders, substitution envelopes, and escape remainders still use the
+full $B$. \\
+Substituted forced hits & No D17 substitute receives zero cost.  A different
+real and ghost hit can create a real-only frontier corridor. \\
+Net searched-set shrinkage & The $f$ and $Q^\D$ terms do not grow for a fixed
+augmented certificate, but checkpoint roles can enlarge ancestor obligation
+sets. \\
+Slack pressure & A family with $\tau<b$ does not force the next reply; its
+kernel is the whole legal set.  No additional debit is proved for that turn. \\
+Seed-radius sharpness & Exact sharpness of every $f$-based reduction remains
+open.  Ordinary paths retain the relative boundary $8(r-1)$. \\
+\bottomrule
+\end{tabular}
+\caption{Open extensions of the forced-hit gate calculus.}
+\label{tab:gate-gaps}
+\end{table}
+
+The limit map in \cref{sec:tightness} records this result as
+\emph{partially resolved}.  That status concerns the intended pruning
+extension, not the validity of \cref{thm:T11}.

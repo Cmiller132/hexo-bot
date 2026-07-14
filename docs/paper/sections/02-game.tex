@@ -11,6 +11,12 @@ The first player to occupy six consecutive cells on one of the three grid
 axes wins.  A win is checked after each placement, so a win on the first
 placement ends the game before the second placement of that turn.
 
+There are no captures or passes.  The engine has no normal draw outcome.  An
+unfinished play can continue on the unbounded board, but every certificate in
+this paper has a finite declared horizon.  The informal rules and the formal
+model agree with the repository rule implementation
+\cite{hexobot-companions}.
+
 We use attacker and defender as fixed roles, denoted by $\A$ and $\D$.  A
 ply is one placement, while a normal turn contains two plies.  Everything
 below concerns positions after the Opening placement (the origin is occupied;
@@ -31,6 +37,12 @@ $x=(q,r)$ and $y=(q',r')$, set
 \]
 \end{definition}
 
+\begin{plainterms}
+The coordinate pair names one hexagon.  The third quantity in the maximum is
+the missing cube-coordinate difference.  Distance eight is therefore an
+actual hex-grid radius rather than a rectangular coordinate bound.
+\end{plainterms}
+
 The winning patterns are finite segments along the three line directions of
 the axial lattice.
 
@@ -49,6 +61,12 @@ exactly six cells, and every cell lies in exactly 18 windows, from three axes
 and six possible offsets on each axis.
 \end{definition}
 
+\begin{plainterms}
+A winning line is always one of these six-cell sets.  A cell has six possible
+positions inside a window on each of three axes.  This is why a placement
+changes exactly eighteen window records.
+\end{plainterms}
+
 The next fact records the metric consequence of belonging to one window.
 
 \begin{fact}[Window collinearity]
@@ -57,6 +75,12 @@ Two distinct cells of a window differ by a nonzero multiple of the window's
 axis vector.  Thus any two cells contained in a common window are collinear
 along that axis and have distance at most $5$.
 \end{fact}
+
+\begin{plainterms}
+Window cells lie on one grid line and are never more than five steps apart.
+This small diameter makes threat cells legal and supplies the locality bounds
+used later.
+\end{plainterms}
 
 Figure~\ref{fig:coordinates} shows the coordinate convention and one distance
 calculation.
@@ -102,6 +126,12 @@ When the position is clear from context, we suppress it and write
 $\cnt_X(W)$.
 \end{definition}
 
+\begin{plainterms}
+The state records one placement phase, not only the player whose turn it is.
+This distinction is needed because the remaining budget can be one or two and
+a win can stop the turn between those placements.
+\end{plainterms}
+
 Legality is local to the existing stones, while a transition must also
 account for immediate termination and the two-placement turn structure.
 
@@ -122,6 +152,12 @@ of a two-placement turn.  If there is no win, the next position is
 $ (\sigma',m,1)$ when $b=2$, and $(\sigma',\bar m,2)$ when $b=1$.
 \end{definition}
 
+\begin{plainterms}
+Any existing stone of either colour can justify legality.  A remote defender
+reply can therefore create legal cells for both players.  The soundness proof
+must track that frontier even when no current threat window is touched.
+\end{plainterms}
+
 Window states distinguish usable winning lines, blocked lines, and lines that
 can be completed within one normal turn.
 
@@ -132,6 +168,12 @@ $\cnt_{\bar X}(W)=0$.  An all-empty window is alive for both players.  It is
 \emph{dead} if $\cnt_\A(W)\ge1$ and $\cnt_\D(W)\ge1$.  It is an
 \emph{$X$-threat} if it is alive for $X$ and $\cnt_X(W)\ge4$.
 \end{definition}
+
+\begin{plainterms}
+An alive window can still become a win for the named player.  A dead window
+cannot, because stones are permanent.  Four stones are a threat because the
+two remaining cells fit in one normal turn.
+\end{plainterms}
 
 The three panels in \cref{fig:window-states} give the basic mask patterns used
 by this terminology.
@@ -191,6 +233,13 @@ The $\lambda^1$ verdict is \textsc{win} when $\ownwinnow(P)$ holds,
 The post-opening soundness of these implemented verdicts is assumed here.
 \end{definition}
 
+\begin{plainterms}
+The tactical test reduces a family of threat empties to a hitting-set
+question.  A defender budget of two can answer a family with transversal
+number at most two.  The LOSS result also requires the mover to lack a faster
+win of its own.
+\end{plainterms}
+
 Absolute placement indices allow later certificates to state an exact win
 horizon without treating a two-placement turn as simultaneous.
 
@@ -202,6 +251,12 @@ $T$}, written $\DefCount(P,T)$, is the number of plies strictly before $T$ at
 which $\D$ places, as determined by $(m,b)$ and alternation.
 \end{definition}
 
+\begin{plainterms}
+Certificate deadlines count placements, not turns.  This convention records
+the exact order in which a first-stone win, a second-stone win, and the next
+turn can occur.
+\end{plainterms}
+
 The final convention fixes the direction needed when defender replies are
 removed from an attacker-win certificate.
 
@@ -212,6 +267,12 @@ $\mathrm{WIN}\succ\nonWIN$.  A \emph{sound dismissal} of a defender reply
 $c$ at a node $N$ means that, if the certificate proves that $\A$ wins against
 all searched replies, then $\A$ also wins against $c$.
 \end{definition}
+
+\begin{plainterms}
+The paper removes defender replies only while proving an attacker win.  A
+dismissal is sound when the omitted reply cannot turn that verified win into
+a nonwin.  No symmetric dominance claim is intended.
+\end{plainterms}
 
 \begin{figure}[tbp]
   \centering

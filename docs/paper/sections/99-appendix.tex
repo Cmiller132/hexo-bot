@@ -1,0 +1,279 @@
+\section{Notation and source crosswalk}
+\label{sec:notation}
+\label{sec:appendix}
+
+The notation tables collect the symbols used across the certificate,
+pairing, potential, and domination layers.  The crosswalk then records the
+paper number and the corresponding tag in the repository companion.  Core
+tags without a prefix refer to \emph{PROOF\_TSS\_DEFENDER\_ZONES.md}.
+The prefix ES-P refers to \emph{ES\_POTENTIAL.md}, ES-G refers to
+\emph{ES\_GLOBAL\_BOUNDARY.md}, and DOM refers to
+\emph{DOMINATION.md}.  The crosswalk has no row for expository prose or an
+unnumbered observation.
+
+\subsection{Notation}
+
+\newenvironment{appendixtable}
+  {\par\medskip\noindent\begin{minipage}{\textwidth}\centering
+   \captionsetup{hypcap=false}}
+  {\end{minipage}\par\medskip}
+
+\begin{appendixtable}
+  \captionof{table}{Game and certificate notation.}
+  \label{tab:notation-game}
+  \small
+  \renewcommand{\arraystretch}{1.08}
+  \begin{tabular}{@{}p{.245\textwidth}p{.655\textwidth}@{}}
+    \toprule
+    Symbol & Meaning \\
+    \midrule
+    $\Cells=\mathbb Z^2$ & Axial cell lattice. \\
+    $x=(q,r)$ & Cell with axial coordinates $q,r$. \\
+    $d(x,y)$ & Hex distance
+      $\max\{|q-q'|,|r-r'|,|(q-q')+(r-r')|\}$. \\
+    $B_R(x)$, $B_R(U)$ & Closed radius-$R$ ball around a cell, and the union
+      of those balls around a set. \\
+    $\axisQ,\axisR,\axisS$ & The three unoriented axes represented by
+      $(1,0)$, $(0,1)$, and $(1,-1)$. \\
+    $W$ & Six consecutive cells on one axis. \\
+    $\Omega(x)$ & The eighteen windows containing $x$. \\
+    $P=(\sigma,m,b)$ & Finite position, player to place, and remaining
+      placements in the current turn. \\
+    $\Stones(P)$ & Occupied cells of $P$. \\
+    $\Legal(P)$ & Legal empty placement cells of a nonterminal position. \\
+    $\cnt_X(W,P)$ & Number of stones of player $X\in\{\A,\D\}$ in $W$. \\
+    $E(W,P)$ & Empty cells of $W$ in $P$. \\
+    $\ownwinnow(P)$ & Predicate that the mover can complete a window within
+      the remaining placement budget. \\
+    $\hit(P)$ & Family of empty sets of current opponent-threat windows. \\
+    $\mhs(P)$, $\tau(F)$ & Minimum transversal size of the current threat
+      family, or of a finite set family $F$. \\
+    $p$ & Absolute placement index on a certificate path. \\
+    $T$ & Declared absolute resolution horizon. \\
+    $N$, $P_N$ & Certificate node and its labelled position. \\
+    $S(N)$ & Legal defender replies represented by children of an AND node. \\
+    $B(N)$ & Local upper bound on defender placements before certified
+      resolution, including a LOSS remainder. \\
+    $\Omega(N)$ & Live obligation roles reachable below $N$. \\
+    $\Prot(N)$ & Cells carrying live attacker-placement or leaf-witness
+      roles at $N$. \\
+    $r_N(\rho)$, $r_N(y)$ & Remaining ordinary defender opportunities before
+      role $\rho$ is checked, and the maximum rank carried by cell $y$. \\
+    $E_N^{\D}(W)$ & Maximum defender exposure before attacker resolution or
+      first attacker entry into $W$. \\
+    \bottomrule
+  \end{tabular}
+\end{appendixtable}
+
+\begin{appendixtable}
+  \captionof{table}{Zone, coupling, and gate notation.}
+  \label{tab:notation-zones}
+  \small
+  \renewcommand{\arraystretch}{1.08}
+  \begin{tabular}{@{}p{.245\textwidth}p{.655\textwidth}@{}}
+    \toprule
+    Symbol & Meaning \\
+    \midrule
+    $Z_{\rm dir}(N)$ & Legal cells carrying a current direct obligation. \\
+    $Z_{\rm seed}(N)$ & Legal seeds close enough to relay into a future
+      protected carrier before its deadline. \\
+    $Z_{\rm touch}(N)$ & Empties of touched defender-alive windows whose
+      current count plus exposure can reach six. \\
+    $Z_{\rm virgin}(N)$ & Legal seeds that can reach and fill an all-empty
+      defender window within its exposure. \\
+    $R_{\rm cert}(\mathcal C,N)$ & Mandatory certificate-relative union of
+      the applicable zone terms. \\
+    $R_{\rm search}(\mathcal C,N)$ & Optional search superset obtained by
+      adding heuristic candidate terms. \\
+    $X$, $Y$ & Real-only dismissed defender stones and ghost-only searched
+      filler stones. \\
+    $\widehat X$ & History of cells that have ever entered the real-only
+      difference set. \\
+    $K_b(N)$ & Extendable-hit kernel at remaining defender budget $b$. \\
+    $\widehat B,\widehat r,\widehat E$ & Transition-inclusive D17 envelope
+      labels for a selected child. \\
+    $\mathcal G$ & Finite acyclic certificate DAG. \\
+    $H_Q$ & Named attacker-threat windows at forcing gate $Q$. \\
+    $F_Q=\{E(U,P_Q):U\in H_Q\}$ & Gate threat-empty family. \\
+    $K(Q)$ & Exact-copy gate kernel
+      $\{d:\tau(F_Q\setminus d)\le b-1\}$. \\
+    $(Q,U,e)$ & Checkpoint role protecting empty $e$ of named gate window
+      $U$ through the entry mask check. \\
+    $\Prot^-(Q)$, $\Prot^+(Q)$ & Protected set immediately before and after
+      checkpoint discharge at a gate. \\
+    $f_N(\rho)$, $f_N(y)$ & Forced-hit-debited ordinary-opportunity clock for
+      a role and the maximum such clock carried by a cell. \\
+    $Q_N^{\D}(W)$ & Branch-coherent maximum of full-cost defender
+      opportunities plus exact copied gate hits lying in $W$. \\
+    $Z_{\rm dir}^{FH}$, $Z_{\rm seed}^{FH}$ & Direct and seed terms at an
+      ordinary debited node. \\
+    $Z_{\rm touch}^{FH}$, $Z_{\rm virgin}^{FH}$ & Touched and virgin
+      completion terms using $Q^{\D}$. \\
+    $p(Q)+b+2$ & Gate escape deadline after entry with $b$ placements left. \\
+    \bottomrule
+  \end{tabular}
+\end{appendixtable}
+
+\begin{appendixtable}
+  \captionof{table}{Pairing, potential, and domination notation.}
+  \label{tab:notation-other}
+  \small
+  \renewcommand{\arraystretch}{1.08}
+  \begin{tabular}{@{}p{.245\textwidth}p{.655\textwidth}@{}}
+    \toprule
+    Symbol & Meaning \\
+    \midrule
+    $M$ & Partial matching used by a pairing strategy. \\
+    $\Lambda=\langle(2,2),(0,6)\rangle$ & Index-twelve period lattice of the
+      length-seven pairing construction. \\
+    $\phi(q,r)=(q\bmod2,r-q\bmod6)$ & Quotient map with kernel $\Lambda$. \\
+    $\lambda=\sqrt3$ & Base of the Hexo potential. \\
+    $\Phi(P)$ & Sum of $\lambda^{-e(W)}$ over attacker-touched alive windows
+      in the dynamic family. \\
+    $\Psi_F(P)$ & Residual potential of a fixed finite target family $F$. \\
+    $d_P(x)$ & Potential reduction, or danger, of a defender placement at
+      $x$. \\
+    $C_t$ & Birth mass enrolled after an attacker pair at epoch $t$. \\
+    $\Phi_R$, $B_R^*$, $N_R$ & Finite-region potential, refined activation
+      reserve, and coarse number of region targets. \\
+    $(n_1,\ldots,n_5)$ & Counts of attacker-alive windows containing one
+      through five attacker stones. \\
+    $\Lambda(P)$ & Geometric legal support
+      $\bigcup_{s\in\Stones(P)}B_8(s)$ in the domination layer. \\
+    $\operatorname{Out}_n$ & Stopped outcome through $n$ placements after a
+      compared defender reply. \\
+    $b\preceq_n a$ & Defender reply $b$ is $n$-outcome-dominated by searched
+      reply $a$. \\
+    $G,H$ & Searched and omitted states in a causal alternating simulation. \\
+    \bottomrule
+  \end{tabular}
+\end{appendixtable}
+
+\clearpage
+\subsection{Paper number to source tag}
+
+The first column uses live references so the displayed paper numbers follow
+the final section order.  Each table below has exactly the paper-number and
+source-tag columns.
+
+\newdimen\crosswalkremaining
+\newcommand{\CrosswalkRule}{%
+  \noindent\hspace*{.06\textwidth}%
+  \rule{.88\textwidth}{.55pt}\par}
+\newcommand{\CrosswalkRow}[2]{%
+  \noindent\hspace*{.06\textwidth}%
+  \begin{minipage}[t]{.58\textwidth}\raggedright\strut #1\strut\end{minipage}%
+  \hspace*{.02\textwidth}%
+  \begin{minipage}[t]{.28\textwidth}\raggedright\strut #2\strut\end{minipage}\par}
+\newcommand{\CrosswalkContinuation}[1]{%
+  \par
+  \crosswalkremaining=\pagegoal
+  \advance\crosswalkremaining by -\pagetotal
+  \ifdim\crosswalkremaining<5\baselineskip\newpage\fi
+  \noindent\begin{minipage}{\textwidth}\centering
+  \textit{Table~\ref*{#1} continued}\par
+  \CrosswalkRule
+  \CrosswalkRow{\bfseries Paper number}{\bfseries Source tag}
+  \CrosswalkRule
+  \end{minipage}\par\nobreak}
+\newenvironment{crosswalktable}[2]
+  {\par\medskip
+   \crosswalkremaining=\pagegoal
+   \advance\crosswalkremaining by -\pagetotal
+   \ifdim\crosswalkremaining<8\baselineskip\newpage\fi
+   \begingroup\small
+   \noindent\begin{minipage}{\textwidth}\centering
+   \captionsetup{hypcap=false}
+   \captionof{table}{#1}\label{#2}
+   \CrosswalkRule
+   \CrosswalkRow{\bfseries Paper number}{\bfseries Source tag}
+   \CrosswalkRule
+   \end{minipage}\par\nobreak}
+  {\nobreak\CrosswalkRule\endgroup\medskip}
+
+\begin{crosswalktable}{Core definitions and the geometric fact.}
+  {tab:crosswalk-definitions}
+  \CrosswalkRow{Definition~\ref*{def:D1}}{D1}
+  \CrosswalkRow{Definition~\ref*{def:D2}}{D2}
+  \CrosswalkRow{Definition~\ref*{def:D3}}{D3}
+  \CrosswalkRow{Definition~\ref*{def:D4}}{D4}
+  \CrosswalkRow{Definition~\ref*{def:D5}}{D5}
+  \CrosswalkRow{Definition~\ref*{def:D6}}{D6}
+  \CrosswalkRow{Definition~\ref*{def:D7}}{D7}
+  \CrosswalkRow{Definition~\ref*{def:D8}}{D8}
+  \CrosswalkRow{Definition~\ref*{def:D9}}{D9}
+  \CrosswalkRow{Definition~\ref*{def:D10}}{D10}
+  \CrosswalkRow{Definition~\ref*{def:D11}}{D11}
+  \CrosswalkRow{Definition~\ref*{def:D12}}{D12}
+  \CrosswalkRow{Definition~\ref*{def:D13}}{D13}
+  \CrosswalkRow{Definition~\ref*{def:D14}}{D14}
+  \CrosswalkRow{Definition~\ref*{def:D15}}{D15}
+  \CrosswalkRow{Definition~\ref*{def:D16}}{D16}
+  \CrosswalkRow{Definition~\ref*{def:D17}}{D17}
+  \CrosswalkRow{Definition~\ref*{def:D18}}{D18}
+  \CrosswalkRow{Definition~\ref*{def:D19}}{D19}
+  \CrosswalkRow{Definition~\ref*{def:D20}}{D20}
+  \CrosswalkRow{Definition~\ref*{def:D20a}}{D20a}
+  \CrosswalkRow{Definition~\ref*{def:D21}}{D21}
+  \CrosswalkRow{Fact~\ref*{fact:F1}}{F1}
+\end{crosswalktable}
+
+\begin{crosswalktable}{Core lemmas and results.}
+  {tab:crosswalk-core-results}
+  \CrosswalkRow{Lemma~\ref*{lem:L1}}{L1}
+  \CrosswalkRow{Lemma~\ref*{lem:L2}}{L2}
+  \CrosswalkRow{Lemma~\ref*{lem:L3}}{L3}
+  \CrosswalkRow{Lemma~\ref*{lem:L4}}{L4}
+  \CrosswalkRow{Lemma~\ref*{lem:L5}}{L5}
+  \CrosswalkRow{Lemma~\ref*{lem:L6}}{L6}
+  \CrosswalkRow{Lemma~\ref*{lem:L7}}{L7}
+  \CrosswalkRow{Lemma~\ref*{lem:L9prime}}{L9$'$}
+  \CrosswalkRow{Lemma~\ref*{lem:L10}}{L10}
+  \CrosswalkRow{Lemma~\ref*{lem:L11}}{L11}
+  \CrosswalkRow{Lemma~\ref*{lem:L12}}{L12}
+  \CrosswalkRow{Lemma~\ref*{lem:L13}}{L13}
+  \CrosswalkRow{Lemma~\ref*{lem:L14}}{L14}
+  \CrosswalkRow{Lemma~\ref*{lem:L15}}{L15}
+  \CrosswalkRow{Lemma~\ref*{lem:L16}}{L16}
+  \CrosswalkRow{Lemma~\ref*{lem:L17}}{L17}
+  \CrosswalkRow{Theorem~\ref*{thm:T1}}{T1}
+  \CrosswalkRow{Theorem~\ref*{thm:T2}}{T2}
+  \CrosswalkRow{Theorem~\ref*{thm:T3}}{T3}
+  \CrosswalkRow{Theorem~\ref*{thm:T4}}{T4}
+  \CrosswalkRow{Theorem~\ref*{thm:T5}}{T5}
+  \CrosswalkRow{Theorem~\ref*{thm:T6}}{T6}
+  \CrosswalkContinuation{tab:crosswalk-core-results}
+  \CrosswalkRow{Theorem~\ref*{thm:T7}}{T7}
+  \CrosswalkRow{Theorem~\ref*{thm:T8}}{T8}
+  \CrosswalkRow{Corollary~\ref*{cor:T8.1}}{T8.1}
+  \CrosswalkRow{Theorem~\ref*{thm:T8.2}}{T8.2}
+  \CrosswalkRow{Theorem~\ref*{thm:T9}}{T9}
+  \CrosswalkRow{Theorem~\ref*{thm:T10}}{T10}
+  \CrosswalkRow{Theorem~\ref*{thm:T11}}{T11}
+  \CrosswalkRow{Theorem~\ref*{thm:T11.1}}{T11.1}
+\end{crosswalktable}
+
+\begin{crosswalktable}{Potential- and domination-layer results.}
+  {tab:crosswalk-potential}
+  \label{tab:crosswalk-domination}
+  \CrosswalkRow{Definition~\ref*{def:ES-potential}}{ES-P D3--D4}
+  \CrosswalkRow{Lemma~\ref*{lem:ES-round}}{ES-P L5}
+  \CrosswalkRow{Theorem~\ref*{thm:ES-fixed-family}}{ES-P T1}
+  \CrosswalkRow{Theorem~\ref*{thm:ES-one-cycle}}{ES-P T2}
+  \CrosswalkRow{Theorem~\ref*{thm:ES-cumulative}}{ES-P T3}
+  \CrosswalkRow{Theorem~\ref*{thm:ES-finite-region}}{ES-P T4}
+  \CrosswalkRow{Theorem~\ref*{thm:ES-greedy-refutation}}{ES-G T1}
+  \CrosswalkRow{Proposition~\ref*{prop:ES-reachable-greedy}}{ES-G P1}
+  \CrosswalkRow{Lemma~\ref*{lem:ES-clean-escape}}{ES-G L1}
+  \CrosswalkRow{Theorem~\ref*{thm:ES-five-placement}}{ES-G T2}
+  \CrosswalkRow{Lemma~\ref*{lem:ES-one-greedy}}{ES-G L2}
+  \CrosswalkRow{Theorem~\ref*{thm:ES-three-pair}}{ES-G T3}
+  \CrosswalkRow{Proposition~\ref*{prop:ES-no-static-pairing}}{ES-G P2}
+  \CrosswalkRow{Proposition~\ref*{prop:ES-no-static-damping}}{ES-G P3}
+  \CrosswalkRow{Theorem~\ref*{thm:ES-finite-reduction}}{ES-G T4}
+  \vspace{.35\baselineskip}
+  \CrosswalkRow{Lemma~\ref*{lem:Dom-L7}}{DOM L7}
+  \CrosswalkRow{Proposition~\ref*{prop:Dom-P1}}{DOM P1}
+  \CrosswalkRow{Proposition~\ref*{prop:Dom-P2}}{DOM P2}
+  \CrosswalkRow{Proposition~\ref*{prop:Dom-P3}}{DOM P3}
+\end{crosswalktable}
