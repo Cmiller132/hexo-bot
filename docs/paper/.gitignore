@@ -1,2 +1,4 @@
 sources/
 *.log
+# Prior-art reference PDF (uploaded copy, not redistributed in-repo)
+RelevanceZoneOriented_Proof_Search_for_Connect6.pdf
