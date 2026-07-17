@@ -915,3 +915,44 @@ per-node state reconstruction expensive — not on bottleneck movement.
 **Provenance note:** both Codex sessions died on API capacity outages;
 measurement was complete, and the orchestrator authored the report with
 every number verified against the retained raw logs.
+
+## 2026-07-17 — R-KT1: forced-reply kernel taxonomy MEASURED NULL — T6 already owns the seam
+
+**Anchor:** branch `hunt/kernel-taxonomy` @ 562b5e51,
+TAXONOMY_KERNEL_REPLY.md + HUNT_REPORT_KERNEL_TAXONOMY.md + six raws.
+Codex ultra round; 94gnnol excluded per owner ruling.
+
+**What was tested:** whether the proven urgent-SecondStone reply kernel
+(538→1) generalizes to a taxonomy of defender-context classes, each a
+certified AND-width cut. Shadow classifier (cfg(test), default-off)
+traversed the final wide PN DAG post-solve on the 18-position official
+1 GiB lazy+gate profile: 2,910,351 classified forced AND contexts,
+**zero load-bearing counterexamples, zero traversal errors** (93.3%
+of contexts honestly reported semantically inconclusive — shadow
+evidence, not proof).
+
+**The structural finding (corrects the agenda's premise):** there is no
+≤37→≤k width cut left to take, because **exact T6 consumption already
+compressed the live seam**: observed forced reply-cell widths are 2–4
+(full legal widths 333–956 are irrelevant post-T6), and defender turns
+are already atomic unordered DefenderPair children. The apparent 52.1%
+reply-cell collapse of the F2_COVER projections retains ALL 9,740,262
+atomic pair children — zero AND-child value. The one genuine new
+complete-reply proposal (S1_DEAD_SPOKE_C4, exact 2→1 with a cheap
+incremental trigger) fired zero times: complete-turn pair compression
+bypasses intermediate SecondStone AND nodes entirely. D19–D21/adaptive-
+escape classes are NO-CONJECTURE — their membership requires
+certificate metadata that does not exist in position state.
+
+**What the paper says:** the defender-width story is CLOSED, positively:
+the zone-theorem substrate (T6/Q8/P2/P3) already extracts the full
+width reduction available at the wide-PN seam, and a 2.9M-context
+corpus-wide shadow audit found zero violations of its reply machinery.
+The remaining defender-enumeration cost (~33% of wall) is per-node
+enumeration WORK, not branching width — the correct attack is
+incremental enumeration, not new kernels. Lean proof queue from this
+round: empty.
+
+**Integrity:** flag-off/on fast-subset identity row-exact; production
+release build with the test-only module absent passes; strict verifier
+untouched; RAM gates recorded per invocation (relaxed 07-17 protocol).
