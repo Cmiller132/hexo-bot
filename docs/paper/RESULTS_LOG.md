@@ -815,3 +815,36 @@ repeated exact trainer queries is a separate API/soundness proposal.
 **Verified:** orchestrator cfg-audit + digit-exact raw-log truth-check
 + independent single-row rerun reproducing WIN/expansions/peak bytes
 identically (CORPUS_DONE failures=0).
+
+## 2026-07-17 — R-CD1: both ideation closure debts disposed as measured NULLs (dynamic child reveal; live_ge3 seed)
+
+**Anchor:** branch `claude/tss-vcf-width` @ b7e9f36c,
+HUNT_REPORT_CLOSURE_DEBTS.md + CLOSURE_*.log raws (incl. the
+orchestrator-completed CLOSURE_COUNTER_FULL_OFF_RAW.log).
+
+**Debt A — dynamic child reveal (the 43.6%-of-wall pair-generation
+attack): NULL, and the number is a paper-grade negative.** The official
+1 GiB counter profile measured 1.80B pairs evaluated vs 3.81M expanded —
+99.79% of classification work never feeds an expanded child — yet the
+*sound* avoidable fraction is only **7.83%** of pair-generation wall
+(23.4s of 299.3s), below the 11.5% needed to clear 5% end-to-end. Why
+the gap: soundness forbids refuting a Choice node before generator
+exhaustion (so refuted/unknown nodes save nothing), and at proven nodes
+the winning child sits deep in rank order (bins
+[10785, 5686, 11250, 5666, 21508, 14981, 5343, 2460]), so the reveal
+prefix covers most of the cost anyway. The "just generate lazily"
+intuition dies on the engine's own soundness contract — this closes the
+register's oldest optimization debt (the old opt-spec's "lazy ordering"
+row) with a measured ceiling.
+
+**Debt B — live_ge3 proof-number seed: NULL by leaf regression.** The
+live A/B on the selected Phase-3 cells regressed wall +18.41% (h8) and
++12.49% with one lost verdict (h16); the promotion conjunction failed
+outright, honoring NQ6's warning that its replay numbers froze
+outcomes. All 109 hard certificates strict-verified; zero
+contradictions.
+
+**Method note:** instrumentation fully cfg(test)/default-off; unused
+paths reproduced R-CR1 counts exactly; strict verifier untouched. Debt
+A's official run completed by the orchestrator post-session with a
+documented RAM judgment (standby-cache deficit, not true scarcity).
