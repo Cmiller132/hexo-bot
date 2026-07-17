@@ -774,3 +774,44 @@ reference gap is claimed either way.
 **Verdict recorded:** "nothing realistic remains" would be false today;
 exhaustion can only be declared after the five lever rounds fail their
 ≥5% gates and the 94gnnol differential is dispositioned.
+
+## 2026-07-17 — R-CR1: cap-ladder resume BUILT — official profile −29.10% wall (ideation candidate 1 consumed)
+
+**Anchor:** branch `claude/tss-vcf-width` @ e05324f4,
+HUNT_REPORT_CAP_RESUME.md + `tss_cap_resume.rs` + retained
+CAP_RESUME_*.log raws. Regen: `tss_cap_resume_campaign` +
+`tss_corpus_check` with `TSS_CAP_RESUME=1`.
+
+**What the paper says (the harness/call-surface section):** the
+official ladder's fresh-per-rung methodology was itself a measured
+30.67% tax (ideation §1.2). A cfg(test) resumable session — one root's
+arena, position index, deferred keys, pn/dn, commitment, and
+staged-depth cursor surviving monotone cap increases — recovers nearly
+all of it: **full official 1 GiB lazy+gate wall 495.94s → 351.62s
+(−29.10%)**, expansions −34.83%, peak bytes −8.95%, 15 re-entries.
+The hardest row's ladder drops ~319s → ~194s (−39%): its closing rung
+now continues from the 1M-rung frontier (1,713,725 cumulative
+expansions) instead of rebuilding it (1,879,611 fresh).
+
+**Soundness story (paper-grade):** the session binding pins the exact
+root, goal, horizon, width, flags, TT cap, and hash mode; only
+monotonically larger caps are accepted; lower-cap results remain
+Unknown; hard results traverse the ordinary materializer and the
+UNCHANGED strict verifier. 27/27 measured identity triples (pn, dn,
+status) matched fresh solves; certificate bytes differed only at
+pause-boundary legal ties and every variant strict-verified.
+Production builds contain none of the machinery (non-test release
+build green; default-off subset byte-identical).
+
+**Honest scope notes:** the win is a property of the *cap-ladder call
+surface*, not the single-solve engine — single-rung solves are
+unchanged; the resumed total landing 5.52% below even the
+final-attempt-only baseline is pause-order scheduling luck, not
+guaranteed; 94gnnol's hypothetical 20M rung was not measured (45-min
+command rule; its official 1M rung matches exactly). Recommended
+deployment: harness-only; an exposed in-process session handle for
+repeated exact trainer queries is a separate API/soundness proposal.
+
+**Verified:** orchestrator cfg-audit + digit-exact raw-log truth-check
++ independent single-row rerun reproducing WIN/expansions/peak bytes
+identically (CORPUS_DONE failures=0).
