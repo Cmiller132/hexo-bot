@@ -433,3 +433,51 @@ restored contract, not the recount.
 
 **Caveats:** none beyond scope — the fix makes evidence labels
 truthful; it cannot make an unwinnable rung winnable.
+
+---
+
+## 2026-07-17 — G2R9/G2R9b: T10-licensed shared-fragment store BUILT; warm reuse real (−20% expansions), TT-saturation hope NULL
+
+**Anchor:** branch `hunt/turn-quotient` (commit at gate),
+BUILD_SHARED_FRAGMENTS.md (design + amended contract) +
+HUNT_REPORT_SHARED_FRAGMENTS.md (stop history + completion) +
+implementation behind `TSS_SHARED_FRAGMENTS=1` (default off). Regen:
+`shared_fragment_soundness_and_warm_campaign`,
+`shared_fragment_reduced_tt_campaign`, official gates with
+`TSS_CORPUS_EXPECT_*` assertions.
+
+**What the paper says (§5 DAG figure + §6 + §12):**
+1. *The store is sound and the contract is the interesting part.* A
+   within-process cross-solve fragment store at T10's max-dominant
+   merge semantics, verified fragments only, strict verifier still the
+   single mint. Its first warm run tripped the campaign's strict
+   verdict-identity requirement in the only direction it could: an
+   UNKNOWN became a strict-verifier-accepted WIN (2 fragment imports,
+   −62% expansions on that root). The session STOPPED rather than
+   reinterpret; the orchestrator ruled the **monotone contract** (cold
+   identity mandatory; warm changes only UNKNOWN → verifier-accepted
+   hard verdict; NO rows never WIN) — UNKNOWN is a resource verdict,
+   and verified proof mass at fixed budget is capacity, not risk.
+   Under that contract: 139 roots × {eager, lazy-composed} all green,
+   mutation control green, both official 2 GiB gates green.
+2. *Warm reuse is real but narrow:* repeat-solves −20.5% expansions /
+   −16.5% wall; cold overhead +0.8–1.0% wall; hit rate small (199
+   hits / 424k lookups). Exactly one monotone improvement in the
+   139-root corpus.
+3. *The bottleneck hope is NULL at this scope, honestly:* the 0l row
+   did NOT close at 512 MiB or 1 GiB with fragments (0 imports cold;
+   13 hits / 0 imports progressive-warm through 1M nodes). Cross-solve
+   fragments do not break the TT-saturation wall — the sub-proofs a
+   deep solve needs at scale are not the ones earlier solves stored.
+   The saturation attack therefore rests on lazy frontier (−67%
+   admissions) and, prospectively, in-solve DAG sharing — not on
+   cross-solve fragment reuse.
+
+**Solver consequence:** deploy target is the Phase-3 leaf solver (many
+solves, nearby positions, one process — where warm reuse is the common
+case), not the deep corpus profile. Default stays off; the consume
+decision moves to the Phase-3 integration round.
+
+**Caveats:** warm numbers are same-root repeat-solve economics; the
+20M-node reduced-TT attempt exceeded the time bound and is reported as
+incomplete, not as UNKNOWN.
