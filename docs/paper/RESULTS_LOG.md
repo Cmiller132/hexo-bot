@@ -548,3 +548,43 @@ remaining block.
 **Caveats:** T6 increments 3–7 and L15–L17 outstanding; two of the
 three spine sessions ended at RAM gates (31 GB host shared with engine
 lanes), not at proof obstacles.
+
+---
+
+## 2026-07-17 — R-LF2: the memory wall MOVED — full gate green at 1 GiB; 8.4× at 512 MiB
+
+**Anchor:** branch `hunt/turn-quotient` (commit at gate),
+HUNT_REPORT_LAZY_MEMORY_WALL.md + per-run logs (`.codex-hunt/lf2-*`).
+Pure measurement round — zero code changes (the official gate's
+existing `TSS_CORPUS_ID` filter sufficed). Regen commands in the
+report.
+
+**What the paper says (§6 headline + the round-8b bottleneck
+epilogue):** the round-8b root cause was TT saturation: the 0-loss row
+closed only under the 2 GiB profile. With lazy frontier admission ON
+(fragments off, isolating the variable):
+- the **full 19-row official gate is green at 1 GiB** (491.3 s,
+  row-by-row verdicts/expansions/TT-hits identical to 2 GiB lazy-on);
+  lazy-off at 1 GiB is also green but takes 836.5 s — lazy nearly
+  halves constrained wall;
+- at **512 MiB** the historically hardest row (`0l4291i_live`) closes
+  WIN in both modes at the 20M rung, but the difference is the
+  campaign's biggest measured number: eager thrashes the capped TT to
+  **18.13M expansions / 1,660 s** while lazy needs **1.91M / 198 s**
+  (−89.4% expansions, 8.4× wall). Cap-pressure regime: a
+  capacity/traversal result under the cap-aware corollary, not
+  uncapped equivalence — all certificates verified, no verdict
+  anomalies;
+- at uncapped 2 GiB, lazy costs ~12% wall (492 vs 437 s baseline) —
+  the lever pays exactly where memory pressure exists, and slightly
+  taxes where it doesn't.
+
+**Recommendation adopted into the program:** official deep-solve
+profile drops to **1 GiB with TSS_LAZY_FRONTIER=1 asserted** (the
+CORPUS_MODE echo + expectation assertions make the flag state
+auditable); 512 MiB stays unofficial pending a full gate there.
+
+**Caveats:** the 256 KiB trainer leaf does NOT currently benefit —
+trainer solves use the narrow path and lazy affects wide PN only; a
+dedicated leaf campaign (or wide-leaf enablement) is the open follow-up
+for that surface.
