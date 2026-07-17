@@ -687,3 +687,40 @@ of this gate and joins the standing battery definition.
 **Caveats:** wall timings at the tip differ slightly from historical
 runs (machine load); the leaf-surface campaign decides which flags the
 Phase-3 leaf asserts.
+
+---
+
+## 2026-07-17 — LEAF-SURFACE CAMPAIGN: Phase-3 config decided — wide + lazy + interior gate DOUBLES leaf verdict rate
+
+**Anchor:** branch `claude/tss-vcf-width` (commit at gate),
+HUNT_REPORT_LEAF_SURFACE.md + `tss_leaf_surface_hunt.rs` +
+LEAF_SURFACE_RAW.txt. Regen: `leaf_surface_campaign`.
+
+**What the paper says (the Phase-3 deployment section / trainer note):**
+six configurations measured on MCTS-realistic batch workloads (50
+deterministic human-game segments, persistent solver per batch,
+256 KiB TT, caps 500/2k/8k, horizons 8 and 16; 300 solves per cell):
+- **Winner: config D — wide PN + TSS_LAZY_FRONTIER +
+  TSS_INTERIOR_CENSUS_GATE.** At horizon 16 it roughly DOUBLES the
+  narrow baseline's verdict rate (6.33% → 13.33% at cap 2,000) at
+  −65.6% wall; at the native h=8 query the interior gate dismissed ALL
+  692 evaluated interior nodes — D expanded ~1,852 nodes regardless of
+  nominal cap, p90 wall −93.7%.
+- The cap-efficiency headline: **D at cap 500 outperforms narrow at
+  cap 8,000** (13.00% vs 7.00% verdict rate at h16) — 16× fewer nodes
+  for nearly double the verdicts, the owner's verdict-rate-at-fixed-cap
+  axis exactly.
+- Fragments: 22/875 hits, zero additional verdicts at this profile —
+  OFF. K_reply: not routed through wide PN (no-op there); its separate
+  probe route improved 15% but remains ~85× slower at median — OFF.
+- Soundness: 806/806 hard certificates verifier-accepted; zero
+  WIN/LOSS contradictions between configs; monotonicity clean;
+  persistent-reuse (the 13ms-cliff guard) PASS in every config.
+- Recommended flags recorded verbatim in the report (vcf_pair_complete
+  width, lazy=1, gate=1, fragments=0, k_reply=0, WIN goal, relative
+  horizon 8, cap 500, 256 KiB).
+
+**Caveats:** absolute verdict rates are workload-dependent (human-game
+segments, not MCTS-visit-weighted positions); the horizon-16 arm
+suggests the trainer may want a taller-horizon leaf query than today's
+h=8 — a Phase-3 integration decision, flagged not assumed.
