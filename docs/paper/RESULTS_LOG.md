@@ -348,3 +348,45 @@ a fraction of the cost, escalate only genuinely deep rows.
 **Caveats:** default-off until a consume round; live human-cohort
 saving is materially below trace (41% vs 53%); no LOSS-arm gating
 anywhere (out of proven scope).
+
+---
+
+## 2026-07-17 — NQ8: horizon-laddered deep solving REFUTED; bounded-horizon certificate-clock bug found
+
+**Anchor:** branch `hunt/pn-init` (commit at gate),
+HUNT_REPORT_HORIZON_LADDER.md + harness extension in
+`tss_pn_init_hunt.rs`. Regen: `horizon_ladder_campaign` (+ focused
+`TSS_HORIZON_LADDER_ONLY_GROUP=double_fork_compact` repro).
+
+**What the paper says (§6 negative result + §12):**
+1. *Ladder economics: DON'T BUILD.* Resolution-depth census over the
+   13 measured WIN roots: 0 resolve within h=8, 3/13 within 16, 7/13
+   within 24 — deep resolutions dominate, so shallow rungs mostly fail
+   and their nodes are wasted. Every schedule loses: best (single h=16
+   rung) +4.8–17.6% nodes vs direct; full ladder up to +148.6%. Even
+   under deliberately perfect fragment-overlap assumptions the best
+   schedule saves 0.1–0.4% — fragment persistence cannot rescue this
+   orchestration. All 152 completed forcing comparisons were
+   verdict-identical with verified certificates.
+2. *STOP finding — a real pre-existing finder bug:* at bounded
+   semantic horizon root+16, the solver returned a WIN certificate for
+   double_fork_compact that the independent verifier REJECTED
+   (`failure=clock, stored_d=8, derived_B=4` at a zoned Universal
+   node). Cause: the materializer's `rebase_zone_distances` stamps zone
+   clocks from the caller's external semantic horizon, while the
+   verifier requires the exact local budget induced by the materialized
+   proof DAG — extra horizon slack makes them disagree. The verifier's
+   rejection is the single-mint architecture working as designed (no
+   wrong verdict can escape), but the finder loses genuinely-won
+   positions at finite horizons — exactly the Phase-3 leaf profile.
+   Frozen repro committed; fix round follows.
+
+**Solver consequence:** ladder struck from the portfolio; the interior
+gate's deep-solve payoff now depends on the leaf profile only; the
+clock-rebase fix is REQUIRED before any bounded-horizon deployment
+(leaf solver) ships.
+
+**Caveats:** human-cohort economics never ran (mandated STOP);
+refutation is for THIS orchestration of the existing solver — a
+verifier-closed bounded-WIN contract (post-fix) could reopen the
+question, but the census says the ceiling is small regardless.
