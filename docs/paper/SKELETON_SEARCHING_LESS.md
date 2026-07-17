@@ -104,7 +104,7 @@ log file + exact command + commit hash; no cell without all three.
 | C2 | Ranked zone = mandatory closure (T4) | Lean decl | `mandatoryZone`, T4 (tss-lean) | PROVEN-LEAN |
 | C3 | T5 short-path containment (amended ERRATA-25) | Lean decl | T5 (tss-lean, S9S-11) | PROVEN-LEAN |
 | C4 | T9 substitution-envelope lift (.d17) | Lean decl | T9 (tss-lean, S9S-11) | PROVEN-LEAN |
-| C5 | T10 DAG unfolding soundness | Lean decl | TssZones/DAGUnfolding (S9S-12) | IN-FLIGHT |
+| C5 | T10 DAG unfolding soundness | Lean decl | `T10` + dismissal corollaries, TssZones/DAGUnfoldingSoundness.lean @ tss-lean `69adffc` | PROVEN-LEAN |
 | C6 | ForcedHit / kernel T6 statements | Lean decl | ForcedHit lane (planned D19–D21, L15–L17) | PLANNED |
 | C7 | Sparse LOSS witnesses (≤3 / ≤6) | Lean + Rust fixtures | L13 + tss_verify LOSS arm | PROVEN-DOC → Lean lane |
 | C8 | Pairing threshold k=7 exists | Lean + witness | index-12 witness (pairing lane) | PROVEN-LEAN |
@@ -120,6 +120,11 @@ log file + exact command + commit hash; no cell without all three.
 | C18 | Atlas opening verdicts | certified solves | living doc snapshots + certificates | PLANNED |
 | C19 | Open problems honestly labeled | doc | §12 map (ES Prop 2, Domination MV, Potential tail, F+H_W) | STANDING |
 | C20 | Reference-solver capstone columns (idtt/dfpn/pdspn, both corpora) | measurement | matched-budget runs (commands TBD, commit-pinned) | PLANNED |
+| C21 | Single-engine migration, byte-identical narrow-in-wide | measurement | identity harness `ace1f5b2` → deletion `3c180c66` | MEASURED |
+| C22 | Quiet-join locality REFUTED (remote-required witness, unique win d=6 of 538) + K_reply kernel 538→1 | proof doc + frozen witness | hunt/quiet-locality PROOF_QUIET_LOCALITY.md @ `016577bb` | PROVEN-DOC |
+| C23 | DTW census two-gap bound (h=8 gate, c≤2 both phases, WIN-goal; naive SS c=3 FALSE) | proof doc + regression | hunt/dtw-bounds PROOF_DTW_CENSUS_BOUND.md @ `273b89f8` | PROVEN-DOC |
+| C24 | Dispatch domination b=1 (L-DISPATCH-B1 + L-DRQ, mhs/budget fence) | proof doc | hunt/domination PROOF_DISPATCH_DOMINATION_ROUND1.md @ `17a6c6de` | PROVEN-DOC |
+| C25 | Strict certs have NO bounded support (0/180 transfer, 1.000× key multiplier); C_rel redesign conjecture (shadow rebind 78–96%) | measurement + report | hunt/cert-support HUNT_REPORT_CERT_SUPPORT.md @ `3cd224fe` | MEASURED |
 
 Status legend: PROVEN-LEAN (kernel-checked, sorry-free) · PROVEN-DOC
 (hostile-round proof doc, not yet mechanized) · MEASURED (logged, commit +
