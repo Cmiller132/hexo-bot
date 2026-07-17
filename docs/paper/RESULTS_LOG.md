@@ -995,3 +995,39 @@ across make/unmake with zero observed divergence at corpus scale, and
 consuming it buys ~7.6% of wall with bit-identical search. The residual
 defender cost is now dominated by canonical-frame and key-construction
 work, which the census/micro-optimization lines attack separately.
+
+## 2026-07-17 — R-CF1: census-deep round — inertness solved exactly; the census idea survives as a DEADLINE family (4 shadow-clean conjectures)
+
+**Anchor:** branch `hunt/census-deep` @ a70e4b37,
+HUNT_REPORT_CENSUS_DEEP.md + CENSUS_CANDIDATES.md + three raws +
+SHA-256 manifest. Codex ultra round.
+
+**The diagnosis (definitive):** the landed interior census gate is
+inert at the official profile for one exact reason — the profile runs
+`semantic_horizon = u32::MAX` while the proven single-window DTW family
+tops out at a finite lower bound of 12. All 484,270 claimant-owned
+interior evaluation points missed by the maximum bucket; census shape
+was never the problem (23.2% already had c≤2). Corollary, worth
+stating as a theorem-shaped negative: NO raw scalar finite-DTW-bound
+extension (higher c, more shapes, better comparisons) can ever fire at
+the unbounded contract. That entire direction is closed.
+
+**The pivot that survived:** deadline-shaped semantic families — claims
+of the form "no WIN can complete before a proven finite deadline" —
+fire heavily at depth with zero counterexamples across the corpus:
+defender-restore (224,761 fires), deadline-ES (168,400), ES + ordered
+pre-block witness (256,386), ES + disjoint-triple witness (171,408).
+Honest boundary carried in the report: none proves permanent no-WIN at
+the unbounded contract, so consumption can only be a deadline-aware
+defer/reopen scheduler (defer expansion past the proven deadline,
+reopen after), and only AFTER Lean proof. Ordered proof queue:
+deadline-family completeness + base ES → ordered pre-block → exact
+defender restore → disjoint-triple invariant (dependency order, not
+fire-rate order).
+
+**Integrity:** all counterfactual instrumentation cfg(test)
+default-off; official Phase A 362.15 s / Phase C 418.49 s both
+zero-failure with identical 31-row search trajectories; identity subset
+exact; non-test release build clean; SHA-256 manifest zero mismatches;
+strict verifier untouched. The naive-SS c=3 refutation was honored as a
+design constraint (no candidate infers deadness from max-c alone).
