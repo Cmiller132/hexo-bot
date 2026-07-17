@@ -481,3 +481,41 @@ decision moves to the Phase-3 integration round.
 **Caveats:** warm numbers are same-root repeat-solve economics; the
 20M-node reduced-TT attempt exceeded the time bound and is reported as
 incomplete, not as UNKNOWN.
+
+---
+
+## 2026-07-17 — G2R7: K_reply kernel shadow-validated across 220,160 fires (zero counterexamples)
+
+**Anchor:** branch `claude/tss-vcf-width` (commit at gate),
+`tss_k_reply_shadow.rs` + cfg(test) shadow instrumentation in
+`tss_solver.rs` (production signature unchanged — the extra parameter
+is `#[cfg(test)]`-gated at the signature level) +
+`.codex-group2/round7-progress.md`.
+
+**What the paper says (§8 + the K_reply consumption story):** the Q8
+K_reply kernel (proven, 5-clause contract, NQ2 salvage) was shadowed —
+computed at every defender fallback fire and compared against the full
+search, never influencing it — across the official 19 rows, the compact
+witness, and 200 human roots:
+- 220,160 fallback fires, 338 urgent nodes; **zero Q8 counterexamples,
+  zero WIN/LOSS disagreements**;
+- at urgent nodes the reply set collapses median **940 → 2**
+  (p90 3,914 → 2);
+- the single urgent fallback WIN edge observed anywhere in the study
+  was inside K_reply (1/1) — the soundness-critical event class is
+  rare, and the kernel contained it;
+- the frozen NQ2 witness reproduces in-engine: urgent, kernel size 1,
+  all 537 alternatives eliminated;
+- telemetry on/off identity exact; round-5 identity PASS; consume
+  witness WIN/409 verifier-accepted.
+
+**Solver consequence:** consumption (G2R8) is now proof-backed AND
+shadow-validated. Expected value is concentrated: urgent nodes are
+0.07% of fires on the forcing corpus and 5.1% on human roots, so
+global node savings will be modest on these corpora but the per-node
+collapse is ~470×; the payoff concentrates where urgent SecondStone
+defense dominates (deep refutation lines, leaf-style solves).
+
+**Caveats:** shadow ≠ consume — verdict-identity + gate evidence for
+the consuming engine is G2R8's burden; urgency rates are
+corpus-dependent.
