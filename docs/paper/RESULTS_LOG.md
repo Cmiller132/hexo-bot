@@ -1031,3 +1031,28 @@ zero-failure with identical 31-row search trajectories; identity subset
 exact; non-test release build clean; SHA-256 manifest zero mismatches;
 strict verifier untouched. The naive-SS c=3 refutation was honored as a
 design constraint (no candidate infers deadness from max-c alone).
+
+## 2026-07-17 — R-IE2: memory round CLEARS every bar — incremental enumeration is production-ready (−8.74%, 0-byte payload)
+
+**Anchor:** branch `hunt/incr-enum` @ bcf2cc70,
+HUNT_REPORT_INCR_ENUM_MEM.md + five raws. Completes R-IE1.
+
+**The design:** selected-edge, path-local reconstruction — the tiny
+parent family/kernel (means 2.5 windows / 3.8 kernel cells) is
+reconstructed only when a selected attacker-pair child is still
+unexpanded; nothing is retained in lazy edges, arena nodes, deferred
+frontiers, or TT entries. R-IE1's 353.39 MiB snapshot payload drops to
+**0 bytes**; peak TT unchanged.
+
+**Results:** same-build official A/B 360.50 s → 328.99 s (**−8.74%**;
+−7.06% vs the R-IE1 batch baseline), all 31 rows identical on every
+search statistic; shadow field-for-field equality 2,910,349/2,910,349
+with exactly 2 safe batch fallbacks (defender expansions without an
+active selected-parent frame); leaf cells h8 **−9.04%** / h16
+**−8.62%** — better than the inline-snapshot version everywhere.
+Production build free of the implementation; strict verifier untouched.
+
+**Status:** every promote bar met with the memory objection dissolved.
+Production wiring (TSS_INCR_DEFENDER in the official profile) is an
+owner decision; orchestrator recommendation is YES — exact search
+identity, zero memory cost, ~8–9% on both deep and leaf surfaces.
