@@ -264,3 +264,87 @@ transpositions reachable via other parents and changed PN values mean
 live savings must be measured, not assumed; SecondStone coverage was too
 thin to recommend any SecondStone strengthening (the frozen ply-5 c=3
 counterexample stands).
+
+---
+
+## 2026-07-17 — R-LF1: lazy frontier admission BUILT and measured (−62.6…−68.4% TT admissions, −15.8% wall)
+
+**Anchor:** branch `hunt/turn-quotient` (commit at gate),
+PROOF_LAZY_FRONTIER.md + HUNT_REPORT_LAZY_FRONTIER.md + implementation
+in `tss_solver.rs` (WidePnSearch) behind `TSS_LAZY_FRONTIER=1`
+(default off). Regen: `lazy_frontier_equivalence_campaign`, flag-on
+`tss_corpus_check`, flag-on `turn_quotient_campaign`.
+
+**What the paper says (§6 engineering story — the NQ4 discovery,
+converted):** unselected generated children are kept as key-bearing
+edge thunks and acquire an arena/TT entry only on first selection. The
+**Lazy-Frontier Refinement Lemma** (proved prose-level against the
+code, with an exhaustive audit of every pre-selection read) shows eager
+and lazy frontiers have identical reachable PN fixed points and
+materializable certificates in the uncapped-index model; the cap-aware
+corollary states exactly which counters may diverge after a TT-index
+refusal (admission order, tt_hits, UNKNOWN timing) while proof validity
+is invariant — no thunk, staged cutoff, or cap exit is ever promoted to
+evidence.
+
+**Measured (paired off/on, 59 roots + corpora):**
+- indexed/retained entries: −62.6% (forcing 10k), −67.3% (forcing
+  100k), −64.8% (human sample) — the NQ4 never-expanded class drops to
+  exactly 0;
+- peak TT bytes: −64.9% / −68.4% / −65.5%;
+- wall: NQ4 campaign 106.5 s → 89.6 s (−15.8%);
+- equivalence: exact verdicts, exact certificate bytes, exact
+  expanded-node counts across all 59 roots; official all-19 corpus gate
+  flag-on green (failures=0); narrow path untouched
+  (double_fork_compact byte-identical).
+
+**Solver consequence:** the same TT budget now holds ~3× the effective
+proof mass before saturation — this composes with the T10-licensed DAG
+sharing (G2R9) and directly benefits the 256 KiB leaf profile, where
+admission pressure dominates (flag-on behavior under tiny TT caps is
+validity-preserving but not trace-identical; Phase-3 rungs measure it).
+
+**Caveats:** `peak_tt_bytes` excludes edge-owned future keys and the
+deferred-key registry — R-LF1 is an admission/arena reduction, not
+total frontier-memory elimination; flag stays default-off until a
+consume round flips it with its own gate.
+
+---
+
+## 2026-07-17 — R-IG1: interior census gate BUILT and live-measured (79–93% node savings on horizon-bounded solves)
+
+**Anchor:** branch `hunt/pn-init` (commit at gate), BUILD_INTERIOR_GATE.md
++ implementation in `tss_solver.rs` behind `TSS_INTERIOR_CENSUS_GATE=1`
+(default off; read once per solve). Regen: `interior_gate_live_campaign`
+off/on + flag-on `tss_corpus_check`.
+
+**What the paper says (§6, paired with the NQ6 sizing):** the proven
+Contract-8.1 census gate, integrated at interior claimant WIN arms only
+(wide + narrow paths; universal defender arms untouched; wide
+refutation and narrow `LOCAL_TT_FAILED` semantics preserved), delivers
+LIVE at requested horizon 16:
+- forcing 10k: 89,405 → 18,909 expansions (**−78.9%** live vs 82.6%
+  trace), wall 7.81 s → 1.13 s;
+- forcing 100k: 324,163 → 21,302 (**−93.4%** live, BETTER than the
+  88.0% trace estimate — gating compounds: killed subtrees stop
+  polluting the TT and PN frontier), wall 28.03 s → 1.25 s (**22×**);
+- human roots: −41.2% live vs 53.1% trace (honestly below — the
+  transposition caveat is real);
+- compact witness: 0 dismissals (required negative control), zero cost.
+Soundness: zero verdict differences on 139 keyed off/on rows; all 60
+returned certificates verifier-accepted; flag-off identity vs the
+frozen NQ6 baselines exact; official 2 GiB corpus gate green.
+
+**The honest structural finding:** the official deep-solve profile runs
+at `semantic_horizon = u32::MAX`, where `h_rem ≤ 8` never fires — the
+gate is **inert on today's unbounded corpus profile** (gate_evals=0 on
+every corpus row; the corpus run validates the refactor, not the gate).
+The lever's payoff lives where horizons are finite: the Phase-3 256 KiB
+leaf solver (h=8 is its native query) and any horizon-laddered scheme.
+Since WIN-within-h transfers upward (NQ4's monotone rule), this poses
+NQ8: iterative horizon-deepening for deep solves — find shallow WINs at
+a fraction of the cost, escalate only genuinely deep rows.
+
+**Caveats:** default-off until a consume round; live human-cohort
+saving is materially below trace (41% vs 53%); no LOSS-arm gating
+anywhere (out of proven scope).
