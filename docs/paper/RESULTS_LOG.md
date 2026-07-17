@@ -653,3 +653,37 @@ still not worth its trigger cost on a given profile.
 **Caveats:** 7/19 forcing identity rows incomplete (time-bounded, not
 verdict differences); certificate comparison was structural equality,
 not serialized bytes.
+
+---
+
+## 2026-07-17 — CONSOLIDATION: one engine, all levers, full battery green at the tip
+
+**Anchor:** branch `claude/tss-vcf-width` (commit at gate),
+MERGE_RESOLUTION.md (per-hunk conflict log + battery table with exact
+commands).
+
+**What the paper says (§5/§6 — the state of the engine):** the three
+lever branches merged into the mainline with zero semantic escalations:
+lazy frontier + shared fragments (wide PN), interior census gate +
+zone-clock fix (narrow path + materializer), K_reply shadow + consume
+(fallback), all telemetry systems, and the strengthened official gate
+(mode echo + expectation assertions now covering all four flags).
+Battery at the tip: default suite 104/0; legacy 2 GiB gate green; the
+NEW recommended profile (1 GiB + lazy) green; fragments+lazy
+composition green; every per-lever identity spot-check reproduced its
+frozen baseline (including the fragment store's single monotone
+improvement and the bounded-horizon zoned-WIN regression). The
+always-on production delta of the entire program is exactly one
+correctness fix (R-FIX1's verifier-exact zone budgets); every
+performance lever is flag-gated with auditable state.
+
+**Corpus-coverage note (owner question, answered honestly):** all
+batteries gated on the official puzzle-derived forcing corpus + the
+λ² compact witness; the spare-turn/λ² corpus proper
+(`tss_spare_corpus_check`) had NOT been in any optimization battery —
+it was run at the merged tip (flags-off regression + lazy-on) as part
+of this gate and joins the standing battery definition.
+
+**Caveats:** wall timings at the tip differ slightly from historical
+runs (machine load); the leaf-surface campaign decides which flags the
+Phase-3 leaf asserts.
