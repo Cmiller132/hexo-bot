@@ -519,3 +519,32 @@ defense dominates (deep refutation lines, leaf-style solves).
 **Caveats:** shadow ≠ consume — verdict-identity + gate evidence for
 the consuming engine is G2R8's burden; urgency rates are
 corpus-dependent.
+
+---
+
+## 2026-07-17 — Lean spine: D19–D21 forced-hit layers + Q ≤ E + exact F+H_W maximum (PROVEN-LEAN)
+
+**Anchor:** tss-lean commits `28f37c6` (S9S-15: full D19 gate layer),
+`416bbb9` (S9S-16: D20 forcedRank + f ≤ r, D20a fhExposure recurrence,
+D21 four FH zone components + mandatoryZoneFH, FH/FHD17 validators),
+S9S-17 landing (commit at gate: `fhExposure ≤ defenderExposure`, exact
+branch-coherent F+H_W maximum WITH attaining path, T6 structural
+reflection + four-regime handoff dispatch). All audit-PASS, sorry-free.
+
+**What the paper says (§4 headline list + §12 opens map):** the
+forced-hit gate calculus is now kernel-checked through the validator
+layer: gate validity with executable checkers and reflection, exact
+escape deadline p(Q)+b+2, kernel nonemptiness from FG1 via minimum
+transversals, compact gate-family bounds (one threat at b=1, ≤3 at
+b=2), FH-debited ranks and exposure, and the four mandatory FH zone
+components. Notably, **the branch-coherent F+H_W maximum — listed as an
+open problem in the companion — is now PROVEN-LEAN with an attaining
+path**; the §12 opens map must be updated when the flagship is written
+(the fully general pathwise interpretation question remains open only
+in its residual form). Claim C6 (ForcedHit/T6 statements) is one
+increment from closure: T6's capstone `T6_extendableHitKernel` is the
+remaining block.
+
+**Caveats:** T6 increments 3–7 and L15–L17 outstanding; two of the
+three spine sessions ended at RAM gates (31 GB host shared with engine
+lanes), not at proof obstacles.
