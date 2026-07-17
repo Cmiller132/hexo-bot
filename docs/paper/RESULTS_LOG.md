@@ -619,3 +619,37 @@ never a fabricated verdict, and poisons parent aggregation).
 
 **Caveats:** none hidden — the parking is precisely because the crux
 measurement doesn't exist yet.
+
+---
+
+## 2026-07-17 — G2R8: K_reply consumption BUILT sound; deep-profile economics NEGATIVE — flag stays off
+
+**Anchor:** branch `claude/tss-vcf-width` (commit at gate),
+BUILD_K_REPLY_CONSUME.md + flag-gated consumption in `tss_solver.rs`
+(`TSS_K_REPLY_CONSUME=1`, default off) + identity campaigns in
+`tss_k_reply_shadow.rs`.
+
+**What the paper says (§8 + the honest-economics thread):** the proven
+five-clause kernel was consumed exactly as licensed — the production
+trigger checks the precise contract conditions, and outside them (or
+flag-off) nothing changes. Soundness is complete: 200/200 human
+verdicts identical, 12 completed forcing rows zero differences, compact
+WIN with equal certificates, official 2 GiB gate green. But the
+economics REFUSE on the deep profile: wall +4.8% (human) and +181%
+(completed forcing) at IDENTICAL node counts — the trigger's full-legal
+Win1/BlockAll evaluation at every fallback fire (8,858 fires for 432
+urgent hits on forcing) costs far more than the rare 940→2 collapses
+save. The compact witness gains −3.4%. The shadow's "huge local, modest
+global" expectation did not survive contact with wall-clock.
+
+**Decision:** flag stays default-off; NO deep-profile consumption. The
+kernel remains a candidate for the leaf surface only (urgent
+SecondStone density is corpus-dependent, and a cheaper precomputed
+urgency trigger is the named engineering fix if leaf economics
+justify it). This is the campaign's second honest null-conversion
+(after cross-solve fragments): a theorem can be true, validated, and
+still not worth its trigger cost on a given profile.
+
+**Caveats:** 7/19 forcing identity rows incomplete (time-bounded, not
+verdict differences); certificate comparison was structural equality,
+not serialized bytes.
