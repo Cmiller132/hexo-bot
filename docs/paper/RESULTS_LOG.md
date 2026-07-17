@@ -848,3 +848,31 @@ contradictions.
 paths reproduced R-CR1 counts exactly; strict verifier untouched. Debt
 A's official run completed by the orchestrator post-session with a
 documented RAM judgment (standby-cache deficit, not true scarcity).
+
+## 2026-07-17 — C-REL round 1: support-only verification REFUTED by design; salvage = strict-discharge warm-template cache
+
+**Anchor:** branch `hunt/cert-support` @ 408dc5b6, DESIGN_C_REL.md
+(1,173 lines, ultra design round). Design-only; no experiments run.
+
+**What the paper says (the certificate-format chapter's closing
+argument):** the natural successor to NQ3's refutation — a relative
+certificate whose finite local interface, when cheaply matched at a new
+position, licenses the verdict — is REJECTED at the design level, not
+merely unmeasured. The NQ2 required-remote witness supplies the direct
+counterexample shape: a disjoint remote count-five outside any local
+interface flips the verdict while the interface matches. Attacker
+locality is the wrong soundness boundary for this game; this elevates
+the NQ2 witness from sharp example to a design-level impossibility
+argument against support-hashed certificate reuse.
+
+**The surviving project (bounded, killable):** rootless certificate
+bodies with the interface demoted to a ROUTING HEURISTIC — a warm hit
+only ever proposes a candidate strict certificate that the unchanged
+strict verifier must replay in full (monotone contract). Soundness
+never depends on the interface; economics is the only open question,
+and it faces a named squeeze: weak interfaces pay a strict-rejection
+tax, strong interfaces approach full-position binding and erase
+transfer. 13 obligations dispositioned (6 proof-sketched / 2
+refutation-risk / 5 dissolved, none hidden); staged experiment ladder
+with pre-registered kill criteria (routing-selectivity experiment;
+matched ≥5% gate).
