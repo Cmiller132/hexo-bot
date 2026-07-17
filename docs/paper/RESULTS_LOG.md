@@ -170,3 +170,51 @@ NON-EXISTENT format, not behavior of any shipped certificate; 2/14 official
 WIN rows + double_fork_compact unsolved at the hunt's plain
 `vcf_pair_complete` 100k/64MiB profile (double_fork_compact needs the
 zone-enabled Group-2 configuration — expected, not a regression).
+
+---
+
+## 2026-07-16 — NQ4: search-space quotients sized; lazy-frontier class discovered
+
+**Anchor:** branch `hunt/turn-quotient` (base `2430fc47`),
+HUNT_REPORT_TURN_QUOTIENT.md + `tss_turn_quotient_hunt.rs` (commit at
+gate). Regen: `turn_quotient_campaign` (single gated run, PASS,
+anomalies=0; telemetry-on/off node identity 2,412/2,263 on `0hz3hty`).
+
+**What the paper says (§6 engineering story + §12 opens):** four levers
+sized on 19 forcing roots (10k/100k), double_fork_compact, and 100
+human-corpus roots:
+1. *D6 at the search TT: exactly ZERO duplicates* on every cohort, at
+   6.5–29.3 µs/key canonicalization cost — a clean negative. Within-root
+   search from an asymmetric root essentially never revisits D6 images.
+   (Cert-layer D6 transport is unaffected.) Kills the "fold the search TT
+   under D6" idea before it wasted a build.
+2. *Horizon quotient: the engine already implements the strong form* —
+   one position-keyed entry reopened in place avoids 62–81% of the entries
+   a naive clock-keyed TT would retain. Residual monotone-transfer gain:
+   0.26–1.08 pp, relevant only to a future PERSISTENT proof cache (feeds
+   the U18 design). The report fixes the exact sound-transfer rules
+   (WIN upward; complete restricted refutation downward; UNKNOWN/caps/
+   staged DepthCutoff transfer NOWHERE — dn=0 alone is not a disproof).
+3. *Consecutive-turn commutation: ≤0.16% broadly* (5.4% on one compact
+   witness) and adversarially unsafe without a strategy-preserving
+   diamond theorem (quantifier order ∃attacker/∀defender blocks naive
+   canonical ordering). Parked with the exact proof obligation stated.
+4. *Discovered class — eager frontier admission (the real lever):*
+   **62.6–67.3% of retained wide-TT/arena entries are never expanded**
+   before proof or cap. Keeping unselected children as edge thunks
+   (realized on first selection) is a frontier representation quotient:
+   large reduction in key construction, hash insertions, retained arena
+   records, and TT pressure — on top of the same position quotient.
+   Required theorem: **Lazy-Frontier Refinement Lemma** (thunks preserve
+   PN/DN values, selection order, and transposition linking on
+   realization; eager and lazy frontiers reach the same PN fixed points
+   and certificates), with a cap-aware corollary for admission-timing
+   effects.
+
+**Solver consequence:** build order re-ranked — lazy frontier admission
+is the top unbuilt lever; it composes with T10/U18 DAG sharing (both
+attack TT pressure, multiplicatively).
+
+**Caveats:** the 62–67% figure is retained-entry share, NOT a promised
+node reduction; commutation numbers are upper bounds on removable
+interiors, not achieved dedup.
