@@ -390,3 +390,46 @@ clock-rebase fix is REQUIRED before any bounded-horizon deployment
 refutation is for THIS orchestration of the existing solver — a
 verifier-closed bounded-WIN contract (post-fix) could reopen the
 question, but the census says the ceiling is small regardless.
+
+---
+
+## 2026-07-17 — R-FIX1: bounded-horizon zone-clock defect FIXED (finder now stamps the verifier's exact D14 budgets)
+
+**Anchor:** branch `hunt/pn-init` (commit at gate), FIX_ZONE_CLOCK.md +
+`rebase_zone_distances` rewrite in `tss_solver.rs` + permanent
+regression `bounded_horizon_compact_win_certificate_verifies`.
+
+**What the paper says (§5 certified-engine story — a worked example of
+the single-mint architecture):** the verifier requires every zoned
+Universal node to carry the exact D14 local budget of the materialized
+proof subtree (bottom-up: Win/OrCompletion=0, Loss=turn remainder,
+Choice=pass-through, Universal=1+max over children) and the exact build
+horizon. The finder's materializer instead stamped the defender-clock
+count to the CALLER'S external deadline — an admissible bound for
+searching, but not the evidence label the contract demands. With
+horizon slack the two diverge and the verifier rejects a genuinely
+winning certificate (the frozen compact h16 case: stored 8 vs derived
+4). Two historical accidents hid it: unbounded solves never attach
+zones (the 8-placement bail returns None), and G2R3's consume witness
+used an EXACT deadline where the wrong formula coincidentally produced
+the right numbers. The fix reconstructs the verifier's own recurrence
+over the postorder certificate at final materialization and stamps both
+fields from the assembled proof — search stays conservative (superset
+searching is sound; only evidence labels changed), the verifier is
+untouched.
+
+**Evidence:** frozen repro now verifier-ACCEPTED WIN at h16 with
+verdict equal to the direct solve; permanent regression test added; NQ8
+forcing cohorts unchanged; R-IG1 live campaign numbers frozen-exact
+both flag states; PN identity line unchanged; official 2 GiB gate
+green; full release suite 98/0.
+
+**Solver consequence:** unblocks every bounded-horizon deployment —
+most importantly the Phase-3 256 KiB leaf solver — and makes imported
+finite-horizon zone fragments (G2R9 territory) relabel correctly at
+assembly. Recovered value today is small (one measured rung
+UNKNOWN→verified WIN; NQ8's refutation stands) — the value is the
+restored contract, not the recount.
+
+**Caveats:** none beyond scope — the fix makes evidence labels
+truthful; it cannot make an unwinnable rung winnable.
