@@ -956,3 +956,42 @@ round: empty.
 **Integrity:** flag-off/on fast-subset identity row-exact; production
 release build with the test-only module absent passes; strict verifier
 untouched; RAM gates recorded per invocation (relaxed 07-17 protocol).
+
+## 2026-07-17 — R-IE1: incremental defender enumeration — first live lever since cap-resume (−7.6%), held for a memory round
+
+**Anchor:** branch `hunt/incr-enum` @ 2f46925e, HUNT_REPORT_INCR_ENUM.md
++ sixteen retained raws. Follow-up to R-KT1's work-not-width redirect.
+
+**Phase 1 (counters):** the defender planner's input state is almost
+perfectly carryable — 99.9904% of 2,910,351 calls have an exact parent
+fingerprint, with ZERO parent mismatches and ZERO residual mismatches
+across 11,002,776 bounded one-stone local patches. Conservative
+carryable time 34.49 s = 9.33% of full wall (24.3% of the defender
+bucket). Cost decomposition also priced the non-carryable core
+(canonical frame 30%, final-key construction 25%, fork-prior scan 11%
+of planner time) — the input data for the pair-classification
+micro-round.
+
+**Phase 2 (implementation):** three-mode env (off / shadow / consume);
+shadow mode rebuilds the batch plan field-for-field and aborts on first
+mismatch — corpus-wide green. Consuming A/B: official 18-position wall
+**353.99 s → 326.94 s (−7.64%)** with all 31 rows IDENTICAL on status,
+nodes, expansions, TT entries/hits/peak, stage refreshes, and gate/seed
+counters (compute-only lever, exact search identity). Phase-3 leaf
+cells: h8 −7.34%, h16 −4.88%, no regression. Production release build
+contains none of it; strict verifier untouched.
+
+**The honest hold:** inline fixed-capacity parent snapshots add
+353.39 MiB of accounted peak heap payload on the deep profile
+(TT peak unchanged). PROMOTE bars are met, but production wiring waits
+on a compact-sidecar / selected-edge-reconstruction memory round
+(R-IE2). Snapshot capacity bounds (8 windows / 8 kernel cells) exceed
+all observed maxima (6/4); out-of-bound shapes fall back to exact
+batch.
+
+**What the paper says:** post-T6 defender enumeration is not
+inherently per-node work — its input state is exactly maintainable
+across make/unmake with zero observed divergence at corpus scale, and
+consuming it buys ~7.6% of wall with bit-identical search. The residual
+defender cost is now dominated by canonical-frame and key-construction
+work, which the census/micro-optimization lines attack separately.
