@@ -1056,3 +1056,42 @@ Production build free of the implementation; strict verifier untouched.
 Production wiring (TSS_INCR_DEFENDER in the official profile) is an
 owner decision; orchestrator recommendation is YES — exact search
 identity, zero memory cost, ~8–9% on both deep and leaf surfaces.
+
+## 2026-07-17 — R-PC1: constant-factor round lands −30.21% on the official wall — the hot core was hash/layout-bound
+
+**Anchor:** branch `hunt/incr-enum` @ 0415fcec,
+HUNT_REPORT_PAIRCLASS.md + 14 raws (incl. an independent orchestrator
+identity rerun).
+
+**The design:** three semantics-identical (mode-a) rewrites of the
+measured residual hot core — no search-rule change of any kind. (1)
+`AHashMap`/`AHashSet` at hot maps/sets whose iteration order is never
+observable (pair gate coordinate→window maps, second-candidate and
+unordered-pair dedup sets, planner membership/rank indexes, fork-degree
+accumulator). (2) Exact canonical-frame contender pruning: compute all
+12 phase keys + minimum transformed stone tuples allocation-free, fully
+sort only exact lexicographic contenders; the historical twelve-sort
+implementation is retained as a cfg(test) equality oracle with a
+per-prefix ×12-transform test. (3) One sorted turn-root occupancy per
+defender plan, with each exact pair key produced by merge-encoding two
+sorted extras — byte-identical to the historical constructor.
+
+**Results:** official 1 GiB consuming profile 328.99 s → **229.62 s
+(−30.21%)** — the second-largest single-round wall gain of the campaign
+(after cap-resume). Component attribution: canonical frame −74.54%,
+final keys −73.64%, pair bucket −27.66%, fork scan −20.37%; defender
+planning inclusive −54.76%. Identity is total: 31/31 official rows,
+31/31 component rows, 3/3 fast rows, 2/2 leaf rows identical on every
+search statistic vs the R-IE2 raws; counter fingerprint
+`9e9bcaa2f1a631ea` with 2,910,351 calls / 11,002,776 residual patches /
+0 mismatches unchanged; leaf wall h8 −11.46% / h16 −21.06% with strict
+verification of every hard result; peak TT and the 0-byte snapshot
+payload unchanged; strict verifier untouched.
+
+**Why it matters for the paper:** after the algorithmic levers closed
+(sound-reveal ceiling, threshold scale, kernel taxonomy), the wall
+decomposition said the engine was ~80% pair-generation + defender
+planning. This round shows a large constant slice of that was
+implementation, not search: SipHash defaults and repeated full sorts on
+paths called ~3M times. Combined R-IE2+R-PC1 arc: 360.50 s → 229.62 s
+(−36.3%) at exact search identity.
