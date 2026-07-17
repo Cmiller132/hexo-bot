@@ -1095,3 +1095,50 @@ planning. This round shows a large constant slice of that was
 implementation, not search: SipHash defaults and repeated full sorts on
 paths called ~3M times. Combined R-IE2+R-PC1 arc: 360.50 s → 229.62 s
 (−36.3%) at exact search identity.
+
+## 2026-07-17 — R-G1: canonical Obligation J REFUTED (exact counterexample); classical strategy stealing FAILS in Hexo — two review-confirmed game-theory results
+
+**Anchor:** branch `hunt/gap-raw` @ 0f7e9405 (result 06a1a649 + hostile
+review + errata fold). Codex ultra round + ultra hostile review:
+BOTH DOCUMENTS SOUND-WITH-ERRATA (12 ACCEPT / 5 editorial errata,
+GAP_RAW_REVIEW_ROUND3.md).
+
+**Result 1 — the draw-side potential route is closed as canonically
+posed.** Theorem R3.1: an exact normative root P* with
+Φ = B₂ = 8/9 < 1 and no imminent threats — eight isolated count-2
+gadgets plus three defender-anchored launch rows — where EVERY legal
+defender pair admits a legal attacker response forcing B₂ ≥ 11/9. The
+mechanism: two defender stones recover ≤ 2/9 of potential and can touch
+at most two of three disjoint launch sites; the attacker plays an
+adjacent pair at the untouched site, birthing five fresh count-2
+windows (+5/9) — which the round proves is the exact fresh-pair ceiling
+(L9.8), so the counterexample saturates a hard bound rather than
+exploiting bookkeeping. Canonical GAP-GLOBAL-RENEWAL falls with it.
+Honest boundary: the attacking response completes nothing (τ=0 after),
+so GAP-RAW — perpetual defender survival itself — remains OPEN; what
+died is the Θ₂-invariant proof route. Banked for the successor
+(GAP-REPLACEMENT-INVARIANT): B₂ ≥ |I|/3 debt bound (sub-unit debt
+already implies serviceability), clause-3 redundancy, the exact
+one-pair renewal margin criterion, and a two-clause reformulation of J.
+Machine corroboration: a test-gated harness case exhaustively checks
+all 2,016 quotient defense pairs and the exact worst row (33/27).
+
+**Result 2 — Hexo is a documented counterexample to classical strategy
+stealing.** From the production rules (formalized with source
+citations, review-verified): deletion-based stealing fails by two
+independent obstructions. S3: legality is not deletion-monotone under
+the radius-8 growth rule — erasing the compulsory opening stone removes
+a later LEGAL opponent frontier move (exact witness (8,0)). S4: the
+singleton-then-pairs opening cadence never aligns — the role-swapped
+shadow needs counts (1,0) but deletion leaves (2,0), and translation
+cannot fix it. Scope kept honest: only the classical
+identity/deletion coupling is refuted; opener non-loss stays OPEN with
+named repair obligations (GAP-FRONTIER-COUPLING, opening alignment,
+a non-loss determinacy bridge).
+
+**Why it matters for the paper:** the first value-side structural
+results for the game — a sharp negative boundary on potential-based
+draw proofs (with the exact 5/9-vs-slack arithmetic of why), and a
+natural positional game where strategy stealing provably breaks for
+growth-rule reasons. Both directions continue with named, narrowed
+targets.
