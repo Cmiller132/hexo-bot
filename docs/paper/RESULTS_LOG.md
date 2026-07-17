@@ -218,3 +218,49 @@ attack TT pressure, multiplicatively).
 **Caveats:** the 62–67% figure is retained-entry share, NOT a promised
 node reduction; commutation numbers are upper bounds on removable
 interiors, not achieved dedup.
+
+---
+
+## 2026-07-17 — NQ6: interior census gating sized (53–88% trace-subtree coverage); stronger bounds and PN seeding triaged
+
+**Anchor:** branch `hunt/pn-init` (base `2430fc47`),
+HUNT_REPORT_PN_INIT.md + `tss_pn_init_hunt.rs` (commit at gate). Regen:
+`pn_init_campaign` (single gated run PASS; telemetry on/off identity
+`0hz3hty` 9,302 nodes / 2,872 hits / 9,301 expansions both ways).
+
+**What the paper says (§6 leaf-gate lever, promoted to interior + §12):**
+1. *The proven Contract-8.1 census gate is far bigger inside the tree
+   than at leaves.* Applied at every claimant WIN-arm node with
+   remaining horizon ≤ 8 (broad solves at requested relative horizon
+   16): gates 80–96% of eligible nodes and covers **82.6% / 88.0% /
+   53.1%** of ALL attempt expansions (forcing 10k / forcing 100k /
+   human roots) via first-ancestry subtrees, at 0.5–1.3 µs per full
+   `WindowStore::entries()` scan. The effect is NOT just the h=8
+   predicate: the atomic-turn frontier visits h ∈ {0,4,8,12,16}, and at
+   h ∈ {0,1,4,5} the exact phase formula also gates c=3 nodes.
+   Soundness cross-check: **zero gated positives** over all solved-root
+   gate events; every certificate re-verified. double_fork_compact is
+   the honest negative control (0 of 221 eligible evaluations gate).
+2. *Stronger census bounds are empirically dominated:* the only
+   collision-free stronger target, FirstStone (h=9, c≤2), would add
+   0.03–0.10%; every c≥3 or h≥12 screen collides with verified positive
+   nodes (23–136 collisions) — the counterfactual harness itself
+   demonstrates why those theorems are false or worthless. No broad
+   proof round scheduled: measured triage, not taste.
+3. *PN/DN census seeding is not build-ready:* count≥3 seeding improves
+   an outcome-labelled solved-root replay 37–68%, but population
+   Spearman rho is slightly NEGATIVE on every cohort — the replay/live
+   divergence is named and the only admissible next step is a test-only
+   live A/B, not a production seed.
+
+**Solver consequence:** the interior WIN-arm gate is now the largest
+proven-and-unbuilt lever; build round follows immediately (WIN-only
+integration, live identity + soundness campaign, all-19 gate). Composes
+with lazy frontier (fewer entries) since gating kills whole subtrees
+before they generate frontiers.
+
+**Caveats:** all percentages are deterministic trace counterfactuals —
+transpositions reachable via other parents and changed PN values mean
+live savings must be measured, not assumed; SecondStone coverage was too
+thin to recommend any SecondStone strengthening (the frozen ply-5 c=3
+counterexample stands).
