@@ -876,3 +876,42 @@ transfer. 13 obligations dispositioned (6 proof-sketched / 2
 refutation-risk / 5 dissolved, none hidden); staged experiment ladder
 with pre-registered kill criteria (routing-selectivity experiment;
 matched ≥5% gate).
+
+## 2026-07-17 — R-TS1: prior-scale-aware df-pn thresholds CLOSED NULL (+1 increment proven optimal)
+
+**Anchor:** branch `claude/tss-vcf-width` @ d5a2b5fd,
+HUNT_REPORT_THRESHOLD_SCALE.md + ten retained raws.
+
+**What was tested:** the last unposed algorithmic lever from the final
+ideation gate (candidate 2). The engine initializes proof numbers from
+fork degree (1..37) yet advances descent thresholds by +1 — exactly the
+mismatch the 1+ε literature names as a re-traversal pathology.
+
+**Phase 1 (counters, official 1 GiB lazy+gate):** all descent/state
+time outside expansion = 13.93% of the 495.94 s wall; the
+revisit-attributed share is 7.01% (34.79 s). A ceiling argument opened
+Phase 2 honestly (avoiding ~71% of revisit traversal would clear the 5%
+bar).
+
+**Phase 2 (A/B, one global TSS_THRESHOLD_DELTA):** delta 2 on the
+official deep profile: **927.59 s vs 499.85 s baseline — +85.6%**. Root
+cause: coarser thresholds trade cheap revisits for catastrophic
+frontier misallocation — the hardest row (0l4291i_live) expanded 3.2×
+the nodes (6.05M vs 1.88M), saturated the full 1 GiB TT (vs ~549 MiB),
+and tripled its row wall. Delta 4 and mean-sibling-prior each LOSE one
+hard verdict on the Phase-3 h16 leaf matrix (39→38) and were correctly
+disqualified before their deep runs; the ε ladder was never opened. All
+228 leaf hard results strict-verified; zero contradictions; flag-off
+byte identity and production build green.
+
+**What the paper says:** in a TT-backed iteratively-deepening df-pn,
+the +1 threshold increment is not a naive default but the measured
+optimum: revisit cost (≤7.01% of wall) is an order of magnitude cheaper
+than the best-first arbitration error any coarser schedule introduces
+(+85.6% measured at delta 2). The 1+ε recommendation does not transfer
+to this engine class. Re-arm only on a format change that makes
+per-node state reconstruction expensive — not on bottleneck movement.
+
+**Provenance note:** both Codex sessions died on API capacity outages;
+measurement was complete, and the orchestrator authored the report with
+every number verified against the retained raw logs.
