@@ -588,3 +588,34 @@ auditable); 512 MiB stays unofficial pending a full gate there.
 trainer solves use the narrow path and lazy affects wide PN only; a
 dedicated leaf campaign (or wide-leaf enablement) is the open follow-up
 for that surface.
+
+---
+
+## 2026-07-17 — DOM-B2/B2R2: b=2 domination experiment — zero reversals, but PARKED as computation-limited
+
+**Anchor:** branch `hunt/domination`, commits `a3047de1` (round 1) +
+`af6f777c` (adjudication + orchestrator ruling).
+EXPERIMENT_DOMINATION_B2.md carries the repaired §7 protocol (review
+repairs 2–6 quoted and folded) and both rounds' data; evidence JSONLs
+committed alongside.
+
+**What the paper says (§9 domination + §12 opens):** the b=1 dispatch
+domination (L-DISPATCH-B1 + L-DRQ) stands proven and
+consumption-eligible. The b=2 extension was attacked empirically under
+the repaired protocol: 42,664 b=2 parents inventoried in the human
+corpus; every completed exact comparison — 11/11 d=3 children, 9/12 F₃
+hitter aggregates — came back Unknown with **zero reversals**, and Q0
+admitted no b=2 attacker-Loss (3/16 rows qualified, 13 failed closed).
+But the discriminating d=4 quiet/frontier class completed only 1/11
+children with no directional comparison, even at 45-minute exact-search
+budgets: the naive bounded-minimax reference is the bottleneck, not the
+conjecture. **Ruling: parked OPEN-COMPUTATION-LIMITED** — favorable
+evidence recorded, no proof round launched on unmeasured discrimination.
+Reopening condition named: a certified-engine-based exact reference
+(verified certificates as ground truth) that makes d≥4 F_d computable.
+A methods note worth keeping: the reference solver was upgraded to
+honest incompleteness semantics (budget exhaustion returns incomplete,
+never a fabricated verdict, and poisons parent aggregation).
+
+**Caveats:** none hidden — the parking is precisely because the crux
+measurement doesn't exist yet.
