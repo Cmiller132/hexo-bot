@@ -724,3 +724,53 @@ deterministic human-game segments, persistent solver per batch,
 segments, not MCTS-visit-weighted positions); the horizon-16 arm
 suggests the trainer may want a taller-horizon leaf query than today's
 h=8 — a Phase-3 integration decision, flagged not assumed.
+
+## 2026-07-17 — FINAL IDEATION GATE: lever exhaustion FAILS — 3 unposed levers + full wall-clock decomposition of the final engine
+
+**Anchor:** branch `claude/tss-vcf-width`, IDEATION_FINAL.md (audited
+HEAD 28eb5ac8; all numbers verified against the retained
+codex-consolidate.log transcript). Doc-only round; no code changed.
+
+**What the paper says (the "where the time goes" section + future-work
+ledger):** with every landed lever on, the official 1 GiB lazy run
+(34 solves, 495.94 s) decomposes as: attacker pair generation
+**43.60%**, defender-pair enumeration **35.46%** (together 79.06%),
+non-expansion residue (descent/TT reads/materialization) 15.06%, stage
+refresh 4.75%, TT insertion 0.66%, strict verifier **≤0.07%**. TT
+traffic is dead as a cost center (2.27% hit rate, insertion under 1%);
+the engine's remaining cost is move *generation*, not table management
+or verification — evidence the search itself is near the certificate
+format's floor.
+
+**The one measured untapped lever — cap-ladder repetition:** the
+official harness re-solves each root fresh at every node-cap rung
+(10k→100k→1M→20M). Exact transcript arithmetic: **30.67% of total
+solve wall (151.99 s) and 31.02% of expansions (1,398,409) are
+repeated lower-rung work**; the hardest row (0l4291i_live) alone
+repeats 1,109,997 expansions / 121.86 s before its closing rung
+begins. A resumable proof-number session across a monotone cap ladder
+(same root, horizon, flags; only the ceiling rises) exposes this;
+soundness scope: lower-cap results stay Unknown, hard results still
+cross the unchanged strict verifier.
+
+**Other ranked candidates:** (2) prior-scale-aware df-pn threshold
+increments — priors span 1..37 but thresholds still advance by +1, the
+exact mismatch the proof-number literature names (Kishimoto et al.
+survey; 1+ε trick), counter-first A/B specified; (3) opening-root D6
+stabilizer orbit pruning — nontrivial stabilizers cover 62.92% of the
+human corpus (root-child-removal ceiling 32.39%), distinct from the
+dead mid-search TT folding (NQ5), Choice-roots-only soundness scope.
+Plus two pre-existing closure debts the register never disposed:
+dynamic child reveal (eager pair classification untouched by lazy
+frontier) and the live_ge3 PN-seed live A/B.
+
+**Reference capstone honesty note:** the historical idtt/dfpn/pdspn
+columns are NOT matched-budget experiments (no pinned binary, host, or
+leaf-work accounting). The only material apparent deficit is 94gnnol
+(pdspn cited NO in 21 s vs our UNKNOWN after the 1M rung) — a matched
+differential on that row is the required experiment before any
+reference gap is claimed either way.
+
+**Verdict recorded:** "nothing realistic remains" would be false today;
+exhaustion can only be declared after the five lever rounds fail their
+≥5% gates and the 94gnnol differential is dispositioned.
