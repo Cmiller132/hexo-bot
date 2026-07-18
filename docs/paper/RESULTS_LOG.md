@@ -1414,3 +1414,47 @@ counterroute), and the positive universal repair (∀P₀∃S∀α) that must
 also exclude every other escape class. GAP-HUB-FANOUT-REACHABILITY is
 the named subproblem; GAP-TEMPO-INITIALIZATION and GAP-TEMPO-REPAIR
 remain the broader gates.
+
+## 2026-07-18 — R-T1.1: frontier-band census decides E1 = SPLIT — the delta-2 catastrophe is band work first, saturation amplification second
+
+**Status:** landed on `claude/tss-vcf-width` (`224a3682`: cfg(test)
+census counters, report, 4 hashed raws, theory-doc E1 upgraded
+CONJECTURE → MEASURED). Both instrumented arms reproduced the
+historical R-TS1 solves EXACTLY (1,879,611 vs 6,054,588 expansions,
+identical peak TT bytes), strict-verified WIN, histogram conservation
+exact to the single root node.
+
+**The question:** R-TS1 measured that widening the df-pn threshold
+delta from +1 to 2 blew the hardest official row up 3.221× and
+saturated the 1 GiB indexed TT. CONJECTURE E1 offered two mechanisms:
+(a) the wider window crossed a high-mass competitive score band
+(over-expansion at selection boundaries), and/or (b) admission
+saturation then amplified work via loss of indexed transposition
+reuse. Which is it?
+
+**The verdict — SPLIT, with exact fractions.** Timestamping the first
+admission refusal (expansion 3,586,288) decomposes the 4,174,977
+excess expansions into 40.878716% BEFORE any saturation and 59.121284%
+after. Clause (a) is confirmed as the originating cause: 1.7M excess
+expansions exist before the index ever refuses an entry, and 83.18% of
+them are charged to selections that began TIED with the second-best
+sibling — the tie band carries 82–85% of all classified work in every
+segment, direct evidence of a high-mass competitive band. Clause (b)
+is temporally supported (the majority of excess is post-saturation)
+but the census cannot distinguish true D1 duplicate re-expansion from
+work the widened schedule would have done anyway; that causal gloss
+stays at SKETCH level. Bonus: the review's missing sentinel-hit
+control is closed with nonzero counts — delta 2 actively clamped at
+PN_INFINITY (84 inherited + 128,957 increment strict clamps vs zero
+under +1), so no delta-2 behavior may be attributed purely to the
+`second_best + delta` expression.
+
+**Why it matters for the paper:** this completes the re-traversal
+theory arc with a measured mechanism. The theory proved Θ(N) band
+families exist (T2/T2b); the census shows the production catastrophe
+is exactly that shape — a tie-heavy competitive band that the +1
+schedule slices minimally and the +2 schedule re-enters en masse,
+with TT saturation as a secondary amplifier. Combined with the T6
+identity (revisit share ≤7% caps any possible widening payoff), the
+second+1 policy is now backed end-to-end: theorem ceiling + measured
+mechanism + sentinel-controlled A/B.
