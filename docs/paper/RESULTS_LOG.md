@@ -2101,3 +2101,39 @@ the round-8 stealing synthesis refutation) — and the first time the
 reviewer's refutation certificate itself became the stronger
 published theorem. The two-sided characterization the tempo program
 set out for is now complete and review-hardened at every plateau.
+
+---
+
+## 2026-07-18 — Stealing program round 9: S70 first-cycle controller PROVEN (review-confirmed); all four fast-conversion routes proven to fail; fast outcome stays open
+
+**Lane:** game theory / strategy-stealing program · **Branch:**
+hunt/gap-raw — round landed `e19e97f7`, review + §84 fold `88bca52d`.
+Review verdict: **SOUND-WITH-MINOR-ERRATA** (single MINOR: a
+provenance-ledger repair; zero mathematical findings).
+
+**The positive result.** Theorem S70 (line-seeded first-cycle
+controller): on a selected first cycle, the slow-strategy controller
+forces a three-way disposition — the S58 cliff, a physical stop that
+is itself a win, or full entrance into the current reserve — with
+every forcing step legal and cadence-correct, and the case split
+verified exhaustive under hostile recomputation. Notably, S70
+genuinely bypasses the S50 quantifier gap that blocked the round-5
+approach (confirmed "genuine but narrow": one finite inherited
+prefix, not arbitrary recurrence). S70.1 gives an optional sound
+immediate closure from the entrance horn; S69 gives an exact
+necessary-and-sufficient scalar reserve-membership test.
+
+**The negative results (equally load-bearing).** Every named route
+for converting fast wins — the prepaid reserve carry, both ordinary
+appends, the §53 closure, and terminal-moment S63 — is now *proven*
+to fail, each confirmed independently. Combined with S70.2 (every
+FAST_8 candidate is forced onto the sixth-stone cliff by its own
+winning histories — defeating the proof carrier, never the strategy),
+the program has a sharp, review-hardened boundary: the slow first
+cycle is controlled; the fast outcome is provably out of reach of
+all current vehicles.
+
+**Sharpest open question** (review-endorsed): can an asynchronous or
+outer carrier cross the forced S58/S49 cliff and decide the fast
+game outcome? Seven open obstacles are carried forward explicitly
+(§84.3).
