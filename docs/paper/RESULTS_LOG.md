@@ -1811,3 +1811,56 @@ run carrier for every strategy-following history. Behind them sits
 the capstone T6_extendableHitKernel: the full formal license for the
 solver's shared-TT merge semantics and gate-layer dispatch. The spine
 is one runner layer from its terminal milestone.
+
+## 2026-07-18 — R-ST7: co-terminal alignment gets its invariant — F-CAD_2^st + F-LOCK give conditional alignment, canonical service alone provably cannot, and the sixth stone is the universal barrier
+
+**Artifacts:** `STRATEGY_STEALING_ROUND7.md` + hostile ultra review
+`STRATEGY_STEALING_REVIEW_ROUND7.md` (SOUND-WITH-MINOR-ERRATA, all
+four sections CONFIRMED, errata folded as §63) on `hunt/gap-raw` at
+`175ca45e`.
+
+**The shape of the round:** round 6 compressed the stealing problem
+to one obligation — co-terminal alignment. Round 7 gives that
+obligation its exact theory, positive and negative:
+
+1. **The invariant exists and works (S46/S47, PROVEN):** F-CAD_2^st
+is a causal one-debt F-window deficit cover — a portfolio assigning
+real F-side windows to shadow terminal obligations with no point map
+(review-verified genuinely many-window-to-one). Its debt-update law
+is exact, and maintaining it plus the canonical F-LOCK residual
+PROVABLY delivers the co-terminal append: when sigma completes its
+shadow six, the assigned real window completes on the same coupled
+step.
+2. **But the defense doesn't get it for free (S48, a PROVEN
+negation):** the canonical two-stone service rule alone does NOT
+maintain the invariant — S42's trace is first-safe,
+certificate-valid, tau_E=0, and still terminal-unready. Alignment is
+a genuine additional requirement on the F-role policy, not a
+consequence of good service.
+3. **The universal barrier (S49, PROVEN):** for EVERY one-for-one
+post-S15 event selector including every two-cell service
+augmentation, misalignment at a terminal age of six is
+selector-independent — the sixth shadow stone is where every carrier
+must pay. What remains open is exactly whether a genuinely winning
+sigma can be forced to that fast terminal on its own history.
+4. **The horizon tool (S51, PROVEN):** via the S24 finite-horizon
+theorem, every alleged-winning sigma coupled by any causal outer
+continuation hits a three-way stop cover within a finite shadow
+horizon — with the circularity boundary drawn exactly (S51.1: at a
+branch-(C) node, a physical shadow win IS already the counterstrategy
+contradiction, so the negative route cannot circularly assume
+refutability there).
+
+Membership coverage also advanced (S52 exit partition + S53
+correct-role occupied reconciliation = one fully covered ejection
+class), and per-pair K=2 gained an honest datum (S54: a legal
+intra-pair translation-alternating cylinder exists but is
+fixed-T0-solvable — the class stays open).
+
+**Why it matters for the paper:** the alignment question is now a
+concrete dichotomy with named objects on both horns: either
+F-CAD_2^st + F-LOCK can be maintained to the S24 horizon for every
+alleged-winning sigma (positive: NL_F via the S40 carrier), or some
+winning sigma forces the S49 sixth-stone misalignment on its own
+history (negative: the carrier route dies at terminals). Every
+future round attacks one horn with proven machinery.
