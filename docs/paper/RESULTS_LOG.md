@@ -1962,3 +1962,41 @@ forced failure mode for fast winners (S61) — plus a sharpened honest
 map of what remains: fast-class nonemptiness, the fast OUTCOME
 question, a slow-winner controller, and quiet-membership
 preservation.
+
+## 2026-07-18 — MILESTONE: T11 and T11.1 are kernel-proved — the exact-copy soundness theorems land; the spine is one induction from its capstone
+
+**Artifact:** `TssZones/ForcedHit.lean` (`T11_exactCopySoundness`,
+`T11_1_d17Compatibility`) in E:\tss-lean at `00b6fb6`; LEDGER rows
+115/116 flipped UNSTATED → PROVEN on kernel truth; AUDIT PASS after
+an independent-gate ledger repair (8,695 jobs, 40 modules, axiom
+hygiene over both new rows).
+
+**What was proved:** the two source-strength soundness theorems that
+sit directly on L17. S9S-41 built the missing layer end-to-end — the
+FH and FH+D17 strategy-progress and maximal-resolution runners, which
+construct for EVERY strategy-following history the strengthened
+defender-terminal-run carrier that L17's clauses consume (normalized
+mapped entries, non-leaf mapped endpoints) — and then closed both
+inclusive-horizon attacker-forcing statements: T11 for the exact-copy
+F+H_W policy under exact D21 dismissal, T11.1 for the full-clock
+FH+D17 envelope. Together with L17 this is the complete formal story
+of certificate-checked forcing under both dismissal policies:
+checkers (checkFH_iff / checkFHD17_iff), authority preservation,
+mapped extensions, gate continuations, protected-occupation
+exclusion, completion safety, and now the forcing theorems
+themselves. +3,709 lines, additive.
+
+**A gate note worth recording:** the session's ledger flip left two
+never-landed fixture declarations in the PROVEN row's list; the
+independent audit's axiom-hygiene step failed on the phantom
+constants and the row was repaired to truth (fixture honestly open)
+before anything was committed. The independent-rerun discipline is
+not ceremonial.
+
+**What remains:** exactly one session's worth of named work — the
+T6-specific reverse state splits, the first-escape adapter, the
+rerooted horizon/splice/deadline lemmas, and the global forcing
+induction assembling T3 coupling + L17 + T11/T11.1 dispatch + the
+p(Q)+b+2 deadline into `T6_extendableHitKernel` (row 86): the full
+formal license for the solver's shared-TT merge semantics and gate
+dispatch. The capstone session is running.
