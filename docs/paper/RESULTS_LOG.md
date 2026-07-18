@@ -1565,3 +1565,49 @@ comprehensively closed: measured, mechanism-understood, and negative.
 The narrow residue (a default-off reveal-prefix measurement targeting
 classifier work rather than visit order) is queued behind higher-value
 cargo work.
+
+## 2026-07-18 — R-G4: the greedy tempo policy S_T is REFUTED — an exact strategy-consistent line assembles the shared hub and forces the loss
+
+**Status:** landed on `hunt/gap-raw` (`110042e5` round 6, `8ac6caae`
+hostile review + folded errata). Review verdict
+SOUND-WITH-MINOR-ERRATA: R6.1 CONFIRMED (every S_T reply re-derived
+from its exact minimize-TEMPO-then-lexicographic definition), R6.2
+CONFIRMED-AND-STRENGTHENED — the reviewer computed the exact post-hub
+values, M=4 and next τ=4, stronger than the round's ≥3 bound. No
+quantifier leak anywhere.
+
+**The result (Q1 of the round-5 decomposition):** from an exact strict
+root with potential Φ=0 (three remote anchors), there is a legal
+Attacker continuation, consistent with the round-4 defense policy S_T
+at every single Defender turn, that (1) walks through the known
+axial-cleanup handoff, (2) erects a "four-pencil tempo shield" — a
+20-window diamond whose value structure puts every S_T reply on a
+plateau ray, (3) builds the five count-two shared-hub focal windows
+behind that shield over five stock turns with no hidden count-three
+label ever appearing, and then (4) springs the round-5 hub cascade,
+which survives the extra alive labels: after mandatory service the
+demand jumps to τ=4 and the Attacker wins. S_T — minimize immediate
+TEMPO, break ties lexicographically — is therefore refuted as a
+perpetual-defense witness.
+
+**The mechanism (why a greedy defense dies):** hub pre-emption was
+always legal and would have saved the game — but it TIES the greedy
+objective (immediate TEMPO=2 either way) at the critical P_stock
+epoch, and the lexicographic tie-break picks the losing ray. The
+failure is not myopia about value; it is that a one-step tempo
+objective cannot see next-state risk hiding inside a tie. Any repaired
+policy must be Bellman-aware exactly there. Bonus theorem L12.6: every
+position whose alive windows all have count ≤2 is an initialized M≤2
+root (count ≤1 gives M=0) — the first initialization class beyond
+individual instances.
+
+**Why it matters for the paper:** this is the tempo program's headline
+so far — a complete, hostile-verified, move-by-move refutation of the
+natural greedy defense in Hexo, with the failure mechanism isolated to
+a tie-breaking blind spot. Together with round 5's Bellman-closure
+refutation it fully shapes the remaining perpetual-defense question:
+Q2 (can the hub be forced against EVERY defense — ∃P₀∀S∃α) and Q3 (is
+there a tie-aware policy holding M≤2 everywhere — ∀P₀∃S∀α) are now the
+exact open fronts, with the sharpest next question pinned: at P_stock,
+does some hub-pre-empting pair keep max_b M ≤ 2 over every Attacker
+response?
