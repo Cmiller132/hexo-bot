@@ -2174,3 +2174,41 @@ closed with **zero remaining residue** — every member measured,
 mechanism understood, negative. Measurement integrity: cfg(test)
 telemetry only, 34/34 rung identity vs baseline, strict verifier
 untouched, 13 SHA-manifested raws.
+
+---
+
+## 2026-07-18 — R-CREL-5: leaf-relevance measurement ABORTS — the authorized leaf route cannot produce zoned certificates
+
+**Lane:** solver / C_rel cache (Phase-3 gate) · **Branch:**
+hunt/cert-support `5f5da82a` · **Verdict:** pre-registered ABORT
+(report, do not conclude); the deployment question stays open.
+
+**The question.** Stage 4 measured a 90.159% net repeat-solve gain
+(clustered 95% LB 83.243%) for the selected 8 MiB/fanout-1 cell — but
+on a parent-mutation cohort. Its binding recommendation was to decide
+deployment only on a *leaf-relevance* cohort: non-parent reuse across
+subtree boundaries, with positive zoned-certificate coverage, the way
+the trainer's Phase-3 leaf stream would actually exercise the cache.
+
+**What happened.** The session built the honest cohort machinery — a
+deterministic lowest-common-ancestor sibling-pair generator over real
+solve trees (50 corpus games, 300 root solves per horizon,
+distinct-subtree/equal-ply/equal-phase admission, direct-parent pairs
+excluded) — and the construction gate failed absolutely: positive
+zoned coverage 0/3 admitted pairs at h=8 and 0/62 at h=16, against a
+binding 20% floor. The economics arms were deliberately not run; no
+partial timings were dressed up as leaf economics.
+
+**The structural finding.** The zero is not sampling noise. The
+decided wide/gated cap-500 leaf profile's Universal builder writes
+`zone: None` in every construction path (tss_solver.rs:6579-6620,
+6719, 6756) — the authorized envelope *cannot* emit zoned strict
+certificates, so the mandated cohort cannot exist under it. The
+session correctly refused to manufacture coverage by changing the
+decided profile. The sharpest residual is now a profile-contract
+question: can the wide/gated route emit zoned certificates post-hoc
+without changing its search envelope or soundness contract? That
+extension (R-CREL-6, separately authorized) will either enable the
+verdict measurement or prove the zone information structurally absent.
+Integrity: `hard_without_strict=0` throughout, strict verifier
+untouched, 7 SHA-manifested raws, authoritative log named.
