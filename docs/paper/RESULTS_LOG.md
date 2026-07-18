@@ -1667,3 +1667,51 @@ review's 12-item obstacle list is the authoritative open state; the
 sharpest question is the P3 carrier: can every alleged-winning σ be
 causally paired with the canonical service transversal while
 surviving S18/S20/S12?
+
+## 2026-07-18 — R-ST6: the P3 event carrier — prescriptions need no coordinate map, and the whole stealing problem compresses to co-terminal alignment
+
+**Artifacts:** `STRATEGY_STEALING_ROUND6.md` + hostile ultra review
+`STRATEGY_STEALING_REVIEW_ROUND6.md` (SOUND-WITH-MINOR-ERRATA, all
+three objectives CONFIRMED, errata folded as §53) on `hunt/gap-raw`
+at `09e27a93`.
+
+**The headline mechanism (S40, PROVEN at scope):** for five rounds,
+every strategy-stealing coupling for Hexo died at P3 — turning the
+shadow strategy's prescribed moves into legal real moves. Round 6
+proves the prescriptions never needed a coordinate map at all: pair
+each shadow prescription TEMPORALLY with the canonical real service
+placement the defense already plays after the preceding S turn. On
+the named terminal-closure class A_FS2^ET, this event carrier is
+PROVEN causal (the second prescription is queried only after both
+first placements are nonterminal — the review verified no future
+information leaks into the pairing rule), immune to the S18
+reverse-legality gadget by construction (S41 exhibits a live trace
+whose shadow prescription has an ILLEGAL inverse — and the carrier
+doesn't care), and safe from S12 pre-announcement because service is
+selected after S's completed turn. The entire remaining F-role
+obligation compresses into one named residue: co-terminal alignment
+(every terminal shadow win needs a same-step physical real
+certificate). S42 proves the terminal-blind shortcut dies on its own
+history, so that residue is genuinely load-bearing.
+
+**Secondary results:** per-pair K=2 is PARTIAL — S43 proves the
+budget reset provably escapes the round-5 lifetime counting (honest:
+the lifetime ceiling does not transfer), while S43.1's colored
+two-proxy cut adaptively kills the subclass with isometry fixed
+within each pair. The S30 three-axis fork got a certificate barrier
+(S44: a window-deficit certificate cannot discount a missing physical
+blocker at fixed debt) and its exact price: tau_E=5, with both the
+five-cell transversal and the four-cell impossibility recomputed by
+the review.
+
+**Why it matters for the paper:** this is the first genuinely
+positive P3 mechanism in the program's history, and it changes the
+shape of the NL_F question. Instead of five open fronts (legality,
+causality, collision, reverse maps, terminal fidelity), the
+nonterminal coupling is SOLVED at conditional scope and one question
+remains: derive co-terminal alignment for every alleged-winning
+sigma, or force adaptive S42-style failure on a genuinely winning
+strategy's own history. Window-level representations (round 5) plus
+event-level carriers (round 6) together mark the representation
+space's real boundary: what dies is point maps, what survives is
+structure that never inverts coordinates.
