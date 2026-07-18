@@ -1864,3 +1864,49 @@ alleged-winning sigma (positive: NL_F via the S40 carrier), or some
 winning sigma forces the S49 sixth-stone misalignment on its own
 history (negative: the carrier route dies at terminals). Every
 future round attacks one horn with proven machinery.
+
+## 2026-07-18 — R-G6: the defense is savable at the first plateau — dual near-trigger capping is the intervention principle, and the loss threshold sits inside the stock phase
+
+**Artifacts:** `GAP_RAW_PROOF_ROUND8.md` + hostile ultra review
+`GAP_RAW_REVIEW_ROUND8.md` (SOUND-WITH-MINOR-ERRATA, all four results
+CONFIRMED — the exhaustiveness crux held; errata folded as §76) on
+`hunt/gap-raw` at `c019400a`.
+
+**What was proved:** the positive counterpart to the P_stock stop
+theorem. At the exact first diamond plateau P_0^pl, the non-hub
+Defender pair ((0,-1),(1,1)) — precisely the two triangle-fan trigger
+cells from round 7's refutation machinery — keeps EVERY legal
+Attacker response at M<=2 (R8.1). The review's independent
+verification of the response enumeration was the make-or-break check
+(remote pairs, split pairs, bridge pairs, separated same-axis pairs —
+a single missed response would have refuted the round) and it held,
+with the exact post-cap inventory (8 count-one, 12 count-two, nothing
+higher) recomputed. The same action still works after one stock turn
+(R8.2). The intervention principle is DUAL NEAR-TRIGGER CAPPING:
+occupy the two near triangle triggers exchanged by the half-turn
+symmetry, truncating both vertical shield pencils and reducing every
+response to at most two high axes, each stabilizable within the
+service budget.
+
+**The picture across rounds 6-8:** the greedy defense dies not
+because defense is impossible but because it defends the wrong cells
+at the right time. The position is savable at plateaus 0 and 1
+(proven), universally lost at plateau 5 (proven, R7.2), and the
+earliest loss index in {2,3,4,5} is now a sharp open datum — the
+exact moment Hexo's threat packing outruns one-ply defense.
+
+**Q2 and renewal also moved:** the earliest strategy-independent
+branch point is completely classified (R8.3) — every first Defender
+deviation except the double-corner seal is rerouted to an exact
+tau=0/M=2 lozenge plateau; the seal is THE earliest unresolved Q2
+obstruction. And R8.4 (with the review's safe-filler repair folded)
+gives the first finite renewal step beyond initialization.
+
+**Why it matters for the paper:** together with the negative theory
+(rounds 5-7), Hexo one-ply defense now has a two-sided
+characterization: a proven intervention principle with a concrete
+geometric rule at early plateaus, and a proven universal loss once
+three-region packing completes — with the phase transition localized
+to four indices. The remaining fronts are exact: the earliest loss
+index, the double-corner seal iteration, and arbitrary-member
+renewal.
