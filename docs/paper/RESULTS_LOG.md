@@ -1250,3 +1250,47 @@ scale, depth, and bounded-TT behavior — this round supplies the first
 such family of results, anchored to an exactly measured production
 instance, and converts two of the engine's empirical tuning choices
 (+1 increment, admissible-leaning priors) into theorem-backed ones.
+
+## 2026-07-17 — R-ST2: stealing round 2 — surplus-stone calculus, a fixed-map obstruction class theorem, and the determinacy bridge (NL_F still open)
+
+**Status:** landed on `hunt/gap-raw` (`a85aa311` round 2, `57fcbda8`
+hostile review + errata). Hand proofs anchored to engine source
+citations; hostile ultra review verdict CONFIRMED-WITH-ERRATA — no
+FATAL or MAJOR defect, all theorems stand at their formal scopes.
+
+**Result 1 — the exact surplus-stone calculus (S5-S7).** One-way
+legality monotonicity (a still-empty shadow reply stays legal on the
+bigger real board) plus the exact frontier-gap formula: the real-only
+moves a subset shadow cannot copy are precisely Γ(A,E) =
+(N₈(E)\N₈(A))\B. Surplus stones are monotone-helpful in one direction
+and monotone-harmful exactly on Γ — this cleanly separates the
+"extra stones never hurt" intuition from S3's growth-rule trap, with a
+complete characterization (geometric frontier-neutrality) for one
+surplus stone.
+
+**Result 2 — a fixed-map obstruction class theorem (S9.1/S11,
+review-confirmed).** No synchronous, owner-faithful, no-invention
+role-swapped shadow mapping all real stones injectively one-for-one
+can be a legal coupling — for EVERY coordinate map, not just
+isometries — and the omit-one-stone repair fails for every
+no-invention fixed-isometry immediate-copy history map. The
+no-invention premise is load-bearing (one invented proxy stone of each
+color repairs the raw cadence counts), so the honest survivor class is
+exactly: dynamic recoding, virtual/proxy bookkeeping stones, and
+strategy-specific invariants. Any future Hexo stealing proof must live
+there. Narrow FIFO/preannouncement/terminal-lag obstructions close the
+easy variants.
+
+**Result 3 — the determinacy bridge (D1/D2, PROVEN from CITED
+Gale-Stewart).** The payoff "S completes six at a finite prefix" is
+open, the macro-game encoding is valid (off-path totality erratum
+folded), so NL_F ⇔ "S has no winning strategy." Opener non-loss no
+longer needs a constructed drawing strategy — refuting a second-player
+win suffices.
+
+**Why it matters for the paper:** round 1 showed classical stealing
+breaks in Hexo; round 2 turns that into a sharp boundary — an exact
+calculus for when surplus stones help, a theorem-fenced survivor class
+for coupling arguments, and a determinacy reduction that halves the
+logical burden of the opener-non-loss question. Resume:
+GAP-PROXY-SHADOW (the invented-proxy repair the review itself surfaced).
