@@ -1715,3 +1715,55 @@ strategy's own history. Window-level representations (round 5) plus
 event-level carriers (round 6) together mark the representation
 space's real boundary: what dies is point maps, what survives is
 structure that never inverts coordinates.
+
+## 2026-07-18 — R-G5: the greedy defense is not repairable — P_stock is a universal local stop state, and tie-breaking was never the disease
+
+**Artifacts:** `GAP_RAW_PROOF_ROUND7.md` + hostile ultra review
+`GAP_RAW_REVIEW_ROUND7.md` (SOUND-WITH-MINOR-ERRATA, all four results
+CONFIRMED, errata folded as §67) on `hunt/gap-raw` at `a8a0b92d`.
+
+**What was proved:** round 6 refuted the greedy tempo policy S_T and
+isolated its death to a tie-breaking blind spot — hub pre-emption tied
+the objective and lost only on the lexicographic tie-break. The
+natural repair program (a smarter tie-break S_T') is now CLOSED:
+
+1. **R7.1 (hub pre-emption never repairs):** at every one of the six
+plateau epochs of the refutation line, every legal Defender pair
+containing the hub admits a triangle-fan Attacker response forcing
+M>=3 — verified by the review with an axis- and D6-complete demand
+census and full enumeration of Defender continuations.
+2. **R7.2 (P_stock is a universal local stop state):** at the final
+plateau, EVERY legal Defender pair — hub or not — has a response with
+M>=3 (the review completed the exact label census: 127 count-one, 55
+count-two, none higher). Equivalently min_a R_1 >= 3: every possible
+tie refinement is excluded at once, including one-ply Bellman
+lookahead. One-ply risk detects the lost state; nothing can act on it.
+3. **R7.2.1 (the refutation shortens):** the very first plateau ray
+reply already admits the triangle fan — the five stock turns of round
+6 were diagnosis, not necessity. The review verified this is
+independent of all later stock.
+4. **L13.6:** the initialization ladder climbs — any tau=0 position
+whose count-three residual family has hitting number <=2 is an M<=2
+root (two count-three labels now covered; explicitly not renewal).
+
+**The mechanism-level meaning:** the greedy defense does not fail
+because of how it breaks ties; it fails because the Attacker can pack
+three action-disjoint threat regions (pairwise-disjoint service sets,
+review-verified) faster than any two-stone-per-turn defense can
+service them once the packing completes. A defense policy for Hexo
+must therefore be measured by WHEN it intervenes, not how finely it
+scores ties. The sharpest open question is now pinned at the earliest
+epoch: does ANY action at the first diamond plateau keep the worst
+response at M<=2? Q2 (can a strict root FORCE arrival at P_stock
+against every defense) remains the other open front — answering it
+would convert this local forced-loss theorem into a global GAP-RAW
+attack result.
+
+**Why it matters for the paper:** together with rounds 5-6, the tempo
+program now has a complete negative theory of one-ply greedy defense:
+Bellman closure fails (R5), the greedy policy fails with an exact
+strategy-consistent line (R6), and no tie refinement can fix it
+because the loss is a state property, not a policy property (R7).
+This is the cleanest characterization yet of why local heuristics are
+insufficient for Hexo defense — the game's threat geometry outruns
+any fixed-lookahead scoring rule.
