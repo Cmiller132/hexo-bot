@@ -1767,3 +1767,47 @@ because the loss is a state property, not a policy property (R7).
 This is the cleanest characterization yet of why local heuristics are
 insufficient for Hexo defense — the game's threat geometry outruns
 any fixed-lookahead scoring rule.
+
+## 2026-07-18 — MILESTONE: L17 is kernel-proved — the debited first-bad-event lemma lands at full two-clause source strength
+
+**Artifact:** `TssZones/ForcedHit.lean` (`L17_debitedFirstBadEvent`)
+in E:\tss-lean at `119b9f3`; LEDGER row 114 flipped UNSTATED → PROVEN
+on kernel truth; AUDIT PASS ×2 (8,695 jobs, 40 modules, axiom-hygiene
+included).
+
+**What was proved:** L17 was the largest single open obligation in
+the Lean formalization of the zone-theorem spine — the joint
+protected-occupation and completion-safety lemma under the
+D19/D20/D21 gate layer, proved for BOTH the FH and the FH+D17
+dismissal policies at verbatim source strength:
+
+1. While real play remains mapped to the original certificate, no
+defender placement can create a real-only stone inside the current
+protected set — closed across every direct and inherited authority
+branch (ordinary and D17, direct substitution and
+historically-inherited fills transported back to their D21-omitted
+seeds), and old roles are provably abandoned when an off-kernel
+escape begins.
+2. Before the mapped certificate attacker or a charged gate-escape
+attacker resolves, no carried real defender play completes a window —
+via a kernel-proved three-way first-completion selector whose cases
+(no-dismissal, mapped first-fill, off-kernel first-fill) are each
+individually impossible under the ordinary and transition-inclusive
+D17 completion clocks.
+
+**The eight-session arc:** S9S-33 through S9S-40 built this bottom-up
+— run-level selectors, case exclusions (i)/(iii) by direct MI/FG2
+arithmetic, the case-(ii) ORDINARY-authority and D17 completion-clock
+adapter stacks, a chronological prefix-lineage reifier, and finally
+the two-clause assembly — every session landing audit-green with
+truthful UNSTATED ledger rows until the kernel actually checked the
+full statement.
+
+**What it unblocks:** T11/T11.1 (the exact-copy and D17-envelope
+soundness theorems) now have every ingredient kernel-checked except
+one named layer — the FH/FH+D17 strategy-progress and
+maximal-resolution runners that construct the (honestly strengthened)
+run carrier for every strategy-following history. Behind them sits
+the capstone T6_extendableHitKernel: the full formal license for the
+solver's shared-TT merge semantics and gate-layer dispatch. The spine
+is one runner layer from its terminal milestone.
