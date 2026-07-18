@@ -2000,3 +2000,47 @@ induction assembling T3 coupling + L17 + T11/T11.1 dispatch + the
 p(Q)+b+2 deadline into `T6_extendableHitKernel` (row 86): the full
 formal license for the solver's shared-TT merge semantics and gate
 dispatch. The capstone session is running.
+
+---
+
+## 2026-07-18 — C_rel Stage-4 economics: PASS at 8 MiB / fanout 1 — 90.16% net repeat-solve gain (83.24% clustered 95% LB), zero kill criteria fired
+
+**Lane:** solver / warm-template certificate cache (C_rel) ·
+**Branch:** hunt/cert-support `f7ac3ce4` · **Prior stages:** shadow
+Stages 1–3 ALL PASS at `3e4808c6`.
+
+**Design.** Fixed 512 MiB accounted envelope; 24 cells (reservation
+{1, 8, 32, 64} MiB × template fanout {1, 2, 4, 8, 16, 32}); 6
+invocations per cell; 368 deterministic mutations clustered under 46
+source roots; net gain = (T_base − T_Crel)/T_base over the full
+regeneration pipeline (template lookup + instantiation + mint +
+verification + strict-rebind fallback all charged); 10,000-resample
+percentile cluster bootstrap over source roots, fixed seed —
+mutations never resampled as independent observations.
+
+**Result.** All four design-verbatim kill criteria: NOT FIRED.
+- Selected cell (greatest clustered LB): **8 MiB reservation,
+  fanout 1** — measured net gain **90.159%**, source-clustered 95%
+  lower bound **83.243%**; every cell's LB ≥ 77.25% (kill bar 5%).
+- Accounted peak 82.09 MiB across the whole campaign (limit 512).
+- Max paired process-RSS regression 0.511% (limit 5%).
+- Shadow invariant `hard_without_strict = 0` — the strict verifier
+  remains the sole authority; harness-only diff, verifier untouched.
+
+**Comparator honesty.** Both arms ran with exact fragments enabled:
+the gain is *incremental over* the exact-fragment store (whose own
+warm gain is ~16.4%), not a replacement comparison, and the cohort
+is the scoped K=1/K=2 mutation family — not cross-corpus, not a
+production gate.
+
+**Why it matters.** This is the salvage arc of the NQ2/NQ3
+refutations completing: strict certificates provably do not transfer
+(NQ3, 0/180), but their *support templates* rebind at 78–96%, and
+Stage 4 now shows the economics decisively pay inside a tiny memory
+envelope — 8 MiB of reservation buys back ~90% of repeat-solve wall
+on the mutation cohort. Deploy recommendation is deliberately
+conservative: do not deploy; advance only the selected cell to the
+authorized Phase-3 leaf-relevance measurement, shadow/default-off.
+The open question that measurement answers: does the gain persist on
+real leaf cohorts with non-parent reuse and positive
+zoned-certificate coverage?
