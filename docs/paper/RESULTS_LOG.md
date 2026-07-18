@@ -2044,3 +2044,60 @@ authorized Phase-3 leaf-relevance measurement, shadow/default-off.
 The open question that measurement answers: does the gain persist on
 real leaf cohorts with non-parent reuse and positive
 zoned-certificate coverage?
+
+---
+
+## 2026-07-18 — Tempo program round 9: the exact one-ply-defense phase transition is k*=3 (headline k*=4 REFUTED in review; review proved the correction)
+
+**Lane:** game theory / GAP-RAW tempo program · **Branch:**
+hunt/gap-raw — round landed `9e57ea06`, review + §86 errata folded
+`f5349d3e`.
+
+**The result.** The named-plateau ladder P_0^pl..P_5^pl now has a
+complete, review-confirmed one-successor safety classification:
+
+| plateau | status |
+|---|---|
+| P_0, P_1 | safe — cap exact risk 2 (round 8, confirmed) |
+| P_2 | safe — cap exact risk 2 (confirmed after a finite incidence repair) |
+| P_3 | **unsafe — every legal Defender action has returned M >= 3** |
+| P_4 | unsafe — every action unsafe; cap exact risk 3 (confirmed) |
+| P_5 = P_stock | unsafe (round 7, inherited) |
+
+The exact phase transition of one-ply defense under the dual
+near-trigger cap is therefore **k* = 3**.
+
+**How the number moved.** The round as authored claimed k*=4, with an
+exhaustive response quotient at P_3 showing exact risk two. The
+hostile ultra review — tasked specifically with checking stock-seeded
+responses at P_3 — found the counterexample inside the round's own
+"complete" ledger: the stock-assisted pair b*=((9,-2),(10,-2))
+simultaneously feeds three axes (r=-2 W carrier, s=7 stock pair,
+q=10 V pair) whose only intersections are occupied Attacker stones;
+the unique full-service reply is then defeated by a hub/W response
+with combined disjoint demand exactly three. The review then
+strengthened the counterexample to a universal theorem (the
+H_3-region / triangle-fan dichotomy): every P_3 action is unsafe.
+The transition mechanism is unchanged in kind but earlier in time:
+the first three-separated-demand-region packing appears when the W
+block lands at index three, not when V^+ lands at index four.
+
+**What survived scrutiny.** The P_4 universal stop theorem, the
+435-class (870 ordered) double-corner seal quotient with exact
+values and an honestly-OPEN exceptional boundary, and the six-action
+full-delete renewal obstruction were all independently recomputed
+and confirmed; three additional MINOR defects (a boundary incidence,
+a connector-uniqueness sentence, a bridge subcount 8 -> 6) were
+repaired without any value changes.
+
+**Scope honesty.** k*=3 is a Q1/Q3 reached-state theorem: it
+classifies safety at the named plateaus, and does not prove any
+strict root forces play into them (Q2 forcing remains OPEN), nor the
+exact magnitude of B_1(P_3^pl) beyond >= 3.
+
+**Method note for the paper's narrative.** This is the second time
+this window the hostile-review layer has changed a headline (after
+the round-8 stealing synthesis refutation) — and the first time the
+reviewer's refutation certificate itself became the stronger
+published theorem. The two-sided characterization the tempo program
+set out for is now complete and review-hardened at every plateau.
