@@ -2137,3 +2137,40 @@ all current vehicles.
 outer carrier cross the forced S58/S49 cliff and decide the fast
 game outcome? Seven open obstacles are carried forward explicitly
 (§84.3).
+
+---
+
+## 2026-07-18 — R-OS3: reveal-prefix sound ceiling NULL — the ordering/scheduling lever family closes completely
+
+**Lane:** solver / ordering family (final member) · **Branch:**
+claude/tss-vcf-width `7c2706c8` · **Verdict:** NULL against
+pre-registered bars; no cursor-build hunt is posed.
+
+**The question.** R-OS1 showed zone_bound reranking moves winning
+children into the top four (offline). R-OS2 showed that promise does
+not convert to a live df-pn win. One residue remained, authorized by
+R-OS2 itself: does the reranking at least raise the *sound reveal
+ceiling* (the provably avoidable classification tail after the
+winning child at proven pair Choice nodes) enough to justify an
+incremental-reveal cursor?
+
+**The answer, on all 19 official rows (34 rungs, none skipped),
+anchored by an exact reproduction of the R-CD1 smoke cohort
+(7.956% vs 7.961%):** the zone_bound-ordered ceiling is *smaller*
+than the historical one — 0.930x against a pre-registered >=2x bar —
+and two rows regress past the 20% row guard. The mechanism is the
+same tail R-OS1 warned about, now measured at exactly the nodes
+that matter: the retained-child 33+ tail grows from 3.17% to 9.22%
+(smoke cohort: 1.25% to 36.66%). Winners move up on average;
+the expensive stragglers move out much further; the prefix that a
+cursor could skip does not shorten.
+
+**Why this row matters for the lever-exhaustion case.** The offline
+rank signal failed at each of its three conversion layers in turn —
+offline rank (promising), live visit order (NULL, R-OS2), sound
+reveal ceiling (NULL, worse than baseline). With R-OS1, R-OS2,
+R-T1/T1.1, R-RS1, and R-OS3, the ordering/scheduling family is now
+closed with **zero remaining residue** — every member measured,
+mechanism understood, negative. Measurement integrity: cfg(test)
+telemetry only, 34/34 rung identity vs baseline, strict verifier
+untouched, 13 SHA-manifested raws.
