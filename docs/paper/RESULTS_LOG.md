@@ -1910,3 +1910,55 @@ three-region packing completes — with the phase transition localized
 to four indices. The remaining fronts are exact: the earliest loss
 index, the double-corner seal iteration, and arbitrary-member
 renewal.
+
+## 2026-07-18 — R-ST8: the reserve corridor works, the readiness cliff is exact, and fast winners are forced onto the misalignment — but the review killed the synthesis overclaim
+
+**Artifacts:** `STRATEGY_STEALING_ROUND8.md` + hostile ultra review
+`STRATEGY_STEALING_REVIEW_ROUND8.md` (core S55-S63 CONFIRMED at
+conditional scopes; the §68 synthesis REFUTED and rewritten; errata
+folded as §73) on `hunt/gap-raw` at `ab0fd965`.
+
+**What survived review (the real results):**
+
+1. **S59 — the reserve corridor (maintenance horn):** on the named
+nonempty quiet/R_1 cycle class, an explicit reserve handler maintains
+BOTH the F-CAD_2^st cover and augmented assigned-window readiness
+(F-LOCK^+) through every admitted rolling cycle, with a complete
+physical co-terminal witness verified clause-by-clause by the review.
+This is the first proof that the alignment invariant survives real
+repeated play. Scope honesty: augmented lock only — canonical F-LOCK
+stays open.
+2. **S58 — the (2,3) readiness cliff:** at the unprepaid
+first-event cliff, NO query-first, common-phase,
+one-event-per-microstep selector can maintain the invariant — the
+review verified the counting is selector-independent with no
+one-for-one escape. The exact boundary between "maintainable" and
+"impossible" for the S40 carrier architecture.
+3. **S61 — fast winners forced onto the misalignment (forcing
+horn):** every alleged-winning strategy in the fast classes
+(FAST_8^{S15}/FAST_<14) is forced onto the S49 sixth-stone
+misalignment on its own winning history — the program's first
+negative theorem against genuinely winning strategies, with the
+horizon arithmetic (depth six or at least nine) verified exact.
+4. **S63 — a physical ejection stop:** the mirror-clean first-unsafe
+class is covered by two actual shadow appends completing a six.
+
+**What the review refuted — and why that matters too:** the round's
+§68 synthesis claimed one missing quantifier (fast-or-reserve) was
+exactly why NL_F remains open. The review showed the open region is
+genuinely wider: S61 defeats the tested one-for-one CARRIER, not the
+winning strategy itself (a fast sigma that breaks the carrier might
+still win the game — the outcome-level argument is a separate open
+front), and the quiet-class complement plus unresolved ejection and
+outer-carrier classes are independent obstructions. §68 is now
+honestly a partial interface map. This is the hostile-review pipeline
+doing exactly its job: the theorems stand, the narrative inflation
+died.
+
+**Why it matters for the paper:** the alignment program now has a
+proven three-piece structure — a corridor where alignment is
+maintainable (S59), an exact cliff where it is not (S58), and a
+forced failure mode for fast winners (S61) — plus a sharpened honest
+map of what remains: fast-class nonemptiness, the fast OUTCOME
+question, a slow-winner controller, and quiet-membership
+preservation.
