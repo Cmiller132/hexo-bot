@@ -1611,3 +1611,59 @@ there a tie-aware policy holding M≤2 everywhere — ∀P₀∃S∀α) are now 
 exact open fronts, with the sharpest next question pinned: at P_stock,
 does some hub-pre-empting pair keep max_b M ≤ 2 over every Attacker
 response?
+
+## 2026-07-18 — R-ST5: the lifetime two-escape ceiling, a proven rolling-lag service invariant, and the first window-faithful non-isometric representation
+
+**Artifacts:** `STRATEGY_STEALING_ROUND5.md` + hostile ultra review
+`STRATEGY_STEALING_REVIEW_ROUND5.md` (verdict SOUND-WITH-MINOR-ERRATA,
+all three objectives CONFIRMED, errata folded as §44) on branch
+`hunt/gap-raw` at `3000a117`.
+
+**What was proved (three scoped results):**
+
+1. **S32 — the third support cut (lifetime K=2 REFUTED).** The
+total-exact isometric branch-(A) candidate class with a fixed
+LIFETIME budget of two coordinate-reactive escapes fails: after both
+escapes are spent, the candidate's own next σ-consistent pair forces
+either an untransferable shadow-F terminal verdict (six shadow stones
+vs five real — no physical certificate possible) or a third occupied
+target, and the support-cut premises provably survive both escapes
+(the review recomputed the full stone-count table at all three cut
+checkpoints). Per-pair K=2 remains OPEN and is now the sharpest
+branch-(A) question.
+
+2. **S33/S34 — branch (B) gets its first genuine positive theorem.**
+A physical rolling one-cell lag queue (debt rotated by actual shadow
+appends, fillers persist forever, no undo) provably maintains the
+deadline shield δ>m on the exactly-named finite continuation class
+A_FS2, with an exact two-stone real-board service rule (minimum
+transversal of the urgent windows, τ_E≤2) restoring δ>2 before every
+S turn. The class is nonempty at active-service scope (S35). This is
+conditional — first-unsafe coordinates, τ_E≥3 forks, and the P3
+carrier for arbitrary σ stay outside — but it is the first proven
+lag-based defense module after rounds 2-4 killed every unguarded
+variant (S13/S14 stay as regressions, now explicitly cross-referenced).
+
+3. **S36-S39 — window-deficit certificates: representation without a
+cell map.** First rigorous definition of window-faithful non-isometric
+representations: a selector ν assigning each real window obligation a
+physical shadow window with no more holes (δ_H(ν(W)) ≤ δ_R(W)). A
+concrete reachable example is PROVEN outside every injective point
+representation (two distinct real windows share one shadow
+certificate — no injection can induce that), with an exact one-append
+maintenance algebra and a P5R transfer lemma implementing the S26
+same-step terminal route. The deadline-shield obstruction (S39.1)
+shows this representation family cannot certify shield-unsafe debt on
+a winning-σ history — a scope limit, not a contradiction.
+
+**Why it matters for the paper:** the strategy-stealing program now
+has all three branch fronts pinned with exact theorems: branch (A)
+repair budgets have a proven lifetime ceiling at 2, branch (B) has a
+proven conditional service invariant instead of a graveyard of failed
+lags, and the representation space provably extends beyond point maps
+— the first hard evidence that NL_F, if provable by coupling at all,
+may need window-level rather than stone-level representations. The
+review's 12-item obstacle list is the authoritative open state; the
+sharpest question is the P3 carrier: can every alleged-winning σ be
+causally paired with the canonical service transversal while
+surviving S18/S20/S12?
