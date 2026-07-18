@@ -1374,3 +1374,43 @@ work in one orbit long before sibling orbits are opened. The atlas +
 consumption harness are retained with a precise reopen condition: any
 future root-parallel or portfolio-descent scheme (where sibling orbits
 DO get work) can re-measure instantly.
+
+## 2026-07-18 — R-G3: tempo round 5 — sealed-pencil classification, one-cycle M≤2 theorems, and the shared-hub cascade that refutes naive Bellman closure
+
+**Status:** landed on `hunt/gap-raw` (`d93d5768` round 5, `aed0fecb`
+hostile review + folded errata). Review verdict SOUND-WITH-ERRATA:
+every round-5 theorem CONFIRMED (all coordinates, residuals, and
+hitting sets recomputed by hand), zero refutations; one MAJOR scope
+downgrade folded.
+
+**The results:** (1) L11.1–L11.4 give the COMPLETE first-return
+classification of the exact sealed pencil — 31 alive labels before
+sealing, exactly 6 disjoint count-one residual arms + 5 count-two
+common labels survive, and every legal Attacker return pair is
+exhausted by a 0/1/2 Q-trigger partition with an at-most-two-cell
+transversal covering all 45 axial pairs. (2) R5.1/R5.2: one-cycle
+value theorems — from an isolated (or radius-21-separated union of)
+exact sealed handoff(s), EVERY legal Attacker pair returns an epoch
+with M≤2. (3) R5.3/R5.3.1: the round-4 policy S_T provably REJECTS the
+transverse seal entrance (strict objective gap 0<2, robust to
+tie-break) on a genuine S_T-consistent history — the natural route
+into the nice sealed class is closed. (4) L11.6/L11.7: a strict-
+potential (Φ<1) shared-hub position whose forced two-cell service
+cascades M: 2 → ≥3 — three count-three labels on three axes survive
+every mandatory service. (5) R5.4: embedding that hub behind two
+remote count-five gadgets produces a position satisfying every side
+condition of the statewise equation-(22) closure conjecture whose
+successor still has M≥3 — unrestricted Bellman closure of the
+two-coordinate tempo state is FALSE.
+
+**Why it matters for the paper:** the tempo program now has a sharp
+shape. The two-coordinate state (τ≤2, M≤2) is locally provable
+(one-cycle theorems) but NOT statewise-inductive (hub counterexample);
+any perpetual-defense proof must be strategy-reachable, not statewise.
+The folded MAJOR erratum makes the remaining obligations
+quantifier-precise: fixed-S_T hub reachability (refutes that policy
+only), strategy-independent hub forcing (∃P₀∀S∃α — the GAP-RAW
+counterroute), and the positive universal repair (∀P₀∃S∀α) that must
+also exclude every other escape class. GAP-HUB-FANOUT-REACHABILITY is
+the named subproblem; GAP-TEMPO-INITIALIZATION and GAP-TEMPO-REPAIR
+remain the broader gates.
