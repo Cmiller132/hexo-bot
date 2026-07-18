@@ -1342,3 +1342,35 @@ repair is impossible, and the open frontier is a single sharply-posed
 invariant-design problem (GAP-PROXY-RETIRE-OR-RECODE + P5R). This is a
 publishable arc: a natural game where strategy stealing breaks, plus
 the exact boundary of its repairability.
+
+## 2026-07-18 — R-RS1: root-stabilizer orbit consumption CLOSED NULL — the search never leaves the principal orbit
+
+**Status:** landed on `hunt/root-stabilizer` (`c33e6ff0` implementation
++ atlas, `e1b440f8` binding-rung verdict + raws). Implementation and
+soundness were clean (strict verifier PASS on every arm, fail-closed
+differential 0); the lever itself is economically dead.
+
+**The idea:** 62.92% of top opening families have nontrivial root
+stabilizers (D6 census), so orbit-level deduplication of root children
+— solve one representative per stabilizer orbit, consume the verdict
+for its siblings — looked like a structural win (rank-1 family: 51,752
+raw children collapse to 26,030 orbits).
+
+**The measurement:** A/B (baseline vs consumption) across top
+stabilizer-rich families × transforms at cap 128 (12 arms, original
+round) and cap 1000 (8 arms, binding rung, official deep profile), plus
+one 4.5-hour partial 10k arm. Uniform result: the engine's second-best
+threshold descent commits to a single principal orbit — at cap 1000,
+26,029/26,030 and 24,807/24,808 orbits saw ZERO work, one orbit
+absorbed 998/999 expansions, and consumption changed expansions by
+exactly 0.0000% (wall deltas −0.17%/+4.22% = contention noise around
+identical work). The orbits deduplication would remove are orbits the
+search never touches.
+
+**Why it matters for the paper:** a clean negative with a mechanism —
+symmetry-based root deduplication is worthless under depth-first
+proof-number descent because threshold scheduling concentrates all
+work in one orbit long before sibling orbits are opened. The atlas +
+consumption harness are retained with a precise reopen condition: any
+future root-parallel or portfolio-descent scheme (where sibling orbits
+DO get work) can re-measure instantly.
