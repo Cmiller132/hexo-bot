@@ -1534,3 +1534,34 @@ a 2–4-wide reveal prefix now covers 34–59% of winners instead of
 `zone_bound` as a risk-controlled tie/band key (preserving
 width/urgency/fork-prior classes) with hard identity gates and
 per-row expansion/wall stops on the three tail-risk rows.
+
+## 2026-07-18 — R-OS2: the ordering lever dies honestly — offline rank gains do not convert to a live df-pn win
+
+**Status:** landed on `claude/tss-vcf-width` (`0e4a34e9`: default-off
+implementation, report, 10 raws). Three-arm official A/B, all rows
+same-verdict same-rung, every certificate strict-verified, flag-off
+path byte-identical to pre-change.
+
+**The result — NULL/REGRESSION.** R-OS1's offline promise (winning
+children median rank 6 → 4 under zone_bound re-ranking, top-4
++21.65pp) was wired live as a maximally risk-controlled band key
+(historical width/urgency/fork-prior classes preserved, PN band ±1,
+generation set unchanged, key cost measured at 246 ns/key = 0.31% of
+ladder wall). It did NOT convert: zone_bound summed winning-row
+expansions +0.31% (hard row +0.53%), wall −0.63% — mixed, no material
+win. The d_stone control regressed outright (+5.94% expansions, hard
+row +7.04%) despite being the "safer" offline signal. Implementation
+retained default-off.
+
+**Why it matters for the paper:** this completes the §1.5 generator-
+ordering arc with a mechanism-level conclusion: static generation-
+order rank is a misleading proxy for df-pn visit order, because the
+dynamic PN/DN threshold descent already re-ranks children by proof
+progress — the winners that sit "deep" in generation order are being
+found through transpositions and threshold switching at near-zero
+marginal cost. Combined with R-T1's second+1 backing and R-RS1's
+orbit null, the scheduling/ordering family of levers is now
+comprehensively closed: measured, mechanism-understood, and negative.
+The narrow residue (a default-off reveal-prefix measurement targeting
+classifier work rather than visit order) is queued behind higher-value
+cargo work.
