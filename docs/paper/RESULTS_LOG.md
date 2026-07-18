@@ -1142,3 +1142,60 @@ draw proofs (with the exact 5/9-vs-slack arithmetic of why), and a
 natural positional game where strategy stealing provably breaks for
 growth-rule reasons. Both directions continue with named, narrowed
 targets.
+
+## 2026-07-17 — R-G2: the promotion-tempo account — exact TEMPO factorization PROVEN; three invariant classes excluded; GAP-RAW narrowed to two named gaps
+
+**Status:** landed on `hunt/gap-raw` (`8261c177` proof round 4, `12980bc8`
+hostile review + errata). Hand proofs only (no machine runs this round);
+hostile ultra review verdict SOUND-WITH-ERRATA — every numbered theorem
+CONFIRMED, one MAJOR prose-scope erratum folded (R4.7.1), one MINOR
+framing erratum folded (mode-(b) ingredient, not mode (b)).
+
+**Result 1 — the replacement invariant exists locally and factorizes
+exactly (R4.1/R4.2).** Define `tau(P)` = deadline-zero demand that must
+be serviced now, and `TEMPO(Q)` = the exact maximum service demand the
+next two Attacker placements can create at an Attacker handoff. Then
+`TEMPO(Q) = max over legal ordered Attacker pairs b of
+tau(Q + A@b1 + A@b2)`, and `TEMPO(Q) <= 2` iff `Q` is unripe. TEMPO is
+deliberately NOT additive and does not dominate Θ₂: it charges a
+two-trigger tier inside each interaction component plus only the two
+largest one-trigger demands — exactly matching the Attacker's
+two-placement turn. This formalizes why obligation J's refutation root
+is actually safe for the Defender even at Θ₂ ≥ 11/9. The defender-side
+form is same-pair sound: one actual ordered reply both services `I(P)`
+and hands over an unripe position.
+
+**Result 2 — three whole invariant classes are now theorem-dead
+(R4.3/R4.4/R4.7.1).** (a) Remote-third-component necessity: no state
+predicate can cover every Φ<1 root, imply τ≤2, and be unable to
+distinguish two far-separated component copies from three — killing
+max-local, fixed-radius universal/conjunctive, and top-two-only
+current-demand invariants at their exact scopes. (b) Zero-grade-contact
+strategies lose: an exact Φ = 1/√3 root forces any Defender pair that
+kills zero graded mass to concede τ=3 — a forever strategy must
+sometimes pre-empt non-imminent stock (the right statistic is
+shared-trigger congestion, not count-three mass). (c) Uniform positive
+dormant-component charge is impossible: any root-uniform account with
+`C ≥ ε·N_dorm` blows through every fixed bound (scope narrowed per
+review: selective-type/root-dependent/vanishing charges are NOT
+excluded — the reviewer exhibited an escaping `C_select`).
+
+**Result 3 — a bounded strategy ingredient (R4.8 + review corollary).**
+The sealed-pencil transverse-seal construction gives a one-cycle
+`S_T`-bound: after the two prescribed extensions the stabilizer pair
+witnesses `M ≤ 2`, so the minimizing actual pair hands over
+`TEMPO ≤ 2`. Reachability and closure of the sealed class remain open.
+
+**Honest boundary:** GAP-RAW (perpetual defender survival) and
+GAP-REPLACEMENT-INVARIANT stay OPEN. The program is now narrowed to two
+exact obligations: GAP-TEMPO-INITIALIZATION (`M(P0) ≤ 2` on the τ=0
+strict-root slice) and GAP-TEMPO-REPAIR (one strategy preserving `M ≤ 2`
+after every legal response). Named resume: classify returns through the
+six surviving sealed-pencil count-one extremes, then prove or refute the
+one-cycle Bellman closure for `M ≤ 2`.
+
+**Why it matters for the paper:** round 3 killed the additive-potential
+route; round 4 supplies its replacement — an exact, turn-matched
+order-statistic account with a proven local factorization — and fences
+the search space with three impossibility theorems that any future
+draw-proof attempt must respect.
