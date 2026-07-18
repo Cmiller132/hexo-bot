@@ -1199,3 +1199,54 @@ route; round 4 supplies its replacement — an exact, turn-matched
 order-statistic account with a proven local factorization — and fences
 the search space with three impossibility theorems that any future
 draw-proof attempt must respect.
+
+## 2026-07-17 — R-T1: df-pn re-traversal theory — the formal counterpart of R-TS1 (10 review-confirmed theorems; second+1 justified by an accounting ceiling)
+
+**Status:** landed on `claude/tss-vcf-width` (`28a276e5` theory,
+`71fd05e4` hostile review + errata). Doc-only theory round grounded in
+R-TS1's exactly measured instance; hostile ultra review verdict
+CONFIRMED-WITH-MAJOR-ERRATA — all ten formal results stand (none
+refuted, none downgraded), with model-scope errata folded.
+
+**Result 1 — a traversal ceiling with a near-matching family (T1/F1).**
+For persistent, progress-certified df-pn on a finite acyclic arena with
+exact selected-cutoff deepening, total recursive activations are at most
+(d+1)·E with E ≤ 2N−1 — re-traversal is O(N·(d+1)) — and an explicit
+unary staged-deepening family achieves Θ(N·d) repeat activations, so the
+ceiling is tight up to constants.
+
+**Result 2 — neither delta nor prior scale controls total work
+(T2/T2b/C2/T3/T4).** Explicit worst-case families prove: a coarser
+additive threshold increment (δ=2) can cost Θ(N) extra expansions that
+unit increments avoid — even with all priors equal to 1; and a single
+2× non-admissible prior overestimate can starve the cheapest winning
+line behind Θ(N) useless expansions. Under unit-calibrated score
+response the starvation is bounded by (b−1)(ρP+δ−1) — so certified
+admissible floors (agenda 1.3) provably cap starvation, strengthening
+that lever's case. Engine transfer ranges are stated exactly
+(sentinel-clamping errata folded; T2 transfers for q < 10^9).
+
+**Result 3 — the engine's +1 schedule is justified by an accounting
+identity (T6).** Any scheduling change with positive extra non-revisit
+cost can win only if the revisit cost it saves exceeds that extra cost;
+the revisit-attributed share of baseline wall is an absolute saving
+ceiling. Measured: 7.02% revisit share vs the observed +7.54%
+non-revisit inflation of the tested δ=2 arm — even PERFECT revisit
+elimination could not have paid for it. Retaining `second+1` is now
+theorem-backed, not just A/B-backed.
+
+**Result 4 — the δ=2 catastrophe mechanism, honestly bounded.** The
+review-confirmed arithmetic shows δ=2 REDUCED revisits per expansion by
+26.3% while raising total expansions 3.22× on the hardest row — coarser
+windows trade re-entry for over-expansion past the optimal frontier.
+The causal mechanism (high-mass score-band crossing + admission
+saturation amplification, D1's (k−1)·M duplication bound) remains
+labeled CONJECTURE E1 with a named cheap follow-up (R-T1.1
+frontier-band census).
+
+**Why it matters for the paper:** the checked literature has no
+total-work theorem jointly parameterized by additive increment, prior
+scale, depth, and bounded-TT behavior — this round supplies the first
+such family of results, anchored to an exactly measured production
+instance, and converts two of the engine's empirical tuning choices
+(+1 increment, admissible-leaning priors) into theorem-backed ones.
