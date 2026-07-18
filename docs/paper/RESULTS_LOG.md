@@ -1458,3 +1458,47 @@ with TT saturation as a secondary amplifier. Combined with the T6
 identity (revisit share ≤7% caps any possible widening payoff), the
 second+1 policy is now backed end-to-end: theorem ceiling + measured
 mechanism + sentinel-controlled A/B.
+
+## 2026-07-18 — R-ST4: dynamic proxy rebinding — one reactive escape per turn is provably insufficient, and the exact price of shielding surplus stones
+
+**Status:** landed on `hunt/gap-raw` (`8fb68864` round 4, `67f996d1`
+hostile review + folded errata). Review verdict SOUND-WITH-ERRATA:
+both ranked theorems CONFIRMED (all coordinates, cadences, windows,
+transversals, and hitting sets recomputed by hand), zero refutations;
+one MAJOR logical-shape repair to the resume checklist folded.
+
+**The results:** (1) S23, the dynamic impossibility: starting from
+round 3's genuine two-proxy synchronization, any coupling in the
+zero-lag total-exact owner-faithful family — now allowed arbitrary
+pre-turn rebinding (isometry changes, proxy retirement/backing,
+fillers) plus ONE coordinate-reactive escape in the tested S turn —
+still fails. The engine is the "proxy-support cut": a genuine shadow
+history is radius-8 support-connected, so every committed exact
+binding exposes a partition edge whose real preimage is empty and
+legal; applying the cut, absorbing the single permitted repair, and
+applying it again forces a second unrepairable collision in the same
+ordered turn. This strictly extends round 3's static impossibility
+(the review exhibits a hand witness where one backing/filler repair
+legally executes — the relaxation is real, and it still dies). (2)
+S28, the positive half: a phase-sensitive "deadline shield" (every
+threatened window must keep more empty cells than S has placements
+remaining before F acts) is a sound P5R invariant defining a nonempty
+conditional class of safe dynamic couplings — with exact service
+economics: restoring the shield costs an F-pair transversal of size
+at most 2, a legal three-axis fork pushes it to 3, and permanently
+fencing all 18 windows through one surplus stone costs exactly 6
+blockers (tight both ways). (3) S24: a winning strategy would admit a
+strategy-dependent finite rebinding horizon — so no cheap escalation
+to "infinitely many rebindings needed" is available, honestly leaving
+finite budgets K>=2 open.
+
+**Why it matters for the paper:** the stealing arc now has matching
+halves — the impossibility side has climbed from static maps to
+budget-1 dynamic repair, and the possibility side has its first real
+invariant (the shield) with exact costs. The folded MAJOR erratum
+makes the frontier precise: a successor must, per placement, choose
+zero-lag repair / admissible lag / same-step terminal certificate AND
+discharge service, persistence, and regression obligations — with any
+counterexample forced on the candidate's own strategy-consistent
+history. NL_F remains open at GAP-ZERO-LAG-WINDOW-RECODE /
+P5R-SERVICE.
