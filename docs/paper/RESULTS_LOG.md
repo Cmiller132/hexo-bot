@@ -1294,3 +1294,51 @@ calculus for when surplus stones help, a theorem-fenced survivor class
 for coupling arguments, and a determinacy reduction that halves the
 logical burden of the opener-non-loss question. Resume:
 GAP-PROXY-SHADOW (the invented-proxy repair the review itself surfaced).
+
+## 2026-07-17 — R-ST3: proxy shadows — the cadence obstruction is REPAIRED (two-proxy synchronization theorem); static proxies die in one round; NL_F narrowed to dynamic proxy management
+
+**Status:** landed on `hunt/gap-raw` (`890aa531` round 3, `5023169f`
+hostile review + errata). Hand proofs on the engine-cited rules
+contract; hostile ultra review verdict CONFIRMED-WITH-ERRATA — ranked
+outcomes (b) and (c) both stand; one MAJOR checklist omission repaired
+as a new named obligation (P5R).
+
+**Result 1 — the two-proxy synchronization theorem [(c), PROVEN].**
+The cadence mismatch S4 — one of round 1's two refutation pillars — is
+constructively repairable: two invented stones can be scheduled as
+genuine legal Hexo placements (one being an actual prescription of the
+allegedly winning shadow strategy), and a D6 isometry can always be
+oriented so the real opponent's first-turn stones avoid both proxies.
+Result: a legal, strategy-consistent role-swapped shadow exists at the
+first synchronized checkpoint, and the cadence alignment is PERMANENT
+(parity checked through both phases and mid-turn wins). Scope kept
+honest: conditional on future placement transfer — the theorem
+relocates the difficulty from the opening to the transfer invariant,
+it does not remove it.
+
+**Result 2 — static proxies cannot work [(b), PROVEN for C_static²].**
+If the two proxies and the isometry are frozen with exact two-way
+copying, at least one proxy has an already-legal real preimage; the
+opponent plays it and the collision kills the coupling within one
+ordinary round (or the reply lift had already failed). Dynamic proxy
+management — retiring, moving, or recoding proxies as
+representation-level operations — is the exactly-characterized
+survivor class.
+
+**Result 3 — the complete obligation ledger.** Frontier/collision
+obligations, proxy terminal-fabrication gadgets (proxies must never
+fabricate or block a six for either color), and — added by the hostile
+review as obligation P5R — real-S terminal reflection through OLDER
+surplus stones: the review exhibited a configuration where every
+per-move check passes yet the real board completes a six the shadow
+cannot see. Any future NL_F proof via proxy coupling must discharge
+P5R explicitly.
+
+**Why it matters for the paper:** round 1 proved classical stealing
+fails in Hexo; rounds 2-3 now prove exactly WHY and WHERE the repair
+must live — the opening/cadence half of the obstruction is fully
+solved (a genuine theorem with explicit constructions), the static
+repair is impossible, and the open frontier is a single sharply-posed
+invariant-design problem (GAP-PROXY-RETIRE-OR-RECODE + P5R). This is a
+publishable arc: a natural game where strategy stealing breaks, plus
+the exact boundary of its repairability.
