@@ -1502,3 +1502,35 @@ discharge service, persistence, and regression obligations — with any
 counterexample forced on the candidate's own strategy-consistent
 history. NL_F remains open at GAP-ZERO-LAG-WINDOW-RECODE /
 P5R-SERVICE.
+
+## 2026-07-18 — R-OS1: the §1.5 ordering premise is REAL — winning children sit at median rank 6, and a zone key moves them to 4
+
+**Status:** landed on `claude/tss-vcf-width` (`bb7efa44`: cfg(test)
+offline-rank instrumentation, report, 6 raws). All eight officially
+solved WIN rows reproduced their R-CD1 baselines exactly (incl.
+`0l4291i_live` at 1,879,611 expansions); verifier untouched;
+default-off identity and production build green.
+
+**The measurement:** across 26,710 proven attacker pair nodes, the
+current generator order puts the eventually-winning child at rank 1
+only 14.96% of the time (median rank 6, top-4 coverage 36.91%) — so
+the long-standing suspicion that "winning children sit deep because
+of OUR ordering, not the game" is confirmed as a real, quantified
+inefficiency. Re-ranking the same children offline by `zone_bound`
+(exact max claimant-support distance of the child pair) lifts top-2
+coverage +13.45pp and top-4 coverage +21.65pp (58.55%) and cuts the
+median to 4, with the signal concentrated at depth 16+ where 98% of
+the nodes live. Honest tail warning: the same key worsens mean rank
+(8.70→10.51) and triples the rank-33+ tail (3.86%→10.19%), and
+per-row breadth is heterogeneous — so the verdict is PROMISING, not
+promoted. `d_stone` is the safe secondary (mean −4.3%, tail shrinks,
+no top-4 gain).
+
+**Why it matters for the paper:** this re-opens the generator front
+that R-CD1 had closed under the old order — the 7.83% sound-reveal
+ceiling was an artifact of measuring under the baseline ordering, and
+a 2–4-wide reveal prefix now covers 34–59% of winners instead of
+20–37%. The prescribed next step is a default-off live A/B wiring
+`zone_bound` as a risk-controlled tie/band key (preserving
+width/urgency/fork-prior classes) with hard identity gates and
+per-row expansion/wall stops on the three tail-risk rows.
