@@ -34,6 +34,7 @@ from .constants import (
     BIAS_ROWS,
     BIAS_TOKEN_CELL_ROW,
     BIAS_TOKEN_TOKEN_ROW,
+    CELL_Q_HEAD,
     CHANNELS,
     C_ORBIT,
     FEATURE_VERSION,
@@ -535,13 +536,22 @@ class HexNodeConv(nn.Module):
     """
 
     def __init__(
-        self, in_channels: int, out_channels: int, raytap: bool = False
+        self,
+        in_channels: int,
+        out_channels: int,
+        raytap: bool = False,
+        raytap_lut: str = "none",
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.equivariant = EQUIVARIANT
         self.raytap = bool(raytap)
+        self.raytap_lut = str(raytap_lut)
+        if self.raytap_lut not in ("none", "additive"):
+            raise ValueError(
+                f"raytap_lut={self.raytap_lut!r} must be 'none' or 'additive'"
+            )
         if not self.equivariant:
             self.weight = nn.Parameter(torch.empty(7, in_channels, out_channels))
             self.bias = nn.Parameter(torch.empty(out_channels))
@@ -611,6 +621,12 @@ class HexNodeConv(nn.Module):
         alpha = torch.zeros(RAY_REACH, corb_in)
         alpha[0] = 1.0
         self.alpha = nn.Parameter(alpha)
+        if self.raytap_lut == "additive":
+            # Axis 0 is the inclusive reach state 0..RAY_REACH, not direction.
+            # O/P are shared across directions and zero construction consumes no
+            # RNG, preserving alpha-only warm-start behavior until loaded/trained.
+            self.O = nn.Parameter(torch.zeros(RAY_REACH + 1, RAY_REACH, corb_in))
+            self.P = nn.Parameter(torch.zeros(RAY_REACH + 1, RAY_REACH, corb_in))
 
     def _alpha_full(self) -> torch.Tensor:
         """alpha tiled slot-constant to the full (RAY_REACH, C_in) fiber:
@@ -619,6 +635,46 @@ class HexNodeConv(nn.Module):
         return (
             self.alpha.repeat(1, GROUP_ORDER) if self.equivariant else self.alpha
         )
+
+    def _alpha_tables(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Reach-conditioned O/P tables tiled slot-constant over the fiber."""
+
+        if self.raytap_lut != "additive":
+            raise RuntimeError("reach-conditioned alpha tables require additive LUT")
+        if self.equivariant:
+            return (
+                self.O.repeat(1, 1, GROUP_ORDER),
+                self.P.repeat(1, 1, GROUP_ORDER),
+            )
+        return self.O, self.P
+
+    def _additive_ray_taps(self, x: torch.Tensor, ray_ctx) -> torch.Tensor:
+        """Pure-Torch ray7lut2 aggregation for the showcase eager serve path.
+
+        The showcase ``_raytap`` helper predates the O/P arguments, so keep its
+        legacy call untouched for ``none`` and mirror the live helper's exact
+        additive coefficient here:
+        ``alpha[k,c] + O[reach_own,k,c] + P[reach_opp,k,c]``.
+        """
+
+        rt = _raytap()
+        b, n, c = x.shape
+        x_ext = torch.cat([x, x.new_zeros(b, 1, c)], dim=1)
+        reach = ray_ctx.reach.to(torch.long)
+        alpha = self._alpha_full().view(1, 1, RAY_REACH, c)
+        O_full, P_full = self._alpha_tables()
+        taps = []
+        for d in range(6):
+            gathered = rt._masked_gather(
+                x_ext, ray_ctx.idx_taps, reach, self.alpha.shape[1], d
+            )
+            effective_alpha = (
+                alpha
+                + O_full[reach[:, :, 0, d]]
+                + P_full[reach[:, :, 1, d]]
+            )
+            taps.append((gathered * effective_alpha).sum(dim=2))
+        return torch.stack(taps, dim=2)
 
     def _base_param(self) -> torch.Tensor:
         return self.w0 if self.kind == "stem" else self.w_base
@@ -680,10 +736,15 @@ class HexNodeConv(nn.Module):
                     "ray-tap conv called without ray_ctx; the trunk builds it "
                     "from coords/mask + the raylen wire input (spec §2.5)"
                 )
-            taps = _raytap().ray_tap_taps(
-                x, ray_ctx.idx_taps, ray_ctx.reach, self._alpha_full(),
-                self.alpha.shape[1],
-            )
+            if self.raytap_lut == "additive":
+                taps = self._additive_ray_taps(x, ray_ctx)
+            else:
+                # Preserve the alpha-only helper call and arithmetic path exactly
+                # when the additive architecture knob is disabled.
+                taps = _raytap().ray_tap_taps(
+                    x, ray_ctx.idx_taps, ray_ctx.reach, self._alpha_full(),
+                    self.alpha.shape[1],
+                )
             gathered = torch.cat([x.unsqueeze(2), taps], dim=2).reshape(b, n, 7 * c)
             out = gathered @ weight.reshape(7 * c, self.out_channels) + bias
             return out * mask.unsqueeze(-1)
@@ -865,12 +926,22 @@ class ConvBlock(nn.Module):
     "0" = both convs baseline (current behavior); "conv2" = the second conv
     runs in ray-tap mode; "both" = both convs do."""
 
-    def __init__(self, channels: int, raytap: str = "0") -> None:
+    def __init__(
+        self, channels: int, raytap: str = "0", raytap_lut: str = "none"
+    ) -> None:
         super().__init__()
-        self.conv1 = HexNodeConv(channels, channels, raytap=(raytap == "both"))
+        self.conv1 = HexNodeConv(
+            channels,
+            channels,
+            raytap=(raytap == "both"),
+            raytap_lut=raytap_lut,
+        )
         self.ln1 = _make_norm(channels)
         self.conv2 = HexNodeConv(
-            channels, channels, raytap=(raytap in ("conv2", "both"))
+            channels,
+            channels,
+            raytap=(raytap in ("conv2", "both")),
+            raytap_lut=raytap_lut,
         )
         self.ln2 = _make_norm(channels)
         self.ls = LayerScale(channels)
@@ -888,7 +959,11 @@ class ConvBlock(nn.Module):
             return _hex_conv_ln_fused(
                 x, gather_idx, mask, w, b, ln.weight, ln.bias, ln.eps, relu
             )
-        if _hex_conv_ln_raytap_fused is not None and ray_ctx is not None:
+        if (
+            _hex_conv_ln_raytap_fused is not None
+            and ray_ctx is not None
+            and conv.raytap_lut != "additive"
+        ):
             # K1 fused variant: in-kernel k-loop over the ray gather index +
             # reach + tiled alpha (spec §2.4); the op itself falls back to the
             # reference on a memoized compile failure.
@@ -1317,6 +1392,23 @@ def infer_net_kwargs_from_state_dict(sd: dict, meta: dict | None = None) -> dict
         kwargs["raytap"] = (
             "both" if has_conv1_alpha else ("conv2" if has_conv2_alpha else "0")
         )
+    # Additive reach-conditioned alpha lookup (ray7lut2): meta is
+    # authoritative. For meta-less checkpoints, O/P presence is affirmative
+    # evidence; old alpha-only checkpoints deterministically infer ``none``.
+    if meta.get("raytap_lut") is not None:
+        kwargs["raytap_lut"] = str(meta["raytap_lut"])
+    else:
+        has_additive_tables = any(
+            k.startswith("conv_blocks.") and k.endswith((".O", ".P")) for k in sd
+        )
+        kwargs["raytap_lut"] = "additive" if has_additive_tables else "none"
+    # Per-cell Q head toggle: meta first; the state-dict key set is affirmative
+    # evidence either way (present -> on, absent -> off), so the rebuild is
+    # deterministic regardless of the loading process's env.
+    if meta.get("cell_q") is not None:
+        kwargs["cell_q"] = bool(meta["cell_q"])
+    else:
+        kwargs["cell_q"] = any(k.startswith("cell_q_") for k in sd)
     return kwargs
 
 
@@ -1334,6 +1426,8 @@ class HexfieldNet(nn.Module):
         reg_tok_read: bool | None = None,
         ray_blockers: bool | None = None,
         raytap: str | None = None,
+        raytap_lut: str | None = None,
+        cell_q: bool | None = None,
     ) -> None:
         super().__init__()
         # channels/attention_heads/trunk_layout default to the module globals
@@ -1392,6 +1486,15 @@ class HexfieldNet(nn.Module):
                 f"raytap={rt_mode!r} must be '0', 'conv2', or 'both'"
             )
         self._raytap = rt_mode
+        # Meta-driven additive reach lookup. Unlike raytap itself, the showcase
+        # has no environment default for this new mode: absent metadata remains
+        # the exact legacy ``none`` behavior.
+        lut_mode = "none" if raytap_lut is None else str(raytap_lut)
+        if lut_mode not in ("none", "additive"):
+            raise ValueError(
+                f"raytap_lut={lut_mode!r} must be 'none' or 'additive'"
+            )
+        self._raytap_lut = lut_mode
         if rt_mode != "0":
             # Constructor-kwarg twin of the constants.py import check (§2.6).
             rt_corb = c // GROUP_ORDER if EQUIVARIANT else c
@@ -1419,6 +1522,10 @@ class HexfieldNet(nn.Module):
         self._reg_tok_read = (
             REG_TOK_READ if reg_tok_read is None else bool(reg_tok_read)
         )
+        # Per-cell Q head toggle: env default, explicit kwarg for cross-arch
+        # loaders (it changes the state-dict key set, so meta-first rebuilds
+        # pass it here).
+        self._cell_q = CELL_Q_HEAD if cell_q is None else bool(cell_q)
         if self._reg_tok_read and not self._reg_lane:
             raise ValueError(
                 "reg_tok_read=True requires reg_lane=True (the cells <- tokens "
@@ -1429,7 +1536,10 @@ class HexfieldNet(nn.Module):
         # The stem and the tied head convs are always baseline (spec §2.3);
         # ray-tap equips trunk ConvBlocks only.
         self.conv_blocks = nn.ModuleList(
-            [ConvBlock(c, raytap=rt_mode) for _ in range(layout.count("C"))]
+            [
+                ConvBlock(c, raytap=rt_mode, raytap_lut=lut_mode)
+                for _ in range(layout.count("C"))
+            ]
         )
         if rt_mode != "0":
             # Generated tap geometry LUTs (spec §2.5, T7): non-persistent so
@@ -1564,9 +1674,12 @@ class HexfieldNet(nn.Module):
         self.soft_policy_expand = head_linear(c, POLICY_READ_EXPAND * c)
         self.soft_policy_head = nn.Linear(pol_w, 1)
         # Per-cell Q head (train-only): emitted in forward() only, not in serve.
-        self.cell_q_conv = HexNodeConv(c, c)
-        self.cell_q_expand = head_linear(c, POLICY_READ_EXPAND * c)
-        self.cell_q_head = nn.Linear(pol_w, VALUE_BINS)
+        # Toggle-off skips construction so the state-dict key set carries the
+        # choice and rebuilds infer it deterministically.
+        if self._cell_q:
+            self.cell_q_conv = HexNodeConv(c, c)
+            self.cell_q_expand = head_linear(c, POLICY_READ_EXPAND * c)
+            self.cell_q_head = nn.Linear(pol_w, VALUE_BINS)
         self.value_reduction = nn.Linear((NUM_TOKENS + 2) * read_w, red_out)
         self.value_head = nn.Linear(red_out, VALUE_BINS)
         self.aux_reduction = nn.Linear(4 * read_w, red_out)
@@ -1682,11 +1795,16 @@ class HexfieldNet(nn.Module):
             # load-bearing — equipped convs carry `alpha` params, and
             # conv2-vs-both cannot be told apart by key presence alone.
             "raytap": self._raytap,
+            # Additive reach-conditioned alpha lookup (ray7lut2).
+            "raytap_lut": self._raytap_lut,
             "equivariant": self._equivariant,
             # Register lane toggles (Phase R0): load-bearing — they change the
             # state-dict key set, and KNOWN_TRUNK_LAYOUTS cannot express them.
             "reg_lane": self._reg_lane,
             "reg_tok_read": self._reg_tok_read,
+            # Per-cell Q head presence — load-bearing like the register lane
+            # toggles (changes the state-dict key set).
+            "cell_q": self._cell_q,
             # The featurizer support radius this net was built/trained under
             # (spec D-S26): a mismatch at load is a silent input-distribution
             # shift, so loaders assert it.
@@ -2209,10 +2327,11 @@ class HexfieldNet(nn.Module):
                 )
             ),
         }
-        out["cell_q"] = self._cell_q_logits(
-            self.cell_q_conv, self.cell_q_expand, self.cell_q_head,
-            cells, gather_idx, mask,
-        )
+        if self._cell_q:
+            out["cell_q"] = self._cell_q_logits(
+                self.cell_q_conv, self.cell_q_expand, self.cell_q_head,
+                cells, gather_idx, mask,
+            )
         aux = F.relu(
             self.aux_reduction(self._value_input(tokens, (2, 3), pooled, pre_tokens))
         )

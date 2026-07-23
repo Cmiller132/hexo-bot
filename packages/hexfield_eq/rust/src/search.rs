@@ -15,11 +15,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 
 use hexo_engine::{
-    apply_placement, unpack_coord, HexoState as RustHexoState, PackedCoord, Placement,
+    apply_placement, pack_coord, unpack_coord, HexoState as RustHexoState, PackedCoord, Placement,
 };
 
 use crate::cache::{
@@ -33,9 +34,13 @@ use crate::payload::{
 use crate::state::states_from_py_states;
 use crate::threats_shared as threats;
 use crate::tree::{
-    gumbel_completed_q, gumbel_sigma, gumbel_softmax, random_unit, terminal_value, Divergences,
-    RootDirichletNoise, RustEdge, RustLeaf, RustNode, RustSearch, Widening,
+    gumbel_completed_q, gumbel_sigma, gumbel_softmax, random_unit, terminal_value,
+    tss_solve_verified, Divergences, RootDirichletNoise, RustEdge, RustLeaf, RustNode, RustSearch,
+    SolverHorizon, TssCounters, TssLeafRoute, TssParkResolution, Widening,
 };
+use crate::tss_async::TssAsyncPool;
+use crate::tss_core::{self, ProofStatus};
+use crate::tss_verify::CertNode;
 
 pub const ACTIVE_ROOT_LIMIT: usize = 512;
 
@@ -104,15 +109,23 @@ impl ContinuousMovePolicy {
             return 0;
         }
         if self.policy_init_fraction < 1.0 {
-            let select =
-                random_unit(mix_seed(base_seed, game_key, 0, SEED_STREAM_POLICY_INIT_SELECT));
+            let select = random_unit(mix_seed(
+                base_seed,
+                game_key,
+                0,
+                SEED_STREAM_POLICY_INIT_SELECT,
+            ));
             if select >= self.policy_init_fraction as f64 {
                 return 0;
             }
         }
-        let unit = random_unit(mix_seed(base_seed, game_key, 1, SEED_STREAM_POLICY_INIT_COUNT));
-        let count =
-            (-(self.policy_init_avg_plies as f64) * (1.0 - unit).max(1.0e-12).ln()).floor();
+        let unit = random_unit(mix_seed(
+            base_seed,
+            game_key,
+            1,
+            SEED_STREAM_POLICY_INIT_COUNT,
+        ));
+        let count = (-(self.policy_init_avg_plies as f64) * (1.0 - unit).max(1.0e-12).ln()).floor();
         (count.max(0.0) as u32).min(self.policy_init_max_plies)
     }
 
@@ -202,8 +215,7 @@ impl ContinuousMovePolicy {
         if !matches!(class, MoveClass::Full) {
             return 1.0;
         }
-        if self.root_policy_temperature_early <= 0.0
-            || self.root_policy_temperature_halflife <= 0.0
+        if self.root_policy_temperature_early <= 0.0 || self.root_policy_temperature_halflife <= 0.0
         {
             return self.root_policy_temperature;
         }
@@ -221,12 +233,7 @@ impl ContinuousMovePolicy {
     ///           ml_final_pick no longer fire for Fast moves — they require T==0).
     ///   Init => 0.0 (the played move is then prior-sampled by the caller at
     ///           policy_init_temperature).
-    fn temperature_for_class(
-        &self,
-        class: MoveClass,
-        temperature_by_ply: &[f32],
-        ply: u32,
-    ) -> f32 {
+    fn temperature_for_class(&self, class: MoveClass, temperature_by_ply: &[f32], ply: u32) -> f32 {
         match class {
             MoveClass::Full => temperature_for_ply(temperature_by_ply, ply),
             MoveClass::Fast => self.fast_temperature,
@@ -267,6 +274,15 @@ struct ContinuousSlot {
     baseline: HashMap<PackedCoord, u32>,
     policy_init_remaining: u32,
     move_class: MoveClass,
+}
+
+/// A deep-solver leaf whose async request was accepted and therefore remains
+/// outside the GPU evaluation queue until its result lands or its bounded bail
+/// deadline expires. It retains its virtual visit and pending mark meanwhile.
+struct ParkedLeaf {
+    leaf: RustLeaf,
+    parked_at: Instant,
+    generation: u64,
 }
 
 enum ContinuousEvalItem {
@@ -328,6 +344,9 @@ struct ContinuousSchedulerStats {
     complete_seconds: f64,
     loop_iterations: u64,
     completes_skipped: u64,
+    tss_async_verify_failed_tail: u64,
+    tss_async_worker_panics_tail: u64,
+    tss_async_tail_cleared: u64,
 }
 
 fn continuous_flush_decision(
@@ -355,6 +374,17 @@ fn continuous_flush_decision(
 
 fn continuous_completion_ready(completed_visits: u32, target_visits: u32, in_flight: u32) -> bool {
     completed_visits >= target_visits && in_flight == 0
+}
+
+fn resolved_tss_worker_max(base: u32, configured: u32) -> usize {
+    TssAsyncPool::resolved_max_worker_count(base, configured, true)
+}
+
+fn tss_pool_matches(pool: &TssAsyncPool, base: u32, max: u32, park: bool) -> bool {
+    let expected_max = TssAsyncPool::resolved_max_worker_count(base, max, park);
+    pool.base_worker_count() == base.clamp(1, 32) as usize
+        && pool.max_worker_count() == expected_max
+        && pool.park_mode() == park
 }
 
 /// Early-stop test. Greedy unrecorded searches (Fast / eval-arena) stop when
@@ -537,6 +567,9 @@ pub struct HexfieldMctsSession {
     searches: HashMap<u64, RustSearch>,
     evaluation_cache: SharedEvaluationCache,
     cache_max_states: usize,
+    /// Background deep-solve pool, lazily created when an active divergence
+    /// profile enables async TSS and retained so worker caches stay warm.
+    tss_pool: Option<TssAsyncPool>,
 }
 
 #[pymethods]
@@ -550,6 +583,7 @@ impl HexfieldMctsSession {
             searches: HashMap::new(),
             evaluation_cache: new_shared_evaluation_cache(),
             cache_max_states,
+            tss_pool: None,
         })
     }
 
@@ -599,6 +633,21 @@ impl HexfieldMctsSession {
     ) -> PyResult<Py<PyAny>> {
         validate_search_inputs(visits, c_puct, temperature)?;
         let divergences = resolve_divergences(search_parity_mode, divergence_overrides, false)?;
+        if divergences.tss_solver_async {
+            let base = divergences.tss_solver_async_threads;
+            let max = divergences.tss_solver_async_threads_max;
+            let park = divergences.tss_solver_park;
+            let resize = self
+                .tss_pool
+                .as_ref()
+                .is_some_and(|pool| !tss_pool_matches(pool, base, max, park));
+            if resize {
+                self.tss_pool = None;
+            }
+            if self.tss_pool.is_none() {
+                self.tss_pool = Some(TssAsyncPool::new(base, max, park));
+            }
+        }
         let roots = states_from_py_states(py, states)?;
         if roots.is_empty() {
             return Ok(PyTuple::empty(py).into_any().unbind());
@@ -820,6 +869,7 @@ impl HexfieldMctsSession {
             request_logits,
             &move_temps,
             &baselines,
+            self.tss_pool.as_ref(),
         )?;
         let cache_len = self
             .evaluation_cache
@@ -830,29 +880,47 @@ impl HexfieldMctsSession {
             .lock()
             .expect("evaluation stats mutex poisoned")
             .clone();
-        let selected_actions: Vec<_> = searches
+        let natives: Vec<PayloadNative> = searches
             .iter()
             .enumerate()
             .map(|(index, search)| {
-                select_search_action(
+                build_search_result_payload_native(
                     search,
                     baselines.get(index),
                     move_temps[index],
                     seed.wrapping_add(index as u64),
+                    c_puct,
+                    forced_playout_k,
                 )
             })
             .collect::<PyResult<Vec<_>>>()?;
-        let results = build_search_result_payloads(
-            py,
-            &searches,
-            Some(&evaluation_stats_snapshot),
-            Some(cache_len),
-            &move_temps,
-            seed,
-            Some(&baselines),
-            c_puct,
-            forced_playout_k,
-        )?;
+        // Preserve the showcase's historical retained-tree advancement when
+        // the deep root guard is off. Only a verified root proof must override
+        // that legacy re-selection, because the returned action then came from
+        // the certificate and the retained tree must follow the same move.
+        let selected_actions: Vec<Option<PackedCoord>> = searches
+            .iter()
+            .zip(natives.iter())
+            .enumerate()
+            .map(|(index, (search, native))| {
+                if native.deep_override {
+                    Ok(Some(native.action_id))
+                } else {
+                    select_search_action(
+                        search,
+                        baselines.get(index),
+                        move_temps[index],
+                        seed.wrapping_add(index as u64),
+                    )
+                }
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let results = PyList::empty(py);
+        for native in &natives {
+            let result = native.to_pydict(py, Some(&evaluation_stats_snapshot), Some(cache_len))?;
+            results.append(result)?;
+        }
+        let results = results.into_any().unbind();
 
         let no_advance = debug_no_advance.unwrap_or(false);
         for ((game_key, mut search), selected) in game_keys
@@ -933,6 +1001,47 @@ impl HexfieldMctsSession {
             Some(fast) => resolve_divergences(search_parity_mode, Some(fast), true)?,
             None => divergences,
         };
+        if divergences.tss_solver_async || divergences_fast.tss_solver_async {
+            let park = divergences.tss_solver_park || divergences_fast.tss_solver_park;
+            let base = if park {
+                let mut enabled_base = 1u32;
+                if divergences.tss_solver_async {
+                    enabled_base = enabled_base.max(divergences.tss_solver_async_threads);
+                }
+                if divergences_fast.tss_solver_async {
+                    enabled_base = enabled_base.max(divergences_fast.tss_solver_async_threads);
+                }
+                enabled_base
+            } else {
+                divergences
+                    .tss_solver_async_threads
+                    .max(divergences_fast.tss_solver_async_threads)
+            };
+            let mut max = base as usize;
+            if park && divergences.tss_solver_async {
+                max = max.max(resolved_tss_worker_max(
+                    divergences.tss_solver_async_threads,
+                    divergences.tss_solver_async_threads_max,
+                ));
+            }
+            if park && divergences_fast.tss_solver_async {
+                max = max.max(resolved_tss_worker_max(
+                    divergences_fast.tss_solver_async_threads,
+                    divergences_fast.tss_solver_async_threads_max,
+                ));
+            }
+            let max = max as u32;
+            let resize = self
+                .tss_pool
+                .as_ref()
+                .is_some_and(|pool| !tss_pool_matches(pool, base, max, park));
+            if resize {
+                self.tss_pool = None;
+            }
+            if self.tss_pool.is_none() {
+                self.tss_pool = Some(TssAsyncPool::new(base, max, park));
+            }
+        }
         let roots = states_from_py_states(py, states)?;
         if roots.len() != game_keys.len() {
             return Err(PyValueError::new_err(format!(
@@ -1050,7 +1159,9 @@ impl HexfieldMctsSession {
             widening_max_children,
         )?;
         if temperature_by_ply.is_empty() {
-            return Err(PyValueError::new_err("temperature_by_ply must not be empty"));
+            return Err(PyValueError::new_err(
+                "temperature_by_ply must not be empty",
+            ));
         }
         if temperature_by_ply
             .iter()
@@ -1123,6 +1234,7 @@ impl HexfieldMctsSession {
         }
 
         let mut stats = ContinuousSchedulerStats::default();
+        let mut parked = Vec::new();
         // Select-eval overlap: the next select pass runs with the flush's
         // virtual losses still pending (pre-backup tree state). A no-progress
         // prefetch is discarded so the next iteration re-selects after the
@@ -1170,7 +1282,13 @@ impl HexfieldMctsSession {
                 &temperature_by_ply,
                 &evaluation_stats,
                 &mut stats,
+                &mut parked,
             )?;
+            debug_assert!(
+                parked.is_empty(),
+                "depth-2 scheduler returned with parked leaves"
+            );
+            self.tss_pool_tail_drain(&mut stats);
             return self.finish_continuous_stats(py, stats, &evaluation_stats);
         }
         // HEXFIELD_GATE_COMPLETE: skip the per-iteration complete scan (a
@@ -1182,17 +1300,33 @@ impl HexfieldMctsSession {
         // identical; the flag exists for the A/B.
         let gate_complete = std::env::var("HEXFIELD_GATE_COMPLETE").is_ok();
         let mut last_moves_decided: u64 = 1; // force the first scan
-        while continuous_has_work(&slots) || !queue.is_empty() {
+        while continuous_has_work(&slots, &parked) || !queue.is_empty() {
             stats.loop_iterations += 1;
+            if let Some(pool) = self.tss_pool.as_ref() {
+                wire_tss_async(&mut slots, pool);
+                drain_tss_async(pool, &mut slots);
+            }
+            resolve_parked_continuous(&mut slots, &mut parked, &mut queue, virtual_loss)?;
+            debug_assert_continuous_pen(&slots, &parked);
             let phase_t0 = std::time::Instant::now();
             let (new_leaves, made_progress) = match prefetched.take() {
                 Some(result) => result,
                 None => py.detach(|| {
-                    select_continuous_pass(&mut slots, c_puct, leaf_batch_per_root, virtual_loss)
+                    select_continuous_pass(
+                        &mut slots,
+                        c_puct,
+                        leaf_batch_per_root,
+                        virtual_loss,
+                        &mut parked,
+                    )
                 })?,
             };
             stats.select_seconds += phase_t0.elapsed().as_secs_f64();
             queue.extend(new_leaves.into_iter().map(ContinuousEvalItem::Leaf));
+            if let Some(pool) = self.tss_pool.as_ref() {
+                drain_tss_worker_spawns(pool, &mut slots);
+            }
+            let made_progress = made_progress || (!parked.is_empty() && queue.is_empty());
 
             let decision = continuous_flush_decision(queue.len(), flush_target, made_progress);
             if let ContinuousFlushDecision::Flush { no_progress } = decision {
@@ -1246,6 +1380,7 @@ impl HexfieldMctsSession {
                                 c_puct,
                                 leaf_batch_per_root,
                                 virtual_loss,
+                                &mut parked,
                             )
                         })?
                     };
@@ -1280,6 +1415,7 @@ impl HexfieldMctsSession {
                             c_puct,
                             leaf_batch_per_root,
                             virtual_loss,
+                            &mut parked,
                         )?
                     };
                     (prefetch_result, evaluations)
@@ -1312,9 +1448,13 @@ impl HexfieldMctsSession {
                 } else {
                     None
                 };
+                if let Some(pool) = self.tss_pool.as_ref() {
+                    drain_tss_worker_spawns(pool, &mut slots);
+                }
             }
 
             let flushed_this_iter = matches!(decision, ContinuousFlushDecision::Flush { .. });
+            debug_assert_continuous_pen(&slots, &parked);
             let must_complete = !gate_complete
                 || flushed_this_iter
                 || last_moves_decided > 0
@@ -1339,7 +1479,10 @@ impl HexfieldMctsSession {
             };
             stats.complete_seconds += t_complete.elapsed().as_secs_f64();
 
-            if matches!(decision, ContinuousFlushDecision::Stop) && moves_decided == 0 {
+            if matches!(decision, ContinuousFlushDecision::Stop)
+                && moves_decided == 0
+                && parked.is_empty()
+            {
                 // Rescue pass before declaring a stall: a Gumbel
                 // Sequential-Halving root can saturate its reachable tree below
                 // target_visits and its round caps (terminal subtrees), which
@@ -1372,6 +1515,11 @@ impl HexfieldMctsSession {
             // After the rescue so a rescue-decided move re-arms the next scan.
             last_moves_decided = moves_decided;
         }
+        debug_assert!(
+            parked.is_empty(),
+            "continuous scheduler exited with parked leaves"
+        );
+        self.tss_pool_tail_drain(&mut stats);
 
         self.finish_continuous_stats(py, stats, &evaluation_stats)
     }
@@ -1381,6 +1529,16 @@ impl HexfieldMctsSession {
 // (`Widening`, `Divergences`, `&mut [ContinuousSlot]`) that pyo3 cannot expose,
 // so they MUST live outside the `#[pymethods]` block above.
 impl HexfieldMctsSession {
+    fn tss_pool_tail_drain(&self, stats: &mut ContinuousSchedulerStats) {
+        let Some(pool) = self.tss_pool.as_ref() else {
+            return;
+        };
+        stats.tss_async_tail_cleared += pool.quiesce_for_telemetry(Duration::from_secs(2)) as u64;
+        let _ = pool.try_drain();
+        stats.tss_async_verify_failed_tail += pool.take_verify_failures() as u64;
+        stats.tss_async_worker_panics_tail += pool.take_worker_panics() as u64;
+    }
+
     /// Build the `run_continuous` stats dict (shared by the lockstep loop and the
     /// depth-2 pipeline). Pure GIL-held conversion of the accumulated counters.
     fn finish_continuous_stats(
@@ -1422,6 +1580,17 @@ impl HexfieldMctsSession {
             hist.set_item(size, count)?;
         }
         dict.set_item("flush_size_histogram", hist)?;
+        if self.tss_pool.is_some() {
+            dict.set_item(
+                "tss_async_verify_failed_tail",
+                stats.tss_async_verify_failed_tail,
+            )?;
+            dict.set_item(
+                "tss_async_worker_panics_tail",
+                stats.tss_async_worker_panics_tail,
+            )?;
+            dict.set_item("tss_async_tail_cleared", stats.tss_async_tail_cleared)?;
+        }
         dict.set_item("on_move_seconds", stats.on_move_seconds)?;
         dict.set_item("select_seconds", stats.select_seconds)?;
         dict.set_item("submit_seconds", stats.submit_seconds)?;
@@ -1483,6 +1652,7 @@ impl HexfieldMctsSession {
         temperature_by_ply: &[f32],
         evaluation_stats: &SharedEvaluationStats,
         stats: &mut ContinuousSchedulerStats,
+        parked: &mut Vec<ParkedLeaf>,
     ) -> PyResult<()> {
         // The in-flight (submitted, not-yet-backed-up) flush: its eval handle, the
         // items it will resolve, and the unique-state count snapshot taken at its
@@ -1503,12 +1673,22 @@ impl HexfieldMctsSession {
 
         // The loop continues as long as there is host work OR an eval is still in
         // flight (so the last flush is always drained + completed).
-        while continuous_has_work(slots) || !queue.is_empty() || inflight.is_some() {
+        while continuous_has_work(slots, parked) || !queue.is_empty() || inflight.is_some() {
+            if let Some(pool) = self.tss_pool.as_ref() {
+                wire_tss_async(slots, pool);
+                drain_tss_async(pool, slots);
+            }
+            resolve_parked_continuous(slots, parked, queue, virtual_loss)?;
+            debug_assert_continuous_pen(slots, parked);
             // (1) select N on the CURRENT (post-previous-backup) tree state.
-            let (new_leaves, made_progress) = py.detach(|| {
-                select_continuous_pass(slots, c_puct, leaf_batch_per_root, virtual_loss)
+            let (new_leaves, selected_progress) = py.detach(|| {
+                select_continuous_pass(slots, c_puct, leaf_batch_per_root, virtual_loss, parked)
             })?;
             queue.extend(new_leaves.into_iter().map(ContinuousEvalItem::Leaf));
+            if let Some(pool) = self.tss_pool.as_ref() {
+                drain_tss_worker_spawns(pool, slots);
+            }
+            let made_progress = selected_progress || (!parked.is_empty() && queue.is_empty());
 
             let decision = continuous_flush_decision(queue.len(), flush_target, made_progress);
 
@@ -1536,10 +1716,8 @@ impl HexfieldMctsSession {
                 stats.flush_count += 1;
                 stats.queued_states += items_n.len() as u64;
                 let unique_before_n = lock_unique_states(evaluation_stats);
-                let requests_n: Vec<RustEvaluationRequest> = items_n
-                    .iter()
-                    .map(continuous_item_request)
-                    .collect();
+                let requests_n: Vec<RustEvaluationRequest> =
+                    items_n.iter().map(continuous_item_request).collect();
                 let pending_n = submit_eval_cached(
                     py,
                     evaluator,
@@ -1591,7 +1769,7 @@ impl HexfieldMctsSession {
                     drained_this_pass = true;
                 }
                 inflight = Some((pending_n, items_n, unique_before_n));
-            } else if !made_progress && inflight.is_some() {
+            } else if !selected_progress && inflight.is_some() {
                 // No new flush this pass and select stalled: drain the buffered
                 // eval so its backup frees paths / completes slots. Without this
                 // the loop would spin (select keeps stalling) until a flush; this
@@ -1620,6 +1798,7 @@ impl HexfieldMctsSession {
             // correctly NOT completed here. When the complete-overlap path already
             // ran the complete this pass (after submit, before drain), reuse its
             // decided count instead of completing a second time.
+            debug_assert_continuous_pen(slots, parked);
             let mut moves_decided = if completed_this_pass {
                 overlapped_moves
             } else {
@@ -1645,6 +1824,7 @@ impl HexfieldMctsSession {
                 && moves_decided == 0
                 && inflight.is_none()
                 && !drained_this_pass
+                && parked.is_empty()
             {
                 moves_decided = complete_continuous_slots(
                     py,
@@ -1674,6 +1854,10 @@ impl HexfieldMctsSession {
         debug_assert!(
             inflight.is_none(),
             "depth-2 pipeline exited with an undrained in-flight eval"
+        );
+        debug_assert!(
+            parked.is_empty(),
+            "depth-2 pipeline exited with parked leaves"
         );
         Ok(())
     }
@@ -1730,6 +1914,118 @@ impl HexfieldMctsSession {
 
 // === Lockstep internals ===
 
+fn wire_tss_async_searches(searches: &mut [RustSearch], pool: &TssAsyncPool) {
+    for (index, search) in searches.iter_mut().enumerate() {
+        if !search.divergences.tss_solver_async || search.tss_async_generation().is_some() {
+            continue;
+        }
+        search.set_tss_async(Some(pool.handle_for(index as u32)));
+    }
+}
+
+fn drain_tss_async_searches(pool: &TssAsyncPool, searches: &mut [RustSearch]) {
+    if let Some(search) = searches.first_mut() {
+        search.tss.deep_verify_failed += pool.take_verify_failures();
+        search.tss.async_workers_spawned += pool.take_workers_spawned();
+    }
+    let worker_panics = pool.take_worker_panics();
+    if worker_panics > 0 {
+        eprintln!(
+            "hexfield tss_async: {worker_panics} solve worker panic(s) - requests lost, \
+             workers recycled with fresh solvers"
+        );
+    }
+    for response in pool.try_drain() {
+        let Some(search) = searches.get_mut(response.slot as usize) else {
+            if response.counters.deep_verify_failed > 0 {
+                eprintln!(
+                    "hexfield tss_async: certificate VERIFY FAILURE in an orphaned \
+                     response (lockstep slot {}) - investigate immediately",
+                    response.slot
+                );
+            }
+            continue;
+        };
+        if search.tss_async_generation() == Some(response.generation) {
+            search.apply_tss_async_response(&response);
+        } else {
+            search.apply_tss_async_response_stale(&response);
+        }
+    }
+}
+
+fn parked_wait_ms(parked_at: Instant, now: Instant) -> u64 {
+    now.saturating_duration_since(parked_at)
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+fn record_park_wait(search: &mut RustSearch, wait_ms: u64) {
+    search.tss.park_wait_ms_sum += wait_ms;
+    search.tss.park_wait_ms_max = search.tss.park_wait_ms_max.max(wait_ms);
+}
+
+fn resolve_parked_searches(
+    searches: &mut [RustSearch],
+    parked: &mut Vec<ParkedLeaf>,
+    eval_leaves: &mut Vec<RustLeaf>,
+    virtual_loss: f32,
+) -> PyResult<()> {
+    if parked.is_empty() {
+        return Ok(());
+    }
+    let now = Instant::now();
+    let mut waiting = Vec::with_capacity(parked.len());
+    for entry in parked.drain(..) {
+        let root_index = entry.leaf.root_index;
+        let search = searches.get_mut(root_index).ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "TSS parked leaf references missing lockstep search {root_index}"
+            ))
+        })?;
+        if search.tss_async_generation() != Some(entry.generation) {
+            return Err(PyRuntimeError::new_err(format!(
+                "TSS parked leaf generation changed before resolution for lockstep search \
+                 {root_index}"
+            )));
+        }
+        let wait_ms = parked_wait_ms(entry.parked_at, now);
+        match search.tss_park_resolution(entry.leaf.state_hash, &entry.leaf.state) {
+            TssParkResolution::Hard(hard) => {
+                search.tss.park_hard += 1;
+                record_park_wait(search, wait_ms);
+                search.mark_pending(entry.leaf.parent_node, entry.leaf.edge_index, -1);
+                let leaf_player = entry.leaf.state.current_player();
+                search.backup_virtual(
+                    &entry.leaf.path,
+                    leaf_player,
+                    hard.value(),
+                    virtual_loss,
+                    None,
+                );
+            }
+            TssParkResolution::Release => {
+                search.tss.park_released += 1;
+                record_park_wait(search, wait_ms);
+                eval_leaves.push(entry.leaf);
+            }
+            TssParkResolution::Pending
+                if now.saturating_duration_since(entry.parked_at)
+                    > Duration::from_millis(
+                        search.divergences.tss_solver_park_timeout_ms as u64,
+                    ) =>
+            {
+                search.tss.park_bailed += 1;
+                record_park_wait(search, wait_ms);
+                eval_leaves.push(entry.leaf);
+            }
+            TssParkResolution::Pending => waiting.push(entry),
+        }
+    }
+    *parked = waiting;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_searches_to_targets(
     py: Python<'_>,
@@ -1745,6 +2041,7 @@ fn run_searches_to_targets(
     request_logits: bool,
     move_temps: &[f32],
     baselines: &[HashMap<PackedCoord, u32>],
+    tss_pool: Option<&TssAsyncPool>,
 ) -> PyResult<()> {
     // Two-stage pipeline: the next batch is selected before the current batch
     // is backed up. This ordering extends the virtual-loss window by one batch:
@@ -1786,26 +2083,50 @@ fn run_searches_to_targets(
     let async_eval = std::env::var("HEXFIELD_ASYNC_EVAL").is_ok()
         && evaluator.hasattr("submit_payload").unwrap_or(false);
 
+    if let Some(pool) = tss_pool {
+        wire_tss_async_searches(searches, pool);
+    }
+    let mut parked = Vec::new();
     early_stop_pass(searches);
     // No leaves in flight on the priming select, so the SH barrier is unblocked
     // for every search (empty in-flight set).
-    let (mut pending_leaves, _primed_progress) =
-        select_leaf_batch(searches, c_puct, leaf_batch_per_root, virtual_loss, &[])?;
+    let (mut pending_leaves, _primed_progress) = select_leaf_batch(
+        searches,
+        c_puct,
+        leaf_batch_per_root,
+        virtual_loss,
+        &[],
+        &mut parked,
+    )?;
 
     loop {
+        if let Some(pool) = tss_pool {
+            drain_tss_async_searches(pool, searches);
+        }
+        resolve_parked_searches(searches, &mut parked, &mut pending_leaves, virtual_loss)?;
         // Check between every batch (a no-op in parity mode); see the
         // in-flight-safety note on early_stop_pass above.
         early_stop_pass(searches);
         if pending_leaves.is_empty() {
-            if !searches.iter().any(RustSearch::needs_visits) {
+            let needs_visits = searches.iter().any(RustSearch::needs_visits);
+            if !needs_visits && parked.is_empty() {
                 break;
+            }
+            if !needs_visits {
+                continue;
             }
             // pending_leaves is empty here: nothing is un-backed, so the SH
             // barrier is unblocked for every search.
-            let (leaves, made_progress) =
-                select_leaf_batch(searches, c_puct, leaf_batch_per_root, virtual_loss, &[])?;
+            let (leaves, made_progress) = select_leaf_batch(
+                searches,
+                c_puct,
+                leaf_batch_per_root,
+                virtual_loss,
+                &[],
+                &mut parked,
+            )?;
             if leaves.is_empty() {
-                if !made_progress {
+                if !made_progress && parked.is_empty() {
                     break;
                 }
                 continue;
@@ -1846,6 +2167,7 @@ fn run_searches_to_targets(
                         leaf_batch_per_root,
                         virtual_loss,
                         &pending_leaves,
+                        &mut parked,
                     )
                 })?
                 .0
@@ -1879,6 +2201,7 @@ fn run_searches_to_targets(
                     leaf_batch_per_root,
                     virtual_loss,
                     &pending_leaves,
+                    &mut parked,
                 )?
                 .0
             } else {
@@ -1888,6 +2211,14 @@ fn run_searches_to_targets(
         };
         apply_eval_backups(searches, pending_leaves, &evaluations, virtual_loss)?;
         pending_leaves = next_leaves;
+    }
+    debug_assert!(
+        parked.is_empty(),
+        "lockstep scheduler exited with parked leaves"
+    );
+    if let Some(pool) = tss_pool {
+        pool.quiesce_for_telemetry(Duration::from_secs(2));
+        drain_tss_async_searches(pool, searches);
     }
     Ok(())
 }
@@ -1902,6 +2233,7 @@ fn select_leaf_batch(
     // must not advance a round for any search that owns one (its ranking would
     // read vl-contaminated per-edge visits/completedQ).
     in_flight: &[RustLeaf],
+    parked: &mut Vec<ParkedLeaf>,
 ) -> PyResult<(Vec<RustLeaf>, bool)> {
     let mut leaves = Vec::new();
     let mut made_progress = false;
@@ -1920,7 +2252,10 @@ fn select_leaf_batch(
         // contaminate the round ranking. The pending leaves are guaranteed to
         // back up (apply_eval_backups runs every loop iteration), so the barrier
         // fires on a later drained pass — no deadlock.
-        let drained = !in_flight.iter().any(|leaf| leaf.root_index == root_index);
+        let drained = !in_flight.iter().any(|leaf| leaf.root_index == root_index)
+            && !parked
+                .iter()
+                .any(|entry| entry.leaf.root_index == root_index);
         if drained && search.has_gumbel_root() {
             while search.maybe_advance_gumbel_round() {}
         }
@@ -1938,20 +2273,94 @@ fn select_leaf_batch(
                 let leaf_player = selected.state.current_player();
                 let leaf_value = terminal_value(outcome, leaf_player);
                 let leaf_ml = ml_on.then_some(0.0);
-                search.backup_virtual(&selected.path, leaf_player, leaf_value, virtual_loss, leaf_ml);
+                search.backup_virtual(
+                    &selected.path,
+                    leaf_player,
+                    leaf_value,
+                    virtual_loss,
+                    leaf_ml,
+                );
+            } else if let Some(hard) = selected.hard {
+                let leaf_player = selected.state.current_player();
+                search.backup_virtual(
+                    &selected.path,
+                    leaf_player,
+                    hard.value(),
+                    virtual_loss,
+                    None,
+                );
             } else if let Some(node_id) = selected.existing_node {
                 let node = &search.nodes[node_id];
                 let player = node.player;
                 let value = node.value();
                 let leaf_ml = if ml_on { node.ml_mean() } else { None };
                 search.backup_virtual(&selected.path, player, value, virtual_loss, leaf_ml);
-            } else if let Some(verdict) = search
+            } else if let Some(hard) = search
                 .tss_enabled
-                .then(|| threats::analyze(&selected.state).verdict())
+                .then(|| tss_core::solve_leaf_lambda1(&selected.state))
                 .flatten()
             {
                 let leaf_player = selected.state.current_player();
-                search.backup_virtual(&selected.path, leaf_player, verdict, virtual_loss, None);
+                search.tss.leaf_verdict_hits += 1;
+                search.backup_virtual(
+                    &selected.path,
+                    leaf_player,
+                    hard.value(),
+                    virtual_loss,
+                    None,
+                );
+            } else if search.divergences.tss_solver_park {
+                let enqueue_started = Instant::now();
+                match search.tss_deep_leaf_route(&selected.state, selected.state_hash) {
+                    TssLeafRoute::Hard(hard) => {
+                        let leaf_player = selected.state.current_player();
+                        search.backup_virtual(
+                            &selected.path,
+                            leaf_player,
+                            hard.value(),
+                            virtual_loss,
+                            None,
+                        );
+                    }
+                    TssLeafRoute::Parked => {
+                        search.mark_pending(selected.parent_node, selected.edge_index, 1);
+                        search.tss.park_parked += 1;
+                        parked.push(ParkedLeaf {
+                            leaf: RustLeaf {
+                                root_index,
+                                parent_node: selected.parent_node,
+                                edge_index: selected.edge_index,
+                                path: selected.path,
+                                state: selected.state,
+                                state_hash: selected.state_hash,
+                            },
+                            parked_at: enqueue_started,
+                            generation: search
+                                .tss_async_generation()
+                                .expect("parked TSS leaf has an async generation"),
+                        });
+                    }
+                    TssLeafRoute::Miss => {
+                        search.mark_pending(selected.parent_node, selected.edge_index, 1);
+                        leaves.push(RustLeaf {
+                            root_index,
+                            parent_node: selected.parent_node,
+                            edge_index: selected.edge_index,
+                            path: selected.path,
+                            state: selected.state,
+                            state_hash: selected.state_hash,
+                        });
+                    }
+                }
+            } else if let Some(hard) = search.tss_deep_leaf(&selected.state, selected.state_hash) {
+                let leaf_player = selected.state.current_player();
+                search.backup_virtual(
+                    &selected.path,
+                    leaf_player,
+                    hard.value(),
+                    virtual_loss,
+                    None,
+                );
             } else {
                 search.mark_pending(selected.parent_node, selected.edge_index, 1);
                 leaves.push(RustLeaf {
@@ -2000,8 +2409,9 @@ fn select_continuous_leaves(
     c_puct: f32,
     budget: u32,
     virtual_loss: f32,
-) -> PyResult<(Vec<RustLeaf>, bool, u32)> {
+) -> PyResult<(Vec<RustLeaf>, Vec<ParkedLeaf>, bool, u32)> {
     let mut leaves = Vec::new();
+    let mut parked = Vec::new();
     let mut made_progress = false;
     let mut added_in_flight = 0u32;
     let budget = budget.min(search.remaining_visits());
@@ -2017,20 +2427,96 @@ fn select_continuous_leaves(
             let leaf_player = selected.state.current_player();
             let leaf_value = terminal_value(outcome, leaf_player);
             let leaf_ml = ml_on.then_some(0.0);
-            search.backup_virtual(&selected.path, leaf_player, leaf_value, virtual_loss, leaf_ml);
+            search.backup_virtual(
+                &selected.path,
+                leaf_player,
+                leaf_value,
+                virtual_loss,
+                leaf_ml,
+            );
+        } else if let Some(hard) = selected.hard {
+            let leaf_player = selected.state.current_player();
+            search.backup_virtual(
+                &selected.path,
+                leaf_player,
+                hard.value(),
+                virtual_loss,
+                None,
+            );
         } else if let Some(node_id) = selected.existing_node {
             let node = &search.nodes[node_id];
             let player = node.player;
             let value = node.value();
             let leaf_ml = if ml_on { node.ml_mean() } else { None };
             search.backup_virtual(&selected.path, player, value, virtual_loss, leaf_ml);
-        } else if let Some(verdict) = search
+        } else if let Some(hard) = search
             .tss_enabled
-            .then(|| threats::analyze(&selected.state).verdict())
+            .then(|| tss_core::solve_leaf_lambda1(&selected.state))
             .flatten()
         {
             let leaf_player = selected.state.current_player();
-            search.backup_virtual(&selected.path, leaf_player, verdict, virtual_loss, None);
+            search.tss.leaf_verdict_hits += 1;
+            search.backup_virtual(
+                &selected.path,
+                leaf_player,
+                hard.value(),
+                virtual_loss,
+                None,
+            );
+        } else if search.divergences.tss_solver_park {
+            let enqueue_started = Instant::now();
+            match search.tss_deep_leaf_route(&selected.state, selected.state_hash) {
+                TssLeafRoute::Hard(hard) => {
+                    let leaf_player = selected.state.current_player();
+                    search.backup_virtual(
+                        &selected.path,
+                        leaf_player,
+                        hard.value(),
+                        virtual_loss,
+                        None,
+                    );
+                }
+                TssLeafRoute::Parked => {
+                    search.mark_pending(selected.parent_node, selected.edge_index, 1);
+                    search.tss.park_parked += 1;
+                    added_in_flight += 1;
+                    parked.push(ParkedLeaf {
+                        leaf: RustLeaf {
+                            root_index: slot_index,
+                            parent_node: selected.parent_node,
+                            edge_index: selected.edge_index,
+                            path: selected.path,
+                            state: selected.state,
+                            state_hash: selected.state_hash,
+                        },
+                        parked_at: enqueue_started,
+                        generation: search
+                            .tss_async_generation()
+                            .expect("parked TSS leaf has an async generation"),
+                    });
+                }
+                TssLeafRoute::Miss => {
+                    search.mark_pending(selected.parent_node, selected.edge_index, 1);
+                    added_in_flight += 1;
+                    leaves.push(RustLeaf {
+                        root_index: slot_index,
+                        parent_node: selected.parent_node,
+                        edge_index: selected.edge_index,
+                        path: selected.path,
+                        state: selected.state,
+                        state_hash: selected.state_hash,
+                    });
+                }
+            }
+        } else if let Some(hard) = search.tss_deep_leaf(&selected.state, selected.state_hash) {
+            let leaf_player = selected.state.current_player();
+            search.backup_virtual(
+                &selected.path,
+                leaf_player,
+                hard.value(),
+                virtual_loss,
+                None,
+            );
         } else {
             search.mark_pending(selected.parent_node, selected.edge_index, 1);
             added_in_flight += 1;
@@ -2044,34 +2530,196 @@ fn select_continuous_leaves(
             });
         }
     }
-    Ok((leaves, made_progress, added_in_flight))
+    Ok((leaves, parked, made_progress, added_in_flight))
 }
+
+fn wire_tss_async(slots: &mut [ContinuousSlot], pool: &TssAsyncPool) {
+    for (slot_index, slot) in slots.iter_mut().enumerate() {
+        let Some(search) = slot.search.as_mut() else {
+            continue;
+        };
+        if !search.divergences.tss_solver_async || search.tss_async_generation().is_some() {
+            continue;
+        }
+        search.set_tss_async(Some(pool.handle_for(slot_index as u32)));
+    }
+}
+
+fn drain_tss_async(pool: &TssAsyncPool, slots: &mut [ContinuousSlot]) {
+    if let Some(search) = slots.iter_mut().find_map(|slot| slot.search.as_mut()) {
+        search.tss.deep_verify_failed += pool.take_verify_failures();
+    }
+    drain_tss_worker_spawns(pool, slots);
+    let worker_panics = pool.take_worker_panics();
+    if worker_panics > 0 {
+        eprintln!(
+            "hexfield tss_async: {worker_panics} solve worker panic(s) - requests lost, \
+             workers recycled with fresh solvers"
+        );
+    }
+    for response in pool.try_drain() {
+        let search = slots
+            .get_mut(response.slot as usize)
+            .and_then(|slot| slot.search.as_mut());
+        match search {
+            Some(search) => {
+                if search.tss_async_generation() == Some(response.generation) {
+                    search.apply_tss_async_response(&response);
+                } else {
+                    search.apply_tss_async_response_stale(&response);
+                }
+            }
+            None => {
+                if response.counters.deep_verify_failed > 0 {
+                    eprintln!(
+                        "hexfield tss_async: certificate VERIFY FAILURE in an orphaned \
+                         response (slot {}) - investigate immediately",
+                        response.slot
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn drain_tss_worker_spawns(pool: &TssAsyncPool, slots: &mut [ContinuousSlot]) {
+    if !pool.park_mode() {
+        return;
+    }
+    let Some(search) = slots.iter_mut().find_map(|slot| slot.search.as_mut()) else {
+        return;
+    };
+    search.tss.async_workers_spawned += pool.take_workers_spawned();
+}
+
+fn resolve_parked_continuous(
+    slots: &mut [ContinuousSlot],
+    parked: &mut Vec<ParkedLeaf>,
+    queue: &mut Vec<ContinuousEvalItem>,
+    virtual_loss: f32,
+) -> PyResult<()> {
+    if parked.is_empty() {
+        return Ok(());
+    }
+    let now = Instant::now();
+    let mut waiting = Vec::with_capacity(parked.len());
+    for entry in parked.drain(..) {
+        let slot_index = entry.leaf.root_index;
+        let slot = slots.get_mut(slot_index).ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "TSS parked leaf references missing continuous slot {slot_index}"
+            ))
+        })?;
+        let search = slot.search.as_mut().ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "TSS parked leaf resolved for empty continuous slot {slot_index}"
+            ))
+        })?;
+        if search.tss_async_generation() != Some(entry.generation) {
+            return Err(PyRuntimeError::new_err(format!(
+                "TSS parked leaf generation changed before resolution for continuous slot \
+                 {slot_index}"
+            )));
+        }
+        let wait_ms = parked_wait_ms(entry.parked_at, now);
+        match search.tss_park_resolution(entry.leaf.state_hash, &entry.leaf.state) {
+            TssParkResolution::Hard(hard) => {
+                search.tss.park_hard += 1;
+                record_park_wait(search, wait_ms);
+                search.mark_pending(entry.leaf.parent_node, entry.leaf.edge_index, -1);
+                slot.in_flight = slot.in_flight.checked_sub(1).ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "TSS parked hard backup underflowed in_flight for slot {slot_index}"
+                    ))
+                })?;
+                let leaf_player = entry.leaf.state.current_player();
+                search.backup_virtual(
+                    &entry.leaf.path,
+                    leaf_player,
+                    hard.value(),
+                    virtual_loss,
+                    None,
+                );
+            }
+            TssParkResolution::Release => {
+                search.tss.park_released += 1;
+                record_park_wait(search, wait_ms);
+                queue.push(ContinuousEvalItem::Leaf(entry.leaf));
+            }
+            TssParkResolution::Pending
+                if now.saturating_duration_since(entry.parked_at)
+                    > Duration::from_millis(
+                        search.divergences.tss_solver_park_timeout_ms as u64,
+                    ) =>
+            {
+                search.tss.park_bailed += 1;
+                record_park_wait(search, wait_ms);
+                queue.push(ContinuousEvalItem::Leaf(entry.leaf));
+            }
+            TssParkResolution::Pending => waiting.push(entry),
+        }
+    }
+    *parked = waiting;
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn debug_assert_continuous_pen(slots: &[ContinuousSlot], parked: &[ParkedLeaf]) {
+    if parked.is_empty() {
+        return;
+    }
+    let mut parked_per_slot = vec![0u32; slots.len()];
+    for entry in parked {
+        let slot = &slots[entry.leaf.root_index];
+        let search = slot
+            .search
+            .as_ref()
+            .expect("parked leaf must retain its owning search");
+        parked_per_slot[entry.leaf.root_index] =
+            parked_per_slot[entry.leaf.root_index].saturating_add(1);
+        debug_assert_eq!(
+            search.tss_async_generation(),
+            Some(entry.generation),
+            "a move must not advance while it owns a parked leaf"
+        );
+    }
+    for (slot_index, parked_count) in parked_per_slot.into_iter().enumerate() {
+        debug_assert!(
+            slots[slot_index].in_flight >= parked_count,
+            "every parked leaf must contribute one in-flight unit"
+        );
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_assert_continuous_pen(_slots: &[ContinuousSlot], _parked: &[ParkedLeaf]) {}
 
 fn select_continuous_pass(
     slots: &mut [ContinuousSlot],
     c_puct: f32,
     leaf_batch_per_root: u32,
     virtual_loss: f32,
+    parked: &mut Vec<ParkedLeaf>,
 ) -> PyResult<(Vec<RustLeaf>, bool)> {
     // Per-slot selection is independent (each closure owns one slot's tree via
     // &mut; the RNG is seeded by slot_index, not execution order), so it is
     // fanned across cores with rayon. Results fold in slot order.
-    let per_slot: PyResult<Vec<(Vec<RustLeaf>, bool)>> = slots
+    let per_slot: PyResult<Vec<(Vec<RustLeaf>, Vec<ParkedLeaf>, bool)>> = slots
         .par_iter_mut()
         .enumerate()
         .map(|(slot_index, slot)| {
             if !matches!(slot.phase, ContinuousPhase::Active) {
-                return Ok((Vec::new(), false));
+                return Ok((Vec::new(), Vec::new(), false));
             }
             let cap = leaf_batch_per_root.saturating_sub(slot.in_flight);
             if cap == 0 {
-                return Ok((Vec::new(), false));
+                return Ok((Vec::new(), Vec::new(), false));
             }
             let Some(search) = slot.search.as_mut() else {
-                return Ok((Vec::new(), false));
+                return Ok((Vec::new(), Vec::new(), false));
             };
             if !search.needs_visits() {
-                return Ok((Vec::new(), false));
+                return Ok((Vec::new(), Vec::new(), false));
             }
             // Intra-slot Sequential-Halving barrier: when all surviving Gumbel
             // candidates in this slot have reached the current round's
@@ -2095,17 +2743,18 @@ fn select_continuous_pass(
             if slot.in_flight == 0 && search.has_gumbel_root() {
                 while search.maybe_advance_gumbel_round() {}
             }
-            let (leaves, progressed, added_in_flight) =
+            let (leaves, parked, progressed, added_in_flight) =
                 select_continuous_leaves(search, slot_index, c_puct, cap, virtual_loss)?;
             slot.in_flight = slot.in_flight.saturating_add(added_in_flight);
-            Ok((leaves, progressed))
+            Ok((leaves, parked, progressed))
         })
         .collect();
     let mut leaves = Vec::new();
     let mut made_progress = false;
-    for (slot_leaves, progressed) in per_slot? {
+    for (slot_leaves, slot_parked, progressed) in per_slot? {
         made_progress |= progressed;
         leaves.extend(slot_leaves);
+        parked.extend(slot_parked);
     }
     Ok((leaves, made_progress))
 }
@@ -2326,7 +2975,9 @@ fn complete_continuous_slots(
     // the build serially instead.
     let serial_build = std::env::var("HEXFIELD_SERIAL_COMPLETE").is_ok();
     let prepared: Vec<Option<PreparedMove>> = py.detach(|| {
-        let prepare = |_slot_index: usize, slot: &ContinuousSlot| -> PyResult<Option<PreparedMove>> {
+        let prepare = |_slot_index: usize,
+                       slot: &ContinuousSlot|
+         -> PyResult<Option<PreparedMove>> {
             if !matches!(slot.phase, ContinuousPhase::Active) {
                 return Ok(None);
             }
@@ -2384,16 +3035,13 @@ fn complete_continuous_slots(
             // Capture remaining_visits() before Phase B applies the early-stop
             // mutation (target_visits = completed_visits), for the
             // early_stop_visits_saved stat.
-            let early_remaining_visits = if early {
-                search.remaining_visits()
-            } else {
-                0
-            };
+            let early_remaining_visits = if early { search.remaining_visits() } else { 0 };
 
             let game_key = slot.game_key;
             let ply = slot.ply;
             let move_seed = mix_seed(base_seed, game_key, ply, SEED_STREAM_MOVE_SELECT);
-            let temperature = move_policy.temperature_for_class(move_class, temperature_by_ply, ply);
+            let temperature =
+                move_policy.temperature_for_class(move_class, temperature_by_ply, ply);
             let mut payload = build_search_result_payload_native(
                 search,
                 Some(&slot.baseline),
@@ -2411,7 +3059,7 @@ fn complete_continuous_slots(
 
             // Init class: sample the played move from the root prior (overrides
             // the payload's selected action). Deterministic seed.
-            let init_override = if matches!(move_class, MoveClass::Init) {
+            let init_override = if matches!(move_class, MoveClass::Init) && !payload.deep_override {
                 let (prior_ids, prior_weights) = root_prior_policy(search.root());
                 let sampled = select_action_from_policy(
                     &prior_ids,
@@ -2569,8 +3217,9 @@ fn complete_continuous_slots(
                         search.set_root_fpu_reduction(move_policy.root_fpu_for(next_class));
                         search.set_tss_enabled(move_policy.tss_enabled);
                         search.set_divergences(class_div);
-                        search
-                            .apply_root_policy_temperature(move_policy.root_temp_for(next_class, next_ply));
+                        search.apply_root_policy_temperature(
+                            move_policy.root_temp_for(next_class, next_ply),
+                        );
                         if let Some(noise) = root_noise_exact(
                             move_policy.noise_for(next_class),
                             mix_seed(base_seed, game_key, next_ply, SEED_STREAM_ROOT_NOISE),
@@ -2590,10 +3239,8 @@ fn complete_continuous_slots(
                         if class_div.gumbel_root {
                             let gumbel_seed =
                                 mix_seed(base_seed, game_key, next_ply, SEED_STREAM_GUMBEL);
-                            search.init_gumbel_root(
-                                gumbel_seed,
-                                move_policy.visits_for(next_class),
-                            );
+                            search
+                                .init_gumbel_root(gumbel_seed, move_policy.visits_for(next_class));
                         } else {
                             search.clear_gumbel_root();
                         }
@@ -2669,10 +3316,11 @@ fn complete_continuous_slots(
     Ok(moves_decided)
 }
 
-fn continuous_has_work(slots: &[ContinuousSlot]) -> bool {
-    slots
-        .iter()
-        .any(|slot| !matches!(slot.phase, ContinuousPhase::Empty))
+fn continuous_has_work(slots: &[ContinuousSlot], parked: &[ParkedLeaf]) -> bool {
+    !parked.is_empty()
+        || slots
+            .iter()
+            .any(|slot| !matches!(slot.phase, ContinuousPhase::Empty))
 }
 
 /// Snapshot the cumulative unique-states counter (depth-2 per-flush histogram).
@@ -2752,6 +3400,28 @@ const KNOWN_DIVERGENCE_KEYS: &[&str] = &[
     "gumbel_draw_temperature",
     "gumbel_target_min_visits",
     "gumbel_play_prune",
+    "tss_interior_guard",
+    "tss_solver_mode",
+    "tss_solver_node_cap",
+    "tss_solver_sample_16",
+    "tss_solver_root_guard",
+    "tss_solver_async",
+    "tss_solver_async_threads",
+    "tss_solver_async_threads_max",
+    "tss_solver_park",
+    "tss_solver_all_leaves",
+    "tss_solver_park_timeout_ms",
+    "tss_solver_async_inline_16",
+    "tss_zone",
+    "tss_zone_stale_filter",
+    "tss_zone_count2",
+    "tss_pair_commutation",
+    "tss_solver_horizon",
+    "tss_solver_dual_pass",
+    "tss_solver_loss_reserve_nodes",
+    "tss_solver_group2",
+    "tss_solver_j2near",
+    "tss_solver_horizon_ladder",
     // Fast-class Gumbel levers (main_8: PUCT Full / Gumbel Fast). These name the
     // Fast view's values; the driver's Python side folds them into the SECOND
     // (fast) override map whose base keys resolve_divergences reads. They are
@@ -2839,18 +3509,22 @@ fn resolve_divergences(
         if let Some(v) = overrides.get_item("ml_scale")? {
             // tanh divisor in the moves-left bonus: 0 => NaN, negative flips
             // the bonus direction. It is a positive length scale (in moves).
-            dv.ml_scale =
-                checked_divergence_f32("ml_scale", v.extract()?, "finite and > 0 (tanh length scale)", |x| {
-                    x > 0.0
-                })?;
+            dv.ml_scale = checked_divergence_f32(
+                "ml_scale",
+                v.extract()?,
+                "finite and > 0 (tanh length scale)",
+                |x| x > 0.0,
+            )?;
         }
         if let Some(v) = overrides.get_item("ml_q_gate")? {
             // Q-gate in value units (Q in [-1, 1]); negative gates invert the
             // dead-zone semantics.
-            dv.ml_q_gate =
-                checked_divergence_f32("ml_q_gate", v.extract()?, "finite and >= 0 (Q gate in value units)", |x| {
-                    x >= 0.0
-                })?;
+            dv.ml_q_gate = checked_divergence_f32(
+                "ml_q_gate",
+                v.extract()?,
+                "finite and >= 0 (Q gate in value units)",
+                |x| x >= 0.0,
+            )?;
         }
         if let Some(v) = overrides.get_item("ml_two_sided")? {
             dv.ml_two_sided = v.extract()?;
@@ -2904,6 +3578,102 @@ fn resolve_divergences(
         }
         if let Some(v) = overrides.get_item("scaled_fpu")? {
             dv.scaled_fpu = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_interior_guard")? {
+            dv.tss_interior_guard = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_mode")? {
+            let mode: u32 = v.extract()?;
+            if mode > 3 {
+                return Err(PyValueError::new_err(format!(
+                    "tss_solver_mode must be 0..=3, got {mode}"
+                )));
+            }
+            dv.tss_solver_mode = mode;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_node_cap")? {
+            let cap: u32 = v.extract()?;
+            if cap == 0 {
+                return Err(PyValueError::new_err(
+                    "tss_solver_node_cap must be >= 1 (every solve would be Unknown at 0)",
+                ));
+            }
+            dv.tss_solver_node_cap = cap;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_sample_16")? {
+            let sample: u32 = v.extract()?;
+            if sample > 16 {
+                return Err(PyValueError::new_err(format!(
+                    "tss_solver_sample_16 must be 0..=16 (sixteenths), got {sample}"
+                )));
+            }
+            dv.tss_solver_sample_16 = sample;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_root_guard")? {
+            dv.tss_solver_root_guard = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_async")? {
+            dv.tss_solver_async = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_async_threads")? {
+            let threads: u32 = v.extract()?;
+            if !(1..=32).contains(&threads) {
+                return Err(PyValueError::new_err(format!(
+                    "tss_solver_async_threads must be 1..=32, got {threads}"
+                )));
+            }
+            dv.tss_solver_async_threads = threads;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_async_threads_max")? {
+            dv.tss_solver_async_threads_max = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_park")? {
+            dv.tss_solver_park = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_park_timeout_ms")? {
+            dv.tss_solver_park_timeout_ms = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_all_leaves")? {
+            dv.tss_solver_all_leaves = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_async_inline_16")? {
+            let inline: u32 = v.extract()?;
+            if inline > 16 {
+                return Err(PyValueError::new_err(format!(
+                    "tss_solver_async_inline_16 must be 0..=16 (sixteenths), got {inline}"
+                )));
+            }
+            dv.tss_solver_async_inline_16 = inline;
+        }
+        if let Some(v) = overrides.get_item("tss_zone")? {
+            dv.tss_zone = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_zone_stale_filter")? {
+            dv.tss_zone_stale_filter = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_zone_count2")? {
+            dv.tss_zone_count2 = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_pair_commutation")? {
+            dv.tss_pair_commutation = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_horizon")? {
+            dv.tss_solver_horizon = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_dual_pass")? {
+            dv.tss_solver_dual_pass = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_loss_reserve_nodes")? {
+            dv.tss_solver_loss_reserve_nodes = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_group2")? {
+            dv.tss_solver_group2 = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_j2near")? {
+            dv.tss_solver_j2near = v.extract()?;
+        }
+        if let Some(v) = overrides.get_item("tss_solver_horizon_ladder")? {
+            dv.tss_solver_horizon_ladder = v.extract()?;
         }
         // Gumbel AlphaZero flags (default-OFF).
         if let Some(v) = overrides.get_item("gumbel_target")? {
@@ -3000,6 +3770,37 @@ fn resolve_divergences(
             dv.gumbel_play_prune = v.extract()?;
         }
     }
+    if dv.tss_solver_async_threads_max != 0
+        && !(dv.tss_solver_async_threads..=64).contains(&dv.tss_solver_async_threads_max)
+    {
+        return Err(PyValueError::new_err(format!(
+            "tss_solver_async_threads_max must be 0 (auto) or {}..=64, got {}",
+            dv.tss_solver_async_threads, dv.tss_solver_async_threads_max
+        )));
+    }
+    if !(1..=5000).contains(&dv.tss_solver_park_timeout_ms) {
+        return Err(PyValueError::new_err(format!(
+            "tss_solver_park_timeout_ms must be 1..=5000, got {}",
+            dv.tss_solver_park_timeout_ms
+        )));
+    }
+    if dv.tss_solver_horizon != 0 && dv.tss_solver_horizon < 16 {
+        return Err(PyValueError::new_err(format!(
+            "tss_solver_horizon must be 0 (unbounded) or >= 16 (the owner floor), got {}",
+            dv.tss_solver_horizon
+        )));
+    }
+    if dv.tss_solver_horizon_ladder && dv.tss_solver_horizon == 0 {
+        return Err(PyValueError::new_err(
+            "tss_solver_horizon_ladder requires a bounded tss_solver_horizon (>= 16); \
+             an unbounded base has nothing taller to climb to",
+        ));
+    }
+    if dv.tss_solver_park && !dv.tss_solver_async {
+        return Err(PyValueError::new_err(
+            "tss_solver_park=true requires tss_solver_async=true",
+        ));
+    }
     Ok(dv)
 }
 
@@ -3010,7 +3811,9 @@ fn build_widening(
 ) -> PyResult<Widening> {
     let widening_mass = mass.unwrap_or(0.95);
     if !widening_mass.is_finite() || widening_mass <= 0.0 || widening_mass > 1.0 {
-        return Err(PyValueError::new_err("widening_policy_mass must be in (0, 1]"));
+        return Err(PyValueError::new_err(
+            "widening_policy_mass must be in (0, 1]",
+        ));
     }
     let widening = Widening {
         mass: widening_mass,
@@ -3037,6 +3840,8 @@ struct PayloadNative {
     action_selection: &'static str,
     lcb_override: bool,
     early_stopped: bool,
+    /// A verified deep root WIN selected the played action.
+    deep_override: bool,
     // Play-policy telemetry: whether the quota-pruned Gumbel play distribution
     // drove selection, and whether the played move is the raw delta leader.
     play_pruned: bool,
@@ -3055,6 +3860,8 @@ struct PayloadNative {
     active_edge_count: usize,
     root_active_edges: usize,
     root_hidden_priors: usize,
+    emit_tss_diagnostics: bool,
+    tss_counters: TssCounters,
 }
 
 struct GumbelTargetNative {
@@ -3094,7 +3901,10 @@ impl PayloadNative {
             "visit_policy_action_ids_bytes",
             to_bytes(&self.export_action_ids),
         )?;
-        result.set_item("visit_policy_weights_bytes", to_bytes_f32(&self.export_weights))?;
+        result.set_item(
+            "visit_policy_weights_bytes",
+            to_bytes_f32(&self.export_weights),
+        )?;
         result.set_item("visit_policy_q_bytes", to_bytes_f32(&self.export_q))?;
         result.set_item("visit_policy_count", self.export_action_ids.len())?;
         result.set_item(
@@ -3107,7 +3917,10 @@ impl PayloadNative {
         )?;
         result.set_item("root_prior_policy_count", self.root_prior_action_ids.len())?;
         if let Some(gumbel) = &self.gumbel {
-            result.set_item("gumbel_policy_action_ids_bytes", to_bytes(&gumbel.action_ids))?;
+            result.set_item(
+                "gumbel_policy_action_ids_bytes",
+                to_bytes(&gumbel.action_ids),
+            )?;
             result.set_item("gumbel_policy_weights_bytes", to_bytes_f32(&gumbel.weights))?;
             result.set_item("gumbel_policy_count", gumbel.action_ids.len())?;
             result.set_item("root_prior_logits_bytes", to_bytes_f32(&gumbel.logits))?;
@@ -3119,6 +3932,54 @@ impl PayloadNative {
         diag.set_item("active_edge_count", self.active_edge_count)?;
         diag.set_item("root_active_edges", self.root_active_edges)?;
         diag.set_item("root_hidden_priors", self.root_hidden_priors)?;
+        if self.emit_tss_diagnostics {
+            let tss = PyDict::new(py);
+            tss.set_item("root_tactical", self.tss_counters.root_tactical)?;
+            tss.set_item("root_injected", self.tss_counters.root_injected)?;
+            tss.set_item("leaf_verdict_hits", self.tss_counters.leaf_verdict_hits)?;
+            tss.set_item("prune_eligible", self.tss_counters.prune_eligible)?;
+            tss.set_item("prune_dropped", self.tss_counters.prune_dropped)?;
+            tss.set_item("deep_calls", self.tss_counters.deep_calls)?;
+            tss.set_item("deep_win", self.tss_counters.deep_win)?;
+            tss.set_item("deep_loss", self.tss_counters.deep_loss)?;
+            tss.set_item("deep_unknown", self.tss_counters.deep_unknown)?;
+            tss.set_item("deep_nodes", self.tss_counters.deep_nodes)?;
+            tss.set_item("deep_verify_failed", self.tss_counters.deep_verify_failed)?;
+            tss.set_item("horizon_retry", self.tss_counters.horizon_retry)?;
+            tss.set_item(
+                "horizon_preflight_failed",
+                self.tss_counters.horizon_preflight_failed,
+            )?;
+            tss.set_item("horizon_cut", self.tss_counters.horizon_cut)?;
+            tss.set_item("horizon_cut_tall", self.tss_counters.horizon_cut_tall)?;
+            tss.set_item("deep_kb_death", self.tss_counters.deep_kb_death)?;
+            tss.set_item("cert_version", crate::tss_core::TSS_CERT_VERSION)?;
+            tss.set_item("zone_nodes", self.tss_counters.zone_nodes)?;
+            tss.set_item("pair_omitted", self.tss_counters.pair_omitted)?;
+            tss.set_item("zone_verify_failed", self.tss_counters.zone_verify_failed)?;
+            tss.set_item("deep_hard_backups", self.tss_counters.deep_hard_backups)?;
+            tss.set_item("deep_win_backups", self.tss_counters.deep_win_backups)?;
+            tss.set_item("deep_loss_backups", self.tss_counters.deep_loss_backups)?;
+            tss.set_item("deep_memo_hits", self.tss_counters.deep_memo_hits)?;
+            tss.set_item("async_enqueued", self.tss_counters.async_enqueued)?;
+            tss.set_item("async_dropped", self.tss_counters.async_dropped)?;
+            tss.set_item("async_stale", self.tss_counters.async_stale)?;
+            tss.set_item("async_pending_hits", self.tss_counters.async_pending_hits)?;
+            tss.set_item("park_parked", self.tss_counters.park_parked)?;
+            tss.set_item("park_hard", self.tss_counters.park_hard)?;
+            tss.set_item("park_released", self.tss_counters.park_released)?;
+            tss.set_item("park_bailed", self.tss_counters.park_bailed)?;
+            tss.set_item("park_wait_ms_sum", self.tss_counters.park_wait_ms_sum)?;
+            tss.set_item("park_wait_ms_max", self.tss_counters.park_wait_ms_max)?;
+            tss.set_item(
+                "async_workers_spawned",
+                self.tss_counters.async_workers_spawned,
+            )?;
+            tss.set_item("depth_sum", self.tss_counters.depth_sum)?;
+            tss.set_item("depth_max", self.tss_counters.depth_max)?;
+            tss.set_item("backups", self.tss_counters.backups)?;
+            diag.set_item("tss", tss)?;
+        }
         if let Some(stats) = eval_stats {
             diag.set_item("evaluation", eval_stats_dict(py, stats)?)?;
         }
@@ -3204,41 +4065,79 @@ fn build_search_result_payload_native(
     // Gated to T>0 (the T=0 greedy/LCB path keeps the raw histogram, so eval
     // arena behavior is unchanged) and inert when pruning would empty the
     // support (degenerate/force-finalized roots keep the fallback chain).
-    let play_pair: Option<(Vec<PackedCoord>, Vec<f32>)> = if temperature > 0.0
-        && search.divergences.gumbel_play_prune
-        && policy_total > 0
-    {
-        search.gumbel_play_quota().and_then(|quota| {
-            let total = policy_total as f32;
-            let cut = quota as f32 + 0.5;
-            let mut ids = Vec::with_capacity(policy_action_ids.len());
-            let mut ws = Vec::with_capacity(policy_action_ids.len());
-            for (id, w) in policy_action_ids.iter().zip(policy_weights.iter()) {
-                if *w * total > cut {
-                    ids.push(*id);
-                    ws.push(*w);
-                }
-            }
-            if ids.is_empty() {
-                None
-            } else {
-                let sum: f32 = ws.iter().sum();
-                if sum > 0.0 {
-                    for w in ws.iter_mut() {
-                        *w /= sum;
+    let play_pair: Option<(Vec<PackedCoord>, Vec<f32>)> =
+        if temperature > 0.0 && search.divergences.gumbel_play_prune && policy_total > 0 {
+            search.gumbel_play_quota().and_then(|quota| {
+                let total = policy_total as f32;
+                let cut = quota as f32 + 0.5;
+                let mut ids = Vec::with_capacity(policy_action_ids.len());
+                let mut ws = Vec::with_capacity(policy_action_ids.len());
+                for (id, w) in policy_action_ids.iter().zip(policy_weights.iter()) {
+                    if *w * total > cut {
+                        ids.push(*id);
+                        ws.push(*w);
                     }
                 }
-                Some((ids, ws))
-            }
-        })
-    } else {
-        None
-    };
+                if ids.is_empty() {
+                    None
+                } else {
+                    let sum: f32 = ws.iter().sum();
+                    if sum > 0.0 {
+                        for w in ws.iter_mut() {
+                            *w /= sum;
+                        }
+                    }
+                    Some((ids, ws))
+                }
+            })
+        } else {
+            None
+        };
     let play_pruned = play_pair.is_some();
     let (sel_ids, sel_weights): (&Vec<PackedCoord>, &Vec<f32>) = match &play_pair {
         Some((ids, ws)) => (ids, ws),
         None => (&policy_action_ids, &policy_weights),
     };
+    let div = &search.divergences;
+    let mut deep_counters = TssCounters::default();
+    let mut deep_forced_move: Option<PackedCoord> = None;
+    if search.tss_enabled && div.tss_solver_root_guard {
+        let lambda1_undecided = threats::analyze(&search.root_state).verdict().is_none();
+        if lambda1_undecided {
+            let mut root_solver = crate::tss_solver::TssSolver::default();
+            root_solver.configure_leaf_profile();
+            root_solver.set_leaf_j2near(div.solver_j2near_enabled());
+            root_solver.set_dual_pass(div.tss_solver_dual_pass);
+            root_solver.set_loss_reserve_nodes(div.tss_solver_loss_reserve_nodes);
+            root_solver.set_group2(div.tss_solver_group2);
+            let solved = tss_solve_verified(
+                &search.root_state,
+                div.tss_solver_node_cap as u64,
+                tss_core::SolveGoal::Both,
+                tss_core::ZoneSearchCaps {
+                    enabled: div.tss_zone,
+                    stale_area_filter: div.tss_zone_stale_filter,
+                    count2_threshold: div.tss_zone_count2,
+                    pair_commutation: div.tss_pair_commutation,
+                },
+                SolverHorizon {
+                    horizon: div.tss_solver_horizon,
+                    ladder: div.tss_solver_horizon_ladder,
+                },
+                &mut root_solver,
+                &mut deep_counters,
+            );
+            if solved.status == ProofStatus::Win {
+                if let Some(cert) = &solved.cert {
+                    if let Some(CertNode::Choice { mv, .. }) =
+                        cert.nodes.get(cert.root_node as usize)
+                    {
+                        deep_forced_move = Some(pack_coord(*mv));
+                    }
+                }
+            }
+        }
+    }
     let guarded_weights = if search.tss_enabled {
         tactical_guard_weights(&search.root_state, sel_ids, sel_weights)
     } else {
@@ -3270,13 +4169,21 @@ fn build_search_result_payload_native(
     };
     debug_assert!(
         root.edges.iter().any(|e| e.action_id == selected)
-            || root
-                .remaining_priors()
-                .iter()
-                .any(|(a, _)| *a == selected),
+            || root.remaining_priors().iter().any(|(a, _)| *a == selected),
         "selected played action_id must be a real root action, never the sentinel"
     );
-    let action_selection = if play_pruned {
+    let deep_changed_selection = matches!(deep_forced_move, Some(mv) if mv != selected);
+    let selected = deep_forced_move.unwrap_or(selected);
+    if let Some(mv) = deep_forced_move {
+        if !export_action_ids.contains(&mv) {
+            export_action_ids.push(mv);
+            export_weights.push(0.0);
+            export_q.push(1.0);
+        }
+    }
+    let action_selection = if deep_changed_selection {
+        "tss_deep_root_win"
+    } else if play_pruned {
         "gumbel_play_policy"
     } else if baseline.is_some() {
         "delta_visit_policy"
@@ -3295,8 +4202,7 @@ fn build_search_result_payload_native(
     // Improved-policy target π'=softmax(logits+σ(completedQ)). Exported only when
     // gumbel_target is on; the raw root logits column ships alongside. When the
     // flag is off, none of these keys appear.
-    let div = &search.divergences;
-    let gumbel = if div.gumbel_target {
+    let mut gumbel = if div.gumbel_target {
         // Export-only σ softening: gumbel_target_c_scale overrides c_scale in the
         // target's σ call ONLY, so π' can be flattened without touching the SH
         // ranking or interior selection (both keep div.gumbel_c_scale).
@@ -3316,12 +4222,28 @@ fn build_search_result_payload_native(
     } else {
         None
     };
+    if let Some(mv) = deep_forced_move {
+        if let Some(g) = gumbel.as_mut() {
+            if !g.action_ids.contains(&mv) {
+                g.action_ids.push(mv);
+                g.weights.push(0.0);
+                g.logits.push(0.0);
+            }
+        }
+    }
+    let mut tss_counters = search.tss;
+    tss_counters.add(&deep_counters);
+    let emit_tss_diagnostics = div.tss_interior_guard
+        || div.tss_solver_mode != 0
+        || div.tss_solver_root_guard
+        || div.tss_solver_async;
     let tree = search.diagnostics();
     Ok(PayloadNative {
         action_id: selected,
         action_selection,
         lcb_override,
         early_stopped: search.early_stopped,
+        deep_override: deep_forced_move.is_some(),
         play_pruned,
         play_winner,
         export_action_ids,
@@ -3336,6 +4258,8 @@ fn build_search_result_payload_native(
         active_edge_count: tree.active_edge_count,
         root_active_edges: tree.root_active_edges,
         root_hidden_priors: tree.root_hidden_priors,
+        emit_tss_diagnostics,
+        tss_counters,
     })
 }
 
@@ -3655,7 +4579,9 @@ pub fn debug_lcb_from_stats(
         let variance = (value_sq_sum / n - q * q).max(0.0);
         let lcb = q - z * variance.sqrt() / n.sqrt();
         let replace = match best {
-            Some((current, current_id)) => lcb > current || (lcb == current && action_id < current_id),
+            Some((current, current_id)) => {
+                lcb > current || (lcb == current && action_id < current_id)
+            }
             None => true,
         };
         if replace {
@@ -4095,7 +5021,13 @@ mod fallback_tests {
         // idx1: n_forced = floor(sqrt(2*0.05*100)) = 3; each removal keeps
         // U_1 (~ -0.22) far below u_best, so all 3 forced visits are stripped.
         let pruned = prune_forced_delta_counts(
-            &[60, 10], &[0.7, 0.05], &[60, 10], &[0.5, -0.3], 100, 2.0, 1.5,
+            &[60, 10],
+            &[0.7, 0.05],
+            &[60, 10],
+            &[0.5, -0.3],
+            100,
+            2.0,
+            1.5,
         );
         assert_eq!(pruned, vec![60, 7]);
     }
@@ -4106,7 +5038,13 @@ mod fallback_tests {
         // makes U_1 = 0.8 + 0.3*15/10 = 1.25 > u_best on the first candidate
         // removal, so the loop breaks immediately: genuine visits, not forced.
         let pruned = prune_forced_delta_counts(
-            &[60, 10], &[0.7, 0.3], &[60, 10], &[0.5, 0.8], 100, 2.0, 1.5,
+            &[60, 10],
+            &[0.7, 0.3],
+            &[60, 10],
+            &[0.5, 0.8],
+            100,
+            2.0,
+            1.5,
         );
         assert_eq!(pruned, vec![60, 10]);
     }
@@ -4117,7 +5055,13 @@ mod fallback_tests {
         // raw delta-visit histogram, unchanged.
         let deltas = [60u32, 10, 5];
         let pruned = prune_forced_delta_counts(
-            &deltas, &[0.5, 0.3, 0.2], &[60, 10, 5], &[0.4, 0.1, -0.2], 75, 0.0, 1.5,
+            &deltas,
+            &[0.5, 0.3, 0.2],
+            &[60, 10, 5],
+            &[0.4, 0.1, -0.2],
+            75,
+            0.0,
+            1.5,
         );
         assert_eq!(pruned, deltas.to_vec());
     }
@@ -4128,7 +5072,13 @@ mod fallback_tests {
         // idx1: n_forced=floor(sqrt(80))=8, U stays below u_best across all 8 ->
         // loses exactly 8 (30->22). idx2: n_forced=floor(sqrt(4))=2 -> 8->6.
         let pruned = prune_forced_delta_counts(
-            &[50, 30, 8], &[0.5, 0.4, 0.02], &[50, 30, 8], &[0.4, 0.2, -0.5], 100, 2.0, 1.5,
+            &[50, 30, 8],
+            &[0.5, 0.4, 0.02],
+            &[50, 30, 8],
+            &[0.4, 0.2, -0.5],
+            100,
+            2.0,
+            1.5,
         );
         assert_eq!(pruned, vec![50, 22, 6]);
     }
@@ -4149,8 +5099,7 @@ mod fallback_tests {
             vec![edge(A1, 0.6, 3, 1.5), edge(A2, 0.4, 2, 0.5)],
             Vec::new(),
         );
-        let baseline: HashMap<PackedCoord, u32> =
-            [(A1, 3u32), (A2, 2u32)].into_iter().collect();
+        let baseline: HashMap<PackedCoord, u32> = [(A1, 3u32), (A2, 2u32)].into_iter().collect();
         let (ids, weights, _q, total) = visit_policy(&root, Some(&baseline));
         assert!(ids.is_empty(), "all-baseline delta policy must be empty");
         assert!(weights.is_empty());
@@ -4167,7 +5116,10 @@ mod fallback_tests {
         // most-visited cumulative edge.
         let root = node(
             vec![edge(A1, 0.2, 5, 2.0), edge(A2, 0.7, 1, 0.1)],
-            vec![RustPriorCandidate { action_id: A3, prior: 0.9 }],
+            vec![RustPriorCandidate {
+                action_id: A3,
+                prior: 0.9,
+            }],
         );
         let picked = fallback_root_action(&root).expect("fallback yields an action");
         assert_ne!(picked, 0, "fallback must never return the sentinel id 0");
@@ -4185,15 +5137,17 @@ mod fallback_tests {
             vec![edge(A1, 0.6, 3, 1.5), edge(A2, 0.4, 2, 0.5)],
             Vec::new(),
         );
-        let baseline: HashMap<PackedCoord, u32> =
-            [(A1, 3u32), (A2, 2u32)].into_iter().collect();
+        let baseline: HashMap<PackedCoord, u32> = [(A1, 3u32), (A2, 2u32)].into_iter().collect();
         let (d_ids, _d_w, _d_q, d_total) = visit_policy(&root, Some(&baseline));
         assert!(d_ids.is_empty() && d_total == 0, "delta policy is empty");
         let (c_ids, c_w, _c_q, c_total) = visit_policy(&root, None);
         assert_eq!(c_ids.len(), 2, "cumulative policy keeps both edges");
         assert_eq!(c_total, 5, "cumulative total = sum of edge visits");
         let mass: f32 = c_w.iter().sum();
-        assert!((mass - 1.0).abs() < 1e-6, "cumulative target carries unit mass");
+        assert!(
+            (mass - 1.0).abs() < 1e-6,
+            "cumulative target carries unit mass"
+        );
         assert!(c_ids.iter().all(|&id| id != 0), "no sentinel in the target");
     }
 
@@ -4204,11 +5158,17 @@ mod fallback_tests {
         // edges + unexpanded candidates — still a real, legal action id.
         let root = node(
             vec![edge(A1, 0.2, 0, 0.0), edge(A2, 0.3, 0, 0.0)],
-            vec![RustPriorCandidate { action_id: A3, prior: 0.5 }],
+            vec![RustPriorCandidate {
+                action_id: A3,
+                prior: 0.5,
+            }],
         );
         let picked = fallback_root_action(&root).expect("fallback yields an action");
         assert_ne!(picked, 0);
-        assert_eq!(picked, A3, "highest-prior action wins when no edge is visited");
+        assert_eq!(
+            picked, A3,
+            "highest-prior action wins when no edge is visited"
+        );
     }
 
     // --- Fast-class play temperature + sampler zero-weight edge ---------------
@@ -4248,8 +5208,14 @@ mod fallback_tests {
         // reproducing current behavior. Full uses the ply schedule; Init is 0.0.
         let policy = move_policy(0.0);
         let by_ply = vec![0.9, 0.5, 0.15];
-        assert_eq!(policy.temperature_for_class(MoveClass::Fast, &by_ply, 1), 0.0);
-        assert_eq!(policy.temperature_for_class(MoveClass::Init, &by_ply, 1), 0.0);
+        assert_eq!(
+            policy.temperature_for_class(MoveClass::Fast, &by_ply, 1),
+            0.0
+        );
+        assert_eq!(
+            policy.temperature_for_class(MoveClass::Init, &by_ply, 1),
+            0.0
+        );
         assert_eq!(
             policy.temperature_for_class(MoveClass::Full, &by_ply, 1),
             0.5,
@@ -4262,8 +5228,14 @@ mod fallback_tests {
         // The lever flows to the Fast class only; Full/Init are unchanged.
         let policy = move_policy(0.1);
         let by_ply = vec![0.9, 0.5, 0.15];
-        assert_eq!(policy.temperature_for_class(MoveClass::Fast, &by_ply, 0), 0.1);
-        assert_eq!(policy.temperature_for_class(MoveClass::Init, &by_ply, 0), 0.0);
+        assert_eq!(
+            policy.temperature_for_class(MoveClass::Fast, &by_ply, 0),
+            0.1
+        );
+        assert_eq!(
+            policy.temperature_for_class(MoveClass::Init, &by_ply, 0),
+            0.0
+        );
         assert_eq!(
             policy.temperature_for_class(MoveClass::Full, &by_ply, 0),
             0.9,
@@ -4346,7 +5318,10 @@ mod fallback_tests {
         // Resolved value when the override is None (mirrors search.rs call site).
         let div = Divergences::gumbel(); // gumbel_target_c_scale defaults to None
         let resolved = div.gumbel_target_c_scale.unwrap_or(div.gumbel_c_scale);
-        assert_eq!(resolved, c_scale, "unset override resolves to gumbel_c_scale");
+        assert_eq!(
+            resolved, c_scale,
+            "unset override resolves to gumbel_c_scale"
+        );
         let (ids, w, l) = gumbel_target_policy(&root, None, c_visit, resolved, 1);
         assert_eq!(ids, ref_ids);
         assert_eq!(l, ref_l, "logits output is independent of c_scale");
@@ -4372,8 +5347,12 @@ mod fallback_tests {
         let logit_map = root.root_logits.clone().unwrap();
         let (completed, v_mix) = gumbel_completed_q(&root, &logit_map);
         let max_n = root.edges.iter().map(|e| e.visits).max().unwrap();
-        let mut support: Vec<PackedCoord> =
-            root.edges.iter().filter(|e| e.visits >= 1).map(|e| e.action_id).collect();
+        let mut support: Vec<PackedCoord> = root
+            .edges
+            .iter()
+            .filter(|e| e.visits >= 1)
+            .map(|e| e.action_id)
+            .collect();
         support.sort_unstable();
         assert_eq!(ids, support, "exporter uses ascending action_id support");
         let ref_scores: Vec<f32> = support
@@ -4408,8 +5387,12 @@ mod fallback_tests {
         Python::initialize();
         Python::attach(|py| {
             let overrides = PyDict::new(py);
-            overrides.set_item("gumbel_target_c_scale", 0.35f32).unwrap();
-            overrides.set_item("gumbel_draw_temperature", 1.0f32).unwrap();
+            overrides
+                .set_item("gumbel_target_c_scale", 0.35f32)
+                .unwrap();
+            overrides
+                .set_item("gumbel_draw_temperature", 1.0f32)
+                .unwrap();
             let dv = resolve_divergences(None, Some(&overrides), false)
                 .expect("new lever keys must pass the known-keys gate");
             assert_eq!(dv.gumbel_target_c_scale, Some(0.35));
@@ -4420,7 +5403,8 @@ mod fallback_tests {
             // failure class that tripped the supervisor circuit breaker.
             let fast = PyDict::new(py);
             fast.set_item("fast_gumbel_root_enabled", true).unwrap();
-            fast.set_item("fast_gumbel_sequential_halving", true).unwrap();
+            fast.set_item("fast_gumbel_sequential_halving", true)
+                .unwrap();
             fast.set_item("fast_gumbel_nonroot_select", true).unwrap();
             fast.set_item("fast_gumbel_c_visit", 12.0f32).unwrap();
             fast.set_item("fast_gumbel_c_scale", 0.5f32).unwrap();
@@ -4440,6 +5424,62 @@ mod fallback_tests {
             let bogus = PyDict::new(py);
             bogus.set_item("gumbel_bogus_lever", 1.0f32).unwrap();
             assert!(resolve_divergences(None, Some(&bogus), false).is_err());
+
+            let tss_async = PyDict::new(py);
+            tss_async.set_item("tss_interior_guard", true).unwrap();
+            tss_async.set_item("tss_solver_mode", 3u32).unwrap();
+            tss_async.set_item("tss_solver_node_cap", 500u32).unwrap();
+            tss_async.set_item("tss_solver_sample_16", 16u32).unwrap();
+            tss_async.set_item("tss_solver_root_guard", true).unwrap();
+            tss_async.set_item("tss_solver_async", true).unwrap();
+            tss_async
+                .set_item("tss_solver_async_threads", 12u32)
+                .unwrap();
+            tss_async
+                .set_item("tss_solver_async_threads_max", 48u32)
+                .unwrap();
+            tss_async.set_item("tss_solver_park", true).unwrap();
+            tss_async
+                .set_item("tss_solver_park_timeout_ms", 200u32)
+                .unwrap();
+            tss_async.set_item("tss_solver_all_leaves", true).unwrap();
+            tss_async
+                .set_item("tss_solver_async_inline_16", 4u32)
+                .unwrap();
+            tss_async.set_item("tss_solver_horizon", 16u32).unwrap();
+            tss_async.set_item("tss_solver_dual_pass", true).unwrap();
+            tss_async
+                .set_item("tss_solver_loss_reserve_nodes", 32u32)
+                .unwrap();
+            let av = resolve_divergences(None, Some(&tss_async), false)
+                .expect("tss_solver_* keys must pass the known-keys gate");
+            assert!(av.tss_interior_guard);
+            assert_eq!(av.tss_solver_mode, 3);
+            assert_eq!(av.tss_solver_node_cap, 500);
+            assert!(av.tss_solver_async);
+            assert_eq!(av.tss_solver_async_threads, 12);
+            assert_eq!(av.tss_solver_async_threads_max, 48);
+            assert!(av.tss_solver_park);
+            assert_eq!(av.tss_solver_park_timeout_ms, 200);
+            assert!(av.tss_solver_all_leaves);
+            assert_eq!(av.tss_solver_async_inline_16, 4);
+            assert!(av.tss_solver_dual_pass);
+            assert_eq!(av.tss_solver_loss_reserve_nodes, 32);
+
+            let park_without_async = PyDict::new(py);
+            park_without_async
+                .set_item("tss_solver_park", true)
+                .unwrap();
+            assert!(resolve_divergences(None, Some(&park_without_async), false).is_err());
+
+            let max_below_base = PyDict::new(py);
+            max_below_base
+                .set_item("tss_solver_async_threads", 12u32)
+                .unwrap();
+            max_below_base
+                .set_item("tss_solver_async_threads_max", 8u32)
+                .unwrap();
+            assert!(resolve_divergences(None, Some(&max_below_base), false).is_err());
 
             // fast_* keys are Fast-view levers: accepted only in the fast map,
             // rejected in the BASE map where they would silently mutate the
@@ -4477,6 +5517,91 @@ mod fallback_tests {
             tau_off.set_item("gumbel_draw_temperature", 0.0f32).unwrap();
             assert!(resolve_divergences(None, Some(&tau_off), false).is_ok());
         });
+    }
+
+    #[test]
+    fn main5_style_async_park_search_smoke() {
+        let action_id = pack_coord(hexo_engine::HexCoord::ZERO);
+        let eval = RustEvaluation {
+            value: 0.0,
+            priors: vec![(action_id, 1.0)],
+            moves_left: None,
+            logits: None,
+        };
+        let mut divergences = Divergences::parity();
+        divergences.tss_solver_mode = 3;
+        divergences.tss_solver_node_cap = 500;
+        divergences.tss_solver_sample_16 = 16;
+        divergences.tss_solver_async = true;
+        divergences.tss_solver_async_threads = 6;
+        divergences.tss_solver_async_threads_max = 6;
+        divergences.tss_solver_park = true;
+        divergences.tss_solver_all_leaves = true;
+        divergences.tss_solver_park_timeout_ms = 1000;
+
+        let mut search = RustSearch::new(
+            RustHexoState::new(),
+            &eval,
+            1,
+            0.2,
+            0.0,
+            1.0,
+            None,
+            Widening {
+                mass: 1.0,
+                min_children: 1,
+                max_children: 1,
+            },
+            0.0,
+            true,
+            divergences,
+        )
+        .expect("main5-style search builds");
+        let pool = TssAsyncPool::new(6, 6, true);
+        search.set_tss_async(Some(pool.handle_for(0)));
+
+        let (eval_leaves, mut parked, progressed, added_in_flight) =
+            select_continuous_leaves(&mut search, 0, 1.0, 1, 1.0)
+                .expect("main5-style leaf selection succeeds");
+        assert!(progressed);
+        assert!(eval_leaves.is_empty(), "accepted solve parks before eval");
+        assert_eq!(parked.len(), 1);
+        assert_eq!(added_in_flight, 1);
+        assert_eq!(search.tss.async_enqueued, 1);
+        assert_eq!(search.tss.park_parked, 1);
+
+        let mut slots = vec![ContinuousSlot {
+            game_key: 5,
+            ply: 0,
+            search: Some(search),
+            phase: ContinuousPhase::Active,
+            in_flight: added_in_flight,
+            baseline: HashMap::new(),
+            policy_init_remaining: 0,
+            move_class: MoveClass::Full,
+        }];
+        let mut queue = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !parked.is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "main5-style async solve did not resolve before smoke deadline"
+            );
+            drain_tss_async(&pool, &mut slots);
+            resolve_parked_continuous(&mut slots, &mut parked, &mut queue, 1.0)
+                .expect("parked leaf resolves");
+            std::thread::yield_now();
+        }
+
+        let search = slots[0].search.as_ref().expect("search remains live");
+        assert!(search.tss.deep_calls >= 1);
+        assert_eq!(search.tss.async_dropped, 0);
+        assert_eq!(
+            search.tss.park_hard + search.tss.park_released,
+            1,
+            "verified hard result or Unknown release consumes the parked leaf"
+        );
+        assert_eq!(search.tss.park_bailed, 0);
     }
 
     // === main_8: turn-based classification + per-class divergences ===========
@@ -4529,7 +5654,10 @@ mod fallback_tests {
         let mut total = 0u64;
         for game_key in 0u64..2000 {
             for k in 0u32..16 {
-                if matches!(policy.classify(base_seed, game_key, 2 * k, 0), MoveClass::Full) {
+                if matches!(
+                    policy.classify(base_seed, game_key, 2 * k, 0),
+                    MoveClass::Full
+                ) {
                     full += 1;
                 }
                 total += 1;

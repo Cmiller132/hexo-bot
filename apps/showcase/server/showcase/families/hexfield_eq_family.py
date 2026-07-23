@@ -17,6 +17,7 @@ _META_ENV = {
     "trunk_layout": "HEXFIELD_EQ_TRUNK",
     "reg_lane": "HEXFIELD_EQ_REG_LANE",
     "reg_tok_read": "HEXFIELD_EQ_REG_TOK_READ",
+    "cell_q": "HEXFIELD_EQ_CELL_Q",
     "feature_version": "HEXFIELD_EQ_FEATURE_VERSION",
     "raytap": "HEXFIELD_EQ_RAYTAP",
     "ray_blockers": "HEXFIELD_EQ_RAY_BLOCKERS",
@@ -30,7 +31,11 @@ def _env_value(value: Any) -> str:
 def _arch_from_meta(meta: Any, checkpoint: Path) -> dict[str, str]:
     if not isinstance(meta, dict):
         raise RuntimeError(f"hexfield_eq checkpoint has no architecture meta: {checkpoint}")
-    missing = [key for key in _META_ENV if key != "ray_blockers" and key not in meta]
+    missing = [
+        key
+        for key in _META_ENV
+        if key not in ("ray_blockers", "cell_q") and key not in meta
+    ]
     if missing:
         raise RuntimeError(
             f"hexfield_eq checkpoint meta is missing architecture keys {missing}: {checkpoint}"

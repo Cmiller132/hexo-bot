@@ -1,0 +1,123 @@
+# hexfield_eq_main_5 — SERVING config for the showcase (capacity scale-up line).
+#
+# main_5 = the capacity scale-up line: 15-block CCACCACCACCACCA trunk (the
+# KNOWN_TRUNK_LAYOUTS (10,5) shape), per-cell CellQ head REMOVED, feature_version
+# 2. Served checkpoint = ep35. The architecture is carried by the checkpoint meta
+# (model.arch_meta) — there is NO architecture env in this serve config, exactly
+# as with hexfield_eq_main_2; the meta is the authoritative self-description.
+#
+# SCOPE: the showcase serve path reads ONLY [model.config.selfplay] and
+# [model.config.multi_stage_eval] and rejects unknown keys. This file therefore
+# carries only the fields hexfield_eq_main_2 uses in those two sections, plus the
+# deep-TSS serve block. All training-only sections ([model.config.training],
+# [model.config.evaluation], the sprt/opponents subtables, [run], [loop], the
+# top-level [selfplay]/[train]/[checkpoint]) are intentionally dropped.
+#
+# Search/gumbel/c_puct/widening/fpu/ml regime = unchanged from main_2. The one
+# serve-relevant search value retuned on the live main_5 training line and
+# matched here is multi_stage_eval.full_search_visits (256, down from main_2's
+# 512).
+
+[model]
+name = "hexfield_eq"
+module = "hexfield_eq.plugin"
+
+[model.config]
+device = "cuda"
+
+[model.config.selfplay]
+search_visits = 256
+# 100% PCR: every turn is a full move with a written Gumbel-target row.
+pcr_full_proportion = 1.0
+pcr_fast_visits = 192
+pcr_fast_temperature = 0.0
+active_games = 256
+virtual_batch_size = 96
+flush_target = 1024
+active_root_limit = 256
+max_game_plies = 256
+
+# ---- Deep-TSS serve block (serve-retuned). Field names are copied VERBATIM
+#      from the live main_5 training config. NOTE: the tss_solver_ keys take
+#      effect only once the deep-TSS engine port lands on the showcase serve path.
+tss_enabled = true
+tss_interior_guard = true
+# mode 3 = verified WIN + hard-LOSS consumption.
+tss_solver_mode = 3
+tss_solver_root_guard = true
+tss_solver_node_cap = 500
+tss_solver_sample_16 = 16
+tss_solver_dual_pass = true
+# UNBOUNDED horizon (0 => semantic_horizon = u32::MAX; the node cap bounds work).
+tss_solver_horizon = 0
+tss_solver_horizon_ladder = false
+tss_solver_async = true
+tss_solver_async_threads = 6
+tss_solver_async_inline_16 = 4
+tss_solver_async_threads_max = 6
+tss_solver_park = true
+tss_solver_park_timeout_ms = 5000
+tss_solver_all_leaves = true
+tss_zone = false
+tss_solver_j2near = false
+tss_solver_group2 = false
+tss_solver_loss_reserve_nodes = 0
+
+cache_max_states = 262144
+nucleus_f64 = true
+lcb_z = 1.6
+clean_root_prior_cache = true
+
+# ---- Search c_puct (constant; visit-scaling neutralized) ----
+c_puct = 1.5
+visit_scaled_c_puct = true
+c_scale = 0.0
+c_base = 500.0
+# De-contaminated target search: zero root Dirichlet, zero forced playouts.
+root_dirichlet_noise_fraction = 0.0
+root_dirichlet_total_alpha = 10.83
+dirichlet_shaped = true
+fpu_reduction = 0.2
+root_fpu_reduction = 0.0
+forced_playout_k = 0.0
+pruned_dynamic_cpuct = true
+lazy_widening = true
+new_child_fpu = true
+widening_policy_mass = 0.95
+widening_max_children = 96
+widening_min_children = 2
+temperature = 1.0
+temperature_floor = 0.15
+temperature_halflife_plies = 20.0
+root_policy_temperature = 1.05
+policy_init_fraction = 0.35
+policy_init_avg_plies = 4.0
+policy_init_max_plies = 8
+policy_init_temperature = 1.4
+ml_two_sided = false
+ml_final_pick_band = 0.08
+
+# ---- Gumbel AlphaZero (m=16 fits 256 visits exactly) ----
+gumbel_root_enabled = true
+gumbel_sequential_halving = true
+gumbel_nonroot_select = true
+gumbel_target_enabled = true
+gumbel_c_visit = 50.0
+gumbel_c_scale = 1.0
+gumbel_m = 16
+gumbel_target_min_visits = 1
+gumbel_play_prune = true
+
+[model.config.multi_stage_eval]
+enabled = true
+games_budget = 192
+every_n_epochs = 5
+# full_search_visits matched to the live main_5 value (256, down from main_2's
+# 512) — the retuned serve-relevant eval search budget.
+full_search_visits = 256
+eval_virtual_batch_size = 32
+sealbot_share = 0.1667
+strix_share = 0.3333
+strix_weight = 1.0
+verdict_reference_lag = 5
+pool_path = "diagnostics/eval_pool.json"

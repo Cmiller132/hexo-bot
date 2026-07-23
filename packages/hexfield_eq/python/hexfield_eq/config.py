@@ -76,6 +76,34 @@ class SelfplayConfig:
     temperature_halflife_plies: float = 30.0
     max_game_plies: int = 512
     tss_enabled: bool = True
+    # Deep-TSS solver knobs (ported for main_5 serve). All default OFF so a
+    # checkpoint config that omits them (e.g. main_2 ep70) keeps the light
+    # tactical-guard-only path, byte-identical to before this port. Consumed by
+    # build_divergence_overrides -> Rust divergence_overrides; defaults mirror the
+    # trainer SelfplayConfig. The serve profile (configs/hexfield_eq_main_5.toml)
+    # turns them on (mode 3, async, park, cap 500, 6 threads, all-leaves).
+    tss_interior_guard: bool = False
+    tss_solver_mode: int = 0
+    tss_solver_node_cap: int = 2000
+    tss_solver_sample_16: int = 16
+    tss_solver_root_guard: bool = False
+    tss_solver_async: bool = False
+    tss_solver_async_threads: int = 8
+    tss_solver_async_threads_max: int = 0
+    tss_solver_park: bool = False
+    tss_solver_all_leaves: bool = False
+    tss_solver_park_timeout_ms: int = 100
+    tss_solver_async_inline_16: int = 0
+    tss_zone: bool = False
+    tss_zone_stale_filter: bool = False
+    tss_zone_count2: bool = False
+    tss_pair_commutation: bool = False
+    tss_solver_horizon: int = 16
+    tss_solver_dual_pass: bool = False
+    tss_solver_loss_reserve_nodes: int = 0
+    tss_solver_group2: bool = False
+    tss_solver_j2near: bool = False
+    tss_solver_horizon_ladder: bool = False
     search_parity_mode: bool = False
     # Moves-left utility. Defaults: enabled, two-sided, with the final-move
     # tie-break. Passed to Rust as divergence_overrides. moves_left_utility=False
@@ -535,6 +563,32 @@ def build_divergence_overrides(
         "clean_root_prior_cache": bool(sp.clean_root_prior_cache),
         "dirichlet_shaped": bool(sp.dirichlet_shaped),
         "pruned_dynamic_cpuct": bool(sp.pruned_dynamic_cpuct),
+        # TSS interior forced-move guard (Lever 0, default OFF).
+        "tss_interior_guard": bool(sp.tss_interior_guard),
+        # TSS deep-solver ladder (Stage 4, default OFF).
+        "tss_solver_mode": int(sp.tss_solver_mode),
+        "tss_solver_node_cap": int(sp.tss_solver_node_cap),
+        "tss_solver_sample_16": int(sp.tss_solver_sample_16),
+        "tss_solver_root_guard": bool(sp.tss_solver_root_guard),
+        # TSS async solve pool (async rung, default OFF).
+        "tss_solver_async": bool(sp.tss_solver_async),
+        "tss_solver_async_threads": int(sp.tss_solver_async_threads),
+        "tss_solver_async_threads_max": int(sp.tss_solver_async_threads_max),
+        "tss_solver_park": bool(sp.tss_solver_park),
+        "tss_solver_all_leaves": bool(sp.tss_solver_all_leaves),
+        "tss_solver_park_timeout_ms": int(sp.tss_solver_park_timeout_ms),
+        "tss_solver_async_inline_16": int(sp.tss_solver_async_inline_16),
+        "tss_zone": bool(sp.tss_zone),
+        "tss_zone_stale_filter": bool(sp.tss_zone_stale_filter),
+        "tss_zone_count2": bool(sp.tss_zone_count2),
+        "tss_pair_commutation": bool(sp.tss_pair_commutation),
+        # TSS deep-solve semantic horizon (h16 floor, or 0 = unbounded) + ladder.
+        "tss_solver_horizon": int(sp.tss_solver_horizon),
+        "tss_solver_dual_pass": bool(sp.tss_solver_dual_pass),
+        "tss_solver_loss_reserve_nodes": int(sp.tss_solver_loss_reserve_nodes),
+        "tss_solver_group2": bool(sp.tss_solver_group2),
+        "tss_solver_j2near": bool(sp.tss_solver_j2near),
+        "tss_solver_horizon_ladder": bool(sp.tss_solver_horizon_ladder),
         # Gumbel AlphaZero levers (default OFF).
         "gumbel_target": bool(sp.gumbel_target_enabled),
         "gumbel_root": bool(sp.gumbel_root_enabled),

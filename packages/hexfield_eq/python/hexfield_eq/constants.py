@@ -404,6 +404,18 @@ if REG_TOK_READ and not REG_LANE:
 # knob.
 REG_SUM_SCALE = 1.0 / 32.0
 
+# --- per-cell Q head toggle ------------------------------------------------------
+# HEXFIELD_EQ_CELL_Q ("0"/"1", default "1"): build the train-only per-cell Q
+# head (cell_q_conv / cell_q_expand / cell_q_head). "0" drops the head entirely
+# (main_5+: owner-ordered removal — no serve consumer, and losses.py already
+# skips the component when forward() does not emit it). An arch knob (it
+# changes the state-dict key set), so it takes the HEXFIELD_EQ_* namespace and
+# rides the checkpoint meta (model.arch_meta) like reg_lane.
+_CELL_Q_ENV = os.environ.get("HEXFIELD_EQ_CELL_Q", "1")
+if _CELL_Q_ENV not in ("0", "1"):
+    raise ValueError(f"HEXFIELD_EQ_CELL_Q={_CELL_Q_ENV!r} must be '0' or '1'")
+CELL_Q_HEAD = _CELL_Q_ENV == "1"
+
 # --- relative-position bias table (per-block learned tables) --------------------
 # rows 0-216:  exact axial offsets with hex-dist <= 8 (the 217-offset disk LUT)
 # rows 217-224: on-win-axis ring buckets, hex-dist 9-16

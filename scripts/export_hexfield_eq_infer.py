@@ -28,6 +28,7 @@ ARCH_ENV = {
     "trunk_layout": "HEXFIELD_EQ_TRUNK",
     "reg_lane": "HEXFIELD_EQ_REG_LANE",
     "reg_tok_read": "HEXFIELD_EQ_REG_TOK_READ",
+    "cell_q": "HEXFIELD_EQ_CELL_Q",
     "feature_version": "HEXFIELD_EQ_FEATURE_VERSION",
     "raytap": "HEXFIELD_EQ_RAYTAP",
     "ray_blockers": "HEXFIELD_EQ_RAY_BLOCKERS",
@@ -47,7 +48,11 @@ def export(source: Path, out: Path, *, verify: bool) -> None:
     if not isinstance(payload.get("meta"), dict):
         raise SystemExit(f"error: checkpoint has no architecture meta: {source}")
     meta = dict(payload["meta"])
-    missing = [key for key in ARCH_ENV if key != "ray_blockers" and key not in meta]
+    missing = [
+        key
+        for key in ARCH_ENV
+        if key not in ("ray_blockers", "cell_q") and key not in meta
+    ]
     if missing:
         raise SystemExit(f"error: checkpoint meta lacks architecture keys: {missing}")
 

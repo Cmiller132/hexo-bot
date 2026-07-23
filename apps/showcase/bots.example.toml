@@ -80,3 +80,12 @@ epoch = 0
 # epoch = 70
 # search_profile = "../../configs/hexfield_eq_main_2.toml"
 # group = "hexfield_eq"
+# [[checkpoint]]
+# id = "hexfield-main5-ep35"
+# family = "hexfield_eq"
+# checkpoint = "deploy/models/hexfield_eq_main5_ep35_infer.pt"
+# label = "Hexfield EQ main_5 (ep35)"
+# run = "hexfield_eq_main_5"
+# epoch = 35
+# search_profile = "../../configs/hexfield_eq_main_5.toml"
+# group = "hexfield_eq"

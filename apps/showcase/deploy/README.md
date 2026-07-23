@@ -61,6 +61,34 @@ model. A worker may host shrimp and hexfield entries together, but all
 hexfield entries in one worker must share one architecture. Local development
 may point the entry directly at the full training checkpoint.
 
+### Preparing the hexfield_eq main_5 ep35 model
+
+The main_5 ep35 entry ships alongside ep70 and adds the deep-TSS solver to the
+serving path. Export the inference weights without optimizer state:
+
+```bash
+python scripts/export_hexfield_eq_infer.py \
+  <run>/checkpoints/epoch_000035.pt \
+  --out apps/showcase/deploy/models/hexfield_eq_main5_ep35_infer.pt \
+  --verify
+```
+
+Merge the main_5 entry from `deploy/bots.hexfield_eq.example.toml` into
+`deploy/models/bots.toml`. It declares `family = "hexfield_eq"` and the
+main_5 search profile `/app/configs/hexfield_eq_main_5.toml`, which is baked
+into the image from `configs/hexfield_eq_main_5.toml`.
+
+The engine now bundles the deep-TSS solver, so this update requires a full
+image rebuild rather than a `docker compose restart app`:
+
+```bash
+docker compose up -d --build
+```
+
+The deep-TSS solver warms its tables on each worker's first hexfield request.
+Wait for `worker ready` in the log before directing traffic at the main_5
+entry.
+
 4. **Launch**:
 
    ```bash

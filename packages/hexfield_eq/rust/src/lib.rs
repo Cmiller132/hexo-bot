@@ -14,6 +14,13 @@ mod support;
 
 // Threat-Space Search core (vendored into hexfield_eq; see threats_shared.rs).
 mod threats_shared;
+mod tss_core;
+mod tss_solver;
+mod tss_verify;
+mod tss_verify_group2;
+
+#[cfg(feature = "python")]
+mod tss_async;
 
 #[cfg(feature = "python")]
 mod cache;

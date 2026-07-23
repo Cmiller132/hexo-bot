@@ -291,6 +291,35 @@ def test_t4_taps_are_live_off_init() -> None:
     assert not torch.allclose(out_pert["policy"], out_init["policy"], atol=1e-6)
 
 
+def test_t4_lut2_own_and_opp_tables_are_live() -> None:
+    """Each additive table independently reaches the policy output."""
+
+    batch = _position_batch(seeds=(5,), n_stones=9)
+    model = HexfieldNet(raytap="both", raytap_lut="additive").eval()
+    _randomize(model, 14)
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if name.endswith((".O", ".P")):
+                param.zero_()
+
+    args = (batch["feats"], batch["nbr"], batch["mask"], batch["coords"])
+    with torch.no_grad():
+        base = model(*args, raylen=batch["raylen"])["policy"]
+        for name, param in model.named_parameters():
+            if name.endswith(".O"):
+                param.fill_(0.5)
+        own = model(*args, raylen=batch["raylen"])["policy"]
+        for name, param in model.named_parameters():
+            if name.endswith(".O"):
+                param.zero_()
+            elif name.endswith(".P"):
+                param.fill_(-0.5)
+        opp = model(*args, raylen=batch["raylen"])["policy"]
+
+    assert not torch.allclose(own, base, atol=1e-6, rtol=0), "O table is not live"
+    assert not torch.allclose(opp, base, atol=1e-6, rtol=0), "P table is not live"
+
+
 def test_raytap_requires_raylen() -> None:
     batch = _position_batch(seeds=(3,), n_stones=5)
     rt = HexfieldNet(raytap="both").eval()
