@@ -32,3 +32,8 @@ packages/hexo_train
 apps/showcase/tests
 apps/showcase/.env
 apps/showcase/deploy
+
+# Re-include the two serve perf/parity harnesses (Dockerfile COPYs them for
+# on-box A310 benchmarking); the rest of scripts/ stays excluded above.
+!scripts/parity_hexfield_eq_main5_serve.py
+!scripts/bench_hexfield_eq_main5_serve.py
