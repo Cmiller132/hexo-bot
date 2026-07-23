@@ -414,8 +414,32 @@ class HexfieldEvaluator:
         )
         # When set, defer the per-group decode/softmax/gather (which carry two
         # device syncs) from submit_payload to result(), so submit only enqueues
-        # forwards. Default off (HEXFIELD_DEFER_DECODE=1 to enable).
-        self._defer_decode = os.environ.get("HEXFIELD_DEFER_DECODE") == "1"
+        # forwards. XPU defaults this on: its fp32 eager forward otherwise gets
+        # serialized group-by-group by the pageable group-count H2D and dynamic
+        # boolean gather. Explicit 0/1 always wins.
+        self._defer_decode = os.environ.get(
+            "HEXFIELD_DEFER_DECODE",
+            "1" if self.device.type == "xpu" else "0",
+        ) == "1"
+        # Avoid the dynamic-shape priors[legal] device gather on XPU. The exact
+        # same full fp32 softmax tensor is copied after the forward drain and
+        # its known legal prefixes are flattened on the host. The extra D2H is
+        # O(B*S), negligible beside O(B*S^2) attention, and removes a device
+        # synchronization per shape group. Explicitly toggleable for A/B.
+        self._host_legal_gather = os.environ.get(
+            "HEXFIELD_HOST_LEGAL_GATHER",
+            "1" if self.device.type == "xpu" else "0",
+        ) == "1"
+        # Reuse the shape-only column index used by legal masking. This removes
+        # one arange allocation/launch per group without changing any values.
+        self._decode_cache = (
+            os.environ.get(
+                "HEXFIELD_DECODE_CACHE",
+                "1" if self.device.type == "xpu" else "0",
+            )
+            == "1"
+        )
+        self._decode_col_idx: dict[tuple[str, int | None, int], torch.Tensor] = {}
         # Keep feats f16 through pack+H2D (CUDA): half the feats H2D bytes and no
         # astype copy. HEXFIELD_F32_FEATS=1 forces the f32 path instead.
         self._f16_feats = (
@@ -454,14 +478,18 @@ class HexfieldEvaluator:
             self._compiled_fpv = self._raw_fpv
         # Rust parallel serve-pack with zero-copy buffers (HEXFIELD_RUST_PACK):
         # grouping + per-group padding + f16/int buffer assembly run in parallel
-        # Rust; the resulting zero-copy buffers are consumed via torch.frombuffer
-        # + .to(device), skipping the Python pack loop and astype.
-        # Gated on _f16_feats: the Rust pack emits f16 feats only, so the f32
-        # toggle forces a fall back to the CSR/Python pack.
+        # Rust; zero-copy buffers feed compact H2D transfers. CUDA retains f16;
+        # XPU losslessly widens the already wire-rounded f16 features to fp32
+        # during transfer, skipping the Python pack loop and host astype.
         self._rust_pack = (
-            self.device.type == "cuda"
-            and self._f16_feats
-            and os.environ.get("HEXFIELD_RUST_PACK") == "1"
+            os.environ.get("HEXFIELD_RUST_PACK") == "1"
+            and (
+                (self.device.type == "cuda" and self._f16_feats)
+                # XPU runs the model in fp32, but can still consume the Rust
+                # packer's exact f16 wire rows: widen them losslessly during
+                # H2D while retaining the parallel pack + compact i32 transfer.
+                or self.device.type == "xpu"
+            )
         )
         # Dedicated copy stream + pinned staging ring (HEXFIELD_COPY_STREAM=1,
         # rust-pack path only): makes submit_payload a true async enqueue
@@ -660,8 +688,14 @@ class HexfieldEvaluator:
             "legal_counts": legal_counts,
             "values_gpu": torch.cat(gpu_values),
             "ml_gpu": torch.cat(gpu_ml) if request_ml else None,
-            "priors_gpu": torch.cat(gpu_priors),
-            "logits_gpu": torch.cat(gpu_logits) if request_logits else None,
+            "priors_gpu": (
+                gpu_priors if self._host_legal_gather else torch.cat(gpu_priors)
+            ),
+            "logits_gpu": (
+                (gpu_logits if self._host_legal_gather else torch.cat(gpu_logits))
+                if request_logits
+                else None
+            ),
             "perf_events": perf_events,
         }
 
@@ -848,7 +882,15 @@ class HexfieldEvaluator:
                 d_feats = (
                     torch.frombuffer(grp["feats"], dtype=torch.float16)
                     .reshape(gn, p, NUM_FEATURES)
-                    .to(dev, non_blocking=True)
+                    .to(
+                        dev,
+                        dtype=(
+                            torch.float32
+                            if self.device.type == "xpu"
+                            else torch.float16
+                        ),
+                        non_blocking=True,
+                    )
                 )
                 d_nbr = (
                     torch.frombuffer(grp["nbr"], dtype=torch.int32)
@@ -900,8 +942,14 @@ class HexfieldEvaluator:
             "legal_counts": legal_counts,
             "values_gpu": torch.cat(gpu_values),
             "ml_gpu": torch.cat(gpu_ml) if request_ml else None,
-            "priors_gpu": torch.cat(gpu_priors),
-            "logits_gpu": torch.cat(gpu_logits) if request_logits else None,
+            "priors_gpu": (
+                gpu_priors if self._host_legal_gather else torch.cat(gpu_priors)
+            ),
+            "logits_gpu": (
+                (gpu_logits if self._host_legal_gather else torch.cat(gpu_logits))
+                if request_logits
+                else None
+            ),
             "perf_events": perf_events,
         }
 
@@ -930,18 +978,32 @@ class HexfieldEvaluator:
                 if request_logits:
                     gpu_logits.append(logits_flat)
             handle["values_gpu"] = torch.cat(gpu_values)
-            handle["priors_gpu"] = torch.cat(gpu_priors)
+            handle["priors_gpu"] = (
+                gpu_priors if self._host_legal_gather else torch.cat(gpu_priors)
+            )
             handle["ml_gpu"] = torch.cat(gpu_ml) if request_ml else None
-            handle["logits_gpu"] = torch.cat(gpu_logits) if request_logits else None
+            handle["logits_gpu"] = (
+                (gpu_logits if self._host_legal_gather else torch.cat(gpu_logits))
+                if request_logits
+                else None
+            )
 
         values_out = handle["values_gpu"].cpu().numpy().astype(np.float32, copy=False)
         # priors_gpu is torch.cat over the per-row legal-prefix priors in row
         # order, so flat_priors is the sum(legal_counts) positional layout the
         # Rust parser walks. Emitted as one contiguous f32 buffer; the row split
         # happens Rust-side from legal_counts.
-        flat_priors = np.ascontiguousarray(
-            handle["priors_gpu"].cpu().numpy(), dtype=np.float32
-        )
+        if self._host_legal_gather:
+            # The first values_gpu.cpu() above drained all queued forwards.
+            # Copy each O(B*S) full-softmax group, then select the exact same
+            # row-major prefixes the device boolean gather selected before.
+            flat_priors = self._flatten_host_legal(
+                handle["priors_gpu"], legal_counts
+            )
+        else:
+            flat_priors = np.ascontiguousarray(
+                handle["priors_gpu"].cpu().numpy(), dtype=np.float32
+            )
 
         reply = {
             "values_bytes": values_out.tobytes(),
@@ -954,8 +1016,12 @@ class HexfieldEvaluator:
         if request_logits:
             # Raw pre-softmax logits, same positional layout as priors_bytes
             # (per-row legal prefix, row order).
-            flat_logits = np.ascontiguousarray(
-                handle["logits_gpu"].cpu().numpy(), dtype=np.float32
+            flat_logits = (
+                self._flatten_host_legal(handle["logits_gpu"], legal_counts)
+                if self._host_legal_gather
+                else np.ascontiguousarray(
+                    handle["logits_gpu"].cpu().numpy(), dtype=np.float32
+                )
             )
             reply["priors_logits_bytes"] = flat_logits.tobytes()
         # The .cpu() syncs above guarantee this flush's forward events are
@@ -963,6 +1029,32 @@ class HexfieldEvaluator:
         if self._perf is not None:
             self._perf.on_result(handle.get("perf_events"), int(b))
         return reply
+
+    @staticmethod
+    def _flatten_host_legal(
+        groups: list[torch.Tensor], legal_counts: np.ndarray
+    ) -> np.ndarray:
+        """D2H full (group, Npad) rows and flatten known legal prefixes.
+
+        This is byte-equivalent to concatenating ``tensor[legal]`` on-device:
+        no arithmetic is repeated on the host; only already-computed fp32
+        elements are selected in the same row-major order.
+        """
+        pieces: list[np.ndarray] = []
+        row = 0
+        for tensor in groups:
+            host = tensor.cpu().numpy()
+            for local in range(host.shape[0]):
+                count = int(legal_counts[row])
+                pieces.append(host[local, :count])
+                row += 1
+        if row != len(legal_counts):
+            raise RuntimeError(
+                f"legal-prefix group rows {row} != batch rows {len(legal_counts)}"
+            )
+        if not pieces:
+            return np.empty(0, dtype=np.float32)
+        return np.ascontiguousarray(np.concatenate(pieces), dtype=np.float32)
 
     def _forward_group(
         self, feats, qr, nbr, offsets, sizes, legal_counts, start, end, pad_to,
@@ -1147,36 +1239,59 @@ class HexfieldEvaluator:
         group_counts = torch.from_numpy(
             np.ascontiguousarray(legal_counts[start:end])
         ).to(logits.device, dtype=torch.long)
-        col_idx = torch.arange(logits.shape[1], device=logits.device)
+        cache_key = (
+            logits.device.type,
+            logits.device.index,
+            int(logits.shape[1]),
+        )
+        col_idx = (
+            self._decode_col_idx.get(cache_key) if self._decode_cache else None
+        )
+        if col_idx is None:
+            col_idx = torch.arange(logits.shape[1], device=logits.device)
+            if self._decode_cache:
+                self._decode_col_idx[cache_key] = col_idx
         legal = col_idx.unsqueeze(0) < group_counts.unsqueeze(1)  # (g, Npad)
         masked = logits.masked_fill(~legal, float("-inf"))
         priors = torch.softmax(masked, dim=1)  # fp32, GPU; rows with l==0 -> NaN
         # When requested, gather the raw (pre-softmax, un-masked) logits over the
         # same legal mask / row-major order as priors[legal], so the flat layout
         # is positionally identical to priors_bytes. Skipped otherwise.
+        if self._host_legal_gather:
+            # Keep static-shaped outputs on-device; result() performs the
+            # row-prefix selection after the single forward drain.
+            return value, ml, priors, logits if request_logits else None
         logits_flat = logits[legal] if request_logits else None
         return value, ml, priors[legal], logits_flat
 
 
 # Fire the import-time-mismatch warning at most once per process (it is a
-# static property of how hexfield.model was imported, not per-construction).
+# static property of how hexfield_eq.model was imported, not per-construction).
 _SERVE_ENV_WARNED = False
 
 
-def _warn_if_import_flags_mismatch(role: str) -> None:
-    """Warn once if hexfield.model was imported with any serve kernel gate OFF.
+def _warn_if_import_flags_mismatch(role: str, device: str) -> None:
+    """Warn once if applicable import-time serve kernel gates are OFF.
 
-    The import-time flex/triton flags (serve_env.IMPORT_TIME_FLAGS) are read
-    once at ``import hexfield.model`` and cannot be flipped afterward. If the
-    module's already-imported globals disagree with the self-play serve profile
-    (all ON), the evaluator cannot match self-play kernels — surface that so the
-    caller knows to run ``prime_serve_env()`` before importing hexfield.model.
+    Import-time flex/Triton gates are backend-specific and are read
+    once at ``import hexfield_eq.model`` and cannot be flipped afterward. CUDA
+    expects the full self-play profile; XPU expects only explicitly probed gates.
+    A mismatch is surfaced so the caller can prime the backend before import.
     """
     global _SERVE_ENV_WARNED
     if _SERVE_ENV_WARNED:
         return
     from . import model as _model
-    from .serve_env import IMPORT_TIME_FLAGS
+    from .serve_env import IMPORT_TIME_FLAGS, XPU_FLEX_FLAGS
+
+    kind = str(device).split(":", 1)[0].lower()
+    if kind == "cuda":
+        expected = IMPORT_TIME_FLAGS
+    elif kind == "xpu" and os.environ.get("HEXFIELD_XPU_FLEX") == "1":
+        expected = XPU_FLEX_FLAGS
+    else:
+        # CUDA-only Triton gates being off on XPU/CPU is intentional.
+        return
 
     # env flag -> model.py module global set at import time. Derived from
     # serve_env.IMPORT_TIME_FLAGS — the single source of the gate list — so a
@@ -1186,7 +1301,7 @@ def _warn_if_import_flags_mismatch(role: str) -> None:
     irregular = {"HEXFIELD_EQ_TRITON_RAY": "_TRITON_RAY"}
     gate_globals = {
         env: irregular.get(env, "_" + env.removeprefix("HEXFIELD_"))
-        for env in IMPORT_TIME_FLAGS
+        for env in expected
     }
     disagree = [
         env for env, attr in gate_globals.items() if not getattr(_model, attr, False)
@@ -1194,10 +1309,10 @@ def _warn_if_import_flags_mismatch(role: str) -> None:
     if disagree:
         _SERVE_ENV_WARNED = True
         logger.warning(
-            "build_serve_evaluator(role=%s): hexfield.model was imported with "
+            "build_serve_evaluator(role=%s): hexfield_eq.model was imported with "
             "serve kernel gates OFF (%s); these import-time flags cannot be "
-            "flipped now. Call hexfield.serve_env.prime_serve_env() BEFORE the "
-            "first 'import hexfield.model' to match the self-play serve profile.",
+            "flipped now. Prime the backend serve environment BEFORE the first "
+            "'import hexfield_eq.model'.",
             role,
             ", ".join(disagree),
         )
@@ -1210,10 +1325,9 @@ def build_serve_evaluator(model, cfg, *, role="eval", auto_match_serve_env=True)
     build the evaluator identically. When ``auto_match_serve_env`` (the default
     for standalone eval), forces the evaluator-time serve flags to the self-play
     profile via ``apply_serve_env_profile()`` BEFORE construction (they are
-    re-read per HexfieldEvaluator), and warns once if hexfield.model's
-    already-imported import-time kernel gates disagree with that profile (those
-    cannot be flipped post-import; call ``prime_serve_env()`` before
-    ``import hexfield.model``).
+    re-read per HexfieldEvaluator), and warns once if the applicable
+    ``hexfield_eq.model`` gates disagree with the backend profile. Those gates
+    cannot be flipped post-import; call ``prime_serve_env_for_device()`` first.
 
     ``role`` ("eval" | "selfplay") is advisory, for log context only; both roles
     build the same evaluator class. Self-play passes
@@ -1224,5 +1338,5 @@ def build_serve_evaluator(model, cfg, *, role="eval", auto_match_serve_env=True)
 
     if auto_match_serve_env:
         apply_serve_env_profile()
-        _warn_if_import_flags_mismatch(role)
+        _warn_if_import_flags_mismatch(role, cfg.device)
     return HexfieldEvaluator(model, device=cfg.device)

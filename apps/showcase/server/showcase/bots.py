@@ -365,6 +365,11 @@ class _WorkerRuntime:
         # model module is first imported.
         for name, family_specs in grouped.items():
             families[name].prepare_process(family_specs)
+        # Must also precede load_net: model kernel gates are frozen at the same
+        # import boundary. Family adapters select only kernels applicable to
+        # the resolved backend (hexfield_eq Triton kernels are CUDA-only).
+        for family in families.values():
+            family.prepare_serve_process(device)
 
         # Profiles are family-scoped: two families may parse the same TOML
         # using different config dataclasses/search implementations.
@@ -699,6 +704,7 @@ def _gpu_probe_main(
             return
         family = get_family(spec.family)
         family.prepare_process([spec])
+        family.prepare_serve_process(resolved.device)
         model = family.load_net(spec)
         check = devmod.verify_device(model, resolved.device, family=family)
         if check.ok:

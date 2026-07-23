@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 from pathlib import Path
 from typing import Any, Sequence
 
 _SEED_MASK = (1 << 63) - 1
+log = logging.getLogger(__name__)
 _META_ENV = {
     "channels": "HEXFIELD_EQ_CHANNELS",
     "group_order": "HEXFIELD_EQ_GROUP_ORDER",
@@ -128,6 +130,31 @@ class HexfieldEqFamily:
             )
         os.environ.update(expected)
 
+    def prepare_serve_process(self, device: str) -> None:
+        """Prime backend-appropriate import-time gates before model import.
+
+        ``prepare_process`` has already installed checkpoint architecture env
+        by the time this hook runs, so importing the lightweight serve-env
+        module is safe. CUDA gets the established full serve profile. XPU keeps
+        CUDA-only Triton gates off and enables FlexAttention only under the
+        explicit parity/perf probe flag.
+        """
+        from hexfield_eq.serve_env import prime_serve_env_for_device
+
+        applied = prime_serve_env_for_device(device)
+        if applied:
+            log.info(
+                "hexfield_eq import-time serve gates for %s: %s",
+                device,
+                ", ".join(sorted(applied)),
+            )
+        elif str(device).split(":", 1)[0].lower() == "xpu":
+            log.info(
+                "hexfield_eq XPU uses materialized fp32 attention; CUDA-only "
+                "Triton gates remain off (set HEXFIELD_XPU_FLEX=1 only for "
+                "the A310 parity/perf probe)"
+            )
+
     def load_net(self, spec: Any) -> Any:
         from hexfield_eq.eval_arena import _load_hexfield_net
 
@@ -138,7 +165,17 @@ class HexfieldEqFamily:
         from hexfield_eq.inference import build_serve_evaluator
 
         cfg = parse_hexfield_config({"device": device, "selfplay": {}})
-        return build_serve_evaluator(model, cfg, role="eval")
+        evaluator = build_serve_evaluator(model, cfg, role="eval")
+        log.info(
+            "hexfield_eq evaluator: device=%s rust_pack=%s defer_decode=%s "
+            "host_legal_gather=%s decode_cache=%s",
+            device,
+            evaluator._rust_pack,
+            evaluator._defer_decode,
+            evaluator._host_legal_gather,
+            evaluator._decode_cache,
+        )
+        return evaluator
 
     def build_session(self) -> Any:
         from hexfield_eq import _rust

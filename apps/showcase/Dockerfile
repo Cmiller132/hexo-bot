@@ -110,6 +110,8 @@ COPY apps/showcase/profiles apps/showcase/profiles
 COPY apps/showcase/web apps/showcase/web
 COPY apps/showcase/bots.example.toml apps/showcase/bots.example.toml
 COPY configs configs
+COPY scripts/bench_hexfield_eq_main5_serve.py scripts/bench_hexfield_eq_main5_serve.py
+COPY scripts/parity_hexfield_eq_main5_serve.py scripts/parity_hexfield_eq_main5_serve.py
 
 ENV PYTHONPATH=/app/apps/showcase/server \
     SHOWCASE_DB_PATH=/data/showcase.db

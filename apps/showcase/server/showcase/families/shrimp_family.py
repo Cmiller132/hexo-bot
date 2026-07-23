@@ -81,6 +81,9 @@ def _load_checkpoint(path: Path) -> Any:
 class ShrimpFamily:
     name = "shrimp"
 
+    def prepare_serve_process(self, device: str) -> None:
+        """No extra import-time serve setup beyond the existing shrimp path."""
+
     def prepare_process(self, specs: Sequence[Any]) -> None:
         return None
 

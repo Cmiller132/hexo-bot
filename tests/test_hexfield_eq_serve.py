@@ -222,6 +222,29 @@ def test_l_net_serves_and_matches_train_forward() -> None:
 
 
 @needs_rust
+def test_deferred_host_legal_gather_is_byte_exact(monkeypatch) -> None:
+    """The XPU sync-removal path changes scheduling, never reply values."""
+    states = _battery_states(n_seeds=1)
+    payload, _ = _build_payload(states, request_ml=True)
+    payload["request_logits"] = True
+    model = _build_l_net()
+
+    monkeypatch.setenv("HEXFIELD_DEFER_DECODE", "0")
+    monkeypatch.setenv("HEXFIELD_HOST_LEGAL_GATHER", "0")
+    monkeypatch.setenv("HEXFIELD_DECODE_CACHE", "0")
+    baseline = HexfieldEvaluator(model, device="cpu").evaluate_payload(dict(payload))
+
+    monkeypatch.setenv("HEXFIELD_DEFER_DECODE", "1")
+    monkeypatch.setenv("HEXFIELD_HOST_LEGAL_GATHER", "1")
+    monkeypatch.setenv("HEXFIELD_DECODE_CACHE", "1")
+    optimized = HexfieldEvaluator(model, device="cpu").evaluate_payload(dict(payload))
+
+    assert optimized.keys() == baseline.keys()
+    for key in baseline:
+        assert optimized[key] == baseline[key], key
+
+
+@needs_rust
 def test_l_net_raylen_actually_changes_outputs() -> None:
     """The threaded raylen is LIVE: zeroing it (fresh evaluator, latch aside —
     blockers OFF net so the guard does not fire) changes the L-block mask, so
