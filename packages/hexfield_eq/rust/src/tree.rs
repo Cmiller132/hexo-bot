@@ -957,6 +957,34 @@ pub struct RustSearchDiagnostics {
     pub root_hidden_priors: usize,
 }
 
+/// Read-only view of the active Gumbel tournament at move entry. This is a
+/// telemetry sidecar only: every field is copied out of the search, and callers
+/// cannot use it to mutate selection state.
+#[derive(Clone, Debug)]
+pub struct GumbelStartTelemetry {
+    pub round: u32,
+    pub rounds: u32,
+    pub target_visits: u32,
+    pub survivor_action_ids: Vec<PackedCoord>,
+}
+
+/// Snapshot captured at the exact drained Sequential-Halving barrier, after
+/// ranking the just-completed round and before the next round selects a leaf.
+/// `policy_*` describes the pre-halving candidate set in SH-score order;
+/// `survivor_action_ids` is the post-halving set.
+#[derive(Clone, Debug)]
+pub struct GumbelRoundTelemetry {
+    pub round: u32,
+    pub rounds: u32,
+    pub visits: u32,
+    pub target_visits: u32,
+    pub root_value: f32,
+    pub policy_action_ids: Vec<PackedCoord>,
+    pub policy_weights: Vec<f32>,
+    pub policy_visits: Vec<u32>,
+    pub survivor_action_ids: Vec<PackedCoord>,
+}
+
 impl RustNode {
     pub fn value(&self) -> f32 {
         if self.visits == 0 {
@@ -1881,6 +1909,20 @@ impl RustSearch {
         self.gumbel_root.is_some()
     }
 
+    /// Copy the initial/current Gumbel tournament metadata for observational
+    /// telemetry. The candidate policy itself lives on the root node and is
+    /// copied by the search binding without allocating a HashMap or touching
+    /// the search RNG.
+    pub fn gumbel_start_telemetry(&self) -> Option<GumbelStartTelemetry> {
+        let state = self.gumbel_root.as_ref()?;
+        Some(GumbelStartTelemetry {
+            round: state.round,
+            rounds: state.num_rounds,
+            target_visits: state.budget,
+            survivor_action_ids: state.survivors.clone(),
+        })
+    }
+
     /// Round-0 per-candidate visit quota of the active Gumbel SH root
     /// (`floor(budget / (R * m_initial))`, min 1), or None without an active
     /// sequential-halving state. The play-policy quota prune uses it as its
@@ -2069,14 +2111,30 @@ impl RustSearch {
     /// change unless a SH Gumbel root is active and the barrier condition holds.
     /// Returns true when a halving fired.
     pub fn maybe_advance_gumbel_round(&mut self) -> bool {
+        self.maybe_advance_gumbel_round_impl(false).0
+    }
+
+    /// Telemetry-enabled form of `maybe_advance_gumbel_round`. A snapshot is
+    /// returned only when a genuine halving fired. Snapshot construction uses
+    /// Vec copies only and is downstream of the ranking used by search.
+    pub fn maybe_advance_gumbel_round_telemetry(&mut self) -> Option<GumbelRoundTelemetry> {
+        let (advanced, snapshot) = self.maybe_advance_gumbel_round_impl(true);
+        debug_assert_eq!(advanced, snapshot.is_some());
+        snapshot
+    }
+
+    fn maybe_advance_gumbel_round_impl(
+        &mut self,
+        capture_telemetry: bool,
+    ) -> (bool, Option<GumbelRoundTelemetry>) {
         let Some(state) = self.gumbel_root.as_ref() else {
-            return false;
+            return (false, None);
         };
         if !state.sequential_halving
             || state.survivors.len() <= 1
             || state.round >= state.num_rounds
         {
-            return false;
+            return (false, None);
         }
         // Intra-slot barrier: ALL survivors must have reached their round cap.
         let visits: HashMap<PackedCoord, u32> = self.nodes[0]
@@ -2090,7 +2148,7 @@ impl RustSearch {
             v >= cap
         });
         if !all_met {
-            return false;
+            return (false, None);
         }
         // Rank survivors by the SH score g(a)+logits(a)+σ(completedQ(a)).
         let root = &self.nodes[0];
@@ -2134,6 +2192,49 @@ impl RustSearch {
                 .then_with(|| a.cmp(&b))
         });
         let keep = ((ranked.len() + 1) / 2).max(1);
+        let telemetry = if capture_telemetry {
+            let policy_action_ids: Vec<PackedCoord> =
+                ranked.iter().map(|(action_id, _)| *action_id).collect();
+            let policy_visits: Vec<u32> = policy_action_ids
+                .iter()
+                .map(|action_id| {
+                    let current = visits.get(action_id).copied().unwrap_or(0);
+                    let before = state.entry_visits.get(action_id).copied().unwrap_or(0);
+                    current.saturating_sub(before)
+                })
+                .collect();
+            // Equal per-round quotas do not reveal the ordering that drove the
+            // halving, so visualize a normalization of the genuine SH scores.
+            // Raw visit counts remain available alongside it.
+            let policy_scores: Vec<f32> =
+                ranked.iter().map(|(_, score)| *score).collect();
+            let policy_weights = gumbel_softmax(&policy_scores);
+            let move_visits = root.edges.iter().fold(0u32, |total, edge| {
+                let before = state
+                    .entry_visits
+                    .get(&edge.action_id)
+                    .copied()
+                    .unwrap_or(0);
+                total.saturating_add(edge.visits.saturating_sub(before))
+            });
+            Some(GumbelRoundTelemetry {
+                round: state.round,
+                rounds: state.num_rounds,
+                visits: move_visits,
+                target_visits: state.budget,
+                root_value: root.value(),
+                policy_action_ids,
+                policy_weights,
+                policy_visits,
+                survivor_action_ids: ranked
+                    .iter()
+                    .take(keep)
+                    .map(|(action_id, _)| *action_id)
+                    .collect(),
+            })
+        } else {
+            None
+        };
         ranked.truncate(keep);
         let survivors: Vec<PackedCoord> = ranked.into_iter().map(|(a, _)| a).collect();
         let state = self.gumbel_root.as_mut().expect("checked above");
@@ -2143,7 +2244,7 @@ impl RustSearch {
         let mut new_state = state.clone();
         self.seed_gumbel_round_caps(&mut new_state);
         *self.gumbel_root.as_mut().expect("checked above") = new_state;
-        true
+        (true, telemetry)
     }
 
     pub fn add_node_from_eval(
@@ -4761,6 +4862,103 @@ mod tests {
             let cap = state.round_cap.get(&a).copied().unwrap();
             assert!(cap > v, "new round cap must be above current visits");
         }
+    }
+
+    #[test]
+    fn sh_round_telemetry_is_exact_and_observational() {
+        let eval = gumbel_eval(8);
+        let mut dv = Divergences::gumbel();
+        dv.gumbel_m = 8;
+        let mut seeded = build_search_from_eval(&eval, dv);
+        seeded.init_gumbel_root(0xA11C_E55, 256);
+
+        let start = seeded
+            .gumbel_start_telemetry()
+            .expect("active Gumbel root has a start snapshot");
+        assert_eq!(start.round, 0);
+        assert_eq!(start.rounds, 3);
+        assert_eq!(start.target_visits, 256);
+        assert_eq!(
+            start.survivor_action_ids,
+            seeded.gumbel_root.as_ref().unwrap().survivors
+        );
+
+        let caps: Vec<(PackedCoord, u32)> = seeded
+            .gumbel_root
+            .as_ref()
+            .unwrap()
+            .round_cap
+            .iter()
+            .map(|(&action_id, &cap)| (action_id, cap))
+            .collect();
+        for (action_id, cap) in caps {
+            let edge_index = seeded
+                .gumbel_root_edge_index(action_id)
+                .expect("survivor materializes");
+            let edge = &mut seeded.nodes[0].edges[edge_index];
+            edge.visits = cap;
+            edge.value_sum = cap as f32 * (action_id as f32 * 0.01 - 0.03);
+        }
+
+        // Identical pre-transition trees: one takes the original no-telemetry
+        // path, the other captures the sidecar at the same barrier.
+        let mut without = seeded.clone();
+        let mut with = seeded;
+        assert!(without.maybe_advance_gumbel_round());
+        let snapshot = with
+            .maybe_advance_gumbel_round_telemetry()
+            .expect("barrier emits exactly one round snapshot");
+
+        let edge_fingerprint = |search: &RustSearch| {
+            search.nodes[0]
+                .edges
+                .iter()
+                .map(|edge| {
+                    (
+                        edge.action_id,
+                        edge.prior.to_bits(),
+                        edge.visits,
+                        edge.value_sum.to_bits(),
+                        edge.value_sq_sum.to_bits(),
+                        edge.pending,
+                        edge.child,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(edge_fingerprint(&without), edge_fingerprint(&with));
+        assert_eq!(without.completed_visits, with.completed_visits);
+        assert_eq!(without.target_visits, with.target_visits);
+
+        let without_state = without.gumbel_root.as_ref().unwrap();
+        let with_state = with.gumbel_root.as_ref().unwrap();
+        assert_eq!(without_state.round, with_state.round);
+        assert_eq!(without_state.survivors, with_state.survivors);
+        assert_eq!(without_state.round_cap, with_state.round_cap);
+        assert_eq!(without_state.entry_visits, with_state.entry_visits);
+
+        assert_eq!(snapshot.round, 0);
+        assert_eq!(snapshot.rounds, 3);
+        assert_eq!(snapshot.target_visits, 256);
+        assert_eq!(snapshot.policy_action_ids.len(), 8);
+        assert_eq!(snapshot.policy_visits.len(), 8);
+        assert_eq!(snapshot.policy_weights.len(), 8);
+        assert_eq!(snapshot.survivor_action_ids.len(), 4);
+        assert_eq!(snapshot.survivor_action_ids, with_state.survivors);
+        assert_eq!(
+            snapshot.visits,
+            snapshot
+                .policy_visits
+                .iter()
+                .copied()
+                .fold(0u32, u32::saturating_add)
+        );
+        let weight_sum: f32 = snapshot.policy_weights.iter().sum();
+        assert!((weight_sum - 1.0).abs() < 1.0e-6);
+        assert!(snapshot
+            .policy_weights
+            .windows(2)
+            .all(|pair| pair[0] >= pair[1]));
     }
 
     #[test]

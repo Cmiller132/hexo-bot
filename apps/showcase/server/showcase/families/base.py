@@ -23,6 +23,7 @@ class SearchProfile(Protocol):
         visits: int,
         seed: int,
         temperature: float,
+        telemetry_callback: Any | None = None,
     ) -> dict: ...
 
 

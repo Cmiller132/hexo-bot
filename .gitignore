@@ -1,11 +1,13 @@
 runs/*
 !runs/.gitkeep
 target/
+.cargo/
 __pycache__/
 .pytest_cache/
 *.pyc
 *.so
 *.pyd
+*.pdb
 .venv/
 *.log
 .claude/

@@ -8,10 +8,10 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=12";
-import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=11";
-import { createBoard, findWin, key } from "./board.js?v=7";
-import { initStats, refreshStats } from "./stats.js?v=18";
+import * as api from "./api.js?v=13";
+import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=12";
+import { createBoard, findWin, key } from "./board.js?v=8";
+import { initStats, refreshStats } from "./stats.js?v=19";
 
 "use strict";
 
@@ -120,12 +120,22 @@ const play = {
   // bot-turn elapsed ticker: thinkSince is when the current bot_thinking spell
   // began (ms epoch), thinkTimer the 1s interval that repaints the elapsed read
   thinkSince: 0, thinkTimer: null,
+  live: {
+    requested: false, turnKey: null, basePly: null, botColor: null,
+    stream: null, generation: 0, runId: null, lastSeq: -1,
+    queue: [], frameTimer: null, done: false, failed: false,
+    turnCompleteRendered: false,
+    priorByStone: new Map(), stoneOrder: new Map(), currentStone: 1,
+    previews: [], heat: new Map(),
+    pendingSnapshot: null, pendingTimer: null,
+  },
 };
 
 const statusEl = $("playStatus"), statusText = $("statusText");
 const resignBtn = $("resignBtn"), analyzeBtn = $("analyzeBtn");
 const nickForm = $("nickForm"), nickInput = $("nickInput"), nickMsg = $("nickMsg");
 const placeChip = $("placeChip"), playTag = $("playTag"), cursorPos = $("cursorPos");
+const watchSearch = $("watchSearch"), searchPhase = $("searchPhase");
 
 /* Per-visitor cached handle. A random animal name, generated once and kept in
  * localStorage, pre-fills the "sign this game" box and auto-signs finished games
@@ -176,7 +186,7 @@ const WARMUP_NOTE_AFTER_S = 8;
 
 const playBoard = createBoard($("playBoard"), {
   onCellClick: onPlayCell,
-  onHover: (q, r) => { cursorPos.textContent = q === null ? "—" : fmtCell(q, r); },
+  onHover: (q, r) => { cursorPos.textContent = liveCursorText(q, r); },
   ghostAllowed: () => !!play.snap && play.snap.status === "your_turn",
   onPanStart: () => playBoard.hideHoverGhost(),
   canReset: t => {
@@ -186,6 +196,483 @@ const playBoard = createBoard($("playBoard"), {
         t.classList.contains("cell") && !t.classList.contains("occ")) return false;
     return true;
   },
+});
+
+// ---- optional live-search visualization -----------------------------------
+
+const LIVE_FRAME_DWELL_MS = 210;
+const LIVE_FINAL_HOLD_MS = 2600;
+const liveMotion = window.matchMedia
+  ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+const liveReducedMotion = () => !!(liveMotion && liveMotion.matches);
+
+function liveCursorText(q, r) {
+  if (q === null) return "—";
+  const row = play.live.heat.get(key(q, r));
+  if (!row) return fmtCell(q, r);
+  if (Number.isFinite(row.visits)) {
+    return `${fmtCell(q, r)} · ${Math.round(row.visits)} visits`;
+  }
+  return `${fmtCell(q, r)} · ${(Math.max(0, row.p || 0) * 100).toFixed(1)}%`;
+}
+
+function setSearchPhase(text) {
+  if (!searchPhase) return;
+  searchPhase.textContent = text || "";
+  searchPhase.hidden = !text;
+}
+
+function closeLiveStream() {
+  const live = play.live;
+  live.generation++;
+  const stream = live.stream;
+  live.stream = null;
+  if (stream) stream.close();
+}
+
+function cancelLiveFrames() {
+  const live = play.live;
+  if (live.frameTimer) clearTimeout(live.frameTimer);
+  live.frameTimer = null;
+  live.queue = [];
+}
+
+function clearLiveBoard() {
+  play.live.heat = new Map();
+  play.live.previews = [];
+  playBoard.clearLiveHeat();
+  playBoard.clearPreviewStones();
+}
+
+function clearPendingLiveSnapshot() {
+  const live = play.live;
+  if (live.pendingTimer) clearTimeout(live.pendingTimer);
+  live.pendingTimer = null;
+  live.pendingSnapshot = null;
+}
+
+/* End one telemetry turn completely. Authoritative ingest calls this only
+ * AFTER setStones(), so replacing previews with real stones is one paint. */
+function discardLiveTurn({ hidePhase = true } = {}) {
+  const live = play.live;
+  closeLiveStream();
+  cancelLiveFrames();
+  clearPendingLiveSnapshot();
+  clearLiveBoard();
+  live.requested = false;
+  live.turnKey = null;
+  live.basePly = null;
+  live.botColor = null;
+  live.runId = null;
+  live.lastSeq = -1;
+  live.done = false;
+  live.failed = false;
+  live.turnCompleteRendered = false;
+  live.priorByStone = new Map();
+  live.stoneOrder = new Map();
+  live.currentStone = 1;
+  if (hidePhase) setSearchPhase("");
+}
+
+/* Stop just the optional presentation while retaining the turn identity and
+ * whether its worker was telemetry-enabled. This is what toggle-off and a
+ * dropped SSE use; authoritative polling remains wholly independent. */
+function stopLivePresentation({ message = "", failed = false, commitPending = false } = {}) {
+  const live = play.live;
+  const pending = commitPending ? live.pendingSnapshot : null;
+  closeLiveStream();
+  cancelLiveFrames();
+  clearPendingLiveSnapshot();
+  clearLiveBoard();
+  live.runId = null;
+  live.lastSeq = -1;
+  live.failed = failed;
+  live.priorByStone = new Map();
+  live.stoneOrder = new Map();
+  live.currentStone = 1;
+  setSearchPhase(message);
+  if (pending) ingestPlay(pending, true);
+}
+
+function fallbackLiveSearch() {
+  if (!play.live.turnKey) return;
+  stopLivePresentation({
+    message: "live view lost · finishing normally",
+    failed: true,
+    commitPending: true,
+  });
+}
+
+function liveTurnKey(snap) {
+  return `${snap.id}:${snap.ply}`;
+}
+
+/* Called before ingesting a create/move/retry response. It records whether the
+ * mutation actually requested telemetry before ingestPlay opens the replaying
+ * SSE stream. */
+function armLiveTurn(snap, requested) {
+  if (!snap || snap.status !== "bot_thinking") return;
+  const live = play.live;
+  const turnKey = liveTurnKey(snap);
+  if (live.turnKey !== turnKey) {
+    discardLiveTurn();
+    live.turnKey = turnKey;
+    live.basePly = Number.isInteger(snap.ply) ? snap.ply : 0;
+    live.botColor = Number.isInteger(snap.to_move) ? snap.to_move : 1;
+  }
+  live.requested = !!requested;
+  live.done = false;
+  live.failed = false;
+  live.turnCompleteRendered = false;
+}
+
+function ensureLiveTurn(snap) {
+  const live = play.live;
+  const turnKey = liveTurnKey(snap);
+  if (live.turnKey !== turnKey) {
+    // Defensive path for a bot_thinking snapshot not initiated by this page.
+    armLiveTurn(snap, false);
+  }
+  if (!watchSearch || !watchSearch.checked || !live.requested ||
+      live.stream || live.done || live.failed) return;
+  live.runId = null;
+  live.lastSeq = -1;
+  const generation = ++live.generation;
+  setSearchPhase("live search · connecting");
+  try {
+    live.stream = api.openSearchStream(play.id, {
+      onEvent: event => {
+        if (play.live.generation !== generation) return;
+        handleLiveSearchEvent(event);
+      },
+      onError: () => {
+        if (play.live.generation !== generation || play.live.done) return;
+        fallbackLiveSearch();
+      },
+    });
+  } catch (_) {
+    fallbackLiveSearch();
+  }
+}
+
+function liveStoneNumber(event) {
+  const live = play.live;
+  if (Number.isInteger(event.stone)) {
+    live.currentStone = clamp(1, 2, event.stone);
+    return live.currentStone;
+  }
+  const p = Number.isInteger(event.ply) ? String(event.ply) : null;
+  if (p !== null) {
+    if (!live.stoneOrder.has(p)) {
+      live.stoneOrder.set(p, Math.min(2, live.stoneOrder.size + 1));
+    }
+    live.currentStone = live.stoneOrder.get(p);
+  }
+  return live.currentStone;
+}
+
+function coordKey(row) {
+  return row && Number.isFinite(row.q) && Number.isFinite(row.r)
+    ? key(row.q, row.r) : null;
+}
+
+/* Normalize a streamed policy for the heat layer. SH events may send only the
+ * survivor coordinates; in that case retain their real F1 prior weights until
+ * searched weights arrive. */
+function livePolicyRows(event, stoneNo) {
+  const live = play.live;
+  const policy = Array.isArray(event.policy) ? event.policy : [];
+  let rows = policy
+    .filter(row => coordKey(row) !== null)
+    .map(row => ({
+      q: Number(row.q), r: Number(row.r),
+      p: Number.isFinite(row.p)
+        ? Math.max(0, Number(row.p))
+        : (Number.isFinite(row.visits) ? Math.max(0, Number(row.visits)) : 0),
+      visits: Number.isFinite(row.visits) ? Number(row.visits) : null,
+    }));
+  if (event.kind === "bare_policy") {
+    live.priorByStone.set(
+      stoneNo,
+      new Map(rows.map(row => [key(row.q, row.r), { ...row }])),
+    );
+  }
+
+  const survivorKeys = new Set(
+    (Array.isArray(event.survivors) ? event.survivors : [])
+      .map(coordKey).filter(Boolean)
+  );
+  // The raw start frame deliberately carries both the full root policy and
+  // the initial survivor set. F1 must show the full policy; only F2 frames
+  // narrow to the active SH candidates.
+  if (event.kind !== "bare_policy" && survivorKeys.size) {
+    rows = rows.filter(row => survivorKeys.has(key(row.q, row.r)));
+    if (!rows.length) {
+      const priors = live.priorByStone.get(stoneNo) || new Map();
+      rows = [...survivorKeys]
+        .map(k => priors.get(k))
+        .filter(Boolean)
+        .map(row => ({ ...row }));
+    }
+  }
+  rows.sort((a, b) =>
+    b.p - a.p || a.q - b.q || a.r - b.r
+  );
+  const bestKey = coordKey(event.action) || coordKey(event.best);
+  if (bestKey) {
+    const i = rows.findIndex(row => key(row.q, row.r) === bestKey);
+    if (i > 0) rows.unshift(rows.splice(i, 1)[0]);
+  }
+  return rows;
+}
+
+function liveFrameKey(event) {
+  const ply = Number.isInteger(event.ply) ? event.ply : play.live.currentStone;
+  if (event.kind === "search_round") return `${event.kind}:${ply}:${event.round}`;
+  if (event.kind === "bare_policy" || event.kind === "candidate_set" ||
+      event.kind === "search_complete") return `${event.kind}:${ply}`;
+  return `${event.kind}:${event.seq}`;
+}
+
+function enqueueLiveFrame(event) {
+  const live = play.live;
+  const frameKey = liveFrameKey(event);
+  const coalesce = event.kind === "bare_policy" || event.kind === "candidate_set" ||
+    event.kind === "search_round" || event.kind === "search_complete";
+  if (coalesce) {
+    for (let i = live.queue.length - 1; i >= 0; i--) {
+      if (live.queue[i]._frameKey === frameKey) {
+        live.queue[i] = { ...event, _frameKey: frameKey };
+        return;
+      }
+    }
+  }
+  live.queue.push({ ...event, _frameKey: frameKey });
+  drainLiveFrames();
+}
+
+function liveFrameDwell(event) {
+  if (liveReducedMotion()) return 0;
+  if (event.kind === "turn_start") return 100;
+  if (event.kind === "turn_complete") return 160;
+  if (event.kind === "stone" || event.kind === "search_complete") return 260;
+  return LIVE_FRAME_DWELL_MS;
+}
+
+function renderLiveFrame(event) {
+  const live = play.live;
+  if (event.kind === "turn_start") {
+    clearLiveBoard();
+    setSearchPhase(
+      event.post_search
+        ? "searching · result replay follows"
+        : "live search · starting"
+    );
+    return;
+  }
+
+  if (event.kind === "bare_policy" || event.kind === "candidate_set" ||
+      event.kind === "search_round" || event.kind === "search_complete") {
+    const stoneNo = liveStoneNumber(event);
+    const rows = livePolicyRows(event, stoneNo);
+    live.heat = new Map(rows.map(row => [key(row.q, row.r), row]));
+    if (rows.length) {
+      playBoard.setLiveHeat(
+        rows,
+        live.botColor === 0 ? H0 : H1,
+        live.botColor === 0 ? H0R : H1R,
+        0.85,
+      );
+    } else {
+      playBoard.clearLiveHeat();
+    }
+    const survivors = Array.isArray(event.survivors)
+      ? event.survivors.length : rows.length;
+    if (event.kind === "bare_policy") {
+      setSearchPhase(
+        event.post_search
+          ? `stone ${stoneNo} · policy replay`
+          : `stone ${stoneNo} · policy priors`
+      );
+    } else if (event.kind === "candidate_set") {
+      setSearchPhase(
+        `stone ${stoneNo} · ${survivors} candidates` +
+        (event.post_search ? " · replay" : "")
+      );
+    } else if (event.kind === "search_round") {
+      const round = Number.isInteger(event.round) ? event.round + 1 : "?";
+      const rounds = Number.isInteger(event.rounds) ? event.rounds : "?";
+      const visitRead = Number.isFinite(event.visits) && Number.isFinite(event.target_visits)
+        ? ` · ${event.visits}/${event.target_visits} visits` : "";
+      setSearchPhase(
+        `stone ${stoneNo} · round ${round}/${rounds} · ${survivors} remain${visitRead}`
+      );
+    } else {
+      const value = Number.isFinite(event.root_value) ? ` · value ${fmtV(event.root_value)}` : "";
+      setSearchPhase(
+        `stone ${stoneNo} · search complete${value}` +
+        (event.post_search ? " · replay" : "")
+      );
+    }
+    return;
+  }
+
+  if (event.kind === "stone") {
+    const picked = coordKey(event.action)
+      ? event.action : (coordKey(event.stone) ? event.stone : event.best);
+    if (coordKey(picked)) {
+      const pickedKey = key(picked.q, picked.r);
+      if (!live.previews.some(row => key(row.q, row.r) === pickedKey)) {
+        live.previews.push({
+          q: Number(picked.q), r: Number(picked.r), color: live.botColor,
+        });
+      }
+      live.previews = live.previews.slice(0, 2);
+      playBoard.setPreviewStones(live.previews);
+    }
+    const stoneNo = Math.max(1, live.previews.length);
+    live.currentStone = Math.min(2, stoneNo + 1);
+    setSearchPhase(
+      stoneNo === 1 ? "stone 1 placed" : "stone 2 selected"
+    );
+    return;
+  }
+
+  if (event.kind === "turn_complete") {
+    live.turnCompleteRendered = true;
+    setSearchPhase("search complete · placing move");
+    if (event.snapshot && event.snapshot.id === play.id) {
+      ingestPlay(event.snapshot);
+      return;
+    }
+    const id = play.id;
+    api.getGame(id).then(snap => {
+      if (play.id === id) ingestPlay(snap);
+    }).catch(() => { /* polling remains authoritative */ });
+  }
+}
+
+function drainLiveFrames() {
+  const live = play.live;
+  if (live.frameTimer) return;
+  if (!live.queue.length) {
+    maybeCommitPendingLiveSnapshot();
+    return;
+  }
+  const event = live.queue.shift();
+  renderLiveFrame(event);
+  const dwell = liveFrameDwell(event);
+  if (dwell <= 0) {
+    drainLiveFrames();
+    return;
+  }
+  live.frameTimer = setTimeout(() => {
+    live.frameTimer = null;
+    drainLiveFrames();
+  }, dwell);
+}
+
+function handleLiveSearchEvent(event) {
+  const live = play.live;
+  if (!event || typeof event !== "object") return;
+  const seq = Number(event.seq);
+  const basePly = Number(event.base_ply);
+  const runId = String(event.run_id ?? "");
+  if (!Number.isInteger(seq) || !runId ||
+      (Number.isInteger(basePly) && basePly !== live.basePly)) return;
+  if (live.runId === null) live.runId = runId;
+  if (live.runId !== runId || seq <= live.lastSeq) return;
+  live.lastSeq = seq;
+
+  const allowed = new Set([
+    "turn_start", "bare_policy", "candidate_set", "search_round",
+    "search_complete", "stone", "turn_complete", "turn_failed",
+    "turn_cancelled",
+  ]);
+  if (!allowed.has(event.kind)) return;
+  if (event.kind === "turn_start") {
+    // A pool-level retry reuses this stream/run but starts a wholly new search
+    // attempt. Treat its start marker as an immediate animation barrier: no
+    // queued frame from the abandoned attempt may be coalesced with, or render
+    // ahead of, the retry's frames. Keep runId/lastSeq intact so the ordinary
+    // stale/out-of-order guards continue to apply across the barrier.
+    cancelLiveFrames();
+    live.priorByStone = new Map();
+    live.stoneOrder = new Map();
+    live.currentStone = 1;
+    live.turnCompleteRendered = false;
+    live.done = false;
+    live.failed = false;
+    enqueueLiveFrame(event);
+    return;
+  }
+  if (event.kind === "turn_cancelled") {
+    live.done = true;
+    stopLivePresentation({
+      message: "live search cancelled", commitPending: true,
+    });
+    return;
+  }
+  if (event.kind === "turn_failed") {
+    live.done = true;
+    closeLiveStream();
+    stopLivePresentation({
+      message: "live search stopped", failed: true, commitPending: true,
+    });
+    return;
+  }
+  if (event.kind === "turn_complete") {
+    live.done = true;
+    closeLiveStream();
+  }
+  enqueueLiveFrame(event);
+}
+
+function shouldDeferAuthoritative(snap) {
+  const live = play.live;
+  return !liveReducedMotion() &&
+    snap.status !== "bot_thinking" && snap.status !== "bot_failed" &&
+    !!live.turnKey && live.requested && !!watchSearch && watchSearch.checked &&
+    !live.failed &&
+    (!live.turnCompleteRendered || live.queue.length > 0 || !!live.frameTimer);
+}
+
+function deferAuthoritativeSnapshot(snap) {
+  const live = play.live;
+  live.pendingSnapshot = snap;
+  if (live.pendingTimer) return;
+  live.pendingTimer = setTimeout(() => {
+    live.pendingTimer = null;
+    commitPendingLiveSnapshot(true);
+  }, LIVE_FINAL_HOLD_MS);
+}
+
+function commitPendingLiveSnapshot(force = false) {
+  const live = play.live;
+  if (!live.pendingSnapshot) return;
+  if (!force && !liveReducedMotion() && !live.failed && watchSearch && watchSearch.checked &&
+      (!live.turnCompleteRendered || live.queue.length || live.frameTimer)) return;
+  const snap = live.pendingSnapshot;
+  live.pendingSnapshot = null;
+  if (live.pendingTimer) clearTimeout(live.pendingTimer);
+  live.pendingTimer = null;
+  ingestPlay(snap, true);
+}
+
+if (watchSearch) watchSearch.addEventListener("change", () => {
+  if (!watchSearch.checked) {
+    stopLivePresentation({ commitPending: true });
+    return;
+  }
+  const live = play.live;
+  live.failed = false; // an explicit off/on is also an explicit retry
+  if (play.snap && play.snap.status === "bot_thinking") {
+    if (live.requested && !live.done) {
+      ensureLiveTurn(play.snap);
+    } else if (!live.requested) {
+      setSearchPhase("live search starts next bot turn");
+    }
+  }
 });
 
 function setStatus(txt, cls) {
@@ -277,7 +764,10 @@ if (retryBtn) retryBtn.addEventListener("click", async () => {
   if (!play.id) return;
   retryBtn.disabled = true;
   try {
-    ingestPlay(await api.retryBot(play.id));
+    const watch = !!(watchSearch && watchSearch.checked);
+    const snap = await api.retryBot(play.id, watch);
+    armLiveTurn(snap, watch);
+    ingestPlay(snap);
     if (play.snap && play.snap.status === "bot_thinking") startPoll();
   } catch (e) {
     if (e.status === 404) { stopThinking(); setStatus("game expired on the server", "over"); }
@@ -339,7 +829,11 @@ function showYouColor(hc) {
   el.className = "n " + (hc === 1 ? "is-p1" : "is-p0");
 }
 
-function ingestPlay(snap) {
+function ingestPlay(snap, force = false) {
+  if (!force && shouldDeferAuthoritative(snap)) {
+    deferAuthoritativeSnapshot(snap);
+    return;
+  }
   play.snap = snap;
   ingestMoves(snap);
   if (Number.isInteger(snap.human_color)) showYouColor(snap.human_color);
@@ -350,6 +844,10 @@ function ingestPlay(snap) {
         ? snap.winning_line : findWin(play.moves))
     : null;
   playBoard.setStones(play.moves, winCells);
+  // Streamed previews are board-only. Once an authoritative non-thinking
+  // snapshot arrives, replace them with real stones and clear every optional
+  // search layer synchronously in this same ingest.
+  if (snap.status !== "bot_thinking" && play.live.turnKey) discardLiveTurn();
   playBoard.setLegal(snap.status === "your_turn" ? snap.legal : null);
   $("plyCount").textContent = snap.ply;
   $("turnCount").textContent = turnOf(snap.ply);
@@ -369,6 +867,7 @@ function ingestPlay(snap) {
     setStatus(`${play.label} thinking…`, "think");
     startThinking(); // owns the status text from here: elapsed + warm-up note
     clearStage();
+    ensureLiveTurn(snap);
   } else if (snap.status === "bot_failed") {
     // the bot's search hiccuped but the game is intact — offer a retry instead
     // of forcing a new game. The board and your position are untouched.
@@ -427,7 +926,8 @@ function startPoll() {
   const id = play.id;
   (async () => {
     let delay = 600; // ~600ms while the bot thinks, backing off gently
-    while (play.id === id && play.snap && play.snap.status === "bot_thinking") {
+    while (play.id === id && play.snap && play.snap.status === "bot_thinking" &&
+           !play.live.pendingSnapshot) {
       await sleep(delay);
       if (play.id !== id) break;
       try {
@@ -452,7 +952,10 @@ async function tryPlace(q, r) {
   play.lastPlaceT = Date.now();
   playBoard.hideHoverGhost();
   try {
-    ingestPlay(await api.postMove(play.id, q, r));
+    const watch = !!(watchSearch && watchSearch.checked);
+    const next = await api.postMove(play.id, q, r, watch);
+    armLiveTurn(next, watch);
+    ingestPlay(next);
     if (play.snap.status === "bot_thinking") startPoll();
     if (play.snap.status === "finished") refreshFeed(true);
   } catch (e) {
@@ -509,6 +1012,7 @@ placeChip.addEventListener("click", () => {
 function showStartBoard() {
   stopThinking();
   clearPlayAlert();
+  discardLiveTurn();
   play.id = null;
   play.snap = null;
   play.moves = [];
@@ -532,11 +1036,13 @@ async function newGame() {
   resignBtn.disabled = true;
   stopThinking(); // reset the elapsed clock so the new game's first turn is fresh
   clearPlayAlert();
+  discardLiveTurn();
   try {
+    const watch = !!(watchSearch && watchSearch.checked);
     const snap = await api.createGame({
       ...botsNorm.payloadFor(sel.ckpt, sel.sims),
       human_color: sel.color,
-    });
+    }, watch);
     play.id = snap.id;
     play.moves = [];
     play.staged = null;
@@ -545,6 +1051,7 @@ async function newGame() {
     playTag.textContent = `field · ∞ · vs ${play.label} · ${play.sims} sims`;
     nickForm.hidden = true;
     analyzeBtn.hidden = true;
+    armLiveTurn(snap, watch);
     ingestPlay(snap);
     playBoard.resetView();
     if (snap.status === "bot_thinking") startPoll();
@@ -558,6 +1065,9 @@ async function newGame() {
 
 resignBtn.addEventListener("click", async () => {
   if (play.id && play.snap && play.snap.status !== "finished") {
+    // Resignation makes every streamed frame stale immediately. The server
+    // request remains the authority and its response repaints the real board.
+    stopLivePresentation({ commitPending: true });
     try {
       ingestPlay(await api.resign(play.id));
       refreshFeed(true);

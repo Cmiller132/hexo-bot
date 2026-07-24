@@ -55,6 +55,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.responses import StreamingResponse
 
 from hexo_engine import IllegalActionError
 
@@ -73,6 +74,13 @@ from .db import ShowcaseDB, decode_payload, encode_payload
 from .matchapi import MatchDeps, build_match_router
 from .elo import compute_ratings
 from .jsonsafe import sanitize_json
+from .live_search import (
+    LiveSearchHub,
+    LiveSearchSubscriberLimit,
+    encode_sse_event,
+    expand_worker_event,
+    subscription_closed,
+)
 from .game import (
     TERMINATION_RESIGN,
     TERMINATION_SIX_IN_LINE,
@@ -256,6 +264,7 @@ def create_app(settings: Settings) -> FastAPI:
             except asyncio.CancelledError:
                 pass
             await app.state.pool.stop()
+            app.state.live_search_hub.close_all()
             app.state.db.close()
 
     app = FastAPI(title="Shrimp — a Hexo bot", lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -268,6 +277,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.lab_eval_bucket = TokenBucket(settings.lab_eval_per_minute)
     app.state.lab_search_bucket = TokenBucket(settings.lab_search_per_minute)
     app.state.background_jobs = 0  # in-flight non-move pool jobs (see gate)
+    app.state.live_search_hub = LiveSearchHub()
 
     # -- helpers ---------------------------------------------------------------
 
@@ -391,20 +401,52 @@ def create_app(settings: Settings) -> FastAPI:
         # whole-payload TTL cache so the next read recomputes.
         app.state.stats_cache = None
 
-    async def _run_bot_turn(session: GameSession) -> None:
+    def _publish_live(
+        session: GameSession, live: tuple[int, int, int], event: dict[str, Any],
+    ) -> None:
+        run_id, attempt, base_ply = live
+        app.state.live_search_hub.publish(
+            session.game_id,
+            {
+                **sanitize_json(event),
+                "run_id": run_id,
+                "attempt": attempt,
+                "base_ply": base_ply,
+            },
+        )
+
+    async def _run_bot_turn(
+        session: GameSession, live: tuple[int, int, int] | None = None,
+    ) -> None:
         """Background bot turn: search in the pool, apply under the game lock.
 
         The game may resign or time out while the search runs; the post-await
         liveness check makes the stale result a no-op. Any pool failure
         finalizes the game as abandoned rather than leaving it stuck."""
+        progress_callback = None
+        if live is not None:
+            def progress_callback(event: dict[str, Any]) -> None:
+                run_id, attempt, base_ply = live
+                if (
+                    session.active
+                    and session.bot_busy
+                    and session.search_run_id == run_id
+                    and session.search_attempt == attempt
+                    and session.search_base_ply == base_ply
+                ):
+                    for expanded in expand_worker_event(event):
+                        _publish_live(session, live, expanded)
         try:
-            out = await app.state.pool.bot_turn(
+            turn_kwargs = dict(
                 game_key=session.game_key,
                 bot_slug=session.bot_slug,
                 actions=session.actions,
                 seed=session.seed,
                 visits=session.sims,
             )
+            if progress_callback is not None:
+                turn_kwargs["progress_callback"] = progress_callback
+            out = await app.state.pool.bot_turn(**turn_kwargs)
         except Exception:
             log.exception("bot turn failed for game %s", session.game_id)
             async with session.lock:
@@ -417,25 +459,64 @@ def create_app(settings: Settings) -> FastAPI:
                 if session.active:
                     session.bot_failed = True
                     session.touch()
+                    if live is not None:
+                        _publish_live(
+                            session, live,
+                            {"kind": "turn_failed", "reason": "backend_unavailable"},
+                        )
             return
         async with session.lock:
             session.bot_busy = False
             if not session.active:
+                if live is not None:
+                    _publish_live(session, live, {"kind": "turn_cancelled"})
                 return  # resigned/timed out mid-search; result discarded
             try:
                 session.apply_bot_actions([move["action_id"] for move in out["actions"]])
             except IllegalActionError:
                 log.exception("bot produced an illegal move in game %s", session.game_id)
                 _finalize(session, termination=None, winner=None)
+                if live is not None:
+                    _publish_live(
+                        session,
+                        live,
+                        {"kind": "turn_failed", "reason": "illegal_bot_action"},
+                    )
                 return
             winner = session.engine_winner()
             if winner is not None:
                 _finalize(session, termination=TERMINATION_SIX_IN_LINE, winner=winner)
+            if live is not None:
+                _publish_live(
+                    session,
+                    live,
+                    {"kind": "turn_complete", "snapshot": session.snapshot()},
+                )
 
     def _start_bot_turn(session: GameSession) -> None:
+        retrying = (
+            session.bot_failed
+            and session.search_base_ply == len(session.actions)
+            and session.search_attempt > 0
+        )
+        session.search_run_id += 1
+        if retrying:
+            session.search_attempt += 1
+        else:
+            session.search_attempt = 1
+            session.search_base_ply = len(session.actions)
         session.bot_failed = False  # a fresh attempt clears any prior hiccup
         session.bot_busy = True
-        asyncio.get_running_loop().create_task(_run_bot_turn(session))
+        live: tuple[int, int, int] | None = None
+        if session.kind == "human" and session.watch_search:
+            live = (
+                session.search_run_id,
+                session.search_attempt,
+                session.search_base_ply,
+            )
+            app.state.live_search_hub.begin_run(session.game_id)
+            _publish_live(session, live, {"kind": "turn_start"})
+        asyncio.get_running_loop().create_task(_run_bot_turn(session, live))
 
     def _resolve_color(requested: int | str) -> int:
         """0/1 pass through; "random" resolves to a fair server-side coin."""
@@ -460,6 +541,7 @@ def create_app(settings: Settings) -> FastAPI:
                                 _finalize(session, termination=TERMINATION_TIMEOUT, winner=None)
                     elif session.idle_seconds() >= settings.finished_ttl_s:
                         app.state.sessions.pop(session.game_id, None)
+                        app.state.live_search_hub.drop(session.game_id)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -468,7 +550,10 @@ def create_app(settings: Settings) -> FastAPI:
     # -- game lifecycle ----------------------------------------------------------
 
     @app.post("/api/game")
-    async def create_game(body: CreateGameRequest, request: Request, response: Response):
+    async def create_game(
+        body: CreateGameRequest, request: Request, response: Response,
+        watch_search: bool = Query(default=False),
+    ):
         key = _client_key(request)
         if not app.state.game_bucket.allow(key):
             raise HTTPException(429, "too many games created; slow down")
@@ -498,6 +583,7 @@ def create_app(settings: Settings) -> FastAPI:
             bot_slug=spec.slug, bot_db_id=bot_db_id, bot_label=spec.label,
             bot_epoch=spec.epoch, sims=body.sims, human_color=human_color,
             client_hash=client_hash,
+            watch_search=watch_search,
         )
         # One token per client: reuse the cookie so a client's games all
         # authenticate with the same value.
@@ -547,8 +633,60 @@ def create_app(settings: Settings) -> FastAPI:
             finished_at=row["finished_at"],
         )
 
+    @app.get("/api/game/{game_id}/search-stream")
+    async def search_stream(game_id: str, request: Request):
+        """Owner-only, replaying SSE view of optional live-search progress.
+
+        The stream has no ownership of the bot task: cancelling this response
+        only unsubscribes its bounded queue.
+        """
+        session = _session_or_404(game_id)
+        _authorize(session, request)
+        try:
+            after_seq = max(0, int(request.headers.get("last-event-id", "0") or "0"))
+        except (TypeError, ValueError):
+            after_seq = 0
+        try:
+            subscription = app.state.live_search_hub.subscribe(
+                game_id, after_seq=after_seq
+            )
+        except LiveSearchSubscriberLimit as exc:
+            raise HTTPException(429, "live-search viewer limit reached") from exc
+
+        async def event_source():
+            try:
+                for event in subscription.replay:
+                    yield encode_sse_event(event)
+                while True:
+                    try:
+                        item = await asyncio.wait_for(
+                            subscription.queue.get(), timeout=15.0
+                        )
+                    except asyncio.TimeoutError:
+                        if await request.is_disconnected():
+                            return
+                        yield ": keepalive\n\n"
+                        continue
+                    if subscription_closed(item):
+                        return
+                    yield encode_sse_event(item)
+            finally:
+                subscription.close()
+
+        return StreamingResponse(
+            event_source(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @app.post("/api/game/{game_id}/move")
-    async def move(game_id: str, body: MoveRequest, request: Request):
+    async def move(
+        game_id: str, body: MoveRequest, request: Request,
+        watch_search: bool = Query(default=False),
+    ):
         session = _session_or_404(game_id)
         _authorize(session, request)
         if not app.state.move_bucket.allow(_client_key(request)):
@@ -562,6 +700,7 @@ def create_app(settings: Settings) -> FastAPI:
                 session.apply_human_move(body.q, body.r)
             except IllegalActionError as exc:
                 raise HTTPException(422, f"illegal move: {exc}") from exc
+            session.watch_search = bool(watch_search)
             winner = session.engine_winner()
             if winner is not None:
                 _finalize(session, termination=TERMINATION_SIX_IN_LINE, winner=winner)
@@ -585,7 +724,10 @@ def create_app(settings: Settings) -> FastAPI:
             return session.snapshot()
 
     @app.post("/api/game/{game_id}/retry")
-    async def retry_bot(game_id: str, request: Request):
+    async def retry_bot(
+        game_id: str, request: Request,
+        watch_search: bool | None = Query(default=None),
+    ):
         """Re-run a bot turn that hiccuped. The failed search never mutated the
         position (the game was held in `bot_failed`, not abandoned), so this
         simply re-enqueues the same turn. Idempotent while a retry is already
@@ -601,6 +743,8 @@ def create_app(settings: Settings) -> FastAPI:
                 return session.snapshot()  # a retry is already running
             if not session.bot_failed or not session.bot_to_move:
                 raise HTTPException(409, "no failed bot turn to retry")
+            if watch_search is not None:
+                session.watch_search = bool(watch_search)
             _start_bot_turn(session)
             return session.snapshot()
 

@@ -107,9 +107,11 @@ export function createBoard(svg, opts = {}) {
     svg.appendChild(g);
     return g;
   };
-  // draw order: grid (tiles + tengen), heat, stones ABOVE heat, marks, ghost
+  // draw order: grid, heat, authoritative stones, streamed preview stones,
+  // marks, human hover/touch ghosts. Preview stones are visual only: they
+  // never enter stoneList/occupied/legal state.
   const grid = mk("gridg"), heat = mk("heatg"), stones = mk("stonesg"),
-        marks = mk("marksg"), ghostG = mk("ghostg");
+        previews = mk("previewg"), marks = mk("marksg"), ghostG = mk("ghostg");
   const tilesG = document.createElementNS(NS, "g");
   grid.appendChild(tilesG);
   const tengen = document.createElementNS(NS, "circle");
@@ -412,8 +414,21 @@ export function createBoard(svg, opts = {}) {
   /* Flat 2D policy map: full-tile fills UNDER the solid stones. Tint comes
    * from pale hue-shifted families (never the stone colors) so a fully-lit
    * overlay cell can't pass for a translucent stone; best cell gets a ring. */
-  function setHeat(rows, tint, ringTint, opa) {
+  const liveHeatCells = new Map();
+  let liveBest = null;
+  let liveHeatRevision = 0;
+  const LIVE_FADE_MS = 240;
+
+  function hardClearHeat() {
+    liveHeatRevision++;
     heat.textContent = "";
+    liveHeatCells.clear();
+    liveBest = null;
+  }
+
+  function setHeat(rows, tint, ringTint, opa) {
+    // Existing analysis behavior remains immediate/non-animated.
+    hardClearHeat();
     if (!rows || !rows.length || opa <= 0) return;
     const maxW = rows[0].p || 1;
     for (const h of rows) {
@@ -433,7 +448,144 @@ export function createBoard(svg, opts = {}) {
     heat.appendChild(ring);
   }
 
-  const clearHeat = () => { heat.textContent = ""; };
+  const clearHeat = hardClearHeat;
+
+  /* Keyed, transition-friendly heat for the play screen's streamed search.
+   * Missing cells fade before removal; surviving cells retain their DOM nodes,
+   * so rapid SH rounds concentrate smoothly instead of flashing an empty
+   * layer. Both the ring and opacity use the true maximum defensively; stable
+   * coordinate tie-breaking keeps an equal-weight round from jittering. */
+  function setLiveHeat(rows, tint, ringTint, opa) {
+    const seq = Array.isArray(rows) ? rows.filter(row =>
+      row && Number.isFinite(row.q) && Number.isFinite(row.r)
+    ) : [];
+    if (!seq.length || opa <= 0) {
+      hardClearHeat();
+      return;
+    }
+    const revision = ++liveHeatRevision;
+    const active = new Set();
+    const freshCells = [];
+    const fadingCells = [];
+    let maxW = 0;
+    for (const row of seq) {
+      const weight = Number.isFinite(row.p) ? Math.max(0, row.p) : 0;
+      maxW = Math.max(maxW, weight);
+    }
+    if (!(maxW > 0)) maxW = 1;
+
+    for (const row of seq) {
+      const k = key(row.q, row.r);
+      active.add(k);
+      let el = liveHeatCells.get(k);
+      const fresh = !el;
+      if (!el) {
+        el = document.createElementNS(NS, "polygon");
+        el.setAttribute("points", hexPts(axialX(row.q, row.r), axialY(row.r), S * DRAW));
+        el.setAttribute("class", "heatcell live-heatcell");
+        el.style.opacity = "0";
+        heat.appendChild(el);
+        liveHeatCells.set(k, el);
+      }
+      el.dataset.fadeToken = "";
+      el.style.fill = tint;
+      const weight = Number.isFinite(row.p) ? Math.max(0, row.p) : 0;
+      const opacity = (opa * (0.12 + 0.88 * weight / maxW)).toFixed(3);
+      if (fresh) {
+        freshCells.push({ k, el, opacity });
+      } else {
+        el.style.opacity = opacity;
+      }
+    }
+    if (freshCells.length) {
+      requestAnimationFrame(() => {
+        for (const { k, el, opacity } of freshCells) {
+          if (liveHeatCells.get(k) === el) el.style.opacity = opacity;
+        }
+      });
+    }
+
+    for (const [k, el] of liveHeatCells) {
+      if (active.has(k)) continue;
+      const token = String(revision);
+      el.dataset.fadeToken = token;
+      el.style.opacity = "0";
+      fadingCells.push({ k, el, token });
+    }
+    if (fadingCells.length) {
+      setTimeout(() => {
+        for (const { k, el, token } of fadingCells) {
+          if (el.dataset.fadeToken !== token || liveHeatCells.get(k) !== el) continue;
+          liveHeatCells.delete(k);
+          el.remove();
+        }
+      }, LIVE_FADE_MS);
+    }
+
+    const best = seq.reduce((winner, row) => {
+      if (!winner) return row;
+      const wp = Number.isFinite(winner.p) ? winner.p : 0;
+      const rp = Number.isFinite(row.p) ? row.p : 0;
+      if (rp !== wp) return rp > wp ? row : winner;
+      if (row.q !== winner.q) return row.q < winner.q ? row : winner;
+      return row.r < winner.r ? row : winner;
+    }, null);
+    const bestKey = key(best.q, best.r);
+    if (!liveBest || liveBest.key !== bestKey) {
+      if (liveBest) {
+        const old = liveBest.el;
+        old.style.opacity = "0";
+        setTimeout(() => old.remove(), LIVE_FADE_MS);
+      }
+      const ring = document.createElementNS(NS, "polygon");
+      ring.setAttribute("points", hexPts(axialX(best.q, best.r), axialY(best.r), S * 0.86));
+      ring.setAttribute("class", "heattop live-heattop");
+      ring.style.stroke = ringTint;
+      ring.style.opacity = "0";
+      heat.appendChild(ring);
+      liveBest = { key: bestKey, el: ring };
+      requestAnimationFrame(() => {
+        if (liveBest && liveBest.el === ring) {
+          ring.style.opacity = Math.min(1, opa + 0.1).toFixed(3);
+        }
+      });
+    } else {
+      liveBest.el.style.stroke = ringTint;
+      liveBest.el.style.opacity = Math.min(1, opa + 0.1).toFixed(3);
+    }
+  }
+
+  const clearLiveHeat = hardClearHeat;
+
+  /* Stream-selected bot stones staged while the worker searches the rest of
+   * its turn. They are intentionally isolated from setStones(), occupied,
+   * legality, home framing, and the human touch-confirm ghost. */
+  const previewCells = new Map();
+  function setPreviewStones(moves) {
+    const active = new Set();
+    for (const move of Array.isArray(moves) ? moves : []) {
+      if (!move || !Number.isFinite(move.q) || !Number.isFinite(move.r)) continue;
+      const k = key(move.q, move.r);
+      active.add(k);
+      let el = previewCells.get(k);
+      if (!el) {
+        el = document.createElementNS(NS, "polygon");
+        el.setAttribute("points", hexPts(axialX(move.q, move.r), axialY(move.r), S * 0.8));
+        previews.appendChild(el);
+        previewCells.set(k, el);
+      }
+      el.setAttribute(
+        "class",
+        "stone search-preview " + (move.color === 0 ? "s0" : "s1"),
+      );
+    }
+    for (const [k, el] of previewCells) {
+      if (active.has(k)) continue;
+      previewCells.delete(k);
+      el.remove();
+    }
+  }
+  const clearPreviewStones = () => setPreviewStones([]);
 
   function stage(q, r) {
     stagedGhost.setAttribute("points", hexPts(axialX(q, r), axialY(r), S * 0.8));
@@ -447,6 +599,7 @@ export function createBoard(svg, opts = {}) {
 
   return {
     svg, setStones, setLegal, setHeat, clearHeat,
+    setLiveHeat, clearLiveHeat, setPreviewStones, clearPreviewStones,
     stage, clearStage, hideHoverGhost,
     resetView: goHome,
     tileCount: () => tiles.size,

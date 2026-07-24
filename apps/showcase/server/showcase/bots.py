@@ -47,7 +47,7 @@ import tomllib
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import Settings
 
@@ -60,6 +60,10 @@ _READY = "__ready__"
 # Without it, ordinary queue-wait was misdiagnosed as an accelerator fault and,
 # at GPU_FAULT_THRESHOLD=1, needlessly failed the shard over to CPU.
 _STARTED = "__started__"
+# Low-volume, best-effort live-search frame. Progress shares the worker
+# generation's existing result queue so its ordering relative to the final
+# reply is guaranteed; it never resolves the job future.
+_PROGRESS = "__progress__"
 # How many times a failed job is transparently re-run after its shard has been
 # recycled (or failed over to CPU). One retry is enough: a job that wedged the
 # accelerator recycles the shard — onto CPU once the fault threshold is hit — so
@@ -477,7 +481,8 @@ class _WorkerRuntime:
         return state
 
     def bot_turn(
-        self, *, bot_slug: str, game_key: int, actions: list[int], seed: int, visits: int,
+        self, *, bot_slug: str, game_key: int, actions: list[int], seed: int,
+        visits: int, progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict:
         """Play the bot's whole turn (1-2 stones) from the given move history
         at the given visit budget.
@@ -493,17 +498,155 @@ class _WorkerRuntime:
         entry_player = engine.current_player(state)
         played: list[dict] = []
         ply = len(actions)
+        # This is intentionally the pre-feature implementation verbatim. With
+        # no callback there is no extra forward, event allocation, result
+        # parsing, or changed search kwarg.
+        if progress_callback is None:
+            while engine.terminal(state) is None and engine.current_player(state) == entry_player:
+                result = bot.profile.search_one(
+                    bot.session, bot.evaluator, state,
+                    game_key=game_key,
+                    visits=int(visits),
+                    seed=seed * 5003 + ply,
+                    temperature=bot.profile.move_temperature(ply),
+                )
+                action_id = int(result["action_id"])
+                q, r = bot.family.decode_action(action_id)
+                engine.apply_action(state, PlacementAction(unpack_coord_id(action_id)))
+                played.append(
+                    {
+                        "action_id": action_id,
+                        "q": q,
+                        "r": r,
+                        "root_value": round(float(result["root_value"]), 6),
+                        "visits": int(result["visits"]),
+                    }
+                )
+                ply += 1
+            return {"actions": played}
+
+        def emit(payload: dict[str, Any]) -> None:
+            try:
+                progress_callback(payload)
+            except Exception:
+                # Presentation must not affect the move future or search result.
+                return
+
+        def result_policy_wire(result: dict, prefix: str) -> dict[str, bytes]:
+            """Copy native result buffers without decoding them in the worker."""
+            out: dict[str, bytes] = {}
+            for source_suffix, target_key in (
+                ("action_ids_bytes", "policy_action_ids_bytes"),
+                ("weights_bytes", "policy_weights_bytes"),
+            ):
+                try:
+                    out[target_key] = bytes(result[f"{prefix}_{source_suffix}"])
+                except Exception:
+                    pass
+            return out
+
+        post_search_only = bot.spec.family != "hexfield_eq"
+        if post_search_only:
+            # This family has no native live-round recorder. Tell the viewer
+            # before the first search starts so its eventual result-derived
+            # reveal is labelled honestly rather than presented as live SH.
+            emit({"kind": "turn_start", "post_search": True})
+
         while engine.terminal(state) is None and engine.current_player(state) == entry_player:
-            result = bot.profile.search_one(
-                bot.session, bot.evaluator, state,
-                game_key=game_key,
-                visits=int(visits),
-                seed=seed * 5003 + ply,
-                temperature=bot.profile.move_temperature(ply),
+            stone = len(played) + 1
+            saw_start = False
+            pending_complete: dict[str, Any] | None = None
+
+            def on_raw_telemetry(raw: dict[str, Any]) -> None:
+                nonlocal saw_start, pending_complete
+                try:
+                    phase = str(raw.get("phase", "")).lower()
+                    frame = {
+                        **raw,
+                        "kind": "search_telemetry",
+                        "stone": stone,
+                        "ply": ply,
+                        "phase": phase,
+                    }
+                    if phase == "start":
+                        saw_start = True
+                        emit(frame)
+                    elif phase == "round":
+                        emit(frame)
+                    elif phase == "complete":
+                        # The normal result returned immediately after this frame
+                        # is the source of truth for any omitted optional fields.
+                        pending_complete = frame
+                except Exception:
+                    return
+
+            search_kwargs = {
+                "game_key": game_key,
+                "visits": int(visits),
+                "seed": seed * 5003 + ply,
+                "temperature": bot.profile.move_temperature(ply),
+            }
+            if bot.spec.family == "hexfield_eq":
+                result = bot.profile.search_one(
+                    bot.session, bot.evaluator, state,
+                    telemetry_callback=on_raw_telemetry,
+                    **search_kwargs,
+                )
+            else:
+                result = bot.profile.search_one(
+                    bot.session, bot.evaluator, state, **search_kwargs,
+                )
+
+            if not saw_start:
+                emit(
+                    {
+                        "kind": "search_telemetry",
+                        "stone": stone,
+                        "ply": ply,
+                        "phase": "start",
+                        "visits": 0,
+                        "target_visits": int(visits),
+                        "_fallback_start": True,
+                        "_result_policy": True,
+                        **result_policy_wire(result, "root_prior_policy"),
+                    }
+                )
+
+            complete = dict(pending_complete or {})
+            complete.update(
+                {
+                    "kind": "search_telemetry",
+                    "stone": stone,
+                    "ply": ply,
+                    "phase": "complete",
+                }
+            )
+            if post_search_only or not saw_start:
+                complete["_post_search"] = True
+            complete.setdefault("action_id", int(result["action_id"]))
+            complete.setdefault("root_value", round(float(result["root_value"]), 6))
+            complete.setdefault("visits", int(result["visits"]))
+            if "policy_action_ids_bytes" not in complete:
+                complete["_result_policy"] = True
+                complete.update(result_policy_wire(result, "visit_policy"))
+            emit(
+                complete
             )
             action_id = int(result["action_id"])
             q, r = bot.family.decode_action(action_id)
             engine.apply_action(state, PlacementAction(unpack_coord_id(action_id)))
+            emit(
+                {
+                    "kind": "stone",
+                    "stone": stone,
+                    "ply": ply,
+                    "action": {
+                        "action_id": action_id,
+                        "q": int(q),
+                        "r": int(r),
+                    },
+                }
+            )
             played.append(
                 {
                     "action_id": action_id,
@@ -653,7 +796,15 @@ def _worker_main(
             result_queue.put((_STARTED, job_id))
         try:
             if kind == "move":
-                out = runtime.bot_turn(**kwargs)
+                if kwargs.pop("watch_search", False) and job_id is not None:
+                    out = runtime.bot_turn(
+                        **kwargs,
+                        progress_callback=lambda payload: result_queue.put(
+                            (_PROGRESS, job_id, payload)
+                        ),
+                    )
+                else:
+                    out = runtime.bot_turn(**kwargs)
             elif kind == "analyze":
                 out = runtime.analyze(**kwargs)
             elif kind == "summary":
@@ -749,6 +900,11 @@ class BotPool:
         self._result_queues: list[Any] = []
         self._readers: list[threading.Thread] = []
         self._futures: dict[int, asyncio.Future] = {}
+        # Optional loop-thread observers for live-search progress. Worker
+        # callbacks never cross multiprocessing; only tagged data frames do.
+        self._progress_callbacks: dict[
+            int, Callable[[dict[str, Any]], None]
+        ] = {}
         # job ids whose worker has posted the _STARTED marker (i.e. the job is
         # executing, not queued). Timeout classification depends on this.
         self._started: set[int] = set()
@@ -913,6 +1069,7 @@ class BotPool:
             if not fut.done():
                 fut.cancel()
         self._futures.clear()
+        self._progress_callbacks.clear()
         self._job_worker.clear()
         self._started.clear()
 
@@ -939,6 +1096,12 @@ class BotPool:
                     _, index, error = item
                     self._loop.call_soon_threadsafe(self._deliver_ready, index, error)
                     continue
+                if len(item) == 3 and item[0] == _PROGRESS:
+                    _, progress_job_id, progress = item
+                    self._loop.call_soon_threadsafe(
+                        self._deliver_progress, progress_job_id, progress
+                    )
+                    continue
                 if len(item) == 2 and item[0] == _STARTED:
                     self._loop.call_soon_threadsafe(self._mark_started, item[1])
                     continue
@@ -962,10 +1125,24 @@ class BotPool:
         else:  # waiter not yet registered — stash for _await_ready to pick up
             self._ready_pending[index] = error
 
+    def _deliver_progress(self, job_id: int, payload: dict[str, Any]) -> None:
+        """Deliver best-effort progress on the loop thread without touching its future."""
+        callbacks = getattr(self, "_progress_callbacks", None)
+        callback = callbacks.get(job_id) if callbacks is not None else None
+        if callback is None:
+            return  # late frame from a resolved/recycled generation
+        try:
+            callback(payload)
+        except Exception:
+            log.exception("pool progress callback failed for job %s; ignored", job_id)
+
     def _resolve(self, job_id: int, payload: dict) -> None:
         """Deliver a worker reply to its future (loop thread only)."""
         self._job_worker.pop(job_id, None)
         self._started.discard(job_id)
+        callbacks = getattr(self, "_progress_callbacks", None)
+        if callbacks is not None:
+            callbacks.pop(job_id, None)
         future = self._futures.pop(job_id, None)
         if future is not None and not future.done():
             future.set_result(payload)
@@ -975,11 +1152,17 @@ class BotPool:
         self._futures.pop(job_id, None)
         self._job_worker.pop(job_id, None)
         self._started.discard(job_id)
+        callbacks = getattr(self, "_progress_callbacks", None)
+        if callbacks is not None:
+            callbacks.pop(job_id, None)
 
     def _drop_job_future(self, job_id: int, exc: Exception) -> None:
         """Drop a job's bookkeeping AND fail its future (loop thread only)."""
         self._job_worker.pop(job_id, None)
         self._started.discard(job_id)
+        callbacks = getattr(self, "_progress_callbacks", None)
+        if callbacks is not None:
+            callbacks.pop(job_id, None)
         fut = self._futures.pop(job_id, None)
         if fut is not None and not fut.done():
             fut.set_exception(exc)
@@ -1336,6 +1519,7 @@ class BotPool:
     async def _submit(
         self, worker: int, kind: str, kwargs: dict, timeout: float,
         *, recycle_on_hang: bool = False, retries: int = 0,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> Any:
         """Enqueue a job on `worker` and await its reply.
 
@@ -1344,6 +1528,21 @@ class BotPool:
         the job is then transparently re-run up to `retries` times so a transient
         accelerator fault costs the user a longer think, not an abandoned game."""
         assert self._loop is not None, "BotPool.start() was not awaited"
+
+        def notify_retry(attempt_number: int, reason: str) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(
+                    {
+                        "kind": "turn_start",
+                        "worker_retry": attempt_number,
+                        "reason": reason,
+                    }
+                )
+            except Exception:
+                log.exception("pool retry progress callback failed; ignored")
+
         attempt = 0
         while True:
             if self._poisoned[worker]:
@@ -1357,6 +1556,11 @@ class BotPool:
             future: asyncio.Future = self._loop.create_future()
             self._futures[job_id] = future
             self._job_worker[job_id] = worker
+            if progress_callback is not None:
+                callbacks = getattr(self, "_progress_callbacks", None)
+                if callbacks is None:
+                    callbacks = self._progress_callbacks = {}
+                callbacks[job_id] = progress_callback
             self._job_queues[worker].put((job_id, kind, kwargs))
 
             recycle_reason: str | None = None
@@ -1394,6 +1598,7 @@ class BotPool:
                         pass  # barrier: recycle finished
                     if not self._poisoned[worker]:
                         attempt += 1
+                        notify_retry(attempt, "worker_recycled")
                         log.warning(
                             "retrying %s on shard %d after it was stranded by a "
                             "recycle (attempt %d/%d): %s",
@@ -1425,6 +1630,7 @@ class BotPool:
                 )
                 if attempt < retries and not self._poisoned[worker]:
                     attempt += 1
+                    notify_retry(attempt, "worker_fault")
                     log.warning(
                         "retrying %s on shard %d after fault (attempt %d/%d): %s",
                         kind, worker, attempt, retries, recycle_reason,
@@ -1436,17 +1642,23 @@ class BotPool:
     # -- public jobs ------------------------------------------------------------
 
     async def bot_turn(
-        self, *, game_key: int, bot_slug: str, actions: list[int], seed: int, visits: int,
+        self, *, game_key: int, bot_slug: str, actions: list[int], seed: int,
+        visits: int,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict:
+        kwargs = {
+            "bot_slug": bot_slug, "game_key": game_key, "actions": list(actions),
+            "seed": seed, "visits": int(visits),
+        }
+        if progress_callback is not None:
+            kwargs["watch_search"] = True
         return await self._submit(
             self._route(game_key), "move",
-            {
-                "bot_slug": bot_slug, "game_key": game_key, "actions": list(actions),
-                "seed": seed, "visits": int(visits),
-            },
+            kwargs,
             self._settings.move_timeout_s,
             recycle_on_hang=True,
             retries=_JOB_RETRIES,
+            progress_callback=progress_callback,
         )
 
     async def analyze(

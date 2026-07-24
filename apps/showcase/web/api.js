@@ -7,7 +7,7 @@
  * {checkpoints, sims} shape.
  */
 
-import { normalizeCheckpoints } from "./checkpoints.js?v=11";
+import { normalizeCheckpoints } from "./checkpoints.js?v=12";
 
 export class ApiError extends Error {
   constructor(status, message, network = false) {
@@ -118,19 +118,76 @@ export async function getBots() {
 
 // ---- games ------------------------------------------------------------------
 
-export const createGame = payload =>
-  request("/api/game", { method: "POST", body: { human_color: 0, ...payload } });
+const watchQuery = enabled => enabled ? "?watch_search=1" : "";
+
+export const createGame = (payload, watchSearch = false) =>
+  request("/api/game" + watchQuery(watchSearch), {
+    method: "POST", body: { human_color: 0, ...payload },
+  });
 
 export const getGame = id => request(`/api/game/${id}`);
 
-export const postMove = (id, q, r) =>
-  request(`/api/game/${id}/move`, { method: "POST", body: { q, r } });
+export const postMove = (id, q, r, watchSearch = false) =>
+  request(`/api/game/${id}/move` + watchQuery(watchSearch), {
+    method: "POST", body: { q, r },
+  });
 
 export const resign = id => request(`/api/game/${id}/resign`, { method: "POST" });
 
 // Re-run a bot turn that hiccuped; the position is unchanged, so this is safe
 // to call whenever the game is in the `bot_failed` state.
-export const retryBot = id => request(`/api/game/${id}/retry`, { method: "POST" });
+export const retryBot = (id, watchSearch = false) =>
+  request(
+    `/api/game/${id}/retry?watch_search=${watchSearch ? "1" : "0"}`,
+    { method: "POST" },
+  );
+
+/* Optional live-search telemetry. This deliberately does not use request():
+ * EventSource owns reconnection/stream parsing, and a dropped visualization
+ * must not mark the whole app offline while authoritative game polling still
+ * works. The caller closes on the first error and falls back to polling. */
+export function openSearchStream(id, { onEvent, onError } = {}) {
+  if (typeof EventSource !== "function") {
+    throw new ApiError(0, "live search is not supported by this browser", true);
+  }
+  const source = new EventSource(
+    `/api/game/${encodeURIComponent(id)}/search-stream`,
+    { withCredentials: true },
+  );
+  let closed = false;
+  const handleMessage = message => {
+    if (closed) return;
+    let payload;
+    try {
+      payload = JSON.parse(message.data);
+    } catch (_) {
+      closed = true;
+      source.close();
+      if (onError) onError(new ApiError(0, "invalid live-search event"));
+      return;
+    }
+    if (onEvent) onEvent(payload);
+  };
+  // The current server names SSE records `event: search`; onmessage is kept
+  // for compatibility with an older/default-event stream. Custom events do
+  // not also trigger onmessage, and the controller's monotone seq guard makes
+  // an accidentally duplicated record harmless.
+  source.addEventListener("search", handleMessage);
+  source.onmessage = handleMessage;
+  source.onerror = () => {
+    if (closed) return;
+    closed = true;
+    source.close();
+    if (onError) onError(new ApiError(0, "live-search stream closed", true));
+  };
+  return {
+    close() {
+      if (closed) return;
+      closed = true;
+      source.close();
+    },
+  };
+}
 
 export const setNickname = (id, nickname) =>
   request(`/api/game/${id}/nickname`, { method: "POST", body: { nickname } });

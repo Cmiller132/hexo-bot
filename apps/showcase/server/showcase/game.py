@@ -185,6 +185,12 @@ class GameSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     bot_busy: bool = False
     bot_failed: bool = False  # transient bot-turn failure; retryable, not terminal
+    # Internal live-search presentation state. These fields never enter a game
+    # snapshot or .hxr record and therefore cannot affect game/search semantics.
+    watch_search: bool = False
+    search_run_id: int = 0
+    search_attempt: int = 0
+    search_base_ply: int = -1
     db_status: str = "active"  # active | finished | abandoned
     result: int | None = None  # +1 human, -1 bot, 0 none (schema convention)
     termination: str | None = None
@@ -197,7 +203,7 @@ class GameSession:
     @classmethod
     def create(
         cls, *, bot_slug: str, bot_db_id: int, bot_label: str, bot_epoch: int,
-        sims: int, human_color: int, client_hash: str,
+        sims: int, human_color: int, client_hash: str, watch_search: bool = False,
     ) -> "GameSession":
         session = cls(
             game_id=str(uuid.uuid4()),
@@ -209,6 +215,7 @@ class GameSession:
             sims=sims,
             human_color=human_color,
             client_hash=client_hash,
+            watch_search=bool(watch_search),
         )
         # The opening single is forced to the origin, so place it at creation
         # rather than searching it (a 1-legal-move search is degenerate) or

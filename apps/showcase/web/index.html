@@ -6,7 +6,7 @@
 <title>shrimp &mdash; instrument</title>
 <!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
      in app.js whenever the bundle changes incompatibly -->
-<link rel="stylesheet" href="./style.css?v=17">
+<link rel="stylesheet" href="./style.css?v=18">
 </head>
 <body>
 
@@ -85,6 +85,12 @@
         <!-- calm second line while a slow/cold bot turn runs long; app.js
              fills it past the warm-up threshold and clears it on the move -->
         <div class="think-note" id="thinkNote" role="status" hidden></div>
+        <label class="watch-search" for="watchSearch">
+          <input id="watchSearch" type="checkbox" checked>
+          <span>watch live search</span>
+        </label>
+        <div class="search-phase" id="searchPhase" role="status"
+             aria-live="polite" aria-atomic="true" hidden></div>
         <!-- recoverable bot-backend failure notice + a way forward; app.js
              unhides it on a fail-fast timeout / abandoned finish -->
         <div class="play-alert" id="playAlert" hidden>
@@ -371,6 +377,6 @@ print(result["result"])        # {"winner": ..., "termination": ...}</code></pre
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=19"></script>
+<script type="module" src="./app.js?v=20"></script>
 </body>
 </html>

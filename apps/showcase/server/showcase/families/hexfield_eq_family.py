@@ -26,6 +26,48 @@ _META_ENV = {
 }
 
 
+def _wire_telemetry_event(raw: Any) -> dict[str, Any]:
+    """Copy one Rust frame into a small, immutable multiprocessing payload.
+
+    Wide policy decoding deliberately does *not* happen on the search thread.
+    Rust exposes Python ``bytes``, which are immutable and retained by
+    reference here (``bytes(...)`` only normalizes an unexpected bytes-like
+    object). The web loop expands them into JSON rows after the worker queue.
+    Malformed optional fields are omitted so presentation can never fail a
+    search.
+    """
+    try:
+        source = dict(raw)
+    except Exception:
+        return {"phase": "unknown"}
+
+    event: dict[str, Any] = {"phase": str(source.get("phase", "unknown"))}
+    for key in ("round", "rounds", "visits", "target_visits", "action_id"):
+        try:
+            if source.get(key) is not None:
+                event[key] = int(source[key])
+        except (TypeError, ValueError, OverflowError):
+            pass
+    try:
+        if source.get("root_value") is not None:
+            event["root_value"] = float(source["root_value"])
+    except (TypeError, ValueError, OverflowError):
+        pass
+    for key in (
+        "policy_action_ids_bytes",
+        "policy_weights_bytes",
+        "policy_visits_bytes",
+        "survivor_action_ids_bytes",
+    ):
+        try:
+            if source.get(key) is not None:
+                value = source[key]
+                event[key] = value if isinstance(value, bytes) else bytes(value)
+        except Exception:
+            pass
+    return event
+
+
 def _env_value(value: Any) -> str:
     return "1" if value is True else "0" if value is False else str(value)
 
@@ -80,6 +122,7 @@ class HexfieldEqSearchProfile:
     def search_one(
         self, session: Any, evaluator: Any, state: Any, *,
         game_key: int, visits: int, seed: int, temperature: float,
+        telemetry_callback: Any | None = None,
     ) -> dict:
         from hexfield_eq.config import build_eval_search_kwargs
 
@@ -89,6 +132,17 @@ class HexfieldEqSearchProfile:
             virtual_batch_size=self.virtual_batch_size,
             active_root_limit=self.selfplay.active_root_limit,
         )
+        if telemetry_callback is not None:
+            def safe_telemetry(raw: Any) -> None:
+                try:
+                    telemetry_callback(_wire_telemetry_event(raw))
+                except Exception:
+                    # Search telemetry is best-effort presentation data. A
+                    # disconnected stream or malformed optional frame must not
+                    # change or fail the search result.
+                    return None
+
+            kwargs["telemetry_callback"] = safe_telemetry
         return session.search(
             [int(game_key)],
             (state,),

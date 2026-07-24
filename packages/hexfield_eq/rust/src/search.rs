@@ -35,8 +35,8 @@ use crate::state::states_from_py_states;
 use crate::threats_shared as threats;
 use crate::tree::{
     gumbel_completed_q, gumbel_sigma, gumbel_softmax, random_unit, terminal_value,
-    tss_solve_verified, Divergences, RootDirichletNoise, RustEdge, RustLeaf, RustNode, RustSearch,
-    SolverHorizon, TssCounters, TssLeafRoute, TssParkResolution, Widening,
+    tss_solve_verified, Divergences, GumbelRoundTelemetry, RootDirichletNoise, RustEdge, RustLeaf,
+    RustNode, RustSearch, SolverHorizon, TssCounters, TssLeafRoute, TssParkResolution, Widening,
 };
 use crate::tss_async::TssAsyncPool;
 use crate::tss_core::{self, ProofStatus};
@@ -292,6 +292,11 @@ enum ContinuousEvalItem {
         state: RustHexoState,
         state_hash: hexo_utils::StateHash,
     },
+}
+
+struct IndexedGumbelRoundTelemetry {
+    root_index: usize,
+    snapshot: GumbelRoundTelemetry,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -597,7 +602,7 @@ impl HexfieldMctsSession {
 
     /// Lockstep batched search (eval ladder / arena / differential harness).
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (game_keys, states, visits, c_puct, temperature, seed, evaluator, virtual_batch_size=None, active_root_limit=None, root_dirichlet_total_alpha=None, root_dirichlet_noise_fraction=None, root_policy_temperature=None, fpu_reduction=None, virtual_loss=None, widening_policy_mass=None, widening_max_children=None, widening_min_children=None, forced_playout_k=None, move_temperatures=None, root_policy_temperatures=None, tss_enabled=None, root_fpu_zero_under_noise=None, root_fpu_reduction=None, search_parity_mode=None, divergence_overrides=None, debug_no_advance=None))]
+    #[pyo3(signature = (game_keys, states, visits, c_puct, temperature, seed, evaluator, virtual_batch_size=None, active_root_limit=None, root_dirichlet_total_alpha=None, root_dirichlet_noise_fraction=None, root_policy_temperature=None, fpu_reduction=None, virtual_loss=None, widening_policy_mass=None, widening_max_children=None, widening_min_children=None, forced_playout_k=None, move_temperatures=None, root_policy_temperatures=None, tss_enabled=None, root_fpu_zero_under_noise=None, root_fpu_reduction=None, search_parity_mode=None, divergence_overrides=None, debug_no_advance=None, telemetry_callback=None))]
     fn search(
         &mut self,
         py: Python<'_>,
@@ -630,6 +635,7 @@ impl HexfieldMctsSession {
         search_parity_mode: Option<bool>,
         divergence_overrides: Option<&Bound<'_, PyDict>>,
         debug_no_advance: Option<bool>,
+        telemetry_callback: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         validate_search_inputs(visits, c_puct, temperature)?;
         let divergences = resolve_divergences(search_parity_mode, divergence_overrides, false)?;
@@ -855,6 +861,7 @@ impl HexfieldMctsSession {
             .iter()
             .map(|search| search.root_edge_visits().into_iter().collect())
             .collect();
+        emit_start_search_telemetry(py, telemetry_callback, &game_keys, &searches);
         run_searches_to_targets(
             py,
             evaluator,
@@ -870,6 +877,8 @@ impl HexfieldMctsSession {
             &move_temps,
             &baselines,
             self.tss_pool.as_ref(),
+            telemetry_callback,
+            &game_keys,
         )?;
         let cache_len = self
             .evaluation_cache
@@ -921,6 +930,13 @@ impl HexfieldMctsSession {
             results.append(result)?;
         }
         let results = results.into_any().unbind();
+        emit_complete_search_telemetry(
+            py,
+            telemetry_callback,
+            &game_keys,
+            &searches,
+            &results,
+        );
 
         let no_advance = debug_no_advance.unwrap_or(false);
         for ((game_key, mut search), selected) in game_keys
@@ -1912,6 +1928,255 @@ impl HexfieldMctsSession {
     }
 }
 
+fn telemetry_bytes_u32<'py>(py: Python<'py>, data: &[u32]) -> Bound<'py, PyBytes> {
+    let len = std::mem::size_of_val(data);
+    let raw = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, len) };
+    PyBytes::new(py, raw)
+}
+
+fn telemetry_bytes_f32<'py>(py: Python<'py>, data: &[f32]) -> Bound<'py, PyBytes> {
+    let len = std::mem::size_of_val(data);
+    let raw = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, len) };
+    PyBytes::new(py, raw)
+}
+
+/// Full model policy for the start frame. Prefer the evaluator's stored raw
+/// logits so search-only root-policy temperature/noise is not presented as the
+/// network policy. This deliberately uses only copied Vecs: calling
+/// `root_prior_policy` here would allocate a telemetry-only HashMap before
+/// search and could perturb later HashMap seeds.
+fn telemetry_root_prior_policy(root: &RustNode) -> (Vec<PackedCoord>, Vec<f32>) {
+    if let Some(logit_map) = &root.root_logits {
+        let mut pairs: Vec<(PackedCoord, f32)> = logit_map
+            .iter()
+            .map(|(&action_id, &logit)| (action_id, logit))
+            .collect();
+        pairs.sort_unstable_by_key(|(action_id, _)| *action_id);
+        let action_ids: Vec<PackedCoord> =
+            pairs.iter().map(|(action_id, _)| *action_id).collect();
+        let logits: Vec<f32> = pairs.into_iter().map(|(_, logit)| logit).collect();
+        return (action_ids, gumbel_softmax(&logits));
+    }
+
+    let remaining = root.remaining_priors();
+    let mut pairs: Vec<(PackedCoord, f32)> =
+        Vec::with_capacity(root.edges.len() + remaining.len());
+    pairs.extend(
+        root.edges
+            .iter()
+            .filter(|edge| edge.prior.is_finite() && edge.prior > 0.0)
+            .map(|edge| (edge.action_id, edge.prior)),
+    );
+    pairs.extend(
+        remaining
+            .into_iter()
+            .filter(|(_, prior)| prior.is_finite() && *prior > 0.0),
+    );
+    pairs.sort_unstable_by_key(|(action_id, _)| *action_id);
+    let action_ids: Vec<PackedCoord> = pairs.iter().map(|(action_id, _)| *action_id).collect();
+    let mut weights: Vec<f32> = pairs.into_iter().map(|(_, prior)| prior).collect();
+    let total: f32 = weights.iter().copied().sum();
+    if total > 0.0 {
+        for weight in &mut weights {
+            *weight /= total;
+        }
+    }
+    (action_ids, weights)
+}
+
+/// Best-effort start frames. Every payload is a fresh Python dict containing
+/// copies/immutable bytes; callback failures never enter the search result path.
+fn emit_start_search_telemetry(
+    py: Python<'_>,
+    callback: Option<&Bound<'_, PyAny>>,
+    game_keys: &[u64],
+    searches: &[RustSearch],
+) {
+    let Some(callback) = callback else {
+        return;
+    };
+    for (root_index, search) in searches.iter().enumerate() {
+        let attempt = (|| -> PyResult<()> {
+            let gumbel = search.gumbel_start_telemetry();
+            let (round, rounds, target_visits, survivors) = match gumbel {
+                Some(state) => (
+                    state.round,
+                    state.rounds,
+                    state.target_visits,
+                    state.survivor_action_ids,
+                ),
+                None => (0, 0, search.remaining_visits(), Vec::new()),
+            };
+            let (policy_action_ids, policy_weights) =
+                telemetry_root_prior_policy(search.root());
+            let policy_visits = vec![0u32; policy_action_ids.len()];
+            let event = PyDict::new(py);
+            event.set_item("phase", "start")?;
+            event.set_item("root_index", root_index)?;
+            event.set_item(
+                "game_key",
+                game_keys.get(root_index).copied().unwrap_or_default(),
+            )?;
+            event.set_item("round", round)?;
+            event.set_item("rounds", rounds)?;
+            event.set_item("visits", 0u32)?;
+            event.set_item("target_visits", target_visits)?;
+            event.set_item("root_value", search.root().value())?;
+            event.set_item(
+                "policy_action_ids_bytes",
+                telemetry_bytes_u32(py, &policy_action_ids),
+            )?;
+            event.set_item(
+                "policy_weights_bytes",
+                telemetry_bytes_f32(py, &policy_weights),
+            )?;
+            event.set_item(
+                "policy_visits_bytes",
+                telemetry_bytes_u32(py, &policy_visits),
+            )?;
+            event.set_item("policy_count", policy_action_ids.len())?;
+            event.set_item(
+                "survivor_action_ids_bytes",
+                telemetry_bytes_u32(py, &survivors),
+            )?;
+            event.set_item("survivor_count", survivors.len())?;
+            callback.call1((event,))?;
+            Ok(())
+        })();
+        drop(attempt);
+    }
+}
+
+/// Flush native round snapshots only after selection has returned to the GIL.
+/// The exact snapshot was captured at the drained tree barrier; Python is never
+/// called from `py.detach`.
+fn emit_round_search_telemetry(
+    py: Python<'_>,
+    callback: Option<&Bound<'_, PyAny>>,
+    game_keys: &[u64],
+    snapshots: Vec<IndexedGumbelRoundTelemetry>,
+) {
+    let Some(callback) = callback else {
+        debug_assert!(snapshots.is_empty());
+        return;
+    };
+    for indexed in snapshots {
+        let attempt = (|| -> PyResult<()> {
+            let snapshot = indexed.snapshot;
+            let event = PyDict::new(py);
+            event.set_item("phase", "round")?;
+            event.set_item("root_index", indexed.root_index)?;
+            event.set_item(
+                "game_key",
+                game_keys
+                    .get(indexed.root_index)
+                    .copied()
+                    .unwrap_or_default(),
+            )?;
+            event.set_item("round", snapshot.round)?;
+            event.set_item("rounds", snapshot.rounds)?;
+            event.set_item("visits", snapshot.visits)?;
+            event.set_item("target_visits", snapshot.target_visits)?;
+            event.set_item("root_value", snapshot.root_value)?;
+            event.set_item(
+                "policy_action_ids_bytes",
+                telemetry_bytes_u32(py, &snapshot.policy_action_ids),
+            )?;
+            event.set_item(
+                "policy_weights_bytes",
+                telemetry_bytes_f32(py, &snapshot.policy_weights),
+            )?;
+            event.set_item(
+                "policy_visits_bytes",
+                telemetry_bytes_u32(py, &snapshot.policy_visits),
+            )?;
+            event.set_item("policy_count", snapshot.policy_action_ids.len())?;
+            event.set_item(
+                "survivor_action_ids_bytes",
+                telemetry_bytes_u32(py, &snapshot.survivor_action_ids),
+            )?;
+            event.set_item("survivor_count", snapshot.survivor_action_ids.len())?;
+            callback.call1((event,))?;
+            Ok(())
+        })();
+        drop(attempt);
+    }
+}
+
+/// Final frame copied from the already-built authoritative result dictionaries.
+/// No visit policy or root value is recomputed for telemetry.
+fn emit_complete_search_telemetry(
+    py: Python<'_>,
+    callback: Option<&Bound<'_, PyAny>>,
+    game_keys: &[u64],
+    searches: &[RustSearch],
+    results: &Py<PyAny>,
+) {
+    let Some(callback) = callback else {
+        return;
+    };
+    let Ok(result_list) = results.bind(py).cast::<PyList>() else {
+        return;
+    };
+    for (root_index, search) in searches.iter().enumerate() {
+        let attempt = (|| -> PyResult<()> {
+            let result_item = result_list.get_item(root_index)?;
+            let result = result_item.cast::<PyDict>()?;
+            let event = PyDict::new(py);
+            event.set_item("phase", "complete")?;
+            event.set_item("root_index", root_index)?;
+            event.set_item(
+                "game_key",
+                game_keys.get(root_index).copied().unwrap_or_default(),
+            )?;
+            if let Some(state) = search.gumbel_start_telemetry() {
+                event.set_item("round", state.round)?;
+                event.set_item("rounds", state.rounds)?;
+                event.set_item("target_visits", state.target_visits)?;
+                event.set_item(
+                    "survivor_action_ids_bytes",
+                    telemetry_bytes_u32(py, &state.survivor_action_ids),
+                )?;
+                event.set_item("survivor_count", state.survivor_action_ids.len())?;
+            } else {
+                event.set_item("round", 0u32)?;
+                event.set_item("rounds", 0u32)?;
+                event.set_item("target_visits", search.target_visits)?;
+                event.set_item(
+                    "survivor_action_ids_bytes",
+                    telemetry_bytes_u32(py, &[]),
+                )?;
+                event.set_item("survivor_count", 0usize)?;
+            }
+            for key in [
+                "action_id",
+                "root_value",
+                "visits",
+                "visit_policy_action_ids_bytes",
+                "visit_policy_weights_bytes",
+                "visit_policy_q_bytes",
+                "visit_policy_count",
+            ] {
+                if let Some(value) = result.get_item(key)? {
+                    event.set_item(key, value)?;
+                }
+            }
+            if let Some(value) = result.get_item("visit_policy_action_ids_bytes")? {
+                event.set_item("policy_action_ids_bytes", value)?;
+            }
+            if let Some(value) = result.get_item("visit_policy_weights_bytes")? {
+                event.set_item("policy_weights_bytes", value)?;
+            }
+            if let Some(value) = result.get_item("visit_policy_count")? {
+                event.set_item("policy_count", value)?;
+            }
+            callback.call1((event,))?;
+            Ok(())
+        })();
+        drop(attempt);
+    }
+}
+
 // === Lockstep internals ===
 
 fn wire_tss_async_searches(searches: &mut [RustSearch], pool: &TssAsyncPool) {
@@ -2042,6 +2307,8 @@ fn run_searches_to_targets(
     move_temps: &[f32],
     baselines: &[HashMap<PackedCoord, u32>],
     tss_pool: Option<&TssAsyncPool>,
+    telemetry_callback: Option<&Bound<'_, PyAny>>,
+    game_keys: &[u64],
 ) -> PyResult<()> {
     // Two-stage pipeline: the next batch is selected before the current batch
     // is backed up. This ordering extends the virtual-loss window by one batch:
@@ -2082,6 +2349,7 @@ fn run_searches_to_targets(
     // have submit_payload, so production async is unaffected.
     let async_eval = std::env::var("HEXFIELD_ASYNC_EVAL").is_ok()
         && evaluator.hasattr("submit_payload").unwrap_or(false);
+    let capture_telemetry = telemetry_callback.is_some();
 
     if let Some(pool) = tss_pool {
         wire_tss_async_searches(searches, pool);
@@ -2090,14 +2358,16 @@ fn run_searches_to_targets(
     early_stop_pass(searches);
     // No leaves in flight on the priming select, so the SH barrier is unblocked
     // for every search (empty in-flight set).
-    let (mut pending_leaves, _primed_progress) = select_leaf_batch(
+    let (mut pending_leaves, _primed_progress, primed_telemetry) = select_leaf_batch(
         searches,
         c_puct,
         leaf_batch_per_root,
         virtual_loss,
         &[],
         &mut parked,
+        capture_telemetry,
     )?;
+    emit_round_search_telemetry(py, telemetry_callback, game_keys, primed_telemetry);
 
     loop {
         if let Some(pool) = tss_pool {
@@ -2117,14 +2387,16 @@ fn run_searches_to_targets(
             }
             // pending_leaves is empty here: nothing is un-backed, so the SH
             // barrier is unblocked for every search.
-            let (leaves, made_progress) = select_leaf_batch(
+            let (leaves, made_progress, round_telemetry) = select_leaf_batch(
                 searches,
                 c_puct,
                 leaf_batch_per_root,
                 virtual_loss,
                 &[],
                 &mut parked,
+                capture_telemetry,
             )?;
+            emit_round_search_telemetry(py, telemetry_callback, game_keys, round_telemetry);
             if leaves.is_empty() {
                 if !made_progress && parked.is_empty() {
                     break;
@@ -2149,7 +2421,7 @@ fn run_searches_to_targets(
         // select. Both yield (next_leaves, evaluations); the leaf stream is
         // identical because the select reads the same pre-backup tree state
         // with the same batch in flight either way.
-        let (next_leaves, evaluations) = if async_eval {
+        let (next_leaves, evaluations, round_telemetry) = if async_eval {
             let pending = submit_eval_cached(
                 py,
                 evaluator,
@@ -2159,7 +2431,7 @@ fn run_searches_to_targets(
                 request_moves_left,
                 request_logits,
             )?;
-            let next_leaves = if searches.iter().any(RustSearch::needs_visits) {
+            let next_selection = if searches.iter().any(RustSearch::needs_visits) {
                 py.detach(|| {
                     select_leaf_batch(
                         searches,
@@ -2168,11 +2440,11 @@ fn run_searches_to_targets(
                         virtual_loss,
                         &pending_leaves,
                         &mut parked,
+                        capture_telemetry,
                     )
                 })?
-                .0
             } else {
-                Vec::new()
+                (Vec::new(), false, Vec::new())
             };
             let evaluations = finish_eval_cached(
                 py,
@@ -2182,7 +2454,7 @@ fn run_searches_to_targets(
                 Some(evaluation_stats),
                 cache_max_states,
             )?;
-            (next_leaves, evaluations)
+            (next_selection.0, evaluations, next_selection.2)
         } else {
             let evaluations = evaluate_state_refs_cached(
                 py,
@@ -2194,7 +2466,7 @@ fn run_searches_to_targets(
                 request_moves_left,
                 request_logits,
             )?;
-            let next_leaves = if searches.iter().any(RustSearch::needs_visits) {
+            let next_selection = if searches.iter().any(RustSearch::needs_visits) {
                 select_leaf_batch(
                     searches,
                     c_puct,
@@ -2202,14 +2474,15 @@ fn run_searches_to_targets(
                     virtual_loss,
                     &pending_leaves,
                     &mut parked,
+                    capture_telemetry,
                 )?
-                .0
             } else {
-                Vec::new()
+                (Vec::new(), false, Vec::new())
             };
-            (next_leaves, evaluations)
+            (next_selection.0, evaluations, next_selection.2)
         };
         apply_eval_backups(searches, pending_leaves, &evaluations, virtual_loss)?;
+        emit_round_search_telemetry(py, telemetry_callback, game_keys, round_telemetry);
         pending_leaves = next_leaves;
     }
     debug_assert!(
@@ -2234,9 +2507,11 @@ fn select_leaf_batch(
     // read vl-contaminated per-edge visits/completedQ).
     in_flight: &[RustLeaf],
     parked: &mut Vec<ParkedLeaf>,
-) -> PyResult<(Vec<RustLeaf>, bool)> {
+    capture_telemetry: bool,
+) -> PyResult<(Vec<RustLeaf>, bool, Vec<IndexedGumbelRoundTelemetry>)> {
     let mut leaves = Vec::new();
     let mut made_progress = false;
+    let mut round_telemetry = capture_telemetry.then(Vec::new);
     for (root_index, search) in searches.iter_mut().enumerate() {
         if !search.needs_visits() {
             continue;
@@ -2257,7 +2532,16 @@ fn select_leaf_batch(
                 .iter()
                 .any(|entry| entry.leaf.root_index == root_index);
         if drained && search.has_gumbel_root() {
-            while search.maybe_advance_gumbel_round() {}
+            if let Some(events) = round_telemetry.as_mut() {
+                while let Some(snapshot) = search.maybe_advance_gumbel_round_telemetry() {
+                    events.push(IndexedGumbelRoundTelemetry {
+                        root_index,
+                        snapshot,
+                    });
+                }
+            } else {
+                while search.maybe_advance_gumbel_round() {}
+            }
         }
         let budget = leaf_batch_per_root.min(search.remaining_visits());
         for _ in 0..budget {
@@ -2374,7 +2658,7 @@ fn select_leaf_batch(
             }
         }
     }
-    Ok((leaves, made_progress))
+    Ok((leaves, made_progress, round_telemetry.unwrap_or_default()))
 }
 
 fn apply_eval_backups(
