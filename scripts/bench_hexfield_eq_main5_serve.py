@@ -9,6 +9,7 @@ are frozen when hexfield_eq.model is first imported.
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 import random
 import sys
@@ -39,6 +40,24 @@ IMPORT_GATES = (
     "HEXFIELD_TRITON_ATTN",
     "HEXFIELD_TRITON_CONV_LN",
 )
+SERVE_OPT_ENV = {
+    "rust_pack": "HEXFIELD_RUST_PACK",
+    "defer_decode": "HEXFIELD_DEFER_DECODE",
+    "host_legal_gather": "HEXFIELD_HOST_LEGAL_GATHER",
+    "decode_cache": "HEXFIELD_DECODE_CACHE",
+    "lean_bias": "HEXFIELD_XPU_LEAN_BIAS",
+    "attn_head_split": "HEXFIELD_XPU_ATTN_HEAD_SPLIT",
+    "ray_coeff_lut": "HEXFIELD_XPU_RAY_COEFF_LUT",
+}
+OPTIMIZED_DEFAULTS = {
+    "rust_pack": False,
+    "defer_decode": False,
+    "host_legal_gather": False,
+    "decode_cache": False,
+    "lean_bias": True,
+    "attn_head_split": True,
+    "ray_coeff_lut": True,
+}
 
 
 def csv_ints(raw: str) -> list[int]:
@@ -50,6 +69,17 @@ def csv_ints(raw: str) -> list[int]:
 
 def csv_names(raw: str) -> list[str]:
     allowed = {"live", "tss-off", "park-off", "leaves-off"}
+    values = [x.strip() for x in raw.split(",") if x.strip()]
+    bad = set(values) - allowed
+    if not values or bad:
+        raise argparse.ArgumentTypeError(
+            f"expected comma-separated {sorted(allowed)}; bad={sorted(bad)}"
+        )
+    return values
+
+
+def csv_boards(raw: str) -> list[str]:
+    allowed = {"compact", "wide"}
     values = [x.strip() for x in raw.split(",") if x.strip()]
     bad = set(values) - allowed
     if not values or bad:
@@ -94,12 +124,52 @@ def prime_checkpoint_env(torch, checkpoint: Path, device: str, xpu_flex: bool) -
     return meta
 
 
-def configure_serve_path(path: str) -> None:
-    enabled = "1" if path == "optimized" else "0"
-    os.environ["HEXFIELD_RUST_PACK"] = enabled
-    os.environ["HEXFIELD_DEFER_DECODE"] = enabled
-    os.environ["HEXFIELD_HOST_LEGAL_GATHER"] = enabled
-    os.environ["HEXFIELD_DECODE_CACHE"] = enabled
+def add_serve_opt_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add independently overrideable serve optimization toggles."""
+    for name, env_name in SERVE_OPT_ENV.items():
+        parser.add_argument(
+            "--" + name.replace("_", "-"),
+            choices=("auto", "on", "off"),
+            default="auto",
+            help=(
+                f"override {env_name}; auto uses the verified candidate "
+                "default for --serve-path optimized and off for baseline"
+            ),
+        )
+
+
+def serve_opt_overrides(args: argparse.Namespace) -> dict[str, bool | None]:
+    return {
+        name: None if getattr(args, name) == "auto" else getattr(args, name) == "on"
+        for name in SERVE_OPT_ENV
+    }
+
+
+def configure_serve_path(
+    path: str,
+    *,
+    rust_pack: bool | None = None,
+    defer_decode: bool | None = None,
+    host_legal_gather: bool | None = None,
+    decode_cache: bool | None = None,
+    lean_bias: bool | None = None,
+    attn_head_split: bool | None = None,
+    ray_coeff_lut: bool | None = None,
+) -> None:
+    overrides = {
+        "rust_pack": rust_pack,
+        "defer_decode": defer_decode,
+        "host_legal_gather": host_legal_gather,
+        "decode_cache": decode_cache,
+        "lean_bias": lean_bias,
+        "attn_head_split": attn_head_split,
+        "ray_coeff_lut": ray_coeff_lut,
+    }
+    for name, env_name in SERVE_OPT_ENV.items():
+        value = overrides[name]
+        if value is None:
+            value = path == "optimized" and OPTIMIZED_DEFAULTS[name]
+        os.environ[env_name] = "1" if value else "0"
 
 
 def make_position(api, PlacementAction, AxialCoord, unpack_action_id, kind: str, plies: int):
@@ -164,6 +234,44 @@ def sync_device(torch, device) -> None:
         sync()
 
 
+def release_device_cache(torch, device) -> None:
+    """Release prior-row allocator pressure before measuring on a 4 GB card."""
+    gc.collect()
+    sync_device(torch, device)
+    module = getattr(torch, device.type, None)
+    empty_cache = getattr(module, "empty_cache", None)
+    if callable(empty_cache):
+        empty_cache()
+    sync_device(torch, device)
+
+
+def reset_peak_memory(torch, device) -> None:
+    """Reset allocator peak stats after warmup and before one measured row."""
+    module = getattr(torch, device.type, None)
+    reset = getattr(module, "reset_peak_memory_stats", None)
+    if not callable(reset):
+        if device.type != "cpu":
+            raise RuntimeError(f"torch.{device.type}.reset_peak_memory_stats unavailable")
+        return
+    try:
+        reset(device)
+    except TypeError:
+        reset()
+
+
+def peak_memory_allocated(torch, device) -> int:
+    module = getattr(torch, device.type, None)
+    peak = getattr(module, "max_memory_allocated", None)
+    if not callable(peak):
+        if device.type != "cpu":
+            raise RuntimeError(f"torch.{device.type}.max_memory_allocated unavailable")
+        return 0
+    try:
+        return int(peak(device))
+    except TypeError:
+        return int(peak())
+
+
 def run_one(
     torch,
     rust,
@@ -191,7 +299,8 @@ def run_one(
     )
     kwargs["tss_enabled"] = tss_enabled
     session = rust.HexfieldMctsSession(max_states=65_536)
-    sync_device(torch, evaluator.device)
+    release_device_cache(torch, evaluator.device)
+    reset_peak_memory(torch, evaluator.device)
     started = time.perf_counter()
     result = session.search(
         [game_key],
@@ -204,6 +313,7 @@ def run_one(
     )[0]
     sync_device(torch, evaluator.device)
     wall_s = time.perf_counter() - started
+    peak_bytes = peak_memory_allocated(torch, evaluator.device)
     session.discard(game_key)
 
     diag = result.get("diagnostics", {})
@@ -228,6 +338,7 @@ def run_one(
         "unique": int(ev.get("unique_states", 0)),
         "chunks": int(ev.get("evaluator_chunks", 0)),
         "action": int(result["action_id"]),
+        "peak_mib": peak_bytes / (1024.0 * 1024.0),
     }
 
 
@@ -243,15 +354,28 @@ def main() -> int:
     )
     parser.add_argument("--device", default=os.environ.get("SHOWCASE_DEVICE", "xpu"))
     parser.add_argument("--serve-path", choices=("baseline", "optimized"), default="optimized")
+    add_serve_opt_arguments(parser)
     parser.add_argument(
         "--xpu-flex",
         choices=("off", "on"),
         default="off",
         help="experimental import-time FlexAttention probe; Triton stays off",
     )
+    parser.add_argument(
+        "--pair-ceiling",
+        type=float,
+        default=None,
+        help="override HEXFIELD_PAIR_CEILING before importing the evaluator",
+    )
     parser.add_argument("--visits", type=csv_ints, default=csv_ints("64,128,256,512"))
     parser.add_argument("--batch-sizes", type=csv_ints, default=csv_ints("32"))
     parser.add_argument("--cases", type=csv_names, default=csv_names("live"))
+    parser.add_argument(
+        "--boards",
+        type=csv_boards,
+        default=csv_boards("compact,wide"),
+        help="boards to measure; position construction and compact warmup remain fixed",
+    )
     parser.add_argument("--compact-plies", type=int, default=18)
     parser.add_argument("--wide-plies", type=int, default=18)
     parser.add_argument("--seed", type=int, default=20260723)
@@ -265,6 +389,10 @@ def main() -> int:
 
     if args.rayon_threads:
         os.environ["RAYON_NUM_THREADS"] = str(args.rayon_threads)
+    if args.pair_ceiling is not None and args.pair_ceiling <= 0:
+        parser.error("--pair-ceiling must be > 0")
+    if args.pair_ceiling is not None:
+        os.environ["HEXFIELD_PAIR_CEILING"] = str(args.pair_ceiling)
     try:
         import torch
     except ImportError as exc:
@@ -273,12 +401,13 @@ def main() -> int:
     meta = prime_checkpoint_env(
         torch, args.checkpoint, args.device, args.xpu_flex == "on"
     )
-    configure_serve_path(args.serve_path)
+    configure_serve_path(args.serve_path, **serve_opt_overrides(args))
 
     # Every hexfield_eq import is deliberately below checkpoint env priming.
     import hexo_engine
     from hexo_engine import api
     from hexo_engine.types import AxialCoord, PlacementAction
+    from hexfield_eq import model as model_impl
     from hexfield_eq import _rust
     from hexfield_eq.config import (
         build_divergence_overrides,
@@ -286,7 +415,7 @@ def main() -> int:
     )
     from hexfield_eq.eval_arena import _load_hexfield_net
     from hexfield_eq.geometry import unpack_action_id
-    from hexfield_eq.inference import build_serve_evaluator
+    from hexfield_eq.inference import PAIR_CEILING, build_serve_evaluator
 
     del hexo_engine  # imported only to give a clearer missing-package failure
     with args.config.open("rb") as fh:
@@ -326,7 +455,14 @@ def main() -> int:
         f"channels={meta.get('channels')} trunk={meta.get('trunk_layout')} "
         f"feature_v={meta.get('feature_version')} raytap={meta.get('raytap')} "
         f"rust_pack={evaluator._rust_pack} defer={evaluator._defer_decode} "
-        f"host_gather={evaluator._host_legal_gather}"
+        f"host_gather={evaluator._host_legal_gather} "
+        f"decode_cache={evaluator._decode_cache} pair_ceiling={PAIR_CEILING:g} "
+        f"bias_chunk={model_impl._BIAS_GATHER_CHUNK}/"
+        f"{model_impl._BIAS_GATHER_CHUNK_THRESHOLD} "
+        f"bias_max_elems={model_impl._BIAS_GATHER_MAX_ELEMS} "
+        f"lean_bias={model_impl._XPU_LEAN_BIAS} "
+        f"attn_head_split={model_impl._XPU_ATTN_HEAD_SPLIT} "
+        f"ray_coeff_lut={model_impl._XPU_RAY_COEFF_LUT}"
     )
     for name, (_, actions) in positions.items():
         coords = [unpack_action_id(aid) for aid in actions]
@@ -358,15 +494,16 @@ def main() -> int:
     )
 
     header = (
-        "board    S    case       sims vb  wall_ms  eval_ms enc_ms parse "
-        "other_ms park_sum/max deep(calls/nodes) avgB action"
+        "board    S    case       sims vb  wall_ms  eval_ms peak_MiB enc_ms "
+        "parse other_ms park_sum/max deep(calls/nodes) avgB action"
     )
     print("\n" + header)
     print("-" * len(header))
     base_overrides = build_divergence_overrides(cfg.selfplay)
     key = 8_100_000
     failures = 0
-    for board, (state, _) in positions.items():
+    for board in args.boards:
+        state, _ = positions[board]
         for case in args.cases:
             for batch_size in args.batch_sizes:
                 for visits in args.visits:
@@ -398,7 +535,8 @@ def main() -> int:
                         f"{board:<8} {supports[board]:>4} {case:<10} "
                         f"{visits:>4} {batch_size:>2} "
                         f"{row['wall_ms']:>8.1f} {row['eval_ms']:>8.1f} "
-                        f"{row['encode_ms']:>6.1f} {row['parse_ms']:>5.1f} "
+                        f"{row['peak_mib']:>8.3f} {row['encode_ms']:>6.1f} "
+                        f"{row['parse_ms']:>5.1f} "
                         f"{row['other_ms']:>8.1f} "
                         f"{row['park_sum_ms']:>6}/{row['park_max_ms']:<4} "
                         f"{row['deep_calls']:>4}/{row['deep_nodes']:<7} "
@@ -410,8 +548,9 @@ def main() -> int:
         "forward + decode). other_ms is wall - eval - encode - parse; with "
         "tss-off it is MCTS/tree/control overhead. park_sum is overlapping "
         "per-leaf wait and can exceed wall; use live-vs-park-off wall deltas "
-        "for causal park cost. Toggle cases change search behavior and are "
-        "diagnostic only."
+        "for causal park cost. peak_MiB is torch.<device>.max_memory_allocated "
+        "reset immediately before each search after warmup. Toggle cases "
+        "change search behavior and are diagnostic only."
     )
     return 1 if failures else 0
 

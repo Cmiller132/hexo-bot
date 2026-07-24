@@ -66,6 +66,37 @@ if EQUIVARIANT:
 # Additive pad-key mask value; finite in fp16.
 PAD_KEY_MASK_VALUE = -3.0e4
 
+# No-grad XPU bias-gather safety for deep/spread boards. torch-xpu's advanced
+# indexing kernel can abort in Indexing.h when one otherwise-valid
+# ``bias_t[:, pair]`` launch is very large. Legacy mode gathers disjoint query
+# slices and concatenates them; lean mode writes one head at a time directly
+# into the final output. Both reconstruct the exact original tensor. The chunk
+# value controls only the legacy query-slice path; lean mode is independently
+# bounded by total selected elements per index_select launch.
+_BIAS_GATHER_CHUNK = int(os.environ.get("HEXFIELD_BIAS_GATHER_CHUNK", "512"))
+_BIAS_GATHER_CHUNK_THRESHOLD = int(
+    os.environ.get("HEXFIELD_BIAS_GATHER_CHUNK_THRESHOLD", "1024")
+)
+_BIAS_GATHER_MAX_ELEMS = max(
+    1, int(os.environ.get("HEXFIELD_BIAS_GATHER_MAX_ELEMS", "34000000"))
+)
+# XPU-only materialized-bias memory/traffic reduction. Pair-table rows fit in
+# int32, and the tiny table can be rounded to fp16 then widened before gather,
+# producing the same live-key fp32 bias values without a full B*H*S^2 cast.
+# Kept mutable so the A310 parity harness can compare old/new in one process.
+_XPU_LEAN_BIAS = os.environ.get("HEXFIELD_XPU_LEAN_BIAS") == "1"
+_XPU_RAY_COEFF_LUT = os.environ.get("HEXFIELD_XPU_RAY_COEFF_LUT") == "1"
+# The lean bias is physically contiguous as (heads, batch, Sq, Sk). Split the
+# XPU SDPA call by head so every logical (batch, 1, Sq, Sk) mask is contiguous;
+# this avoids the pathological non-contiguous full-mask path without swapping
+# oneDNN's batch/head interpretation or changing row arithmetic.
+_XPU_ATTN_HEAD_SPLIT = os.environ.get("HEXFIELD_XPU_ATTN_HEAD_SPLIT") == "1"
+if _XPU_LEAN_BIAS != _XPU_ATTN_HEAD_SPLIT:
+    raise RuntimeError(
+        "HEXFIELD_XPU_LEAN_BIAS and HEXFIELD_XPU_ATTN_HEAD_SPLIT must be "
+        "enabled or disabled together"
+    )
+
 STV_HORIZONS = (2, 6, 16)
 
 # Invariant-read widening (spec D-S20): the fiber-invariant head reads expand
@@ -482,13 +513,35 @@ class _RayTapCtx:
       raw buffers, for the K1 fused kernel (which does the slot arithmetic
       in-kernel instead of consuming the widened views)."""
 
-    __slots__ = ("idx_taps", "reach", "ray_idx", "raylen")
+    __slots__ = (
+        "idx_taps",
+        "reach",
+        "ray_idx",
+        "raylen",
+        "reach_long",
+        "coeff_rows",
+    )
 
     def __init__(self, idx_taps, reach, ray_idx, raylen) -> None:
         self.idx_taps = idx_taps
         self.reach = reach
         self.ray_idx = ray_idx
         self.raylen = raylen
+        if (
+            _XPU_RAY_COEFF_LUT
+            and reach.device.type == "xpu"
+            and not torch.is_grad_enabled()
+        ):
+            # Shared by every equipped conv in the trunk. The legacy path
+            # rebuilt the long reach and two reach-table row indices per conv.
+            self.reach_long = reach.to(torch.long)
+            self.coeff_rows = (
+                self.reach_long[:, :, 0, :] * (RAY_REACH + 1)
+                + self.reach_long[:, :, 1, :]
+            ).permute(2, 0, 1).to(torch.int32).contiguous()
+        else:
+            self.reach_long = None
+            self.coeff_rows = None
 
 
 class _BiasGather(torch.autograd.Function):
@@ -548,6 +601,8 @@ class HexNodeConv(nn.Module):
         self.equivariant = EQUIVARIANT
         self.raytap = bool(raytap)
         self.raytap_lut = str(raytap_lut)
+        self._ray_coeff_cache_v = None
+        self._ray_coeff_cache = None
         if self.raytap_lut not in ("none", "additive"):
             raise ValueError(
                 f"raytap_lut={self.raytap_lut!r} must be 'none' or 'additive'"
@@ -648,6 +703,40 @@ class HexNodeConv(nn.Module):
             )
         return self.O, self.P
 
+    def _compact_ray_coeff_lut(self) -> torch.Tensor:
+        """Cached ``(own, opp) -> (distance, orbit-channel)`` coefficients.
+
+        The legacy expression expands O/P across the 12 group slots and then
+        performs two giant advanced-index gathers for every direction of every
+        equipped conv. The coefficients are slot-constant, so frozen serve can
+        combine the tiny orbit-space tables once, in the same left-associated
+        ``(alpha + O) + P`` order, and select only 16 channels per ray row.
+        """
+
+        if self.raytap_lut != "additive":
+            raise RuntimeError("compact ray coefficient LUT requires additive mode")
+        grad_on = torch.is_grad_enabled()
+        version = (self.alpha._version, self.O._version, self.P._version)
+        if (
+            not grad_on
+            and self._ray_coeff_cache is not None
+            and self._ray_coeff_cache_v == version
+        ):
+            return self._ray_coeff_cache
+        coeff = (
+            self.alpha.view(1, 1, RAY_REACH, -1)
+            + self.O[:, None, :, :]
+        ) + self.P[None, :, :, :]
+        coeff = coeff.reshape(
+            (RAY_REACH + 1) * (RAY_REACH + 1),
+            RAY_REACH,
+            self.alpha.shape[1],
+        )
+        if not grad_on:
+            self._ray_coeff_cache_v = version
+            self._ray_coeff_cache = coeff
+        return coeff
+
     def _additive_ray_taps(self, x: torch.Tensor, ray_ctx) -> torch.Tensor:
         """Pure-Torch ray7lut2 aggregation for the showcase eager serve path.
 
@@ -660,7 +749,56 @@ class HexNodeConv(nn.Module):
         rt = _raytap()
         b, n, c = x.shape
         x_ext = torch.cat([x, x.new_zeros(b, 1, c)], dim=1)
-        reach = ray_ctx.reach.to(torch.long)
+        reach = (
+            ray_ctx.reach_long
+            if ray_ctx.reach_long is not None
+            else ray_ctx.reach.to(torch.long)
+        )
+        if (
+            _XPU_RAY_COEFF_LUT
+            and self.equivariant
+            and x.device.type == "xpu"
+            and not torch.is_grad_enabled()
+        ):
+            # One bounded int32 index_select replaces twelve full-fiber
+            # advanced-index launches per conv. Keep the selected coefficients
+            # in orbit space and broadcast across group slots; reshape the
+            # product back to the legacy rank/strides before the distance sum
+            # so the floating-point reduction order is unchanged.
+            reach_rows = ray_ctx.coeff_rows
+            if reach_rows is None:
+                raise RuntimeError("optimized ray coefficient rows were not built")
+            coeff_lut = self._compact_ray_coeff_lut()
+            selected = torch.index_select(
+                coeff_lut,
+                0,
+                reach_rows.reshape(-1),
+            ).reshape(
+                6,
+                b,
+                n,
+                RAY_REACH,
+                self.alpha.shape[1],
+            )
+            groups = c // self.alpha.shape[1]
+            taps = torch.empty(b, n, 6, c, dtype=x.dtype, device=x.device)
+            for d in range(6):
+                gathered = rt._masked_gather(
+                    x_ext, ray_ctx.idx_taps, reach, self.alpha.shape[1], d
+                )
+                weighted = (
+                    gathered.view(
+                        b,
+                        n,
+                        RAY_REACH,
+                        groups,
+                        self.alpha.shape[1],
+                    )
+                    * selected[d].unsqueeze(3)
+                ).reshape(b, n, RAY_REACH, c)
+                taps[:, :, d].copy_(weighted.sum(dim=2))
+                del gathered, weighted
+            return taps
         alpha = self._alpha_full().view(1, 1, RAY_REACH, c)
         O_full, P_full = self._alpha_tables()
         taps = []
@@ -684,6 +822,7 @@ class HexNodeConv(nn.Module):
         # a materialized weight cached on the old device/dtype would survive
         # the move and mix devices in the next serve forward.
         self._cache_v = self._cache_w = self._cache_b = None
+        self._ray_coeff_cache_v = self._ray_coeff_cache = None
         return super()._apply(fn, recurse)
 
     def _gen_weight(self) -> torch.Tensor:
@@ -1118,7 +1257,42 @@ class RelPosAttention(nn.Module):
             # to the math fallback.
             attn_bias = attn_bias.to(q.dtype)
             if self.impl == "sdpa":
-                out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
+                head_major_bias = (
+                    attn_bias.permute(1, 0, 2, 3)
+                    if (
+                        _XPU_ATTN_HEAD_SPLIT
+                        and q.device.type == "xpu"
+                        and not torch.is_grad_enabled()
+                    )
+                    else None
+                )
+                if (
+                    head_major_bias is not None
+                    and head_major_bias.is_contiguous()
+                ):
+                    # A singleton-head slice of the native head-major backing
+                    # store is logical (B,1,Sq,Sk) contiguous. Each head is
+                    # independent, so writing the three results into their
+                    # original slots preserves the exact output order.
+                    out = torch.empty_like(q)
+                    for head in range(h):
+                        out[:, head : head + 1].copy_(
+                            F.scaled_dot_product_attention(
+                                q[:, head : head + 1],
+                                k[:, head : head + 1],
+                                v[:, head : head + 1],
+                                attn_mask=head_major_bias[head].unsqueeze(1),
+                            )
+                        )
+                elif head_major_bias is not None:
+                    raise RuntimeError(
+                        "lean XPU head-split attention requires contiguous "
+                        "(heads,batch,Sq,Sk) bias storage"
+                    )
+                else:
+                    out = F.scaled_dot_product_attention(
+                        q, k, v, attn_mask=attn_bias
+                    )
             elif self.impl == "materialized":
                 scores = (q @ k.transpose(-2, -1)) * self.scale + attn_bias
                 out = torch.softmax(scores, dim=-1) @ v
@@ -1834,29 +2008,51 @@ class HexfieldNet(nn.Module):
         and reused by all 3 attention blocks.
 
         Returns (pair, key_pad):
-        - pair (B, S, S) long: the per-pair bias-table row index. S = NUM_TOKENS +
-          Npad. Tokens occupy slots 0..NUM_TOKENS-1 with no board position; token
-          keys are never masked.
+        - pair (B, S, S) integer: the per-pair bias-table row index. It is
+          legacy int64 except on no-grad lean-XPU serve, where all rows fit
+          int32. S = NUM_TOKENS + Npad. Tokens occupy slots 0..NUM_TOKENS-1
+          with no board position; token keys are never masked.
         - key_pad (B, S) bool: True at live keys (the pad-KEY additive fill mask).
 
         coords (B, Npad, 2) long; mask (B, Npad) bool."""
 
         b, n, _ = coords.shape
-        dq = coords[:, None, :, 0] - coords[:, :, None, 0]  # (B, N, N) key - query
-        dr = coords[:, None, :, 1] - coords[:, :, None, 1]
         # LUT gather over the offset domain (see _cell_bias_lut in __init__):
-        # clamp + mul-add + gather to the (B, N, N) row indices.
+        # clamp + mul-add + gather to the (B, N, N) row indices. Reuse the two
+        # subtraction buffers in-place: the prior expression kept dq/dr/qi/ri
+        # plus a mul-add temporary alive together, which consumed ~1.5 GiB at
+        # B=32,N=1024 on the 4 GB A310 despite producing these same integers.
         m = self._cell_bias_M
         w = 2 * m + 1
-        qi = dq.clamp(-m, m) + m
-        ri = dr.clamp(-m, m) + m
-        cell_idx = self._cell_bias_lut[(qi * w + ri).reshape(-1)].reshape(b, n, n)
+        lean_xpu = (
+            _XPU_LEAN_BIAS
+            and coords.device.type == "xpu"
+            and not torch.is_grad_enabled()
+        )
+        pair_coords = coords.to(torch.int32) if lean_xpu else coords
+        pair_idx = (
+            pair_coords[:, None, :, 0] - pair_coords[:, :, None, 0]
+        )
+        pair_idx.clamp_(-m, m).add_(m).mul_(w)
+        dr = pair_coords[:, None, :, 1] - pair_coords[:, :, None, 1]
+        dr.clamp_(-m, m).add_(m)
+        pair_idx.add_(dr)
+        del dr
+        cell_lut = self._cell_bias_lut_u8 if lean_xpu else self._cell_bias_lut
+        cell_idx = cell_lut[pair_idx.reshape(-1)].reshape(b, n, n)
+        del pair_idx
 
         s = NUM_TOKENS + n
-        pair = coords.new_full((b, s, s), BIAS_TOKEN_TOKEN_ROW)
+        pair = torch.full(
+            (b, s, s),
+            BIAS_TOKEN_TOKEN_ROW,
+            dtype=torch.int32 if lean_xpu else torch.long,
+            device=coords.device,
+        )
         pair[:, :NUM_TOKENS, NUM_TOKENS:] = BIAS_TOKEN_CELL_ROW
         pair[:, NUM_TOKENS:, :NUM_TOKENS] = BIAS_CELL_TOKEN_ROW
         pair[:, NUM_TOKENS:, NUM_TOKENS:] = cell_idx
+        del cell_idx
 
         # Pad-cell KEY columns: additive, finite in fp16; token keys untouched.
         # The mask is added before the attn_mask is materialized so it has
@@ -1906,9 +2102,69 @@ class HexfieldNet(nn.Module):
         # Indexing the transposed table (heads, ROWS) yields a contiguous
         # (heads, B, Sq, Sk); permute(1,0,2,3) is a stride(-1)==1 view, and the
         # pad-mask add is the single full-tensor materialization.
-        bias_t = table.to(torch.float16).t().contiguous()  # (heads, ROWS)
-        bias = bias_t[:, pair]                       # (heads, B, Sq, Sk) contiguous
+        lean_xpu = _XPU_LEAN_BIAS and pair.device.type == "xpu"
+        bias_table = table.to(torch.float16)
+        if lean_xpu:
+            # Round exactly where the legacy path does, but widen the tiny
+            # table before gather instead of widening B*H*S^2 afterward.
+            bias_table = bias_table.to(torch.float32)
+        bias_t = bias_table.t().contiguous()               # (heads, ROWS)
+        s = pair.shape[1]
+        if lean_xpu and (
+            s > _BIAS_GATHER_CHUNK_THRESHOLD
+            or pair.numel() > _BIAS_GATHER_MAX_ELEMS
+        ):
+            # Avoid both torch-xpu's very-large advanced-index launch and the
+            # legacy bias slice-and-cat copy. One index_select per head writes
+            # directly into its contiguous slice of the final head-major
+            # tensor; taken together, the selected elements and order are exactly
+            # ``bias_t[:, pair]``.
+            flat_pair = pair.reshape(-1)
+            bias = torch.empty(
+                (bias_t.shape[0], *pair.shape),
+                dtype=bias_t.dtype,
+                device=pair.device,
+            )
+            for head in range(bias_t.shape[0]):
+                flat_out = bias[head].reshape(-1)
+                for start in range(0, flat_pair.numel(), _BIAS_GATHER_MAX_ELEMS):
+                    end = min(
+                        start + _BIAS_GATHER_MAX_ELEMS,
+                        flat_pair.numel(),
+                    )
+                    torch.index_select(
+                        bias_t[head],
+                        0,
+                        flat_pair[start:end],
+                        out=flat_out[start:end],
+                    )
+        elif (
+            pair.device.type == "xpu"
+            and s > _BIAS_GATHER_CHUNK_THRESHOLD
+            and _BIAS_GATHER_CHUNK > 0
+        ):
+            # Work around torch-xpu's large advanced-index launch defect by
+            # gathering disjoint query slices, then restoring their order.
+            bias = torch.cat(
+                [
+                    bias_t[:, pair[:, i : i + _BIAS_GATHER_CHUNK, :]]
+                    for i in range(0, s, _BIAS_GATHER_CHUNK)
+                ],
+                dim=2,
+            )
+        else:
+            bias = bias_t[:, pair]                   # (heads, B, Sq, Sk) contiguous
         bias = bias.permute(1, 0, 2, 3)              # (B, heads, Sq, Sk) view, stride(-1)=1
+        if lean_xpu:
+            # For the shipped main5 ep35 table range (all |bias| < 1), legacy
+            # fp16 addition rounds every masked entry to exactly this finite
+            # sentinel. Set it in-place and keep already-rounded live-key table
+            # values unchanged.
+            bias.masked_fill_(
+                ~key_pad[:, None, None, :],
+                float(PAD_KEY_MASK_VALUE),
+            )
+            return bias
         fill = torch.where(key_pad, 0.0, PAD_KEY_MASK_VALUE).to(bias.dtype)
         return bias + fill[:, None, None, :]         # broadcast over key axis (dim 3)
 

@@ -161,6 +161,8 @@ class HexfieldEqFamily:
         return _load_hexfield_net(spec.checkpoint)
 
     def build_evaluator(self, model: Any, device: str) -> Any:
+        from hexfield_eq import model as model_impl
+        from hexfield_eq import inference as inference_impl
         from hexfield_eq.config import parse_hexfield_config
         from hexfield_eq.inference import build_serve_evaluator
 
@@ -168,12 +170,19 @@ class HexfieldEqFamily:
         evaluator = build_serve_evaluator(model, cfg, role="eval")
         log.info(
             "hexfield_eq evaluator: device=%s rust_pack=%s defer_decode=%s "
-            "host_legal_gather=%s decode_cache=%s",
+            "host_legal_gather=%s decode_cache=%s lean_bias=%s "
+            "attn_head_split=%s ray_coeff_lut=%s pair_ceiling=%g "
+            "bias_max_elems=%s",
             device,
             evaluator._rust_pack,
             evaluator._defer_decode,
             evaluator._host_legal_gather,
             evaluator._decode_cache,
+            model_impl._XPU_LEAN_BIAS,
+            model_impl._XPU_ATTN_HEAD_SPLIT,
+            model_impl._XPU_RAY_COEFF_LUT,
+            inference_impl.PAIR_CEILING,
+            model_impl._BIAS_GATHER_MAX_ELEMS,
         )
         return evaluator
 
