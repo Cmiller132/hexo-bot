@@ -10,7 +10,7 @@
  * changes incompatibly. */
 import * as api from "./api.js?v=13";
 import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=12";
-import { createBoard, findWin, key } from "./board.js?v=10";
+import { createBoard, findWin, key } from "./board.js?v=11";
 import { initStats, refreshStats } from "./stats.js?v=19";
 
 "use strict";
@@ -126,7 +126,7 @@ const play = {
     queue: [], frameTimer: null, done: false, failed: false,
     turnCompleteRendered: false,
     stoneOrder: new Map(), currentStone: 1,
-    previews: [], heat: new Map(), heatKind: "",
+    previews: [], heat: new Map(), heatScope: "", heatStone: "",
     pendingSnapshot: null, pendingTimer: null,
   },
 };
@@ -200,30 +200,32 @@ const playBoard = createBoard($("playBoard"), {
 
 // ---- optional live-search visualization -----------------------------------
 
-const LIVE_FRAME_DWELL_MS = 210;
+const LIVE_FRAME_DWELL_MS = 240;
 const LIVE_FINAL_HOLD_MS = 2600;
 const liveMotion = window.matchMedia
   ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
 const liveReducedMotion = () => !!(liveMotion && liveMotion.matches);
 
-/* Read out whatever the frame under the cursor actually encodes. The three
+/* Read out whatever the cell under the cursor actually encodes. The three
  * phases carry three different quantities, so the share is labelled rather than
  * left to look like one number that means the same thing throughout, and Q --
- * the value selection really ranks on -- is shown wherever the engine sent it. */
+ * the value selection really ranks on -- is shown wherever the engine sent it.
+ * The label comes off the CELL, because a cell the halving dropped is still on
+ * the board holding the number from the frame that last ranked it. */
 function liveCursorText(q, r) {
   if (q === null) return "—";
-  const live = play.live;
-  const row = live.heat.get(key(q, r));
+  const row = play.live.heat.get(key(q, r));
   if (!row) return fmtCell(q, r);
   const share = `${(Math.max(0, row.p || 0) * 100).toFixed(1)}%`;
   const parts = [fmtCell(q, r)];
   if (Number.isFinite(row.visits)) parts.push(`${Math.round(row.visits)} visits`);
   parts.push(
-    live.heatKind === "prior" ? `${share} prior`
-      : live.heatKind === "score" ? `${share} rank`
+    row.kind === "prior" ? `${share} prior`
+      : row.kind === "score" ? `${share} rank`
         : share
   );
   if (Number.isFinite(row.value)) parts.push(`Q ${fmtV(row.value)}`);
+  if (row.out) parts.push("cut");
   return parts.join(" · ");
 }
 
@@ -248,11 +250,17 @@ function cancelLiveFrames() {
   live.queue = [];
 }
 
-function clearLiveBoard() {
+/* `immediate` is for teardown -- the position under the overlay is being
+ * replaced, so the heat goes in the same paint as the stones rather than
+ * lingering for a fade over a board it no longer describes. Boundaries INSIDE
+ * a turn take the fade. */
+function clearLiveBoard({ immediate = false } = {}) {
   play.live.heat = new Map();
-  play.live.heatKind = "";
+  play.live.heatScope = "";
+  play.live.heatStone = "";
   play.live.previews = [];
-  playBoard.clearLiveHeat();
+  if (immediate) playBoard.resetLiveHeat();
+  else playBoard.clearLiveHeat();
   playBoard.clearPreviewStones();
 }
 
@@ -270,7 +278,7 @@ function discardLiveTurn({ hidePhase = true } = {}) {
   closeLiveStream();
   cancelLiveFrames();
   clearPendingLiveSnapshot();
-  clearLiveBoard();
+  clearLiveBoard({ immediate: true });
   live.requested = false;
   live.turnKey = null;
   live.basePly = null;
@@ -294,7 +302,7 @@ function stopLivePresentation({ message = "", failed = false, commitPending = fa
   closeLiveStream();
   cancelLiveFrames();
   clearPendingLiveSnapshot();
-  clearLiveBoard();
+  clearLiveBoard({ immediate: true });
   live.runId = null;
   live.lastSeq = -1;
   live.failed = failed;
@@ -428,6 +436,80 @@ function livePolicyRows(event) {
   return rows;
 }
 
+/* Merge one frame into the overlay's persistent per-stone model.
+ *
+ * Marking the eliminated candidates was only half the job. Sequential halving
+ * publishes a shrinking list -- round 0 ranks 16 and keeps 8, round 1 ranks
+ * those 8 and keeps 4 -- so the 8 it cut are simply ABSENT from every later
+ * round, and then all 16 come back at once on the completion frame with their
+ * visit shares. Painting each frame as if it were the whole picture made those
+ * cells blink out and blink back: the flicker. So a cell the model has seen
+ * stays in it. A frame that omits one is reporting a smaller field, not a
+ * smaller board, and the omission means the same thing the explicit mark does
+ * -- eliminated -- so the cell holds its last drawn weight and dims.
+ *
+ * `scope` is the one genuine narrowing. The first frame is the policy over
+ * every legal move; every frame after it is about the candidate set. Dropping
+ * the ~90 non-candidates happens there, exactly once, and that wash-out is
+ * itself the information: the rest of the search is a story about 16 cells.
+ *
+ * Weights are normalized per frame, against that frame's own maximum, because
+ * the three phases carry three incomparable quantities (prior probability,
+ * Gumbel/SH score, visit share) -- an absolute scale would render the ~100-cell
+ * prior map invisible. Held cells keep the normalized weight they were last
+ * drawn with, so nothing re-scales underneath them while they sit there. The
+ * quantity each cell's number came from is recorded per cell rather than per
+ * frame, so a readout can never label a held cell with a newer frame's units. */
+function liveHeatRows(event) {
+  const live = play.live;
+  const model = live.heat;
+  const byWeight = () => [...model.values()].sort(
+    (a, b) => b.w - a.w || a.q - b.q || a.r - b.r
+  );
+  const frame = livePolicyRows(event);
+  // The decoder drops any frame whose buffers disagree with the count Rust
+  // sent, and that reaches here as a frame carrying no distribution at all.
+  // Merging one would find nothing in it and mark the ENTIRE candidate set
+  // eliminated -- the whole overlay would dim at once and the ring would
+  // vanish. Hold the last good picture; the phase line still advances.
+  if (!frame.length) return byWeight();
+
+  const scope = event.kind === "bare_policy" ? "board" : "candidates";
+  if (live.heatScope !== scope) {
+    live.heatScope = scope;
+    model.clear();
+  }
+  const kind = String(event.policy_kind || "");
+  let maxP = 0;
+  for (const row of frame) maxP = Math.max(maxP, row.p);
+  if (!(maxP > 0)) maxP = 1;
+
+  // Elimination is one-way within a search. Only the completion frame may
+  // un-cut a cell, because only it supersedes the halving: it republishes the
+  // whole candidate set with the visit shares those cells actually earned, and
+  // showing that whole distribution is the point of the final frame. Any other
+  // frame that re-lists an eliminated cell -- a start phase re-sent for a stone
+  // already mid-search, say -- is stale, and honouring it would brighten eight
+  // dead candidates for one beat and then dim them again.
+  const supersedes = event.kind === "search_complete";
+  const seen = new Set();
+  for (const row of frame) {
+    const k = key(row.q, row.r);
+    const prev = model.get(k);
+    seen.add(k);
+    model.set(k, {
+      q: row.q, r: row.r, p: row.p, w: row.p / maxP,
+      visits: row.visits, value: row.value,
+      out: row.out === true || (!supersedes && !!prev && prev.out === true),
+      kind,
+    });
+  }
+  for (const [k, cell] of model) {
+    if (!seen.has(k)) cell.out = true;
+  }
+  return byWeight();
+}
+
 /* The cell the drawn distribution favours, when that is materially NOT the cell
  * the bot played. Returns null otherwise, and the board draws no second marker.
  *
@@ -485,19 +567,44 @@ function enqueueLiveFrame(event) {
   drainLiveFrames();
 }
 
+/* How long a frame holds the board before the next one is drawn.
+ *
+ * Every dwell here is longer than the layer's CSS transition, which is the
+ * point: at the old flat 210ms a round's fades were still in flight when the
+ * next round retargeted them, so cells were permanently mid-animation and
+ * never settled anywhere. Frames now land, settle, and can be read.
+ *
+ * A deep backlog is the one case worth rushing. The engine can finish a stone
+ * faster than the replay walks it, and the authoritative snapshot waits on this
+ * queue -- so once frames are stacking up, shorten the dwell rather than let
+ * the visible game fall behind the real one. Interrupting a transition is
+ * harmless now that cells keep their nodes: the new target is interpolated from
+ * wherever the old one had got to. */
 function liveFrameDwell(event) {
   if (liveReducedMotion()) return 0;
-  if (event.kind === "turn_start") return 100;
-  if (event.kind === "turn_complete") return 160;
-  // A certificate-forced move gets held long enough to read: the cell it lands
-  // on can carry no policy weight at all, so it needs a beat of its own.
-  if (event.kind === "stone" && event.tss === true) return 1000;
-  // The complete frame is the one carrying the answer -- the whole visit
-  // distribution, the ring, and the clause saying why the ring is where it is.
-  // At the old 260ms it was gone before it could be read.
-  if (event.kind === "search_complete") return 600;
-  if (event.kind === "stone") return 260;
-  return LIVE_FRAME_DWELL_MS;
+  const base =
+    event.kind === "turn_start" ? 100 :
+      event.kind === "turn_complete" ? 160 :
+        // A certificate-forced move is held long enough to read: the cell it
+        // lands on can carry no policy weight at all, so it needs its own beat.
+        (event.kind === "stone" && event.tss === true) ? 1000 :
+          // The complete frame carries the answer -- the whole visit
+          // distribution, the ring, and the clause saying why the ring is where
+          // it is. At the old 260ms it was gone before it could be read.
+          event.kind === "search_complete" ? 600 :
+            // Long enough for the heat to finish fading out under the stone.
+            event.kind === "stone" ? 300 :
+              // The two framing beats. The prior map is the widest picture of
+              // the turn, and the candidate frame washes ~90 cells off the
+              // board -- at a round's dwell that wash-out ate the whole frame
+              // and the 16 that survived it were never still long enough to be
+              // looked at before the halving started.
+              event.kind === "bare_policy" ? 320 :
+                event.kind === "candidate_set" ? 300 :
+                  LIVE_FRAME_DWELL_MS;
+  const backlog = play.live.queue.length;
+  if (backlog <= 3) return base;
+  return Math.max(140, Math.round(base * (backlog > 7 ? 0.5 : 0.72)));
 }
 
 function renderLiveFrame(event) {
@@ -515,14 +622,25 @@ function renderLiveFrame(event) {
   if (event.kind === "bare_policy" || event.kind === "candidate_set" ||
       event.kind === "search_round" || event.kind === "search_complete") {
     const stoneNo = liveStoneNumber(event);
-    const rows = livePolicyRows(event);
+    // A DIFFERENT search, not a narrower view of this one. Normally the stone
+    // frame between them retires the layer, but that frame can be dropped --
+    // and without this the two searches would share one model: stone 1's
+    // candidates would sit on the board holding stone 1's weights and Q while
+    // stone 2 ran, and the ring would glide across from stone 1's answer as if
+    // it were still the same decision.
+    const stoneKey = `${event.ply}:${event.stone}`;
+    if (live.heatStone !== stoneKey) {
+      live.heatStone = stoneKey;
+      live.heatScope = "";
+      live.heat = new Map();
+      playBoard.clearLiveHeat();
+    }
+    const rows = liveHeatRows(event);
     // Only the final frame names a played move. Anything earlier that carries
     // an action field is describing the search, not a placement, and must not
     // take the ring away from the distribution's own leader.
     const chosen = event.kind === "search_complete" && coordKey(event.action)
       ? event.action : null;
-    live.heat = new Map(rows.map(row => [key(row.q, row.r), row]));
-    live.heatKind = String(event.policy_kind || "");
     playBoard.setLiveHeat(
       rows,
       live.botColor === 0 ? H0 : H1,
@@ -531,8 +649,13 @@ function renderLiveFrame(event) {
       chosen,
       liveHeatLeader(rows, chosen),
     );
+    // The counts are the FRAME's, not the model's: the model deliberately
+    // carries cells earlier rounds already cut, so "4 of 16 kept" in round 2
+    // would misreport a halving that ranked 8. A dropped frame has no policy
+    // and gets no denominator rather than borrowing the model's.
+    const framed = Array.isArray(event.policy) ? event.policy.length : 0;
     const survivors = Array.isArray(event.survivors)
-      ? event.survivors.length : rows.length;
+      ? event.survivors.length : framed;
     if (event.kind === "bare_policy") {
       setSearchPhase(
         event.post_search
@@ -549,9 +672,9 @@ function renderLiveFrame(event) {
       const rounds = Number.isInteger(event.rounds) ? event.rounds : "?";
       const visitRead = Number.isFinite(event.visits) && Number.isFinite(event.target_visits)
         ? ` · ${event.visits}/${event.target_visits} visits` : "";
-      // "N of M kept" rather than "N remain": the frame is now showing all M
-      // candidates that were ranked, with the eliminated ones dimmed.
-      const kept = rows.length ? `${survivors} of ${rows.length} kept` : `${survivors} kept`;
+      // "N of M kept" rather than "N remain": M is what this halving ranked,
+      // and the ones it dropped stay on the board dimmed rather than vanishing.
+      const kept = framed ? `${survivors} of ${framed} kept` : `${survivors} kept`;
       setSearchPhase(
         `stone ${stoneNo} · round ${round}/${rounds} · ${kept}${visitRead}`
       );
@@ -587,7 +710,8 @@ function renderLiveFrame(event) {
     // overlay could be in, because the stale picture looks live and the next
     // stone lands nowhere near it.
     live.heat = new Map();
-    live.heatKind = "";
+    live.heatScope = "";
+    live.heatStone = "";
     playBoard.clearLiveHeat();
     const stoneNo = Math.max(1, live.previews.length);
     live.currentStone = Math.min(2, stoneNo + 1);

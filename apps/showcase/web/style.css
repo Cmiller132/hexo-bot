@@ -178,27 +178,32 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 .heatcell{pointer-events:none}
 .heattop{fill:none;stroke-width:1.5;pointer-events:none}
 /* Live-search updates reconcile keyed SVG cells instead of clearing the layer.
-   Opacity carries candidate elimination/concentration without a flash between
-   fast Sequential-Halving snapshots. Analysis heat remains non-animated. */
+   Opacity carries candidate elimination and concentration; a cell keeps its
+   node for the whole stone, so every change is one interpolation rather than a
+   delete and a rebuild. Durations stay below the shortest frame dwell (see
+   liveFrameDwell) so a frame settles before the next one retargets it.
+   Analysis heat remains non-animated. */
 .live-heatcell{
-  transition:opacity .2s cubic-bezier(.22,.61,.36,1),fill .2s ease;
+  transition:opacity .19s cubic-bezier(.22,.61,.36,1),fill .19s ease;
   will-change:opacity;
 }
-.live-heattop{
-  transition:opacity .18s ease;
-  will-change:opacity;
+/* The markers MOVE rather than cross-fade: one node per role, translated to the
+   cell it marks, so the eye can follow the search's favourite from round to
+   round instead of watching two rings briefly overlap. */
+.live-heattop,.live-heatlead{
+  transition:opacity .17s ease,transform .21s cubic-bezier(.22,.61,.36,1);
+  will-change:opacity,transform;
 }
 /* Where the drawn distribution's own leader is NOT the move being played.
    Dashed so it reads as "the search's favourite" against the solid ring on the
    move value/certificate selection actually chose. */
-.live-heatlead{
-  stroke-dasharray:3 3;stroke-width:1.2;
-  transition:opacity .18s ease;
-  will-change:opacity;
-}
-/* Candidates the halving reported by this frame just eliminated. Kept on the
-   board at low opacity for one frame so the cut is visible rather than silent. */
-.live-heatcut{transition:opacity .2s cubic-bezier(.22,.61,.36,1),fill .2s ease}
+.live-heatlead{stroke-dasharray:3 3;stroke-width:1.2}
+/* Candidates sequential halving has eliminated. They stay on the board for the
+   rest of the stone -- the search narrowing onto two cells IS the picture, and
+   anything removed here only had to be rebuilt on the completion frame. Their
+   one fade down is slower than an ordinary reweight so elimination reads as
+   settling out rather than blinking off; no later frame retargets it. */
+.live-heatcut{transition-duration:.3s}
 .search-preview{
   pointer-events:none;
   opacity:.94;

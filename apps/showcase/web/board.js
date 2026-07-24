@@ -415,19 +415,41 @@ export function createBoard(svg, opts = {}) {
    * from pale hue-shifted families (never the stone colors) so a fully-lit
    * overlay cell can't pass for a translucent stone; best cell gets a ring. */
   const liveHeatCells = new Map();
-  let liveBest = null;
-  let liveLead = null;
+  const bestMark = { cls: "heattop live-heattop", el: null, at: null };
+  const leadMark = { cls: "heattop live-heatlead", el: null, at: null };
   let liveHeatRevision = 0;
-  const LIVE_FADE_MS = 240;
+  // Must clear the LONGEST live transition (.live-heatcut's slower settle), or
+  // a cut cell is detached while still visibly opaque -- a pop at exactly the
+  // moment the fade exists to avoid.
+  const LIVE_FADE_MS = 340;
+  const HEAT_GAMMA = 0.6;     // < 1: keeps the middle of the distribution apart
+  const CUT_DIM = 0.3;        // an eliminated candidate's share of its own shade
+  const EMPTY_KEEP = new Set();
 
+  /* Cells and markers get their own sub-groups, in that order, so paint order
+   * is structural. Marker nodes now outlive the cells they mark (they are
+   * moved, not rebuilt), and a flat layer would let the next stone's cells --
+   * appended after them -- paint straight over the rings. */
+  let liveCellsG = null, liveMarksG = null;
+  function liveLayer() {
+    if (!liveCellsG) {
+      liveCellsG = document.createElementNS(NS, "g");
+      liveMarksG = document.createElementNS(NS, "g");
+      heat.appendChild(liveCellsG);
+      heat.appendChild(liveMarksG);
+    }
+  }
+
+  /* Blank the layer between frames, with no fade. Analysis heat owns the same
+   * SVG group and is deliberately non-animated; teardown paths (new game, lost
+   * stream) want the overlay simply gone. The live path uses fadeLiveHeat. */
   function hardClearHeat() {
     liveHeatRevision++;
     heat.textContent = "";
     liveHeatCells.clear();
-    if (liveBest) liveBest.live = false;
-    if (liveLead) liveLead.live = false;
-    liveBest = null;
-    liveLead = null;
+    liveCellsG = null; liveMarksG = null;
+    bestMark.el = null; bestMark.at = null;
+    leadMark.el = null; leadMark.at = null;
   }
 
   function setHeat(rows, tint, ringTint, opa) {
@@ -454,17 +476,24 @@ export function createBoard(svg, opts = {}) {
 
   const clearHeat = hardClearHeat;
 
-  /* Keyed, transition-friendly heat for the play screen's streamed search.
-   * Missing cells fade before removal; surviving cells retain their DOM nodes,
-   * so rapid SH rounds concentrate smoothly instead of flashing an empty
-   * layer. Stable coordinate tie-breaking keeps an equal-weight round from
-   * jittering.
+  /* Keyed heat for the play screen's streamed search.
    *
-   * Brightness is relative to the frame's own maximum -- a raw absolute scale
-   * makes the ~100-cell prior frame invisible -- but with NO pedestal and a
-   * gamma below 1, so a zero-weight cell renders as nothing at all rather than
-   * as a faint tint, and the middle of the distribution stays separable. The
-   * absolute top share is reported in the phase line instead.
+   * This layer is a persistent model, not a per-frame repaint. Sequential
+   * halving publishes a SHRINKING list -- 16 candidates, then the 8 it kept,
+   * then 4, then 2 -- and then republishes all 16 with their visit shares on
+   * the completion frame. A renderer that treated each frame as the whole
+   * truth therefore deleted cells one round and rebuilt them at the end, which
+   * is exactly the blink-out/blink-back the eye reads as flicker. Nothing here
+   * decides what belongs on the board: app.js hands over the full model every
+   * frame, cells keyed by coordinate keep their DOM nodes for as long as they
+   * stay in it, and a cell it drops fades out once instead of being cut.
+   *
+   * `row.w` is a 0..1 weight app.js has already normalized against the right
+   * basis for its frame, so the board never has to know that priors, Gumbel
+   * scores and visit shares are three different quantities. Only the display
+   * gamma (below 1, to keep the middle of the distribution separable) and the
+   * eliminated-candidate dim are applied here. There is no pedestal: a
+   * zero-weight cell renders as nothing at all rather than as a faint tint.
    *
    * `chosen` (optional {q,r}) is the move the bot actually played and takes the
    * solid ring unconditionally: the played move is NOT always the heaviest cell
@@ -474,8 +503,7 @@ export function createBoard(svg, opts = {}) {
    * stone on another. `leader` (optional {q,r}) is the cell the drawn
    * distribution actually favours; when it differs from `chosen` it gets its
    * own dashed marker, which is the whole point -- the disagreement is the
-   * information. Rows flagged `out` were eliminated by the halving this frame
-   * reports and are dimmed rather than dropped. */
+   * information. */
   function setLiveHeat(rows, tint, ringTint, opa, chosen, leader) {
     const mark = cell => (
       cell && Number.isFinite(cell.q) && Number.isFinite(cell.r)
@@ -488,83 +516,62 @@ export function createBoard(svg, opts = {}) {
       row && Number.isFinite(row.q) && Number.isFinite(row.r)
     ) : [];
     if ((!seq.length && !played && !front) || opa <= 0) {
-      hardClearHeat();
+      fadeLiveHeat();
       return;
     }
     const revision = ++liveHeatRevision;
     const active = new Set();
-    const freshCells = [];
-    const fadingCells = [];
-    let maxW = 0;
-    for (const row of seq) {
-      const weight = Number.isFinite(row.p) ? Math.max(0, row.p) : 0;
-      maxW = Math.max(maxW, weight);
-    }
-    if (!(maxW > 0)) maxW = 1;
+    const born = [];
+    liveLayer();
 
     for (const row of seq) {
-      const weight = Number.isFinite(row.p) ? Math.max(0, row.p) : 0;
+      const w = Number.isFinite(row.w) ? Math.min(1, Math.max(0, row.w)) : 0;
       // A certificate move is appended to the export with weight 0.0. It is a
       // real played cell but carries no search mass, so it gets the ring and no
       // heat instead of a pedestal tint implying the search liked it.
-      if (weight <= 0) continue;
+      if (w <= 0) continue;
       const k = key(row.q, row.r);
       active.add(k);
-      let el = liveHeatCells.get(k);
-      const fresh = !el;
-      if (!el) {
-        el = document.createElementNS(NS, "polygon");
+      let cell = liveHeatCells.get(k);
+      const fresh = !cell;
+      if (fresh) {
+        const el = document.createElementNS(NS, "polygon");
         el.setAttribute("points", hexPts(axialX(row.q, row.r), axialY(row.r), S * DRAW));
         el.style.opacity = "0";
-        heat.appendChild(el);
-        liveHeatCells.set(k, el);
+        liveCellsG.appendChild(el);
+        cell = { el, target: "0", fade: 0 };
+        liveHeatCells.set(k, cell);
+        born.push(cell);
       }
-      el.setAttribute(
+      cell.fade = 0;   // rescues a cell caught mid fade-out
+      cell.el.setAttribute(
         "class", row.out ? "heatcell live-heatcell live-heatcut" : "heatcell live-heatcell"
       );
-      el.dataset.fadeToken = "";
-      el.style.fill = tint;
-      const shade = Math.pow(weight / maxW, 0.6) * (row.out ? 0.34 : 1);
-      const opacity = (opa * shade).toFixed(3);
-      if (fresh) {
-        freshCells.push({ k, el, opacity });
-      } else {
-        el.style.opacity = opacity;
-      }
+      cell.el.style.fill = tint;
+      cell.target = (opa * Math.pow(w, HEAT_GAMMA) * (row.out ? CUT_DIM : 1)).toFixed(3);
+      if (!fresh) cell.el.style.opacity = cell.target;
     }
-    if (freshCells.length) {
+    // A new node must be laid out at opacity 0 before it is given its target,
+    // or there is nothing for the transition to run from. `target` is read at
+    // callback time rather than captured, so a frame that lands in between
+    // still wins.
+    if (born.length) {
       requestAnimationFrame(() => {
-        for (const { k, el, opacity } of freshCells) {
-          if (liveHeatCells.get(k) === el) el.style.opacity = opacity;
+        for (const cell of born) {
+          if (cell.fade === 0 && cell.el.isConnected) cell.el.style.opacity = cell.target;
         }
       });
     }
-
-    for (const [k, el] of liveHeatCells) {
-      if (active.has(k)) continue;
-      const token = String(revision);
-      el.dataset.fadeToken = token;
-      el.style.opacity = "0";
-      fadingCells.push({ k, el, token });
-    }
-    if (fadingCells.length) {
-      setTimeout(() => {
-        for (const { k, el, token } of fadingCells) {
-          if (el.dataset.fadeToken !== token || liveHeatCells.get(k) !== el) continue;
-          liveHeatCells.delete(k);
-          el.remove();
-        }
-      }, LIVE_FADE_MS);
-    }
+    retireHeatCells(active, revision);
 
     // Mid-search frames ring their own leader, which must be a cell still in
-    // the running -- never one this frame reports as just eliminated.
+    // the running -- never one the model reports as eliminated.
     const heaviest = seq.reduce((winner, row) => {
       if (row.out) return winner;
       if (!winner) return row;
-      const wp = Number.isFinite(winner.p) ? winner.p : 0;
-      const rp = Number.isFinite(row.p) ? row.p : 0;
-      if (rp !== wp) return rp > wp ? row : winner;
+      const ww = Number.isFinite(winner.w) ? winner.w : 0;
+      const rw = Number.isFinite(row.w) ? row.w : 0;
+      if (rw !== ww) return rw > ww ? row : winner;
       if (row.q !== winner.q) return row.q < winner.q ? row : winner;
       return row.r < winner.r ? row : winner;
     }, null);
@@ -573,48 +580,84 @@ export function createBoard(svg, opts = {}) {
     // The dashed marker only exists to show a disagreement, so it is suppressed
     // wherever the two coincide.
     const lead = front && bestKey !== key(front.q, front.r) ? front : null;
-    liveBest = reconcileMarker(
-      liveBest, best, "heattop live-heattop", ringTint, Math.min(1, opa + 0.1)
-    );
-    liveLead = reconcileMarker(
-      liveLead, lead, "heattop live-heatlead", ringTint, Math.min(1, opa + 0.1) * 0.8
-    );
+    placeMarker(bestMark, best, ringTint, Math.min(1, opa + 0.1));
+    placeMarker(leadMark, lead, ringTint, Math.min(1, opa + 0.1) * 0.8);
   }
 
-  /* Keep one optional {q,r} marker polygon in sync without reflowing the layer:
-   * same cell restyles in place, a different cell cross-fades, null fades out. */
-  function reconcileMarker(current, cell, className, stroke, opacity) {
-    const wanted = cell ? key(cell.q, cell.r) : null;
-    if (current && current.key === wanted) {
-      current.el.style.stroke = stroke;
-      current.el.style.opacity = opacity.toFixed(3);
-      return current;
+  /* Fade out every cell outside `keep` and drop it once the fade has landed.
+   * The token check lets a later frame reclaim a cell mid-fade: setLiveHeat
+   * zeroes `fade` on anything it paints, so the pending sweep skips it. */
+  function retireHeatCells(keep, revision) {
+    const going = [];
+    for (const [k, cell] of liveHeatCells) {
+      if (keep.has(k) || cell.fade) continue;
+      cell.fade = revision;
+      cell.el.style.opacity = "0";
+      going.push([k, cell, revision]);
     }
-    if (current) {
-      // `live` retires the old marker's pending fade-in: without it a marker
-      // replaced inside one animation frame flashes back to full opacity.
-      current.live = false;
-      const old = current.el;
-      old.style.opacity = "0";
-      setTimeout(() => old.remove(), LIVE_FADE_MS);
-    }
-    if (!cell) return null;
-    const ring = document.createElementNS(NS, "polygon");
-    ring.setAttribute("points", hexPts(axialX(cell.q, cell.r), axialY(cell.r), S * 0.86));
-    ring.setAttribute("class", className);
-    ring.style.stroke = stroke;
-    ring.style.opacity = "0";
-    heat.appendChild(ring);
-    const marker = { key: wanted, el: ring, live: true };
-    requestAnimationFrame(() => {
-      if (marker.live && ring.isConnected) {
-        ring.style.opacity = opacity.toFixed(3);
+    if (!going.length) return;
+    setTimeout(() => {
+      for (const [k, cell, token] of going) {
+        if (cell.fade !== token || liveHeatCells.get(k) !== cell) continue;
+        liveHeatCells.delete(k);
+        cell.el.remove();
       }
-    });
-    return marker;
+    }, LIVE_FADE_MS);
   }
 
-  const clearLiveHeat = hardClearHeat;
+  /* One node per marker role, kept for the life of the layer and MOVED by
+   * transform rather than rebuilt. A ring that cross-faded left two rings
+   * briefly on screen at round cadence, which is a flicker in its own right;
+   * gliding lets the eye follow where the search's favourite actually went.
+   * A marker that is currently invisible teleports instead, so it never
+   * arrives by sliding across the board from wherever it was last used. */
+  function placeMarker(state, cell, stroke, opacity) {
+    if (!cell) {
+      if (state.el) { state.el.style.opacity = "0"; state.at = null; }
+      return;
+    }
+    if (!state.el) {
+      liveLayer();
+      const el = document.createElementNS(NS, "polygon");
+      el.setAttribute("points", hexPts(0, 0, S * 0.86));
+      el.setAttribute("class", state.cls);
+      el.style.opacity = "0";
+      liveMarksG.appendChild(el);
+      state.el = el;
+    }
+    const el = state.el;
+    const k = key(cell.q, cell.r);
+    if (state.at !== k) {
+      const shift =
+        `translate(${axialX(cell.q, cell.r).toFixed(2)}px, ${axialY(cell.r).toFixed(2)}px)`;
+      if (state.at === null) {
+        el.style.transition = "none";
+        el.style.transform = shift;
+        void el.getBoundingClientRect();   // commit before the transition returns
+        el.style.transition = "";
+      } else {
+        el.style.transform = shift;
+      }
+      state.at = k;
+    }
+    el.style.stroke = stroke;
+    el.style.opacity = opacity.toFixed(3);
+  }
+
+  /* Retire the whole live layer gracefully. The stone frame drops its search's
+   * heat -- leaving it up while the NEXT stone searches is the most misleading
+   * state the overlay can be in -- but blanking the group outright made a
+   * finished distribution vanish between two paints. */
+  function fadeLiveHeat() {
+    retireHeatCells(EMPTY_KEEP, ++liveHeatRevision);
+    placeMarker(bestMark, null);
+    placeMarker(leadMark, null);
+  }
+  const clearLiveHeat = fadeLiveHeat;
+  // Teardown, as opposed to a boundary inside a search: the position under the
+  // overlay is being replaced, so the overlay goes with it in the same paint
+  // rather than lingering for a fade over a board it no longer describes.
+  const resetLiveHeat = hardClearHeat;
 
   /* Stream-selected bot stones staged while the worker searches the rest of
    * its turn. They are intentionally isolated from setStones(), occupied,
@@ -661,7 +704,8 @@ export function createBoard(svg, opts = {}) {
 
   return {
     svg, setStones, setLegal, setHeat, clearHeat,
-    setLiveHeat, clearLiveHeat, setPreviewStones, clearPreviewStones,
+    setLiveHeat, clearLiveHeat, resetLiveHeat,
+    setPreviewStones, clearPreviewStones,
     stage, clearStage, hideHoverGhost,
     resetView: goHome,
     tileCount: () => tiles.size,

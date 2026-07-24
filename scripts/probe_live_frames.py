@@ -2,17 +2,23 @@
 """Capture real live-search telemetry frames and report what the overlay would
 actually paint on each one.
 
-The claim originally under test: on the final frame the browser filtered the
-displayed cells down to `survivors` (plus the played move), and by then
-sequential halving has reduced `survivors` to one or two actions -- so the frame
-a viewer reads as "search complete" showed ~2 cells rather than the root's visit
-distribution. Measured 2026-07-24: 16 exported, 2 painted.
+Two claims have been under test here, both replayed against genuine frames
+rather than reasoned about, so each fix is verified against the engine and not
+against its own diff.
 
-This replays BOTH the old and the new client rules (apps/showcase/web/app.js,
-livePolicyRows) against genuine frames instead of reasoning about them, so the
-fix is verified against the engine rather than against the diff. It also reports
-the selection verdict, which is the other half of the problem: the played move
-is not always the cell the drawn distribution favours.
+1. Coverage. The browser used to filter every frame after the raw start down to
+   `survivors` plus the played move, and by then sequential halving has reduced
+   `survivors` to one or two actions -- so the frame a viewer reads as "search
+   complete" showed ~2 cells rather than the root's visit distribution.
+   Measured 2026-07-24: 16 exported, 2 painted. Fixed by not discarding.
+
+2. Continuity. Halving publishes a SHRINKING list, then republishes the whole
+   candidate set on the completion frame, so painting each frame as the whole
+   truth made cells blink out mid-search and blink back at the end -- reported
+   as flicker. The old column here is the FIXED-COVERAGE client, i.e. the one
+   that flickered: it paints exactly what its frame carries. The new column
+   holds eliminated candidates in a per-stone model instead of dropping them,
+   so it must score zero blink-out/blink-back cells.
 
 Read-only; pipe over stdin because the showcase container's rootfs is read-only.
 """
@@ -93,6 +99,8 @@ def main() -> int:
     print("\nply phase        round  policy  surv  OLD_painted  NEW_painted  note")
     print("-" * 92)
     regressions = 0
+    old_revivals = 0
+    new_revivals = 0
 
     for ply in range(args.plies):
         if engine.terminal(state) is not None:
@@ -133,29 +141,67 @@ def main() -> int:
         )[0]
         played = int(result["action_id"])
 
+        # One engine `start` phase expands into TWO client frames -- the
+        # board-wide prior map and the candidate set -- and the client's model
+        # is scoped to that split, so the replay has to expand it the same way
+        # or the narrowing would be scored as cells disappearing.
+        client: list[dict] = []
         for frame in frames:
+            if frame["phase"] == "start":
+                client.append({**frame, "scope": "board"})
+                keep = frame["survivors"]
+                idx = [i for i, c in enumerate(frame["policy"]) if c in keep]
+                client.append({
+                    **frame, "scope": "candidates",
+                    "policy": [frame["policy"][i] for i in idx],
+                    "weights": [frame["weights"][i] for i in idx],
+                })
+            else:
+                client.append({**frame, "scope": "candidates"})
+
+        old_seen: set[int] = set()
+        old_live: set[int] = set()
+        new_seen: set[int] = set()
+        new_live: set[int] = set()
+        scope = ""
+        model: dict[int, float] = {}
+
+        for frame in client:
             cells = frame["policy"]
             weights = frame["weights"]
             keep = frame["survivors"]
             act = frame["action_id"]
             note = ""
 
-            # OLD rule: every frame after the raw start was narrowed to
-            # `survivors` plus the played move.
-            if frame["phase"] == "start":
-                old = set(cells)
-            else:
-                old = {c for c in cells if c in keep or c == act}
+            # OLD rule: whatever the frame itself carried was the whole board
+            # and nothing was held, so a candidate the halving stopped ranking
+            # was deleted and then rebuilt when the completion frame
+            # republished it. This is the version that flickered.
+            old = {c for c, w in zip(cells, weights) if w > 0.0}
 
-            # NEW rule: nothing is discarded. Round frames dim the candidates
-            # the halving just cut; the complete frame is drawn whole. Only a
-            # zero-weight cell goes unpainted (a certificate move is appended to
-            # the export with weight 0.0 and is marked by the ring instead).
-            new = {c for c, w in zip(cells, weights) if w > 0.0}
+            # NEW rule: the layer is a model, not a repaint. A frame's own cells
+            # refresh; cells the model already holds and the frame omits are
+            # held (dimmed) rather than deleted. Only a zero-weight cell goes
+            # unpainted -- a certificate move is appended to the export with
+            # weight 0.0 and is marked by the ring instead. A scope change is
+            # the one place cells are dropped.
+            if frame["scope"] != scope:
+                scope, model = frame["scope"], {}
+            model.update(zip(cells, weights))
+            new = {c for c, w in model.items() if w > 0.0}
+
+            # A revival is a cell painted now that was painted earlier in this
+            # stone but NOT on the frame just before -- it blinked out and back.
+            if frame["scope"] == "board":   # first frame of a stone: fresh slate
+                old_seen, old_live = set(), set()
+                new_seen, new_live = set(), set()
+            old_revivals += len(old & (old_seen - old_live))
+            new_revivals += len(new & (new_seen - new_live))
+            old_seen |= old
+            new_seen |= new
+            old_live, new_live = old, new
 
             if frame["phase"] == "complete":
-                if len(new) < len(cells) - 1:
-                    note = "ZERO-WEIGHT CELLS?"
                 if played not in cells:
                     note = "PLAYED MISSING FROM EXPORT"
                     regressions += 1
@@ -169,18 +215,35 @@ def main() -> int:
                         )
                 if len(new) <= 2 < len(cells):
                     regressions += 1
-            if frame["count"] is not None and int(frame["count"]) != len(cells):
+            # Only meaningful on frames as the ENGINE emitted them. The
+            # candidate frame is synthesized here (and, in production, by
+            # expand_worker_event) by slicing the start frame's policy, so its
+            # length legitimately disagrees with the count Rust sent -- the
+            # real decoder validates before that split, not after.
+            if (frame["phase"] != "start" and frame["count"] is not None
+                    and int(frame["count"]) != len(cells)):
                 note = "COUNT MISMATCH — decoder would drop this frame"
                 regressions += 1
 
+            label = (
+                frame["phase"] if frame["phase"] != "start"
+                else "start/board" if frame["scope"] == "board"
+                else "start/cands"
+            )
             print(
-                f"{ply:>3} {frame['phase']:<12} {frame['round']:>5} "
+                f"{ply:>3} {label:<12} {frame['round']:>5} "
                 f"{len(cells):>7} {len(keep):>5} {len(old):>12} {len(new):>12}  {note}"
             )
 
         engine.apply_action(state, PlacementAction(unpack_coord_id(played)))
     session.discard(7_700_001)
-    print(f"\nregressions: {regressions}")
+    # The old client blinked a cell out and back on nearly every halving; a
+    # model-based layer must never do it. A nonzero new count IS the flicker.
+    print(
+        f"\nblink-out/blink-back cells: old={old_revivals} new={new_revivals}"
+    )
+    regressions += new_revivals
+    print(f"regressions: {regressions}")
     return 1 if regressions else 0
 
 
