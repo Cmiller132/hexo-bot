@@ -91,7 +91,14 @@ def _arch_from_meta(meta: Any, checkpoint: Path) -> dict[str, str]:
 
 
 class HexfieldEqSearchProfile:
-    def __init__(self, config_path: Path | str) -> None:
+    def __init__(
+        self,
+        config_path: Path | str,
+        *,
+        opening_plies: int | None = None,
+        opening_temperature: float | None = None,
+        ml_final_pick: bool | None = None,
+    ) -> None:
         from hexfield_eq.config import (
             build_divergence_overrides,
             parse_hexfield_config,
@@ -109,10 +116,22 @@ class HexfieldEqSearchProfile:
         )
         self.selfplay = self.cfg.selfplay
         self.overrides = build_divergence_overrides(self.selfplay)
+        # Serving may drop the final-move decisiveness tie-break without
+        # editing the shared run config (training/eval read the same file).
+        if ml_final_pick is not None:
+            self.overrides["ml_final_pick"] = bool(ml_final_pick)
         mse = self.cfg.multi_stage_eval
         self.virtual_batch_size = int(mse.eval_virtual_batch_size or 32)
-        self.opening_plies = int(mse.opening_plies)
-        self.opening_temperature = float(mse.opening_temperature)
+        # Serving may narrow the as-trained opening-sampling window without
+        # editing the shared run config (which training/eval also read).
+        self.opening_plies = int(
+            mse.opening_plies if opening_plies is None else opening_plies
+        )
+        self.opening_temperature = float(
+            mse.opening_temperature
+            if opening_temperature is None
+            else opening_temperature
+        )
 
     def move_temperature(self, ply: int) -> float:
         if ply < self.opening_plies and self.opening_temperature > 0.0:
@@ -246,7 +265,12 @@ class HexfieldEqFamily:
         return _rust.HexfieldMctsSession(max_states=65_536)
 
     def build_profile(self, profile_path: Path | None, settings: Any) -> HexfieldEqSearchProfile:
-        return HexfieldEqSearchProfile(profile_path or Path(settings.search_config))
+        return HexfieldEqSearchProfile(
+            profile_path or Path(settings.search_config),
+            opening_plies=getattr(settings, "opening_plies", None),
+            opening_temperature=getattr(settings, "opening_temperature", None),
+            ml_final_pick=getattr(settings, "ml_final_pick", None),
+        )
 
     def decode_action(self, action_id: int) -> tuple[int, int]:
         from hexfield_eq.geometry import unpack_action_id

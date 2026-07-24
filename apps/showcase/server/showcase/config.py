@@ -21,6 +21,12 @@ def _env_float(name: str, default: float) -> float:
     return float(os.environ.get(name, "").strip() or default)
 
 
+def _env_opt_float(name: str) -> float | None:
+    """Tri-state float env: unset/empty -> None (caller-defined default)."""
+    raw = os.environ.get(name, "").strip()
+    return float(raw) if raw else None
+
+
 def _env_opt_bool(name: str) -> bool | None:
     """Tri-state boolean env: unset/empty -> None (caller-defined default)."""
     raw = os.environ.get(name, "").strip().lower()
@@ -102,6 +108,28 @@ class Settings:
     # required before promoting, to guard against a flapping backend.
     gpu_reprobe_s: float = 120.0
     gpu_reprobe_healthy_streak: int = 2
+    # Opening move diversity while SERVING. A search profile inherits its run's
+    # `multi_stage_eval` opening knobs (the hexfield defaults are 8 plies at
+    # temperature 1.0), which samples the bot's opening moves from the visit
+    # policy instead of playing its best move. That is right for training/eval
+    # -- it stops self-play games opening identically -- but on the showcase it
+    # reads as the bot ignoring its own search, because the live-search overlay
+    # shows the search converging on one cell and the bot then plays another.
+    # Serving therefore narrows the window rather than inheriting it. NOTE:
+    # `ply` counts individual STONES and a turn places two, so keep this EVEN or
+    # a turn will sample one stone and play the other greedily. 0 disables
+    # opening sampling entirely (every game then opens the same way).
+    opening_plies: int = 4
+    # None -> inherit the profile's configured opening temperature.
+    opening_temperature: float | None = None
+    # Final-move decisiveness tie-break (hexfield_eq only). When the root is
+    # clearly won/lost, it re-picks among moves within `ml_final_pick_band` of
+    # the LCB leader to prefer the fastest finish (or the longest defence).
+    # Off while serving: it trades a measurably better move for a faster one,
+    # and on the showcase a "best move" that is not the search's own leader is
+    # not worth the confusion. Training/eval keep it (their run config is not
+    # touched by this). Set SHOWCASE_ML_FINAL_PICK=1 to restore it.
+    ml_final_pick: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -140,6 +168,11 @@ class Settings:
             gpu_reprobe_s=_env_float("SHOWCASE_GPU_REPROBE_S", 120.0),
             gpu_reprobe_healthy_streak=_env_int(
                 "SHOWCASE_GPU_REPROBE_HEALTHY_STREAK", 2
+            ),
+            opening_plies=_env_int("SHOWCASE_OPENING_PLIES", 4),
+            opening_temperature=_env_opt_float("SHOWCASE_OPENING_TEMPERATURE"),
+            ml_final_pick=(
+                False if (flag := _env_opt_bool("SHOWCASE_ML_FINAL_PICK")) is None else flag
             ),
             finished_ttl_s=_env_float("SHOWCASE_FINISHED_TTL_S", 6 * 3600.0),
             sweep_interval_s=_env_float("SHOWCASE_SWEEP_INTERVAL_S", 15.0),

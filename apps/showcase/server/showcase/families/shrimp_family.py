@@ -12,7 +12,13 @@ _SEED_MASK = (1 << 63) - 1
 class SearchProfile:
     """As-trained shrimp eval-arena search invocation."""
 
-    def __init__(self, config_path: Path | str) -> None:
+    def __init__(
+        self,
+        config_path: Path | str,
+        *,
+        opening_plies: int | None = None,
+        opening_temperature: float | None = None,
+    ) -> None:
         from shrimp.config import build_divergence_overrides, parse_shrimp_config
 
         with open(config_path, "rb") as fh:
@@ -28,8 +34,18 @@ class SearchProfile:
         self.selfplay = cfg.selfplay
         self.overrides = build_divergence_overrides(cfg.selfplay)
         self.virtual_batch_size = int(cfg.multi_stage_eval.eval_virtual_batch_size or 32)
-        self.opening_plies = int(cfg.multi_stage_eval.opening_plies)
-        self.opening_temperature = float(cfg.multi_stage_eval.opening_temperature)
+        # Serving may narrow the as-trained opening-sampling window without
+        # editing the shared run config (which training/eval also read).
+        self.opening_plies = int(
+            cfg.multi_stage_eval.opening_plies
+            if opening_plies is None
+            else opening_plies
+        )
+        self.opening_temperature = float(
+            cfg.multi_stage_eval.opening_temperature
+            if opening_temperature is None
+            else opening_temperature
+        )
 
     def move_temperature(self, ply: int) -> float:
         if ply < self.opening_plies and self.opening_temperature > 0.0:
@@ -101,7 +117,11 @@ class ShrimpFamily:
         return _rust.ShrimpMctsSession(max_states=65_536)
 
     def build_profile(self, profile_path: Path | None, settings: Any) -> SearchProfile:
-        return SearchProfile(profile_path or Path(settings.search_config))
+        return SearchProfile(
+            profile_path or Path(settings.search_config),
+            opening_plies=getattr(settings, "opening_plies", None),
+            opening_temperature=getattr(settings, "opening_temperature", None),
+        )
 
     def decode_action(self, action_id: int) -> tuple[int, int]:
         from shrimp.geometry import unpack_action_id

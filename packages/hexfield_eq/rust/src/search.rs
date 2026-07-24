@@ -903,27 +903,26 @@ impl HexfieldMctsSession {
                 )
             })
             .collect::<PyResult<Vec<_>>>()?;
-        // Preserve the showcase's historical retained-tree advancement when
-        // the deep root guard is off. Only a verified root proof must override
-        // that legacy re-selection, because the returned action then came from
-        // the certificate and the retained tree must follow the same move.
-        let selected_actions: Vec<Option<PackedCoord>> = searches
-            .iter()
-            .zip(natives.iter())
-            .enumerate()
-            .map(|(index, (search, native))| {
-                if native.deep_override {
-                    Ok(Some(native.action_id))
-                } else {
-                    select_search_action(
-                        search,
-                        baselines.get(index),
-                        move_temps[index],
-                        seed.wrapping_add(index as u64),
-                    )
-                }
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+        // Advance the retained tree with the move that was actually PLAYED.
+        //
+        // This used to re-derive the move with a second, independent selection
+        // pass (`select_search_action`) and only reuse the played action when a
+        // deep-root proof forced it. That second pass did NOT apply
+        // `gumbel_play_prune`, which the payload builder applies whenever
+        // temperature > 0, so at exploration temperatures the two passes
+        // sampled DIFFERENT distributions from the same seed and could return
+        // different moves. The divergence never corrupted a search -- the
+        // root-hash check on reuse simply failed to match and rebuilt the tree
+        // -- but it silently discarded the retained tree at exactly the plies
+        // where sampling is on.
+        //
+        // `native.action_id` is the resolved played action: the fallback chain
+        // for an empty delta-visit policy and any deep-root certificate
+        // override have both already been applied, and a debug_assert pins it
+        // to a real root action. One selection, one played move, and the tree
+        // always follows it.
+        let selected_actions: Vec<Option<PackedCoord>> =
+            natives.iter().map(|native| Some(native.action_id)).collect();
         let results = PyList::empty(py);
         for native in &natives {
             let result = native.to_pydict(py, Some(&evaluation_stats_snapshot), Some(cache_len))?;
@@ -4967,23 +4966,6 @@ fn tactical_guard_weights(
         return weights.to_vec();
     }
     guarded
-}
-
-fn select_search_action(
-    search: &RustSearch,
-    baseline: Option<&HashMap<PackedCoord, u32>>,
-    temperature: f32,
-    seed: u64,
-) -> PyResult<Option<PackedCoord>> {
-    let (action_ids, weights, _q, _total) = visit_policy(search.root(), baseline);
-    let guarded = if search.tss_enabled {
-        tactical_guard_weights(&search.root_state, &action_ids, &weights)
-    } else {
-        weights.clone()
-    };
-    let (selected, _override) =
-        select_action_with_lcb(search, baseline, &action_ids, &guarded, temperature, seed)?;
-    Ok(selected)
 }
 
 /// Action selection: temperature sampling when temperature > 0, and on greedy

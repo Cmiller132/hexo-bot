@@ -455,7 +455,13 @@ export function createBoard(svg, opts = {}) {
    * so rapid SH rounds concentrate smoothly instead of flashing an empty
    * layer. Both the ring and opacity use the true maximum defensively; stable
    * coordinate tie-breaking keeps an equal-weight round from jittering. */
-  function setLiveHeat(rows, tint, ringTint, opa) {
+  /* `chosen` (optional {q,r}) is the move the bot actually played. When given
+     it takes the ring unconditionally -- the played move is NOT always the
+     heaviest cell (opening temperature samples the policy, and LCB selection
+     can outrank the visit leader), so inferring the ring from the heat map
+     would ring one cell and then drop the stone on another. Mid-search frames
+     pass nothing and keep ringing the current leader. */
+  function setLiveHeat(rows, tint, ringTint, opa, chosen) {
     const seq = Array.isArray(rows) ? rows.filter(row =>
       row && Number.isFinite(row.q) && Number.isFinite(row.r)
     ) : [];
@@ -522,7 +528,10 @@ export function createBoard(svg, opts = {}) {
       }, LIVE_FADE_MS);
     }
 
-    const best = seq.reduce((winner, row) => {
+    const played = chosen && Number.isFinite(chosen.q) && Number.isFinite(chosen.r)
+      ? { q: Number(chosen.q), r: Number(chosen.r) }
+      : null;
+    const best = played || seq.reduce((winner, row) => {
       if (!winner) return row;
       const wp = Number.isFinite(winner.p) ? winner.p : 0;
       const rp = Number.isFinite(row.p) ? row.p : 0;

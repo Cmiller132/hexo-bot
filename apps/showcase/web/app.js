@@ -418,11 +418,8 @@ function livePolicyRows(event, stoneNo) {
   rows.sort((a, b) =>
     b.p - a.p || a.q - b.q || a.r - b.r
   );
-  const bestKey = coordKey(event.action) || coordKey(event.best);
-  if (bestKey) {
-    const i = rows.findIndex(row => key(row.q, row.r) === bestKey);
-    if (i > 0) rows.unshift(rows.splice(i, 1)[0]);
-  }
+  // The played move is passed to the board explicitly (see setLiveHeat's
+  // `chosen`), so row order never has to encode it.
   return rows;
 }
 
@@ -482,6 +479,9 @@ function renderLiveFrame(event) {
         live.botColor === 0 ? H0 : H1,
         live.botColor === 0 ? H0R : H1R,
         0.85,
+        // Only the final frame names a played move; round frames ring their
+        // own leader.
+        event.action || null,
       );
     } else {
       playBoard.clearLiveHeat();
