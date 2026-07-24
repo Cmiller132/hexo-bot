@@ -416,6 +416,7 @@ export function createBoard(svg, opts = {}) {
    * overlay cell can't pass for a translucent stone; best cell gets a ring. */
   const liveHeatCells = new Map();
   let liveBest = null;
+  let liveLead = null;
   let liveHeatRevision = 0;
   const LIVE_FADE_MS = 240;
 
@@ -423,7 +424,10 @@ export function createBoard(svg, opts = {}) {
     liveHeatRevision++;
     heat.textContent = "";
     liveHeatCells.clear();
+    if (liveBest) liveBest.live = false;
+    if (liveLead) liveLead.live = false;
     liveBest = null;
+    liveLead = null;
   }
 
   function setHeat(rows, tint, ringTint, opa) {
@@ -453,19 +457,37 @@ export function createBoard(svg, opts = {}) {
   /* Keyed, transition-friendly heat for the play screen's streamed search.
    * Missing cells fade before removal; surviving cells retain their DOM nodes,
    * so rapid SH rounds concentrate smoothly instead of flashing an empty
-   * layer. Both the ring and opacity use the true maximum defensively; stable
-   * coordinate tie-breaking keeps an equal-weight round from jittering. */
-  /* `chosen` (optional {q,r}) is the move the bot actually played. When given
-     it takes the ring unconditionally -- the played move is NOT always the
-     heaviest cell (opening temperature samples the policy, and LCB selection
-     can outrank the visit leader), so inferring the ring from the heat map
-     would ring one cell and then drop the stone on another. Mid-search frames
-     pass nothing and keep ringing the current leader. */
-  function setLiveHeat(rows, tint, ringTint, opa, chosen) {
+   * layer. Stable coordinate tie-breaking keeps an equal-weight round from
+   * jittering.
+   *
+   * Brightness is relative to the frame's own maximum -- a raw absolute scale
+   * makes the ~100-cell prior frame invisible -- but with NO pedestal and a
+   * gamma below 1, so a zero-weight cell renders as nothing at all rather than
+   * as a faint tint, and the middle of the distribution stays separable. The
+   * absolute top share is reported in the phase line instead.
+   *
+   * `chosen` (optional {q,r}) is the move the bot actually played and takes the
+   * solid ring unconditionally: the played move is NOT always the heaviest cell
+   * (opening temperature samples the policy, LCB-of-Q can outrank the visit
+   * leader, and a tactical certificate ignores the distribution entirely), so
+   * inferring the ring from the heat map would ring one cell and then drop the
+   * stone on another. `leader` (optional {q,r}) is the cell the drawn
+   * distribution actually favours; when it differs from `chosen` it gets its
+   * own dashed marker, which is the whole point -- the disagreement is the
+   * information. Rows flagged `out` were eliminated by the halving this frame
+   * reports and are dimmed rather than dropped. */
+  function setLiveHeat(rows, tint, ringTint, opa, chosen, leader) {
+    const mark = cell => (
+      cell && Number.isFinite(cell.q) && Number.isFinite(cell.r)
+        ? { q: Number(cell.q), r: Number(cell.r) }
+        : null
+    );
+    const played = mark(chosen);
+    const front = mark(leader);
     const seq = Array.isArray(rows) ? rows.filter(row =>
       row && Number.isFinite(row.q) && Number.isFinite(row.r)
     ) : [];
-    if (!seq.length || opa <= 0) {
+    if ((!seq.length && !played && !front) || opa <= 0) {
       hardClearHeat();
       return;
     }
@@ -481,6 +503,11 @@ export function createBoard(svg, opts = {}) {
     if (!(maxW > 0)) maxW = 1;
 
     for (const row of seq) {
+      const weight = Number.isFinite(row.p) ? Math.max(0, row.p) : 0;
+      // A certificate move is appended to the export with weight 0.0. It is a
+      // real played cell but carries no search mass, so it gets the ring and no
+      // heat instead of a pedestal tint implying the search liked it.
+      if (weight <= 0) continue;
       const k = key(row.q, row.r);
       active.add(k);
       let el = liveHeatCells.get(k);
@@ -488,15 +515,17 @@ export function createBoard(svg, opts = {}) {
       if (!el) {
         el = document.createElementNS(NS, "polygon");
         el.setAttribute("points", hexPts(axialX(row.q, row.r), axialY(row.r), S * DRAW));
-        el.setAttribute("class", "heatcell live-heatcell");
         el.style.opacity = "0";
         heat.appendChild(el);
         liveHeatCells.set(k, el);
       }
+      el.setAttribute(
+        "class", row.out ? "heatcell live-heatcell live-heatcut" : "heatcell live-heatcell"
+      );
       el.dataset.fadeToken = "";
       el.style.fill = tint;
-      const weight = Number.isFinite(row.p) ? Math.max(0, row.p) : 0;
-      const opacity = (opa * (0.12 + 0.88 * weight / maxW)).toFixed(3);
+      const shade = Math.pow(weight / maxW, 0.6) * (row.out ? 0.34 : 1);
+      const opacity = (opa * shade).toFixed(3);
       if (fresh) {
         freshCells.push({ k, el, opacity });
       } else {
@@ -528,10 +557,10 @@ export function createBoard(svg, opts = {}) {
       }, LIVE_FADE_MS);
     }
 
-    const played = chosen && Number.isFinite(chosen.q) && Number.isFinite(chosen.r)
-      ? { q: Number(chosen.q), r: Number(chosen.r) }
-      : null;
-    const best = played || seq.reduce((winner, row) => {
+    // Mid-search frames ring their own leader, which must be a cell still in
+    // the running -- never one this frame reports as just eliminated.
+    const heaviest = seq.reduce((winner, row) => {
+      if (row.out) return winner;
       if (!winner) return row;
       const wp = Number.isFinite(winner.p) ? winner.p : 0;
       const rp = Number.isFinite(row.p) ? row.p : 0;
@@ -539,29 +568,50 @@ export function createBoard(svg, opts = {}) {
       if (row.q !== winner.q) return row.q < winner.q ? row : winner;
       return row.r < winner.r ? row : winner;
     }, null);
-    const bestKey = key(best.q, best.r);
-    if (!liveBest || liveBest.key !== bestKey) {
-      if (liveBest) {
-        const old = liveBest.el;
-        old.style.opacity = "0";
-        setTimeout(() => old.remove(), LIVE_FADE_MS);
-      }
-      const ring = document.createElementNS(NS, "polygon");
-      ring.setAttribute("points", hexPts(axialX(best.q, best.r), axialY(best.r), S * 0.86));
-      ring.setAttribute("class", "heattop live-heattop");
-      ring.style.stroke = ringTint;
-      ring.style.opacity = "0";
-      heat.appendChild(ring);
-      liveBest = { key: bestKey, el: ring };
-      requestAnimationFrame(() => {
-        if (liveBest && liveBest.el === ring) {
-          ring.style.opacity = Math.min(1, opa + 0.1).toFixed(3);
-        }
-      });
-    } else {
-      liveBest.el.style.stroke = ringTint;
-      liveBest.el.style.opacity = Math.min(1, opa + 0.1).toFixed(3);
+    const best = played || front || heaviest;
+    const bestKey = best ? key(best.q, best.r) : null;
+    // The dashed marker only exists to show a disagreement, so it is suppressed
+    // wherever the two coincide.
+    const lead = front && bestKey !== key(front.q, front.r) ? front : null;
+    liveBest = reconcileMarker(
+      liveBest, best, "heattop live-heattop", ringTint, Math.min(1, opa + 0.1)
+    );
+    liveLead = reconcileMarker(
+      liveLead, lead, "heattop live-heatlead", ringTint, Math.min(1, opa + 0.1) * 0.8
+    );
+  }
+
+  /* Keep one optional {q,r} marker polygon in sync without reflowing the layer:
+   * same cell restyles in place, a different cell cross-fades, null fades out. */
+  function reconcileMarker(current, cell, className, stroke, opacity) {
+    const wanted = cell ? key(cell.q, cell.r) : null;
+    if (current && current.key === wanted) {
+      current.el.style.stroke = stroke;
+      current.el.style.opacity = opacity.toFixed(3);
+      return current;
     }
+    if (current) {
+      // `live` retires the old marker's pending fade-in: without it a marker
+      // replaced inside one animation frame flashes back to full opacity.
+      current.live = false;
+      const old = current.el;
+      old.style.opacity = "0";
+      setTimeout(() => old.remove(), LIVE_FADE_MS);
+    }
+    if (!cell) return null;
+    const ring = document.createElementNS(NS, "polygon");
+    ring.setAttribute("points", hexPts(axialX(cell.q, cell.r), axialY(cell.r), S * 0.86));
+    ring.setAttribute("class", className);
+    ring.style.stroke = stroke;
+    ring.style.opacity = "0";
+    heat.appendChild(ring);
+    const marker = { key: wanted, el: ring, live: true };
+    requestAnimationFrame(() => {
+      if (marker.live && ring.isConnected) {
+        ring.style.opacity = opacity.toFixed(3);
+      }
+    });
+    return marker;
   }
 
   const clearLiveHeat = hardClearHeat;

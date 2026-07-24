@@ -42,8 +42,13 @@ class _FakeProfile:
 
         ids_wire = struct.pack(f"={len(candidate_ids)}I", *candidate_ids)
         survivors_wire = struct.pack("=I", action_id)
+        # Mirror the real profile: every raw Rust frame goes through the wire
+        # allowlist before it reaches the worker's progress callback.
+        def emit(raw):
+            callback(_wire_telemetry_event(raw))
+
         if callback is not None:
-            callback(
+            emit(
                 {
                     "phase": "start",
                     "round": 0,
@@ -55,7 +60,7 @@ class _FakeProfile:
                     "survivor_action_ids_bytes": survivors_wire,
                 }
             )
-            callback(
+            emit(
                 {
                     "phase": "round",
                     "round": 1,
@@ -67,7 +72,7 @@ class _FakeProfile:
                     "survivor_action_ids_bytes": survivors_wire,
                 }
             )
-            callback(
+            emit(
                 {
                     "phase": "complete",
                     "visits": kwargs["visits"],
@@ -75,6 +80,8 @@ class _FakeProfile:
                     "root_value": 0.25,
                     "policy_action_ids_bytes": struct.pack("=I", action_id),
                     "policy_weights_bytes": struct.pack("=f", 1.0),
+                    "policy_count": 1,
+                    "visit_policy_q_bytes": struct.pack("=f", 0.5),
                     "action_id": action_id,
                 }
             )
@@ -88,6 +95,9 @@ class _FakeProfile:
             "action_id": action_id,
             "root_value": 0.25,
             "visits": int(kwargs["visits"]),
+            "action_selection": "delta_visit_policy",
+            "lcb_override": True,
+            "play_pruned": False,
             "visit_policy_action_ids_bytes": ids_wire,
             "visit_policy_weights_bytes": weights_wire,
             "root_prior_policy_action_ids_bytes": ids_wire,
@@ -220,6 +230,83 @@ def test_hexfield_raw_telemetry_stays_wire_until_loop_side_expansion():
     assert candidates["survivors"] == [{"q": 1, "r": -1}]
     assert candidates["policy"] == [bare["policy"][0]]
     assert candidates["action"] == {"q": 1, "r": -1}
+
+
+def test_complete_frame_carries_the_selection_verdict_and_per_cell_q():
+    """The overlay heats visit share; selection ranks on LCB-of-Q.
+
+    The complete frame is held back until search() returns precisely so the
+    verdict can ride along with the distribution it contradicts. Without it a
+    viewer sees the bot pass over its brightest cell with no stated reason.
+    """
+    events: list[dict] = []
+    runtime, _ = _fake_runtime()
+    runtime.bot_turn(
+        bot_slug="fake", game_key=7,
+        actions=[pack_coord_id(AxialCoord(q=0, r=0))],
+        seed=11, visits=8,
+        progress_callback=lambda event: events.extend(expand_worker_event(event)),
+    )
+    complete = next(e for e in events if e["kind"] == "search_complete")
+    assert complete["lcb_override"] is True
+    assert complete["selection"] == "delta_visit_policy"
+    assert "play_pruned" not in complete  # falsy verdicts stay off the wire
+    assert [row["value"] for row in complete["policy"]] == [0.5]
+    # Each phase's weights are a different quantity; the client needs to know
+    # which ramp it is drawing.
+    assert [e["policy_kind"] for e in events if "policy_kind" in e] == [
+        "prior", "prior", "score", "visits",
+        "prior", "prior", "score", "visits",
+    ]
+
+
+def test_truncated_policy_buffers_are_dropped_rather_than_zero_filled():
+    from hexfield_eq.geometry import pack_action_id
+
+    ids = [pack_action_id(1, -1), pack_action_id(2, -1)]
+
+    def expand(**overrides):
+        frame = {
+            "kind": "search_telemetry",
+            "stone": 1,
+            "ply": 4,
+            "phase": "round",
+            "policy_action_ids_bytes": struct.pack("=2I", *ids),
+            "policy_weights_bytes": struct.pack("=2f", 3.0, 1.0),
+            "survivor_action_ids_bytes": struct.pack("=I", ids[0]),
+            **overrides,
+        }
+        return expand_worker_event(frame)[0]
+
+    assert len(expand()["policy"]) == 2
+    # A short weight buffer used to be tolerated by zero-filling the tail, which
+    # paints a confident-looking map out of a truncated transfer.
+    assert "policy" not in expand(policy_weights_bytes=struct.pack("=f", 3.0))
+    # Rust's own element counts catch a buffer that is merely the wrong length.
+    assert "policy" not in expand(policy_count=3)
+    assert "survivors" not in expand(survivor_count=2)
+    assert expand(survivor_count=1)["survivors"] == [{"q": 1, "r": -1}]
+
+
+def test_start_frame_reports_priors_without_a_zero_visit_readout():
+    from hexfield_eq.geometry import pack_action_id
+
+    ids = [pack_action_id(1, -1), pack_action_id(2, -1)]
+    bare, _ = expand_worker_event(
+        {
+            "kind": "search_telemetry",
+            "stone": 1,
+            "ply": 4,
+            "phase": "start",
+            "policy_action_ids_bytes": struct.pack("=2I", *ids),
+            "policy_weights_bytes": struct.pack("=2f", 3.0, 1.0),
+            # All-zero by construction: nothing has been searched yet.
+            "policy_visits_bytes": struct.pack("=2I", 0, 0),
+            "survivor_action_ids_bytes": struct.pack("=I", ids[0]),
+        }
+    )
+    assert [row["p"] for row in bare["policy"]] == [0.75, 0.25]
+    assert not any("visits" in row for row in bare["policy"])
 
 
 def test_replay_hub_bounds_replay_and_slow_subscriber_queue():

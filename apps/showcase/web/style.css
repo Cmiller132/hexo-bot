@@ -188,6 +188,17 @@ main{max-width:1120px;margin:0 auto;padding:28px}
   transition:opacity .18s ease;
   will-change:opacity;
 }
+/* Where the drawn distribution's own leader is NOT the move being played.
+   Dashed so it reads as "the search's favourite" against the solid ring on the
+   move value/certificate selection actually chose. */
+.live-heatlead{
+  stroke-dasharray:3 3;stroke-width:1.2;
+  transition:opacity .18s ease;
+  will-change:opacity;
+}
+/* Candidates the halving reported by this frame just eliminated. Kept on the
+   board at low opacity for one frame so the cut is visible rather than silent. */
+.live-heatcut{transition:opacity .2s cubic-bezier(.22,.61,.36,1),fill .2s ease}
 .search-preview{
   pointer-events:none;
   opacity:.94;
@@ -720,7 +731,7 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 @media (prefers-reduced-motion:reduce){
   .status.think .dot{animation:none}
   .toast{animation:none}
-  .live-heatcell,.live-heattop{transition:none}
+  .live-heatcell,.live-heattop,.live-heatlead,.live-heatcut{transition:none}
   .search-preview{animation:none}
 }
 

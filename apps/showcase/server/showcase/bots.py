@@ -538,6 +538,7 @@ class _WorkerRuntime:
             for source_suffix, target_key in (
                 ("action_ids_bytes", "policy_action_ids_bytes"),
                 ("weights_bytes", "policy_weights_bytes"),
+                ("q_bytes", "policy_q_bytes"),
             ):
                 try:
                     out[target_key] = bytes(result[f"{prefix}_{source_suffix}"])
@@ -626,6 +627,21 @@ class _WorkerRuntime:
             complete.setdefault("action_id", int(result["action_id"]))
             complete.setdefault("root_value", round(float(result["root_value"]), 6))
             complete.setdefault("visits", int(result["visits"]))
+            # Why this move, straight off the authoritative result. The complete
+            # frame is deliberately held back until search() returns (see
+            # `pending_complete` above), so the verdict lands on the same frame
+            # as the distribution it contradicts. Selection does NOT rank on the
+            # exported visit share: it ranks on LCB-of-Q over cumulative root
+            # stats, and a tactical certificate can override even that. Without
+            # these flags the viewer sees the bot pass over its most-visited
+            # cell for no stated reason.
+            try:
+                if result.get("action_selection") is not None:
+                    complete["action_selection"] = str(result["action_selection"])
+                complete["lcb_override"] = bool(result.get("lcb_override", False))
+                complete["play_pruned"] = bool(result.get("play_pruned", False))
+            except Exception:
+                pass
             if "policy_action_ids_bytes" not in complete:
                 complete["_result_policy"] = True
                 complete.update(result_policy_wire(result, "visit_policy"))

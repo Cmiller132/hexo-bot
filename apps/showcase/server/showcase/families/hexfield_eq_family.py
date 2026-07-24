@@ -42,7 +42,18 @@ def _wire_telemetry_event(raw: Any) -> dict[str, Any]:
         return {"phase": "unknown"}
 
     event: dict[str, Any] = {"phase": str(source.get("phase", "unknown"))}
-    for key in ("round", "rounds", "visits", "target_visits", "action_id"):
+    for key in (
+        "round",
+        "rounds",
+        "visits",
+        "target_visits",
+        "action_id",
+        # Rust's own element counts. Carried so the decoder can reject a short
+        # or misaligned buffer instead of rendering a plausible-looking heat
+        # map built from whatever survived the truncation.
+        "policy_count",
+        "survivor_count",
+    ):
         try:
             if source.get(key) is not None:
                 event[key] = int(source[key])
@@ -58,16 +69,20 @@ def _wire_telemetry_event(raw: Any) -> dict[str, Any]:
             event["action_selection"] = str(source["action_selection"])
     except (TypeError, ValueError):
         pass
-    for key in (
-        "policy_action_ids_bytes",
-        "policy_weights_bytes",
-        "policy_visits_bytes",
-        "survivor_action_ids_bytes",
+    for key, target in (
+        ("policy_action_ids_bytes", "policy_action_ids_bytes"),
+        ("policy_weights_bytes", "policy_weights_bytes"),
+        ("policy_visits_bytes", "policy_visits_bytes"),
+        ("survivor_action_ids_bytes", "survivor_action_ids_bytes"),
+        # Per-cell root Q on the complete frame. Already computed and already
+        # in the frame; carrying it is what lets the viewer see the quantity
+        # selection actually ranks on rather than only the visit share.
+        ("visit_policy_q_bytes", "policy_q_bytes"),
     ):
         try:
             if source.get(key) is not None:
                 value = source[key]
-                event[key] = value if isinstance(value, bytes) else bytes(value)
+                event[target] = value if isinstance(value, bytes) else bytes(value)
         except Exception:
             pass
     return event
