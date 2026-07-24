@@ -635,6 +635,11 @@ class _WorkerRuntime:
             action_id = int(result["action_id"])
             q, r = bot.family.decode_action(action_id)
             engine.apply_action(state, PlacementAction(unpack_coord_id(action_id)))
+            # A tactical-certificate move overrode the search; the viewer marks
+            # the placement so a zero-weight cell does not read as a stray move.
+            tss_proven = (
+                str(result.get("action_selection", "")) == "tss_deep_root_win"
+            )
             emit(
                 {
                     "kind": "stone",
@@ -645,6 +650,7 @@ class _WorkerRuntime:
                         "q": int(q),
                         "r": int(r),
                     },
+                    **({"tss": True} if tss_proven else {}),
                 }
             )
             played.append(

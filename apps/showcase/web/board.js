@@ -585,7 +585,10 @@ export function createBoard(svg, opts = {}) {
       }
       el.setAttribute(
         "class",
-        "stone search-preview " + (move.color === 0 ? "s0" : "s1"),
+        "stone search-preview " + (move.color === 0 ? "s0" : "s1")
+        // Certificate-forced move: filled red for its dwell, so a placement on
+        // an unweighted cell reads as deliberate rather than random.
+        + (move.tss ? " tss-proven" : ""),
       );
     }
     for (const [k, el] of previewCells) {

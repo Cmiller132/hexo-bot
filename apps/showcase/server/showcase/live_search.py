@@ -117,6 +117,11 @@ def _decoded_fields(raw: dict[str, Any], phase: str) -> dict[str, Any]:
             for action_id in survivor_ids
             for q, r in (_coord(int(action_id)),)
         ]
+    # A tactical certificate overrode the search. The played cell can carry
+    # zero policy weight (it is appended to the export with weight 0.0), so the
+    # viewer needs to be told rather than left to read it as a stray move.
+    if str(raw.get("action_selection", "")) == "tss_deep_root_win":
+        fields["tss"] = True
     try:
         if raw.get("action_id") is not None:
             action_id = int(raw["action_id"])

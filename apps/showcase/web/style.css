@@ -197,6 +197,21 @@ main{max-width:1120px;margin:0 auto;padding:28px}
   filter:drop-shadow(0 0 3px rgba(220,232,242,.34));
   animation:searchStoneIn .22s cubic-bezier(.2,.75,.3,1);
 }
+/* Certificate-forced move (TSS proved a win). The search did not pick this
+   cell -- it can carry zero policy weight and no heat at all -- so the stone
+   is held filled bright red for its dwell before the real placement lands. */
+.search-preview.tss-proven{
+  fill:#ff2f43;
+  stroke:#ffd7dc;
+  opacity:1;
+  filter:drop-shadow(0 0 7px rgba(255,47,67,.85));
+  animation:searchStoneIn .22s cubic-bezier(.2,.75,.3,1),
+            tssProvenPulse .34s ease-in-out .22s 2 alternate;
+}
+@keyframes tssProvenPulse{
+  from{filter:drop-shadow(0 0 6px rgba(255,47,67,.7))}
+  to{filter:drop-shadow(0 0 14px rgba(255,47,67,1))}
+}
 @keyframes searchStoneIn{
   from{opacity:0;transform:scale(.72);transform-origin:center}
   to{opacity:.94;transform:scale(1);transform-origin:center}

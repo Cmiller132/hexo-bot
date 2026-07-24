@@ -10,7 +10,7 @@
  * changes incompatibly. */
 import * as api from "./api.js?v=13";
 import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=12";
-import { createBoard, findWin, key } from "./board.js?v=8";
+import { createBoard, findWin, key } from "./board.js?v=9";
 import { initStats, refreshStats } from "./stats.js?v=19";
 
 "use strict";
@@ -406,7 +406,14 @@ function livePolicyRows(event, stoneNo) {
   // the initial survivor set. F1 must show the full policy; only F2 frames
   // narrow to the active SH candidates.
   if (event.kind !== "bare_policy" && survivorKeys.size) {
-    rows = rows.filter(row => survivorKeys.has(key(row.q, row.r)));
+    // Keep the played move even when it never survived a halving: a tactical
+    // certificate can override the search entirely, and dropping that cell
+    // would leave the ring floating over empty board.
+    const playedKey = coordKey(event.action);
+    rows = rows.filter(row =>
+      survivorKeys.has(key(row.q, row.r)) ||
+      (playedKey && key(row.q, row.r) === playedKey)
+    );
     if (!rows.length) {
       const priors = live.priorByStone.get(stoneNo) || new Map();
       rows = [...survivorKeys]
@@ -452,6 +459,9 @@ function liveFrameDwell(event) {
   if (liveReducedMotion()) return 0;
   if (event.kind === "turn_start") return 100;
   if (event.kind === "turn_complete") return 160;
+  // A certificate-forced move gets held long enough to read: the cell it lands
+  // on can carry no policy weight at all, so it needs a beat of its own.
+  if (event.kind === "stone" && event.tss === true) return 1000;
   if (event.kind === "stone" || event.kind === "search_complete") return 260;
   return LIVE_FRAME_DWELL_MS;
 }
@@ -525,6 +535,7 @@ function renderLiveFrame(event) {
       if (!live.previews.some(row => key(row.q, row.r) === pickedKey)) {
         live.previews.push({
           q: Number(picked.q), r: Number(picked.r), color: live.botColor,
+          tss: event.tss === true,
         });
       }
       live.previews = live.previews.slice(0, 2);
@@ -533,7 +544,9 @@ function renderLiveFrame(event) {
     const stoneNo = Math.max(1, live.previews.length);
     live.currentStone = Math.min(2, stoneNo + 1);
     setSearchPhase(
-      stoneNo === 1 ? "stone 1 placed" : "stone 2 selected"
+      event.tss === true
+        ? `stone ${stoneNo} · proven win`
+        : (stoneNo === 1 ? "stone 1 placed" : "stone 2 selected")
     );
     return;
   }

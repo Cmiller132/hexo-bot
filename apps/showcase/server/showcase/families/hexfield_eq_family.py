@@ -53,6 +53,11 @@ def _wire_telemetry_event(raw: Any) -> dict[str, Any]:
             event["root_value"] = float(source["root_value"])
     except (TypeError, ValueError, OverflowError):
         pass
+    try:
+        if source.get("action_selection") is not None:
+            event["action_selection"] = str(source["action_selection"])
+    except (TypeError, ValueError):
+        pass
     for key in (
         "policy_action_ids_bytes",
         "policy_weights_bytes",

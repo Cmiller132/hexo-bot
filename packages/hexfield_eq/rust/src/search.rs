@@ -2151,6 +2151,11 @@ fn emit_complete_search_telemetry(
                 "action_id",
                 "root_value",
                 "visits",
+                // Why the played move is what it is. Only "tss_deep_root_win"
+                // is presented to the viewer: that move came from a tactical
+                // certificate and OVERRODE the search, so it can carry zero
+                // policy weight and look arbitrary on the overlay.
+                "action_selection",
                 "visit_policy_action_ids_bytes",
                 "visit_policy_weights_bytes",
                 "visit_policy_q_bytes",
