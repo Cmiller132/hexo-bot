@@ -160,7 +160,7 @@ PROFILES_DIR = Path(__file__).resolve().parents[2] / "profiles"
 # Keys of a [[checkpoint]] table the server itself consumes; anything else is
 # passed through verbatim as display metadata (e.g. games_trained, group).
 _CHECKPOINT_REQUIRED = {"id", "checkpoint", "label", "run", "epoch"}
-_CHECKPOINT_SERVER_KEYS = _CHECKPOINT_REQUIRED | {"family", "search_profile"}
+_CHECKPOINT_SERVER_KEYS = _CHECKPOINT_REQUIRED | {"family", "search_profile", "sims"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +178,10 @@ class CheckpointSpec:
     # Resolved profile toml this checkpoint searches with; None selects the
     # global settings.search_config default.
     search_profile: Path | None = None
+    # Per-checkpoint allowed search budgets. None inherits the catalogue's
+    # global set; a family whose per-eval cost differs by an order of
+    # magnitude (mantisnet) declares its own ladder instead.
+    sims: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +275,16 @@ def load_bots_toml(path: Path | str) -> Catalogue:
             if profile_ref is not None
             else None
         )
+        entry_sims_raw = entry.get("sims")
+        entry_sims: tuple[int, ...] | None = None
+        if entry_sims_raw is not None:
+            if not isinstance(entry_sims_raw, list) or not entry_sims_raw:
+                raise ValueError(
+                    f"checkpoint {slug!r}: 'sims' must be a non-empty array"
+                )
+            entry_sims = tuple(sorted({int(s) for s in entry_sims_raw}))
+            if entry_sims[0] < 1:
+                raise ValueError(f"checkpoint {slug!r}: 'sims' entries must be >= 1")
         meta = {key: value for key, value in entry.items() if key not in _CHECKPOINT_SERVER_KEYS}
         for key, value in meta.items():
             if not isinstance(value, (str, int, float, bool)):
@@ -288,6 +302,7 @@ def load_bots_toml(path: Path | str) -> Catalogue:
                 meta=meta,
                 family=family,
                 search_profile=search_profile,
+                sims=entry_sims,
             )
         )
     return Catalogue(checkpoints=tuple(specs), sims=sims)

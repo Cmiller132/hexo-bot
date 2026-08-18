@@ -1313,15 +1313,27 @@ function renderCkptList() {
     onSelect: (id, c) => {
       sel.ckpt = id;
       sel.ckptLabel = c ? c.label : id;
+      // A checkpoint may declare its own sims ladder (a family whose per-eval
+      // cost is an order of magnitude different does); rebuild the budget row
+      // and keep the selection inside the new ladder.
+      renderSimsSeg();
     },
   });
 }
 
-function renderPickers() {
-  renderCkptList();
+/* The allowed search budgets for a checkpoint: its own declared ladder when
+ * the catalogue entry carries one, else the global set. */
+function simsLadderFor(id) {
+  const c = botsNorm && botsNorm.checkpoints.find(x => x.id === id);
+  return (c && Array.isArray(c.sims) && c.sims.length) ? c.sims : botsNorm.sims;
+}
+
+function renderSimsSeg() {
   const seg = $("simSeg");
   seg.textContent = "";
-  for (const s of botsNorm.sims) {
+  const ladder = simsLadderFor(sel.ckpt);
+  if (!ladder.includes(sel.sims)) sel.sims = ladder[0] || 0;
+  for (const s of ladder) {
     const b = document.createElement("button");
     b.dataset.sims = s;
     b.textContent = s;
@@ -1330,6 +1342,11 @@ function renderPickers() {
     b.setAttribute("aria-checked", s === sel.sims);
     seg.appendChild(b);
   }
+}
+
+function renderPickers() {
+  renderCkptList();
+  renderSimsSeg();
 }
 
 $("simSeg").addEventListener("click", e => {
@@ -1370,7 +1387,7 @@ async function loadBots() {
   const def = defaultCheckpoint(botsNorm.checkpoints);
   sel.ckpt = def ? def.id : null;
   sel.ckptLabel = def ? def.label : "";
-  sel.sims = botsNorm.sims[0] || 0; // default to the lowest search budget
+  sel.sims = simsLadderFor(sel.ckpt)[0] || 0; // default to the lowest budget
   renderPickers();
   showStartBoard();
 }

@@ -560,10 +560,11 @@ def create_app(settings: Settings) -> FastAPI:
         spec = app.state.catalogue.get(body.checkpoint_id)
         if spec is None:
             raise HTTPException(404, f"unknown checkpoint {body.checkpoint_id!r}")
-        if body.sims not in app.state.sims_allowed:
+        sims_allowed = spec.sims or app.state.sims_allowed
+        if body.sims not in sims_allowed:
             raise HTTPException(
                 422,
-                f"sims must be one of {list(app.state.sims_allowed)}",
+                f"sims must be one of {list(sims_allowed)}",
             )
         sessions = app.state.sessions
         active = [s for s in sessions.values() if s.active]
@@ -1103,6 +1104,9 @@ def create_app(settings: Settings) -> FastAPI:
                     "id": spec.slug, "label": spec.label,
                     "run": spec.run, "epoch": spec.epoch,
                     "family": spec.family,
+                    # Per-checkpoint sims ladder, when the entry declares one;
+                    # the picker falls back to the global set otherwise.
+                    **({"sims": list(spec.sims)} if spec.sims else {}),
                     **spec.meta,
                 }
                 for spec in app.state.catalogue.values()
