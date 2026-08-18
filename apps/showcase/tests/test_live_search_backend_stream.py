@@ -106,6 +106,13 @@ class _FakeProfile:
 
 
 class _FakeFamily:
+    """The worker routes the callback off the family's declared capability,
+    so the fake models it: hexfield-shaped fakes stream natively, the rest
+    take the post-search fallback."""
+
+    def __init__(self, *, supports_live_telemetry: bool) -> None:
+        self.supports_live_telemetry = supports_live_telemetry
+
     @staticmethod
     def decode_action(action_id: int) -> tuple[int, int]:
         coord = unpack_coord_id(action_id)
@@ -124,7 +131,9 @@ def _fake_runtime(
     runtime.bots = {
         "fake": SimpleNamespace(
             spec=SimpleNamespace(family=family_name),
-            family=_FakeFamily(),
+            family=_FakeFamily(
+                supports_live_telemetry=family_name == "hexfield_eq"
+            ),
             model=object(),
             evaluator=object(),
             session=object(),
