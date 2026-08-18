@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MantisNet &mdash; one block</title>
+<meta name="description" content="Each stage of a MantisNet trunk block in detail: the typed message passes, the cell state, the geometry-biased stone attention, the window-latent cycle, and the feed-forward.">
+<link rel="stylesheet" href="learn.css">
+</head>
+<body>
+
+<header class="learn-header">
+  <a class="wordmark" href="../">hexo</a>
+  <nav class="learn-nav" aria-label="How it works">
+    <a href="./">Overview</a>
+    <a href="position.html">What it sees</a>
+    <a href="network.html">The network</a>
+    <a href="block.html" class="current" aria-current="page">One block</a>
+    <a href="search.html">Search &amp; training</a>
+  </nav>
+</header>
+
+<main class="learn-main">
+
+<h1>One block <span class="h-dim">&mdash; the six stages in detail</span></h1>
+
+<p class="lede">
+The trunk has four identical blocks, and each block runs six stages in
+sequence. The <a href="network.html#block">network page</a> shows the block
+in one figure. This page opens each stage: what it reads, what it updates,
+and which parameters it owns. Every parameter count comes from the served
+checkpoint. Each component table sums to its stage's bar in the
+<a href="network.html#params">parameter budget</a>.
+</p>
+
+<h2 id="shape"><span class="sec-no">01</span>the shape of every stage</h2>
+
+<!-- src: model.py Block.forward (residual pattern throughout); key
+     projections bias-free per the constructor comment (a shared key bias
+     cancels from its softmax row); fp32 softmax discipline per
+     MODEL_SPEC §5 and the op docstrings -->
+<p>
+Each stage is a residual update. The stage normalizes a copy of its input
+rows, computes a delta, and adds the delta to the stored rows. The stored
+rows persist across all stages and all four blocks. Attention scores,
+softmaxes, and weighted sums run in fp32, also under autocast. The key
+projections have no bias terms, because a shared key bias cancels in the
+softmax.
+</p>
+
+<figure class="fig fig-wide" id="fig-shape">
+  <figcaption>fig 1 &middot; <b>the residual shape</b> &middot; every stage follows this pattern &middot; point to a part</figcaption>
+  <svg class="sysmap" viewBox="0 0 860 160" role="group" aria-label="The residual update pattern: stored rows, LayerNorm, the stage, and the residual add">
+    <defs>
+      <marker id="ahS" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
+      </marker>
+    </defs>
+    <g class="map-node" tabindex="0" data-k="stored rows"
+       data-info="The rows of the entities: stones, windows, cells, and latents. They persist across all stages and blocks.">
+      <rect x="16" y="72" width="150" height="52"/>
+      <text class="nt" x="91" y="94" text-anchor="middle">stored rows</text>
+      <text class="ns" x="91" y="110" text-anchor="middle">persist everywhere</text>
+    </g>
+    <path class="edge" d="M166 98 H206" marker-end="url(#ahS)"/>
+    <g class="map-node" tabindex="0" data-k="LayerNorm"
+       data-info="The stage normalizes a copy of the rows. The stored rows do not change here.">
+      <rect x="210" y="72" width="80" height="52"/>
+      <text class="nt" x="250" y="102" text-anchor="middle">LN</text>
+    </g>
+    <path class="edge" d="M290 98 H330" marker-end="url(#ahS)"/>
+    <g class="map-node" tabindex="0" data-k="typed context"
+       data-info="The context is the other entity set that the stage reads, together with its class tables.">
+      <rect x="364" y="8" width="130" height="36"/>
+      <text class="nt" x="429" y="31" text-anchor="middle">typed context</text>
+    </g>
+    <path class="edge" d="M429 44 V68" marker-end="url(#ahS)"/>
+    <g class="map-node" tabindex="0" data-k="the stage"
+       data-info="The stage computes a delta from the normalized rows and its typed context.">
+      <rect x="334" y="72" width="190" height="52"/>
+      <text class="nt" x="429" y="94" text-anchor="middle">the stage</text>
+      <text class="ns" x="429" y="110" text-anchor="middle">computes a delta</text>
+    </g>
+    <path class="edge" d="M524 98 H560" marker-end="url(#ahS)"/>
+    <g class="map-node" tabindex="0" data-k="residual add"
+       data-info="The delta adds to the stored rows.">
+      <circle cx="582" cy="98" r="14" fill="#171c23" stroke="#242c35"/>
+      <text class="nt" x="582" y="103" text-anchor="middle">+</text>
+    </g>
+    <path class="edge" d="M596 98 H636" marker-end="url(#ahS)"/>
+    <g class="map-node" tabindex="0" data-k="updated rows"
+       data-info="The next stage reads these rows. After the last block, the shared output LayerNorm prepares them for the heads.">
+      <rect x="640" y="72" width="180" height="52"/>
+      <text class="nt" x="730" y="94" text-anchor="middle">stored rows + delta</text>
+      <text class="ns" x="730" y="110" text-anchor="middle">to the next stage</text>
+    </g>
+  </svg>
+  <div class="fig-readout" id="shapeRo" aria-live="polite">
+    <span class="ro-k">the pattern</span>
+    <span class="ro-t">every stage normalizes, computes a delta, and adds it.</span>
+  </div>
+</figure>
+
+<h2 id="s51"><span class="sec-no">02</span>stage 5.1 &middot; windows &larr; stones</h2>
+
+<!-- src: model.py forward lines 594-616: x = u(ln_ws_s(s)); aggregate sum
+     per window + class_row_sum(e_ws); w += mlp_w(ln_ws_w(w), agg).
+     Params (block 0): u 16,384; e_ws 1458×128 = 186,624; mlp_w 49,408;
+     ln_ws_s + ln_ws_w 512. Sum 252,928. -->
+<p>
+Each window reads its stones. The stage projects the normalized stone rows
+and sums them for each window. The count is a signal, so the aggregation is
+a sum and not a mean. The 1458-class rows of the window's (pattern, slot)
+incidences add to the same sum. A two-input MLP reads the normalized window
+row and the sum, and its output is the delta.
+</p>
+
+<figure class="fig fig-wide" id="fig-s51">
+  <figcaption>fig 2 &middot; <b>the typed aggregation of stage 5.1</b> &middot; stage 5.2 has the
+    same shape with stones and windows exchanged &middot; point to a part</figcaption>
+  <svg class="sysmap" viewBox="0 0 860 240" role="group" aria-label="Stage 5.1: projected stone rows and class rows sum per window and feed a two-input MLP">
+    <defs>
+      <marker id="ahA" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
+      </marker>
+    </defs>
+    <g class="map-node" tabindex="0" data-k="stone rows"
+       data-info="The current stone rows, from the previous stage.">
+      <rect x="16" y="16" width="140" height="52"/>
+      <text class="nt" x="86" y="38" text-anchor="middle">stone rows</text>
+      <text class="ns" x="86" y="54" text-anchor="middle">of the window</text>
+    </g>
+    <path class="edge" d="M156 42 H196" marker-end="url(#ahA)"/>
+    <g class="map-node" tabindex="0" data-k="normalize + project"
+       data-info="One LayerNorm and one projection matrix. The projection has no bias.">
+      <rect x="200" y="16" width="150" height="52"/>
+      <text class="nt" x="275" y="38" text-anchor="middle">LN + project</text>
+      <text class="ns" x="275" y="54" text-anchor="middle">128 &rarr; 128</text>
+    </g>
+    <path class="edge" d="M350 42 C390 42 396 96 408 102" marker-end="url(#ahA)"/>
+    <g class="map-node" tabindex="0" data-k="1458-class rows"
+       data-info="Each (pattern, slot) incidence selects one class row. The rows sum together with the projected stones.">
+      <rect x="200" y="96" width="150" height="52"/>
+      <text class="nt" x="275" y="118" text-anchor="middle">1458-class rows</text>
+      <text class="ns" x="275" y="134" text-anchor="middle">pattern &otimes; slot</text>
+    </g>
+    <path class="edge" d="M350 122 H404" marker-end="url(#ahA)"/>
+    <g class="map-node" tabindex="0" data-k="sum for each window"
+       data-info="The window sums over its stones and its class rows. The count is a signal, so this is a sum and not a mean.">
+      <circle cx="430" cy="118" r="16" fill="#171c23" stroke="#242c35"/>
+      <text class="nt" x="430" y="124" text-anchor="middle">&Sigma;</text>
+    </g>
+    <path class="edge" d="M446 118 H500" marker-end="url(#ahA)"/>
+    <g class="map-node" tabindex="0" data-k="window row"
+       data-info="The window's own current row, normalized. It is the first input of the MLP.">
+      <rect x="200" y="176" width="150" height="52"/>
+      <text class="nt" x="275" y="198" text-anchor="middle">window row</text>
+      <text class="ns" x="275" y="214" text-anchor="middle">LN</text>
+    </g>
+    <path class="edge" d="M350 202 C440 202 470 148 500 136" marker-end="url(#ahA)"/>
+    <g class="map-node" tabindex="0" data-k="two-input MLP"
+       data-info="Input one is the normalized window row. Input two is the sum. The output is the delta.">
+      <rect x="504" y="92" width="170" height="52"/>
+      <text class="nt" x="589" y="114" text-anchor="middle">two-input MLP</text>
+      <text class="ns" x="589" y="130" text-anchor="middle">&rarr; delta</text>
+    </g>
+    <path class="edge" d="M674 118 H710" marker-end="url(#ahA)"/>
+    <g class="map-node" tabindex="0" data-k="window row + delta"
+       data-info="The delta adds to the stored window row.">
+      <rect x="714" y="92" width="130" height="52"/>
+      <text class="nt" x="779" y="114" text-anchor="middle">window +</text>
+      <text class="ns" x="779" y="130" text-anchor="middle">residual</text>
+    </g>
+  </svg>
+  <div class="fig-readout" id="s51Ro" aria-live="polite">
+    <span class="ro-k">stage 5.1</span>
+    <span class="ro-t">the window reads its stones through the typed sum.</span>
+  </div>
+</figure>
+
+<div class="tablewrap"><table class="divtable">
+  <thead><tr><th>component</th><th>parameters</th><th>role</th></tr></thead>
+  <tbody>
+    <tr><td>stone projection</td><td>16,384</td>
+      <td>projects the normalized stone rows before the sum; no bias</td></tr>
+    <tr><td>1458-class table</td><td>186,624</td>
+      <td>one learned row for each (pattern, slot) incidence class</td></tr>
+    <tr><td>two-input MLP</td><td>49,408</td>
+      <td>reads the window row and the sum; emits the delta</td></tr>
+    <tr><td>2 LayerNorms</td><td>512</td>
+      <td>normalize the stone rows and the window rows</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="s51b"><span class="sec-no">03</span>stage 5.1b &middot; the cell state</h2>
+
+<!-- src: model.py _cell_stage lines 401-478 (pass order: cells<-windows,
+     cells<-stones, windows<-cells); cell_latents.cell_read docstring (vcls
+     added per edge); ops README: the read-back carries no value rows
+     because the cell latent already composed them. Params: cr attn 65,920 +
+     cr_vclass 92,928 + cr_bias 2,904; radius attn 65,920 + vclass 24,576 +
+     bias 768; wr attn 65,920 + wr_bias 2,904; 6 LNs 1,536. Sum 323,376. -->
+<p>
+This is the largest stage, and it runs three passes in order. First, each
+covered cell attends over its containing windows: at most 18, typed by the
+726 decoder classes. The class adds a score bias for each head and a value
+row to each window entry. Second, each cell attends over the stones within
+radius 8, through the 192 radius classes, with the same shape. Third, each
+window attends over its empty candidate cells: at most 5, bias-typed only.
+</p>
+
+<p>
+The read-back has no class value rows, because the cell state already
+composed them. A full window has no empty cells and reads zero. Through
+these passes, two windows that cross at an empty cell exchange information
+in one block.
+</p>
+
+<figure class="fig fig-wide" id="fig-s51b">
+  <figcaption>fig 3 &middot; <b>the three passes of the cell state</b> &middot; point to a pass</figcaption>
+  <svg class="sysmap" viewBox="0 0 860 260" role="group" aria-label="Three typed attention passes between the window, cell, and stone lanes">
+    <defs>
+      <marker id="ahB" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
+      </marker>
+    </defs>
+    <text class="elab" x="16" y="46">windows</text>
+    <text class="elab" x="16" y="136">cells</text>
+    <text class="elab" x="16" y="226">stones</text>
+    <path class="edge soft" d="M90 40 H846"/>
+    <path class="edge soft" d="M90 130 H846"/>
+    <path class="edge soft" d="M90 220 H846"/>
+
+    <path class="edge" d="M210 52 V106" marker-end="url(#ahB)"/>
+    <g class="map-node" tabindex="0" data-k="1 &middot; cells &larr; windows"
+       data-info="Each covered cell attends over its containing windows: at most 18. The 726-class typing adds a score bias for each head and a value row to each window entry.">
+      <rect x="120" y="58" width="180" height="44"/>
+      <text class="nt" x="210" y="76" text-anchor="middle">1 &middot; cells &larr; windows</text>
+      <text class="ns" x="210" y="92" text-anchor="middle">726-class &middot; bias + value rows</text>
+    </g>
+
+    <path class="edge" d="M460 208 V154" marker-end="url(#ahB)"/>
+    <g class="map-node" tabindex="0" data-k="2 &middot; cells &larr; stones"
+       data-info="Each cell attends over the stones within radius 8. The 192 radius classes type the edges: 48 offset orbits, own or opponent, and shared axis or not.">
+      <rect x="370" y="158" width="180" height="44"/>
+      <text class="nt" x="460" y="176" text-anchor="middle">2 &middot; cells &larr; stones</text>
+      <text class="ns" x="460" y="192" text-anchor="middle">192 radius classes &middot; r &le; 8</text>
+    </g>
+
+    <path class="edge" d="M710 118 V64" marker-end="url(#ahB)"/>
+    <g class="map-node" tabindex="0" data-k="3 &middot; windows &larr; empty cells"
+       data-info="Each window attends over its empty candidate cells: at most 5. The read-back has no value rows, because the cell state already composed them. A full window reads zero.">
+      <rect x="620" y="122" width="190" height="44"/>
+      <text class="nt" x="715" y="140" text-anchor="middle">3 &middot; windows &larr; cells</text>
+      <text class="ns" x="715" y="156" text-anchor="middle">726-class &middot; bias only</text>
+    </g>
+  </svg>
+  <div class="fig-readout" id="s51bRo" aria-live="polite">
+    <span class="ro-k">stage 5.1b</span>
+    <span class="ro-t">the cells collect typed context, and the windows read it back.</span>
+  </div>
+</figure>
+
+<div class="tablewrap"><table class="divtable">
+  <thead><tr><th>component</th><th>parameters</th><th>role</th></tr></thead>
+  <tbody>
+    <tr><td>cell &larr; window attention</td><td>65,920</td>
+      <td>the q, k, v, and output projections of pass 1</td></tr>
+    <tr><td>726-class value rows</td><td>92,928</td>
+      <td>one value row for each class; adds to each window entry</td></tr>
+    <tr><td>726-class score bias</td><td>2,904</td>
+      <td>one score bias for each class and head</td></tr>
+    <tr><td>cell &larr; stone attention</td><td>65,920</td>
+      <td>the projections of the radius pass</td></tr>
+    <tr><td>192-class value rows</td><td>24,576</td>
+      <td>one value row for each radius class</td></tr>
+    <tr><td>192-class score bias</td><td>768</td>
+      <td>one score bias for each radius class and head</td></tr>
+    <tr><td>window &larr; cell attention</td><td>65,920</td>
+      <td>the projections of the read-back pass</td></tr>
+    <tr><td>read-back score bias</td><td>2,904</td>
+      <td>the 726-class bias of pass 3; it has no value rows</td></tr>
+    <tr><td>6 LayerNorms</td><td>1,536</td>
+      <td>two input norms for each pass</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="s52"><span class="sec-no">04</span>stage 5.2 &middot; stones &larr; windows</h2>
+
+<!-- src: model.py forward lines 636-653: y = v(ln_sw_w(w)); aggregate per
+     stone + class_row_sum(e_sw); s += mlp_s(ln_sw_s(s), agg). Params:
+     v 16,384; e_sw 186,624; mlp_s 49,408; 2 LNs 512. Sum 252,928. -->
+<p>
+This stage mirrors stage 5.1 in the other direction. Each stone sums the
+projected rows of its windows plus its own 1458-class row sum, and a
+two-input MLP emits the delta. Fig 2 shows the shape, with the roles of
+stones and windows exchanged. After stages 5.1 and 5.1b, these window rows
+carry cell context and opponent context. The stage owns its own projection,
+class table, and MLP.
+</p>
+
+<div class="tablewrap"><table class="divtable">
+  <thead><tr><th>component</th><th>parameters</th><th>role</th></tr></thead>
+  <tbody>
+    <tr><td>window projection</td><td>16,384</td>
+      <td>projects the normalized window rows before the sum; no bias</td></tr>
+    <tr><td>1458-class table</td><td>186,624</td>
+      <td>the stage's own (pattern, slot) class rows</td></tr>
+    <tr><td>two-input MLP</td><td>49,408</td>
+      <td>reads the stone row and the sum; emits the delta</td></tr>
+    <tr><td>2 LayerNorms</td><td>512</td>
+      <td>normalize the window rows and the stone rows</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="s53"><span class="sec-no">05</span>stage 5.3 &middot; stone attention with the latents</h2>
+
+<!-- src: model.py forward lines 655-687 (token set [4 latents; stones],
+     block-diagonal, both s and g take the residual); attention.py
+     _bias_table lines 727-740 + _bucket_index lines 743-764: distance =
+     max(|dq|, |dr|, |dq+dr|), clamp to 12; on-axis pairs SELECT the axis
+     row IN PLACE OF the distance row; self pairs -> SELF; any pair with a
+     latent row -> TOKEN. Params: projections 65,920; dist_bias 4×14 = 56;
+     axis_bias 4×12 = 48; ln_attn 256. Sum 66,280. -->
+<p>
+This is the only stage where two stones connect directly. The token set of
+each position is the four latent rows, then the stones. Attention is
+block-diagonal: tokens of one position never see another position. The
+score of a pair is the scaled dot product plus one learned bias value for
+each head. The geometry of the pair selects the bias row:
+</p>
+
+<ul>
+  <li>An off-axis stone pair reads the <b>distance row</b> at its hex
+  distance. Distances above 12 read row 12.</li>
+  <li>A stone pair on a shared axis reads the <b>axis row</b> at the same
+  clamped distance. The axis row applies in place of the distance row.</li>
+  <li>A token paired with itself reads the <b>SELF</b> row.</li>
+  <li>Every pair that contains a latent row reads the <b>TOKEN</b> row.</li>
+</ul>
+
+<p>
+The stones and the latents both receive their share of the attention
+output. Because of this, the latents see the stones in this stage, before
+the window&ndash;latent cycle.
+</p>
+
+<figure class="fig fig-wide" id="fig-s53">
+  <figcaption>fig 4 &middot; <b>the score assembly</b> &middot; one attention pair &middot; point to a part</figcaption>
+  <svg class="sysmap" viewBox="0 0 860 230" role="group" aria-label="Score assembly: dot product plus one geometry-selected bias row, fp32 softmax, then deltas for stones and latents">
+    <defs>
+      <marker id="ahC" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
+      </marker>
+    </defs>
+    <g class="map-node" tabindex="0" data-k="token set"
+       data-info="The tokens of one position: the four latent rows, then the stones. Attention never crosses positions.">
+      <rect x="16" y="24" width="160" height="52"/>
+      <text class="nt" x="96" y="46" text-anchor="middle">[latents; stones]</text>
+      <text class="ns" x="96" y="62" text-anchor="middle">one position</text>
+    </g>
+    <path class="edge" d="M176 50 H216" marker-end="url(#ahC)"/>
+    <g class="map-node" tabindex="0" data-k="dot product"
+       data-info="The dot product of the projected query and key rows, scaled by the head width.">
+      <rect x="220" y="24" width="130" height="52"/>
+      <text class="nt" x="285" y="46" text-anchor="middle">q&middot;k / &radic;d</text>
+      <text class="ns" x="285" y="62" text-anchor="middle">4 heads</text>
+    </g>
+    <path class="edge" d="M350 50 H390" marker-end="url(#ahC)"/>
+    <g class="map-node" tabindex="0" data-k="+ geometry bias"
+       data-info="One learned bias value for each head. The geometry of the pair selects the row, as the strip below shows.">
+      <rect x="394" y="24" width="150" height="52"/>
+      <text class="nt" x="469" y="46" text-anchor="middle">+ bias row</text>
+      <text class="ns" x="469" y="62" text-anchor="middle">by pair geometry</text>
+    </g>
+    <path class="edge" d="M544 50 H584" marker-end="url(#ahC)"/>
+    <g class="map-node" tabindex="0" data-k="softmax"
+       data-info="The scores and the softmax stay in fp32, also under autocast.">
+      <rect x="588" y="24" width="110" height="52"/>
+      <text class="nt" x="643" y="46" text-anchor="middle">softmax</text>
+      <text class="ns" x="643" y="62" text-anchor="middle">fp32</text>
+    </g>
+    <path class="edge" d="M698 50 H738" marker-end="url(#ahC)"/>
+    <g class="map-node" tabindex="0" data-k="two deltas"
+       data-info="The weighted values go through the output projection. The stones and the latents both receive their delta.">
+      <rect x="742" y="24" width="102" height="52"/>
+      <text class="nt" x="793" y="46" text-anchor="middle">deltas</text>
+      <text class="ns" x="793" y="62" text-anchor="middle">stones + latents</text>
+    </g>
+
+    <path class="edge" d="M469 76 V116" marker-end="url(#ahC)"/>
+    <text class="elab" x="16" y="140">the 26 learned bias rows of each head</text>
+    <g class="map-node" tabindex="0" data-k="distance rows 1..12"
+       data-info="An off-axis stone pair at hex distance d reads row d. Distances above 12 read row 12.">
+      <rect x="16" y="150" width="260" height="44"/>
+      <text class="nt" x="146" y="168" text-anchor="middle">distance 1..12</text>
+      <text class="ns" x="146" y="184" text-anchor="middle">off-axis stone pairs</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="SELF"
+       data-info="A token paired with itself reads this row.">
+      <rect x="284" y="150" width="90" height="44"/>
+      <text class="nt" x="329" y="176" text-anchor="middle">SELF</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="TOKEN"
+       data-info="Every pair that contains a latent row reads this row.">
+      <rect x="382" y="150" width="90" height="44"/>
+      <text class="nt" x="427" y="176" text-anchor="middle">TOKEN</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="axis rows 1..12"
+       data-info="A stone pair on a shared axis reads the axis row at the same clamped distance. The axis row applies in place of the distance row.">
+      <rect x="480" y="150" width="260" height="44"/>
+      <text class="nt" x="610" y="168" text-anchor="middle">axis 1..12</text>
+      <text class="ns" x="610" y="184" text-anchor="middle">shared-axis stone pairs</text>
+    </g>
+  </svg>
+  <div class="fig-readout" id="s53Ro" aria-live="polite">
+    <span class="ro-k">stage 5.3</span>
+    <span class="ro-t">geometry enters the model only through these bias rows.</span>
+  </div>
+</figure>
+
+<p>
+Fig 5 shows the selection on a board. The stone at the centre is one half
+of each pair. Point to a cell to see the other half.
+</p>
+
+<figure class="fig" id="fig-bucket">
+  <figcaption>fig 5 &middot; <b>the bias bucket of every cell, relative to one stone</b> &middot; point to a cell</figcaption>
+  <div class="fig-body">
+    <svg id="bucketSvg" style="width:100%;max-width:560px;display:block;margin:0 auto" role="img" aria-label="A board coloured by distance bucket, with the three shared-axis lines in blue"></svg>
+  </div>
+  <div class="fig-legend" id="bucketLegend"></div>
+  <div class="fig-readout" id="bucketRo" aria-live="polite">
+    <span class="ro-k">the geometry bias</span>
+    <span class="ro-t">a brighter cell has a lower bucket. The blue lines share an axis with the stone.</span>
+  </div>
+</figure>
+
+<div class="tablewrap"><table class="divtable">
+  <thead><tr><th>component</th><th>parameters</th><th>role</th></tr></thead>
+  <tbody>
+    <tr><td>attention projections</td><td>65,920</td>
+      <td>the q, k, v, and output projections over the token set</td></tr>
+    <tr><td>distance table</td><td>56</td>
+      <td>14 rows for each of the 4 heads: distances 1..12, SELF, TOKEN</td></tr>
+    <tr><td>axis table</td><td>48</td>
+      <td>12 rows for each head, for shared-axis stone pairs</td></tr>
+    <tr><td>1 LayerNorm</td><td>256</td>
+      <td>one shared norm over the token rows</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="s54"><span class="sec-no">06</span>stage 5.4 &middot; the window&ndash;latent cycle</h2>
+
+<!-- src: model.py _window_latent_cycle lines 521-571: read (latents query
+     the position's windows), mix (dense 4×4), broadcast (the WINDOWS are
+     the queries; latents are keys/values). Params: read 66,432; mix
+     66,176; broadcast 66,432. Sum 199,040. -->
+<p>
+The cycle has three passes. First, the four latents of each position attend
+over the windows of that position and read a summary. Second, the latents
+attend among themselves in a dense 4-by-4 softmax. Third, each window
+queries the four latents and reads global context back. The broadcast
+direction is a pull by the windows, not a push by the latents. Global
+information reaches every window at the cost of three small attention
+passes.
+</p>
+
+<figure class="fig fig-wide" id="fig-s54">
+  <figcaption>fig 6 &middot; <b>read, mix, broadcast</b> &middot; point to a pass</figcaption>
+  <svg class="sysmap" viewBox="0 0 860 230" role="group" aria-label="The three passes of the window-latent cycle between the window lane and the four latents">
+    <defs>
+      <marker id="ahD" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
+      </marker>
+    </defs>
+    <text class="elab" x="16" y="46">windows</text>
+    <path class="edge soft" d="M90 40 H846"/>
+    <text class="elab" x="16" y="196">latents</text>
+    <g fill="#171c23" stroke="#242c35">
+      <rect x="380" y="176" width="26" height="26"/>
+      <rect x="414" y="176" width="26" height="26"/>
+      <rect x="448" y="176" width="26" height="26"/>
+      <rect x="482" y="176" width="26" height="26"/>
+    </g>
+
+    <path class="edge" d="M210 52 C210 120 350 160 384 174" marker-end="url(#ahD)"/>
+    <g class="map-node" tabindex="0" data-k="1 &middot; read"
+       data-info="The four latents attend over the windows of their position and read a summary.">
+      <rect x="130" y="96" width="150" height="44"/>
+      <text class="nt" x="205" y="114" text-anchor="middle">1 &middot; read</text>
+      <text class="ns" x="205" y="130" text-anchor="middle">latents &larr; windows</text>
+    </g>
+
+    <path class="edge" d="M418 168 C428 152 460 152 470 168" marker-end="url(#ahD)"/>
+    <g class="map-node" tabindex="0" data-k="2 &middot; mix"
+       data-info="The four latents attend among themselves in a dense 4-by-4 softmax.">
+      <rect x="368" y="96" width="150" height="44"/>
+      <text class="nt" x="443" y="114" text-anchor="middle">2 &middot; mix</text>
+      <text class="ns" x="443" y="130" text-anchor="middle">dense 4 &times; 4</text>
+    </g>
+
+    <path class="edge" d="M500 174 C560 150 660 90 668 56" marker-end="url(#ahD)"/>
+    <g class="map-node" tabindex="0" data-k="3 &middot; broadcast"
+       data-info="Each window queries the four latents and reads global context back. The window is the query, not the target.">
+      <rect x="600" y="96" width="170" height="44"/>
+      <text class="nt" x="685" y="114" text-anchor="middle">3 &middot; broadcast</text>
+      <text class="ns" x="685" y="130" text-anchor="middle">windows &larr; latents</text>
+    </g>
+  </svg>
+  <div class="fig-readout" id="s54Ro" aria-live="polite">
+    <span class="ro-k">stage 5.4</span>
+    <span class="ro-t">global context goes in, and a position-level summary comes back out.</span>
+  </div>
+</figure>
+
+<div class="tablewrap"><table class="divtable">
+  <thead><tr><th>component</th><th>parameters</th><th>role</th></tr></thead>
+  <tbody>
+    <tr><td>read pass</td><td>66,432</td>
+      <td>the latents attend over the windows of the position</td></tr>
+    <tr><td>mix pass</td><td>66,176</td>
+      <td>the dense 4-by-4 attention among the latents</td></tr>
+    <tr><td>broadcast pass</td><td>66,432</td>
+      <td>each window queries the four latents</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="ffn"><span class="sec-no">07</span>the feed-forward</h2>
+
+<!-- src: model.py forward lines 690-696: rows = concat(stones, latents) ->
+     ln_ffn -> 128 -> 256 -> ReLU -> 256 -> 128, residual on both. Windows
+     and cells take no FFN. Params: ffn 65,920; ln_ffn 256. Sum 66,176. -->
+<p>
+The last stage is one shared feed-forward: 128 &rarr; 256 &rarr; ReLU
+&rarr; 256 &rarr; 128. It operates on the stones and the latents only. The
+windows and the cells get no feed-forward. Their rows change only through
+the typed reads of the other stages.
+</p>
+
+<div class="tablewrap"><table class="divtable">
+  <thead><tr><th>component</th><th>parameters</th><th>role</th></tr></thead>
+  <tbody>
+    <tr><td>feed-forward</td><td>65,920</td>
+      <td>the shared 2&times; expansion for stones and latents</td></tr>
+    <tr><td>1 LayerNorm</td><td>256</td>
+      <td>the input norm</td></tr>
+  </tbody>
+</table></div>
+
+<div class="note">
+The architecture also holds a typed window-pair attention stage (&sect;5.1c)
+for this slot. The served configuration trains with that stage off: the cell
+state of stage 5.1b connects crossing windows through their shared cells at
+a lower cost. Refer to the note on the
+<a href="network.html#block">network page</a>.
+</div>
+
+</main>
+
+<footer class="learn-footer">
+  <div class="foot-row">
+    <a href="network.html">&larr; the network</a>
+    <a href="search.html">next &middot; search &amp; training &rarr;</a>
+  </div>
+</footer>
+
+<script type="module">
+import * as M from "./mantis.js";
+
+const $ = id => document.getElementById(id);
+
+/* ---------- sysmap hovers (figs 1, 2, 3, 4, 6) ---------- */
+{
+  const wire = (el, ro) => {
+    const show = () => ro.set(el.dataset.k, el.dataset.info);
+    el.addEventListener("mouseenter", show);
+    el.addEventListener("focus", show);
+    el.addEventListener("mouseleave", () => ro.reset());
+    el.addEventListener("blur", () => ro.reset());
+  };
+  for (const [figId, roId] of [
+    ["fig-shape", "shapeRo"],
+    ["fig-s51", "s51Ro"],
+    ["fig-s51b", "s51bRo"],
+    ["fig-s53", "s53Ro"],
+    ["fig-s54", "s54Ro"],
+  ]) {
+    const ro = M.readout($(roId));
+    for (const n of $(figId).querySelectorAll(".map-node")) wire(n, ro);
+  }
+}
+
+/* ---------- fig 5: the bias-bucket board ----------
+   Geometry matches attention.py _bucket_index: hex distance =
+   max(|dq|, |dr|, |dq+dr|) clamped to 12; a pair is on-axis when
+   dq == 0, dr == 0, or dq + dr == 0; the axis row replaces the
+   distance row for on-axis pairs. */
+{
+  const R = 14, D_MAX = 12;
+  const cells = [];
+  for (let q = -R; q <= R; q++) {
+    for (let r = Math.max(-R, -q - R); r <= Math.min(R, -q + R); r++) {
+      cells.push({ q, r });
+    }
+  }
+  const board = M.hexBoard($("bucketSvg"), cells, [{ q: 0, r: 0, owner: 0 }], { size: 9 });
+  const ro = M.readout($("bucketRo"));
+  const info = new Map();
+  for (const c of cells) {
+    if (c.q === 0 && c.r === 0) continue;
+    const d = Math.max(Math.abs(c.q), Math.abs(c.r), Math.abs(c.q + c.r));
+    const bucket = Math.min(d, D_MAX);
+    const onAxis = c.q === 0 || c.r === 0 || c.q + c.r === 0;
+    const alpha = (0.85 - 0.6 * (bucket - 1) / (D_MAX - 1)).toFixed(3);
+    board.setFill(c.q, c.r, onAxis ? M.H0 : "#e8e2d6", alpha);
+    info.set(board.key(c.q, c.r), { c, d, bucket, onAxis });
+  }
+  $("bucketLegend").innerHTML =
+    `<span class="lg"><span class="sw" style="background:${M.H0}"></span>shared axis &rarr; the axis row</span>` +
+    `<span class="lg"><span class="sw" style="background:#e8e2d6"></span>off axis &rarr; the distance row</span>` +
+    `<span class="lg">brighter = lower bucket</span>`;
+  board.svg.addEventListener("pointermove", ev => {
+    const k = ev.target.dataset && ev.target.dataset.k;
+    const e = k && info.get(k);
+    if (!e) { ro.reset(); return; }
+    const clampNote = e.d > D_MAX ? ` Distances above 12 clamp to bucket 12.` : "";
+    const rowNote = e.onAxis
+      ? "The pair shares an axis and reads the axis row."
+      : "The pair reads the distance row.";
+    ro.set(`cell (${e.c.q}, ${e.c.r})`,
+      `distance ${e.d} → bucket ${e.bucket}. ${rowNote}${clampNote}`);
+  });
+  board.svg.addEventListener("pointerleave", () => ro.reset());
+}
+</script>
+
+</body>
+</html>
