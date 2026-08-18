@@ -395,8 +395,16 @@ class MantisnetFamily:
 
     # -- readouts -----------------------------------------------------------
     def net_eval(self, model: Any, state: Any, *, policy_floor: float) -> dict:
-        evaluator = MantisnetEvaluator(model, _model_device(model))
         position = _replay(_moves_from_state(state))
+        if position.is_terminal:
+            # The builder refuses terminal positions (MantisNet only ever
+            # evaluates decision states), and the game is decided anyway.
+            # Null is the frontend's "no data" contract.
+            return {
+                "value": None, "stv": None, "moves_left": None,
+                "legal_count": 0, "policy": [], "top_k": [],
+            }
+        evaluator = MantisnetEvaluator(model, _model_device(model))
         read = evaluator.read([position])
         rows = _policy_rows(read, position, floor=policy_floor)
         return {
@@ -461,15 +469,30 @@ class MantisnetFamily:
 
     def summary_eval(self, model: Any, rows: list[Any]) -> dict:
         evaluator = MantisnetEvaluator(model, _model_device(model))
-        values: list[float | None] = []
-        # Fixed-size chunks bound peak memory: MantisNet's graph grows with
-        # the board, and a whole game in one batch multiplies that by plies.
-        chunk = 8
-        for start in range(0, len(rows), chunk):
-            block = rows[start : start + chunk]
-            positions = [_replay(moves) for moves in block]
-            read = evaluator.read(positions)
-            values.extend(float(v) for v in read.value.tolist())
+        positions = [_replay(moves) for moves in rows]
+        values: list[float | None] = [None] * len(positions)
+        # The final row of a finished game is terminal; the builder refuses
+        # terminal positions (MantisNet only ever evaluates decision states),
+        # so that row stays null — the frontend's "no data".
+        live = [(i, pos) for i, pos in enumerate(positions) if not pos.is_terminal]
+        # Chunks are sized by total legal cells, the term MantisNet's padded
+        # graph actually grows with: shallow openings batch wide, deep boards
+        # forward nearly alone, and peak memory stays bounded on the 4 GB
+        # card. At least one row always forms a chunk.
+        budget = 32_000
+        start = 0
+        while start < len(live):
+            end, total = start, 0
+            while end < len(live):
+                cost = max(1, live[end][1].legal_count)
+                if end > start and total + cost > budget:
+                    break
+                total += cost
+                end += 1
+            read = evaluator.read([pos for _i, pos in live[start:end]])
+            for j, (i, _pos) in enumerate(live[start:end]):
+                values[i] = float(read.value[j])
+            start = end
         return {
             "value": values,
             "stv": [None] * len(values),

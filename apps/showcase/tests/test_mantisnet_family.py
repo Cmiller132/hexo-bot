@@ -93,7 +93,9 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
 
     import hexo_engine as engine
     from hexo_engine import api
-    from hexo_engine.types import PlacementAction, unpack_coord_id
+    from hexo_engine.types import (
+        AxialCoord, PlacementAction, pack_coord_id, unpack_coord_id,
+    )
 
     # The origin opening, as GameSession.create places it.
     state = engine.new_game()
@@ -161,6 +163,29 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     assert len(summary["value"]) == len(actions) + 1
     assert all(v is None for v in summary["stv"])
     assert all(v is None for v in summary["moves_left"])
+
+    # -- a finished game: the terminal row is null, never an error ----------
+    # P1 completes six in a row along r=3 on ply 11; MantisNet's builder
+    # refuses terminal positions, so the final row (and a terminal analyze)
+    # must come back as the frontend's "no data" rather than a 5xx.
+    win = [
+        (0, 0), (0, 3), (1, 3), (1, 0), (2, 0), (2, 3),
+        (3, 3), (3, 0), (4, 0), (4, 3), (5, 3),
+    ]
+    win_ids = [int(pack_coord_id(AxialCoord(q, r))) for q, r in win]
+    finished = runtime.summary(bot_slug="tiny-mantis", actions=list(win_ids))
+    assert len(finished["value"]) == len(win_ids) + 1
+    assert finished["value"][-1] is None
+    assert all(v is not None for v in finished["value"][:-1])
+    terminal_analysis = runtime.analyze(
+        bot_slug="tiny-mantis", actions=list(win_ids), want_search=True,
+        search_visits=8, seed=11,
+    )
+    assert terminal_analysis["value"] is None
+    assert terminal_analysis["legal_count"] == 0
+    assert terminal_analysis["policy"] == []
+    assert "search" not in terminal_analysis
+    assert terminal_analysis["to_move"] is None
 
     # -- lab eval: sequence mode works, free-edit is refused honestly -------
     coords = [(unpack_coord_id(a).q, unpack_coord_id(a).r) for a in actions]
