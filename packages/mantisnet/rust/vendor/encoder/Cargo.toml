@@ -1,0 +1,26 @@
+# Vendored from the MantisNet research repo (crates/models/mantisnet, branch
+# main, MODEL_REPR_VERSION 7). See vendor/engine/Cargo.toml for the renaming
+# scheme.
+[package]
+name = "mantis-hexo-model-mantisnet"
+description = "The MantisNet model package and its shared position encoder."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[lib]
+name = "mantis_hexo_model_mantisnet"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+hexo-engine = { package = "mantis-hexo-engine", path = "../engine" }
+hexo-model = { package = "mantis-hexo-model", path = "../model" }
+hexo-search = { package = "mantis-hexo-search", path = "../search" }
+rayon = "1"
+rustc-hash = "2"
+serde_json = "1"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"

@@ -1,0 +1,23 @@
+# Vendored from the MantisNet research repo (crates/hexo-model, branch main).
+# See vendor/engine/Cargo.toml for the renaming scheme.
+[package]
+name = "mantis-hexo-model"
+description = "The model-package API and checkpoint manifest/probe (MantisNet lineage)."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[lib]
+name = "mantis_hexo_model"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+hexo-engine = { package = "mantis-hexo-engine", path = "../engine" }
+hexo-runner = { package = "mantis-hexo-runner", path = "../runner" }
+hexo-search = { package = "mantis-hexo-search", path = "../search" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -4,6 +4,14 @@ members = [
     "packages/hexo_utils",
     "packages/shrimp",
     "packages/hexfield_eq",
+    "packages/mantisnet",
+    # The mantisnet family's vendored research crates (renamed mantis-*; see
+    # packages/mantisnet/rust/vendor/engine/Cargo.toml for the scheme).
+    "packages/mantisnet/rust/vendor/engine",
+    "packages/mantisnet/rust/vendor/runner",
+    "packages/mantisnet/rust/vendor/search",
+    "packages/mantisnet/rust/vendor/model",
+    "packages/mantisnet/rust/vendor/encoder",
 ]
 resolver = "2"
 

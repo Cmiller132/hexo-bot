@@ -1,0 +1,16 @@
+# Vendored from the MantisNet research repo (crates/hexo-runner, branch main).
+# See vendor/engine/Cargo.toml for the renaming scheme.
+[package]
+name = "mantis-hexo-runner"
+description = "Hexo match orchestration state machine and adjudication (MantisNet lineage)."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[lib]
+name = "mantis_hexo_runner"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+hexo-engine = { package = "mantis-hexo-engine", path = "../engine" }

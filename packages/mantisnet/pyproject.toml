@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "mantisnet"
+version = "0.1.0"
+description = "mantisnet — the MantisNet bot family: inference-side model, position encoder, and decision-session search, vendored from the MantisNet research lineage (MODEL_REPR_VERSION 7)."
+requires-python = ">=3.11"
+# Runtime deps (torch, numpy) are ambient via the serve image / dev venv —
+# NOT pip-resolved here, matching the other model packages.
+dependencies = [
+    "numpy",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "mantisnet._rust"
+features = ["python"]

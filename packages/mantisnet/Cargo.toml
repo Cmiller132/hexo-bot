@@ -1,0 +1,28 @@
+# mantisnet — the MantisNet bot family: Python bindings over the vendored
+# research crates (rust/vendor/*, see vendor/engine/Cargo.toml for provenance
+# and the renaming scheme). Own cdylib (`mantisnet._rust`), maturin-built like
+# the other model packages; the vendored crates keep their upstream
+# `use hexo_engine::...` paths via Cargo dependency renaming.
+[package]
+name = "mantisnet"
+version.workspace = true
+edition = "2024"
+rust-version = "1.88"
+
+[lib]
+name = "mantisnet"
+path = "rust/src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:pyo3", "dep:numpy"]
+
+[dependencies]
+hexo-engine = { package = "mantis-hexo-engine", path = "rust/vendor/engine" }
+hexo-runner = { package = "mantis-hexo-runner", path = "rust/vendor/runner" }
+hexo-search = { package = "mantis-hexo-search", path = "rust/vendor/search" }
+hexo-model = { package = "mantis-hexo-model", path = "rust/vendor/model" }
+hexo-model-mantisnet = { package = "mantis-hexo-model-mantisnet", path = "rust/vendor/encoder" }
+numpy = { version = "0.28", optional = true }
+pyo3 = { workspace = true, optional = true }

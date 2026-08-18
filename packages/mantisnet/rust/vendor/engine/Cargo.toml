@@ -1,0 +1,24 @@
+# Vendored from the MantisNet research repo (crates/hexo-engine, branch main,
+# MODEL_REPR_VERSION 7 lineage). Package and lib are renamed mantis-* because
+# this workspace already ships its own `hexo_engine` crate; dependents restore
+# the original `use hexo_engine::...` paths via Cargo dependency renaming, so
+# the vendored sources stay byte-identical to upstream.
+[package]
+name = "mantis-hexo-engine"
+description = "Authoritative Hexo rules and game state (MantisNet lineage)."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[lib]
+name = "mantis_hexo_engine"
+path = "src/lib.rs"
+bench = false
+# Doc examples use the upstream `hexo_engine::` paths, which dependency
+# renaming cannot reach; the unit suites are the coverage here.
+doctest = false
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"
