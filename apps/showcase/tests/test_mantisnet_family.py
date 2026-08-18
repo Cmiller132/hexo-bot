@@ -212,7 +212,10 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
         attention_cell=coords[0], want_activations=True, want_features=True,
     )
     assert lab["mode"] == "sequence" and lab["ply"] == len(actions)
-    assert len(lab["value_dist"]) == 17
+    # The one value served is v̂; the untrained state head's scalar and bin
+    # distribution are deliberately absent from the payload.
+    assert -1.0 <= lab["value"] <= 1.0
+    assert "value_dist" not in lab and "v_hat" not in lab
     # Attention rows: one per (block, head), weights over support nodes plus
     # one global-token summary weight; a stone query resolves.
     attn = lab["attention"]

@@ -78,6 +78,19 @@ def _f32_bytes(values) -> bytes:
     return np.asarray(list(values), dtype=np.float32).tobytes()
 
 
+def _served_value(read: Any, row: int) -> float:
+    """The model's acting-time value v̂ = E_{π′}[Q], side-to-move POV.
+
+    Every human-facing "value" goes through here. The served checkpoints come
+    from KLENT self-play, which trains the action-value pathway and never the
+    state-value head — ``read.value`` is an UNTRAINED readout of the trained
+    trunk on those models (smooth, structured, and meaningless; charted, it
+    drew a sawtooth). v̂ is the evaluation the model actually acts on, in the
+    same side-to-move frame the summary/analysis contract expects.
+    """
+    return float(read.improved.v_hat[row])
+
+
 class MantisnetEvaluator:
     """Model + device + as-trained KLENT parameters, read through one seam."""
 
@@ -197,7 +210,8 @@ def _run_search(
         if root_read is not None and not emitted_start and snap is not None:
             emitted_start = True
             emit(_start_frame(
-                game_key, legal_ids, root_priors, float(root_read.value[0]), snap,
+                game_key, legal_ids, root_priors, _served_value(root_read, 0),
+                snap,
             ))
         # One frame per completed wave, not just per halving: the deepening
         # rounds are many waves long at higher budgets, and without the
@@ -255,14 +269,14 @@ def _run_search(
             # Zero-candidate budgets decide by prior argmax; the chosen move
             # never became a line. The root net value is the honest report.
             if root_read is not None:
-                result["root_value"] = float(root_read.value[0])
+                result["root_value"] = _served_value(root_read, 0)
         result["visit_policy_action_ids_bytes"] = _u32_bytes(ids)
         result["visit_policy_weights_bytes"] = _f32_bytes(float(v) for v in line_visits)
         result["visit_policy_q_bytes"] = _f32_bytes(values)
         result["visit_policy_count"] = len(ids)
         emit(_complete_frame(game_key, action_id, result, final))
     elif root_read is not None:
-        result["root_value"] = float(root_read.value[0])
+        result["root_value"] = _served_value(root_read, 0)
         result["visit_policy_action_ids_bytes"] = _u32_bytes(legal_ids)
         result["visit_policy_weights_bytes"] = _f32_bytes(root_priors)
         result["visit_policy_count"] = len(legal_ids)
@@ -435,7 +449,7 @@ class MantisnetFamily:
         read = evaluator.read([position])
         rows = _policy_rows(read, position, floor=policy_floor)
         return {
-            "value": float(read.value[0]),
+            "value": _served_value(read, 0),
             # MantisNet has no short-term-value or moves-left heads; null is
             # the frontend's "no data", never a substituted zero.
             "stv": None,
@@ -518,7 +532,7 @@ class MantisnetFamily:
                 end += 1
             read = evaluator.read([pos for _i, pos in live[start:end]])
             for j, (i, _pos) in enumerate(live[start:end]):
-                values[i] = float(read.value[j])
+                values[i] = _served_value(read, j)
             start = end
         return {
             "value": values,
@@ -571,11 +585,12 @@ class MantisnetFamily:
                 "stone_count": position.stone_count,
                 "halo_count": 0,
             },
-            "value": float(read.value[0]),
-            "value_dist": read.value_dist[0].tolist(),
+            # v̂ is the one value served (see _served_value); the untrained
+            # state head's scalar and bin distribution are deliberately absent
+            # — the lab must not present noise as an internal worth reading.
+            "value": _served_value(read, 0),
             "stv": None,
             "moves_left": None,
-            "v_hat": float(read.improved.v_hat[0]),
             "policy": rows,
             "improved_policy": improved_rows,
             "top_k": rows[:5],

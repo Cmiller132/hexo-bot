@@ -55,6 +55,11 @@ Live telemetry is pull-based (`snapshot` between evaluation waves): no
 extra forward, no callback into the search, an identical evaluator schedule
 with the overlay on or off.
 
+Every human-facing "value" (analysis, per-ply summary, lab, telemetry
+root value) is v̂ = E_{π′}[Q], side-to-move POV. The state-value head is
+never served: KLENT self-play trains the action-value pathway only, so on
+these checkpoints that head is an untrained readout of the trained trunk.
+
 ## Build / test
 
 Built like the other model packages: `maturin develop --release -m
