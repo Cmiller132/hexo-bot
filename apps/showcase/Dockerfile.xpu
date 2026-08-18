@@ -39,7 +39,7 @@
 # docker layer cache dedupes the shared steps automatically).
 
 ##############################################################################
-# Stage 1 — builder: rustup (pinned) + maturin, wheels for the four crates
+# Stage 1 — builder: rustup (pinned) + maturin, wheels for the five crates
 ##############################################################################
 FROM python:3.12-slim-bookworm AS builder
 
@@ -62,12 +62,13 @@ RUN pip install --no-cache-dir "maturin==${MATURIN_VERSION}"
 
 WORKDIR /src
 
-# Workspace root + the three member crates (paths per the workspace manifest).
+# Workspace root + the model packages (paths per the workspace manifest).
 COPY Cargo.toml Cargo.lock ./
 COPY packages/hexo_engine packages/hexo_engine
 COPY packages/hexo_utils packages/hexo_utils
 COPY packages/shrimp packages/shrimp
 COPY packages/hexfield_eq packages/hexfield_eq
+COPY packages/mantisnet packages/mantisnet
 
 # --locked: build exactly the dependency set in the committed Cargo.lock.
 RUN maturin build --release --locked -o /wheels -i python3.12 \
@@ -77,7 +78,9 @@ RUN maturin build --release --locked -o /wheels -i python3.12 \
     && maturin build --release --locked -o /wheels -i python3.12 \
         -m packages/shrimp/Cargo.toml \
     && maturin build --release --locked -o /wheels -i python3.12 \
-        -m packages/hexfield_eq/Cargo.toml
+        -m packages/hexfield_eq/Cargo.toml \
+    && maturin build --release --locked -o /wheels -i python3.12 \
+        -m packages/mantisnet/Cargo.toml
 
 ##############################################################################
 # Stage 2 — runtime: ubuntu 24.04 (python 3.12) + XPU torch + level-zero

@@ -24,7 +24,7 @@ fi
 # shellcheck disable=SC1091
 source "$HEXO_VENV/bin/activate"
 
-for crate in hexo_engine hexo_utils shrimp hexfield_eq; do
+for crate in hexo_engine hexo_utils shrimp hexfield_eq mantisnet; do
   echo "=== building $crate ==="
   maturin develop --release -m "$ROOT/packages/$crate/Cargo.toml"
 done
@@ -33,7 +33,7 @@ done
 # PYTHONPATH imports find them (maturin installs them into the venv, but both
 # packages are imported from-tree).
 SITE="$("$HEXO_VENV/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
-for pkg in shrimp hexfield_eq; do
+for pkg in shrimp hexfield_eq mantisnet; do
   SO=$(ls "$SITE/$pkg"/_rust*.so 2>/dev/null | head -1)
   if [ -n "${SO:-}" ]; then
     cp "$SO" "$ROOT/packages/$pkg/python/$pkg/"

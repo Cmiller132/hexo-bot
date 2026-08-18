@@ -43,7 +43,7 @@ jobs:
             cargo-${{ runner.os }}-
 
       - name: cargo test (release)
-        run: cargo test -p hexo_engine -p hexo_utils -p shrimp --release
+        run: cargo test -p hexo_engine -p hexo_utils -p shrimp -p mantis-hexo-engine -p mantis-hexo-runner -p mantis-hexo-search -p mantis-hexo-model -p mantis-hexo-model-mantisnet --release
 
   python:
     name: python (pytest)

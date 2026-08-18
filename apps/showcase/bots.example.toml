@@ -7,7 +7,8 @@
 sims = [64, 128, 256, 512]
 
 # Schema per [[checkpoint]]:
-#   family         model adapter: "shrimp" (default) or "hexfield_eq"
+#   family         model adapter: "shrimp" (default), "hexfield_eq", or
+#                  "mantisnet"
 #   id             stable slug; games reference it (DB identity with weights sha)
 #   checkpoint     Shrimp .pt with a "model" state dict (inference export or
 #                  full checkpoint)
@@ -89,3 +90,18 @@ epoch = 0
 # epoch = 35
 # search_profile = "../../configs/hexfield_eq_main_5.toml"
 # group = "hexfield_eq"
+
+# mantisnet checkpoints carry their architecture in the checkpoint's own
+# model_config plus the klent block π′ depends on — no arch environment, no
+# meta. `epoch` records the training ITERATION for this lineage. The search
+# is the lineage's as-evaled Gumbel sequential halving; keep the sims budget
+# LOW (16-64) — its per-eval cost is higher than shrimp's. An optional
+# search_profile toml may override [search] candidates/temperature.
+# [[checkpoint]]
+# id = "mantis-cellnodes1-it402"
+# family = "mantisnet"
+# checkpoint = "deploy/models/mantis_cellnodes1_it402_infer.pt"
+# label = "MantisNet cellnodes-1"
+# run = "cellnodes-1"
+# epoch = 402
+# group = "mantisnet"
