@@ -100,8 +100,9 @@ _NICK_MAX = 24
 # Version stamp ("v") on cached analysis/summary payloads. Bump whenever the
 # payload schema changes: cached entries with a different (or missing) stamp
 # are treated as misses and recomputed. v2 added stv + moves_left; v3
-# scrubbed non-finite floats to null; v4 populates hexfield STV.
-_ANALYSIS_VERSION = 4
+# scrubbed non-finite floats to null; v4 populates hexfield STV; v5 mantis
+# values became v-hat (the state head it served before is untrained).
+_ANALYSIS_VERSION = 5
 
 # analysis_cache "ply" slot for the whole-game summary payload (real plies are
 # always >= 0, so -1 can never collide).
