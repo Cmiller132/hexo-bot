@@ -1059,7 +1059,7 @@ function renderAttention() {
     setReadout(
       `attention · block ${state.attnBlock + 1} head ${state.attnHead} · query ${fmtCell(q, r)}`,
       `${cells.length} cells above ${attn.floor} · ` +
-      `${(tokenMass * 100).toFixed(1)}% of the row on the 8 summary tokens`,
+      `${(tokenMass * 100).toFixed(1)}% of the row on the ${row.tokens.length} summary token${row.tokens.length === 1 ? "" : "s"}`,
     );
   }).catch(e => {
     if (posKey() !== k || state.module !== "attention") return;

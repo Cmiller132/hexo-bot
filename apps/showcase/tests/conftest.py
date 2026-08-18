@@ -29,6 +29,7 @@ os.environ["SHRIMP_SUPPORT_RADIUS"] = "4"
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 for entry in (
     _REPO_ROOT / "packages" / "shrimp" / "python",
+    _REPO_ROOT / "packages" / "mantisnet" / "python",
     _REPO_ROOT / "apps" / "showcase" / "server",
 ):
     if str(entry) not in sys.path:
@@ -57,6 +58,43 @@ def tiny_checkpoint(tmp_path_factory) -> Path:
     data_dir = Path(__file__).resolve().parent / "data"
     data_dir.mkdir(exist_ok=True)
     torch.save(payload, data_dir / "tiny_bot.pt")
+    return path
+
+
+@pytest.fixture(scope="session")
+def tiny_mantis_checkpoint(tmp_path_factory) -> Path:
+    """A real smoke-size MantisNet inference export (random weights).
+
+    MantisNet architecture rides the checkpoint's own model_config — no env —
+    and the loader requires the semantic versions plus the klent block, so
+    this is a faithful miniature of a production export.
+    """
+    import dataclasses
+
+    import torch
+
+    from mantisnet import MantisConfig, MantisNet, _rust
+
+    config = MantisConfig(
+        h=32, blocks=1, heads=2, ffn_factor=2, d_max=12, value_queries=2,
+        value_bins=17, policy_hidden=32, value_hidden=32,
+        window_attention=False, cell_latents=True, cell_nodes=True,
+        cell_node_scope="all",
+    )
+    payload = {
+        "model": MantisNet(config).state_dict(),
+        "model_config": dataclasses.asdict(config),
+        "versions": {
+            "MODEL_REPR_VERSION": _rust.MODEL_REPR_VERSION,
+            "RULES_VERSION": _rust.RULES_VERSION,
+            "ACTION_ORDER_VERSION": _rust.ACTION_ORDER_VERSION,
+            "torch": torch.__version__,
+        },
+        "klent": {"tau": 0.1, "lam": 0.01, "mass_floor": 0.2},
+        "provenance": {"run": "showcase_tiny_mantis", "iteration": 0},
+    }
+    path = tmp_path_factory.mktemp("mantis-ckpt") / "tiny_mantis.pt"
+    torch.save(payload, path)
     return path
 
 

@@ -60,7 +60,7 @@ def test_registered_families_expose_analysis_and_lab_hooks():
         "net_eval", "searched_eval", "summary_row", "summary_eval",
         "lab_eval_payload", "lab_search_payload",
     )
-    for name in ("shrimp", "hexfield_eq"):
+    for name in ("shrimp", "hexfield_eq", "mantisnet"):
         family = get_family(name)
         assert all(callable(getattr(family, hook, None)) for hook in hooks)
 

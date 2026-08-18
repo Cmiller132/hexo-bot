@@ -34,10 +34,11 @@ _SEED_MASK = (1 << 64) - 1
 _DEFAULT_CANDIDATES = 16
 _DEFAULT_TEMPERATURE = 1.0
 
-_INTROSPECTION_REASON = (
-    "MantisNet lab internals (cell-attention rows, per-block norms, feature "
-    "planes) are not wired yet"
+_ATTN_QUERY_REASON = (
+    "MantisNet's attention rows run over the placement sequence (a global "
+    "token plus the stones, in play order) — pick a stone as the query"
 )
+_ATTN_FLOOR = 1e-3
 
 
 def _pack(q: int, r: int) -> int:
@@ -502,6 +503,9 @@ class MantisnetFamily:
         ]
         improved_rows.sort(key=lambda item: -item["p"])
         stones_list = position.stones()
+        support_coords = [
+            [int(q), int(r)] for q, r, _p in stones_list
+        ] + [[int(q), int(r)] for q, r in position.legal_moves()]
         payload = {
             "mode": "sequence",
             "to_move": position.current_player,
@@ -512,9 +516,7 @@ class MantisnetFamily:
             "ply": len(moves),
             "legal_count": position.legal_count,
             "support": {
-                "coords": [
-                    [int(q), int(r)] for q, r, _p in stones_list
-                ] + [[int(q), int(r)] for q, r in position.legal_moves()],
+                "coords": support_coords,
                 "legal_count": position.legal_count,
                 "stone_count": position.stone_count,
                 "halo_count": 0,
@@ -527,11 +529,15 @@ class MantisnetFamily:
             "policy": rows,
             "improved_policy": improved_rows,
             "top_k": rows[:5],
-            "attention": {"available": False, "reason": _INTROSPECTION_REASON},
-            "activations": {"available": False, "reason": _INTROSPECTION_REASON},
         }
-        if want_features:
-            payload["features"] = {"available": False, "reason": _INTROSPECTION_REASON}
+        payload.update(
+            _lab_internals(
+                model, position, support_coords,
+                attention_cell=attention_cell,
+                want_activations=want_activations,
+                want_features=want_features,
+            )
+        )
         return payload
 
     def lab_search_payload(
@@ -565,3 +571,204 @@ def _model_device(model: Any) -> str:
         return str(next(model.parameters()).device)
     except StopIteration:
         return "cpu"
+
+
+def _lab_internals(
+    model: Any, position: Any, support_coords: list[list[int]], *,
+    attention_cell: tuple[int, int] | None,
+    want_activations: bool,
+    want_features: bool,
+) -> dict:
+    """Attention rows, per-block activation norms, and feature planes.
+
+    One hooked trunk forward, mirroring the research deck's attention
+    inspector: q/k are captured from each block's own projections and the
+    distance-bias logits are rebuilt exactly as the block builds them, so the
+    displayed rows are the attention the forward actually ran. Support-node
+    indexing: stones in canonical order, then legal cells in engine order.
+    """
+    import math as _math
+
+    import torch
+
+    from mantisnet import collate_positions
+
+    device = _model_device(model)
+    batch = collate_positions([position]).to(device)
+    cfg = model.cfg
+
+    captures: list[dict[str, Any]] = [{} for _ in range(cfg.blocks)]
+    block_outputs: list[tuple[Any, Any]] = []
+    hooks = []
+    for index, block in enumerate(model.blocks):
+        hooks.append(block.wq.register_forward_hook(
+            lambda _m, _i, out, index=index: captures[index].__setitem__("q", out.detach())
+        ))
+        hooks.append(block.wk.register_forward_hook(
+            lambda _m, _i, out, index=index: captures[index].__setitem__("k", out.detach())
+        ))
+        hooks.append(block.register_forward_hook(
+            lambda _m, _i, out: block_outputs.append((out[0].detach(), out[3]))
+        ))
+    try:
+        with torch.no_grad():
+            _s, _w, _g, cells = model.trunk(batch)
+    finally:
+        for hook in hooks:
+            hook.remove()
+
+    support_index = {(c[0], c[1]): i for i, c in enumerate(support_coords)}
+    stone_count = position.stone_count
+    length = int(batch.attn_valid[0].sum())
+    seq_coords = batch.coords[0, :length].cpu()  # index 0 = the global token
+
+    out: dict[str, Any] = {}
+
+    # -- attention rows ------------------------------------------------------
+    if attention_cell is None:
+        out["attention"] = {"available": True, "blocks": cfg.blocks, "heads": cfg.heads}
+    else:
+        query_seq = None
+        for i in range(1, length):
+            if (int(seq_coords[i, 0]), int(seq_coords[i, 1])) == tuple(attention_cell):
+                query_seq = i
+                break
+        if query_seq is None:
+            out["attention"] = {"available": False, "reason": _ATTN_QUERY_REASON}
+        else:
+            dim = cfg.h // cfg.heads
+            dq = seq_coords[:, None, 0] - seq_coords[None, :, 0]
+            dr = seq_coords[:, None, 1] - seq_coords[None, :, 1]
+            distance = torch.maximum(
+                torch.maximum(dq.abs(), dr.abs()), (dq + dr).abs()
+            )
+            buckets = (distance - 1).clamp(0, cfg.d_max - 1).long()
+            buckets[distance == 0] = cfg.self_bucket
+            buckets[0, :] = cfg.token_bucket
+            buckets[:, 0] = cfg.token_bucket
+            rows: list[list[dict]] = []
+            for index, block in enumerate(model.blocks):
+                q = captures[index]["q"][0, :length].float().cpu()
+                k = captures[index]["k"][0, :length].float().cpu()
+                q = q.view(length, cfg.heads, dim).transpose(0, 1)
+                k = k.view(length, cfg.heads, dim).transpose(0, 1)
+                logits = q @ k.transpose(-1, -2) / _math.sqrt(dim)
+                logits += block.dist_bias.float().cpu()[:, buckets]
+                weights = torch.softmax(logits[:, query_seq, :], dim=-1)
+                head_rows = []
+                for head in range(cfg.heads):
+                    row = weights[head]
+                    cells_map = {}
+                    for i in range(1, length):
+                        w_i = float(row[i])
+                        if w_i < _ATTN_FLOOR:
+                            continue
+                        node = support_index.get(
+                            (int(seq_coords[i, 0]), int(seq_coords[i, 1]))
+                        )
+                        if node is not None:
+                            cells_map[str(node)] = w_i
+                    head_rows.append(
+                        {"cells": cells_map, "tokens": [float(row[0])]}
+                    )
+                rows.append(head_rows)
+            out["attention"] = {
+                "available": True,
+                "blocks": cfg.blocks,
+                "heads": cfg.heads,
+                "floor": _ATTN_FLOOR,
+                "rows": rows,
+            }
+
+    # -- per-stage activation norms -----------------------------------------
+    if want_activations:
+        # Flat stone order -> support node, via each stone's sequence slot.
+        stone_slots = batch.stone_slot.cpu()
+        max_t = batch.coords.shape[1]
+        stone_nodes = []
+        for i in range(stone_slots.shape[0]):
+            t = int(stone_slots[i]) % max_t
+            coord = (int(batch.coords[0, t, 0]), int(batch.coords[0, t, 1]))
+            stone_nodes.append(support_index.get(coord))
+
+        def stage_norms(s_stream, cell_stream) -> list[float]:
+            norms = [0.0] * len(support_coords)
+            if s_stream is not None:
+                s_norm = s_stream.float().norm(dim=-1).cpu()
+                for i, node in enumerate(stone_nodes):
+                    if node is not None:
+                        norms[node] = float(s_norm[i])
+            if cell_stream is not None:
+                c_norm = cell_stream.float().norm(dim=-1).cpu()
+                for rank in range(c_norm.shape[0]):
+                    norms[stone_count + rank] = float(c_norm[rank])
+            return norms
+
+        stem_cells = None
+        if getattr(model, "cell_occupancy_table", None) is not None:
+            stem_cells = (
+                model.cell_occupancy_table(batch.cell_occupancy)
+                + model.cell_legal_table(batch.cell_is_legal)
+                + model.cell_nearest_table(batch.cell_nearest)
+            )
+        stages = [
+            {
+                "label": "stem",
+                "kind": "stem",
+                # The stem is the embedding tables the trunk starts from;
+                # recomputing the lookups reproduces it exactly.
+                "norms": stage_norms(model.stone_table(batch.stone_own), stem_cells),
+            }
+        ]
+        for index, (s_stream, cell_stream) in enumerate(block_outputs):
+            stages.append(
+                {
+                    "label": f"block {index + 1}",
+                    "kind": "attn",
+                    "norms": stage_norms(s_stream, cell_stream),
+                }
+            )
+        stages.append(
+            {"label": "output (shared LN)", "kind": "attn",
+             "norms": stage_norms(_s, cells)}
+        )
+        out["activations"] = {"available": True, "blocks": stages}
+    else:
+        out["activations"] = {"available": True}
+
+    # -- feature planes ------------------------------------------------------
+    if want_features:
+        n = len(support_coords)
+        planes: dict[str, list[float]] = {
+            "is_stone": [0.0] * n,
+            "stone_own": [0.0] * n,
+            "placement_frac": [0.0] * n,
+            "cell_occupancy": [0.0] * n,
+            "cell_nearest": [0.0] * n,
+        }
+        stones = position.stones()
+        mover = position.current_player
+        total = max(1, len(stones))
+        # Placement order comes from the sequence coords, not stones() (which
+        # is canonical order).
+        order = {}
+        for i in range(1, length):
+            order[(int(seq_coords[i, 0]), int(seq_coords[i, 1]))] = i
+        for q, r, player in stones:
+            node = support_index[(int(q), int(r))]
+            planes["is_stone"][node] = 1.0
+            planes["stone_own"][node] = 1.0 if int(player) == mover else -1.0
+            seq = order.get((int(q), int(r)))
+            if seq is not None:
+                planes["placement_frac"][node] = seq / total
+        occupancy = batch.cell_occupancy.cpu()
+        nearest = batch.cell_nearest.cpu()
+        for rank in range(occupancy.shape[0]):
+            planes["cell_occupancy"][stone_count + rank] = float(occupancy[rank])
+            planes["cell_nearest"][stone_count + rank] = float(nearest[rank])
+        out["features"] = {
+            "available": True,
+            "names": list(planes),
+            "planes": [planes[name] for name in planes],
+        }
+    return out
