@@ -89,6 +89,26 @@ The deep-TSS solver warms its tables on each worker's first hexfield request.
 Wait for `worker ready` in the log before directing traffic at the main_5
 entry.
 
+### Preparing the MantisNet cellnodes-1 model
+
+The `mantisnet` family serves the MantisNet research lineage
+(`packages/mantisnet`). Its inference export is produced in the research
+repo (optimizer state stripped, fp32) and must carry the `klent` block
+(`tau`/`lam`/`mass_floor`) plus `model_config` and the semantic `versions` —
+`packages/mantisnet/README.md` documents the exact contract, and the loader
+refuses anything incomplete rather than defaulting.
+
+Copy the export into the model mount and merge
+`deploy/bots.mantisnet.example.toml` into `deploy/models/bots.toml`. The
+entry's per-checkpoint `sims = [16, 32, 64]` ladder is deliberate — the
+family's per-eval cost is roughly an order of magnitude above shrimp's, and
+its as-evaled profile ran 32 sims — so keep it rather than inheriting the
+global 64-512 set. No architecture environment is needed: MantisNet reads
+its architecture from each checkpoint's own `model_config`.
+
+Adding the family is an image change (a new wheel), so the first deploy
+requires a full rebuild rather than a `docker compose restart app`.
+
 4. **Launch**:
 
    ```bash

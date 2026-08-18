@@ -1,0 +1,19 @@
+# Example mantisnet entry for the production catalogue. Merge into
+# deploy/models/bots.toml (checkpoint paths resolve relative to that file).
+#
+# The per-checkpoint `sims` ladder is deliberate: MantisNet's per-eval cost
+# is roughly an order of magnitude above shrimp's, and its as-evaled anchor
+# profile ran 32 sims — 16/32/64 brackets that. Without the override the
+# entry would inherit the global 64-512 ladder.
+
+[[checkpoint]]
+id = "mantis-cellnodes1-it402"
+family = "mantisnet"
+checkpoint = "mantis_cellnodes1_it402_infer.pt"
+label = "MantisNet cellnodes-1"
+run = "cellnodes-1"
+epoch = 402
+params = 5196965
+sims = [16, 32, 64]
+group = "mantisnet"
+featured = true
