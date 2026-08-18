@@ -3,7 +3,12 @@
 The read maps each position's flat window run into its four latent queries;
 the broadcast maps every flat window query back over those four latents. CUDA
 uses Triton programs that own one complete gradient row and never use atomics.
-CPU and unsupported CUDA shapes use the literal fp32 references below.
+CPU and XPU forwards use the vectorized fp32 eager paths below — the research
+repo's per-position/per-window loop oracles took seconds per late-game board,
+which is what made non-CUDA serving unusable. The literal loop oracle lives in
+``tests/test_window_latents_eager.py`` as the equivalence detector. Backward
+still uses the literal loops: serving runs under ``no_grad`` and never reaches
+it.
 """
 
 from __future__ import annotations
@@ -94,33 +99,46 @@ def _validate_broadcast(q, k, v, window_pos, offsets, order) -> None:
     _validate_layout(offsets, order, k.shape[0], q.shape[0])
 
 
-def _reference_read_forward(q, k, v, offsets, order):
-    """Literal fp32 read oracle, including zero output for an empty run."""
+def _eager_read_forward(q, k, v, offsets, order):
+    """Vectorized fp32 read: a padded ragged softmax over each position's run.
+
+    Semantics match the literal loop oracle exactly, including the empty-run
+    row: zero output, ``m = -inf``, ``l = 0``. The padding gathers each
+    position's window rows into a ``(P, W_max)`` table and masks the tail to
+    ``-inf`` before the softmax, so no loop ever runs over positions or
+    windows.
+    """
     positions, slots, heads, hd = q.shape
     scale = 1.0 / math.sqrt(hd)
-    out = torch.zeros((positions, slots, heads, hd), dtype=torch.float32, device=q.device)
-    m = torch.full(
-        (positions, slots, heads), -float("inf"), dtype=torch.float32, device=q.device
+    counts = (offsets[1:] - offsets[:-1]).to(q.device)
+    max_w = int(counts.max().item()) if counts.numel() else 0
+    if max_w == 0:
+        out = torch.zeros(
+            (positions, slots, heads, hd), dtype=torch.float32, device=q.device
+        )
+        m = torch.full(
+            (positions, slots, heads), -float("inf"), dtype=torch.float32,
+            device=q.device,
+        )
+        return out, m, torch.zeros_like(m)
+
+    lanes = torch.arange(max_w, device=q.device)
+    valid = lanes[None, :] < counts[:, None]  # (P, W)
+    ranks = offsets[:-1, None] + torch.minimum(
+        lanes[None, :], (counts[:, None] - 1).clamp(min=0)
     )
-    l = torch.zeros((positions, slots, heads), dtype=torch.float32, device=q.device)
-    for position in range(positions):
-        rows = order[offsets[position] : offsets[position + 1]]
-        if not rows.numel():
-            continue
-        for slot in range(slots):
-            for head in range(heads):
-                scores = (
-                    q[position, slot, head].float()[None, :]
-                    * k.index_select(0, rows)[:, head].float()
-                ).sum(-1) * scale
-                row_max = scores.max()
-                numer = (scores - row_max).exp()
-                denom = numer.sum()
-                out[position, slot, head] = (
-                    numer[:, None] * v.index_select(0, rows)[:, head].float()
-                ).sum(0) / denom
-                m[position, slot, head] = row_max
-                l[position, slot, head] = denom
+    rows = order.index_select(0, ranks.reshape(-1)).reshape(positions, max_w)
+
+    k_pad = k.float()[rows]  # (P, W, heads, hd)
+    v_pad = v.float()[rows]
+    scores = torch.einsum("pshd,pwhd->pshw", q.float(), k_pad) * scale
+    scores = scores.masked_fill(~valid[:, None, None, :], -float("inf"))
+    m = scores.amax(dim=-1)  # (P, slots, heads); -inf on an empty run
+    shift = torch.where(torch.isfinite(m), m, torch.zeros_like(m))
+    numer = torch.exp(scores - shift.unsqueeze(-1))
+    l = numer.sum(dim=-1)  # 0 on an empty run
+    denom = torch.where(l > 0, l, torch.ones_like(l))
+    out = torch.einsum("pshw,pwhd->pshd", numer, v_pad) / denom.unsqueeze(-1)
     return out, m, l
 
 
@@ -158,28 +176,23 @@ def _reference_read_backward(q, k, v, offsets, order, out, m, l, grad_out):
     return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype)
 
 
-def _reference_broadcast_forward(q, k, v, window_pos):
-    """Literal fp32 broadcast oracle: every window attends over four slots."""
-    windows, heads, hd = q.shape
-    slots = k.shape[1]
+def _eager_broadcast_forward(q, k, v, window_pos):
+    """Vectorized fp32 broadcast: every window attends over its four slots.
+
+    Semantics match the literal loop oracle exactly. All four slots are
+    always live, so the gather is dense and the softmax needs no mask.
+    """
+    heads = q.shape[1]
+    hd = q.shape[2]
     scale = 1.0 / math.sqrt(hd)
-    out = torch.empty((windows, heads, hd), dtype=torch.float32, device=q.device)
-    m = torch.empty((windows, heads), dtype=torch.float32, device=q.device)
-    l = torch.empty((windows, heads), dtype=torch.float32, device=q.device)
-    for window in range(windows):
-        position = window_pos[window]
-        for head in range(heads):
-            scores = (
-                q[window, head].float()[None, :] * k[position, :, head].float()
-            ).sum(-1) * scale
-            row_max = scores.max()
-            numer = (scores - row_max).exp()
-            denom = numer.sum()
-            out[window, head] = (
-                numer[:, None] * v[position, :, head].float()
-            ).sum(0) / denom
-            m[window, head] = row_max
-            l[window, head] = denom
+    pos = window_pos.long()
+    k_w = k.float()[pos]  # (N_w, slots, heads, hd)
+    v_w = v.float()[pos]
+    scores = torch.einsum("whd,wshd->wsh", q.float(), k_w) * scale
+    m = scores.amax(dim=1)  # (N_w, heads)
+    numer = torch.exp(scores - m[:, None, :])
+    l = numer.sum(dim=1)
+    out = torch.einsum("wsh,wshd->whd", numer, v_w) / l[:, :, None]
     return out, m, l
 
 
@@ -551,10 +564,10 @@ def _read_op(
     _validate_read(q, k, v, window_pos, offsets, order)
     q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
     if not _supported(q, k.shape[0]):
-        return _reference_read_forward(q, k, v, offsets, order)
+        return _eager_read_forward(q, k, v, offsets, order)
     key = _shape_key(q)
     if key in _FAILED_READ_SHAPES:
-        return _reference_read_forward(q, k, v, offsets, order)
+        return _eager_read_forward(q, k, v, offsets, order)
     try:
         return _launch_read_forward(q, k, v, offsets, order)
     except Exception as exc:
@@ -563,7 +576,7 @@ def _read_op(
             f"window latent read failed for {key}; using reference: {_FAILED_READ_SHAPES[key]}",
             RuntimeWarning, stacklevel=2,
         )
-        return _reference_read_forward(q, k, v, offsets, order)
+        return _eager_read_forward(q, k, v, offsets, order)
 
 
 @_read_op.register_fake
@@ -623,10 +636,10 @@ def _broadcast_op(
     _validate_broadcast(q, k, v, window_pos, offsets, order)
     q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
     if not _supported(q, q.shape[0]):
-        return _reference_broadcast_forward(q, k, v, window_pos)
+        return _eager_broadcast_forward(q, k, v, window_pos)
     key = _shape_key(q)
     if key in _FAILED_BROADCAST_SHAPES:
-        return _reference_broadcast_forward(q, k, v, window_pos)
+        return _eager_broadcast_forward(q, k, v, window_pos)
     try:
         return _launch_broadcast_forward(q, k, v, window_pos)
     except Exception as exc:
@@ -635,7 +648,7 @@ def _broadcast_op(
             f"window latent broadcast failed for {key}; using reference: "
             f"{_FAILED_BROADCAST_SHAPES[key]}", RuntimeWarning, stacklevel=2,
         )
-        return _reference_broadcast_forward(q, k, v, window_pos)
+        return _eager_broadcast_forward(q, k, v, window_pos)
 
 
 @_broadcast_op.register_fake

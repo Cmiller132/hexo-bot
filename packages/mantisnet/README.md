@@ -21,10 +21,14 @@ vendored and served as a showcase model family alongside `shrimp` and
   from Python (`begin` / `pump` / `resume` / `decision`, plus `snapshot` for
   live telemetry).
 - **`python/mantisnet/`** — the serve closure of the research Python
-  package, unchanged apart from imports: the model (whose custom ops fall
-  back to eager fp32 reference paths off CUDA — that is what CPU and XPU
-  serve), the batch builder, the closed-form KLENT policy improvement, and
-  the position readout. `serve.py` is new: checkpoint loading plus the one
+  package, unchanged apart from imports and one deliberate rewrite: the
+  window-latent custom ops' non-CUDA forwards are vectorized fp32 eager
+  paths (`window_latents.py`), replacing the research repo's literal
+  per-position/per-window loop oracles, which cost seconds per late-game
+  board and made CPU/XPU serving unusable; the loop oracle survives as the
+  equivalence detector in `tests/test_window_latents_eager.py`. Also here:
+  the batch builder, the closed-form KLENT policy improvement, and the
+  position readout. `serve.py` is new: checkpoint loading plus the one
   batched read every serve consumer shares.
 
 ## Checkpoint contract
