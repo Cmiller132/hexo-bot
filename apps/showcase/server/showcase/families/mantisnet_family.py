@@ -313,6 +313,11 @@ def _round_frame(game_key: int, snap: dict) -> dict:
         "policy_action_ids_bytes": _u32_bytes(ids),
         "policy_weights_bytes": _f32_bytes(weights),
         "policy_visits_bytes": _u32_bytes(int(v) for v in snap["visits"]),
+        # Per-line running Q rides every wave, not just the completion frame:
+        # the viewer's value ticks show what the search is learning as it
+        # learns it. Lines with zero visits carry a placeholder 0.0 the viewer
+        # must gate on the visit count.
+        "policy_q_bytes": _f32_bytes(float(v) for v in snap["values"]),
         "policy_count": len(ids),
         "survivor_action_ids_bytes": _u32_bytes(survivor_ids),
         "survivor_count": len(survivor_ids),

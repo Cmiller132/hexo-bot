@@ -131,6 +131,14 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     # The driver ticks once per completed wave, so even a small budget yields
     # round frames between the start and the answer.
     assert phases.count("round") >= 2
+    # Every round frame carries the per-line running Q alongside the visit
+    # counts: the viewer's value ticks update as the search learns, not only
+    # on the answer frame.
+    for frame in frames:
+        if frame.get("phase") != "round":
+            continue
+        assert len(frame["policy_q_bytes"]) == frame["policy_count"] * 4
+        assert len(frame["policy_visits_bytes"]) == frame["policy_count"] * 4
     assert not any(f.get("_post_search") for f in frames), (
         "a native-telemetry family must never take the post-search fallback"
     )
