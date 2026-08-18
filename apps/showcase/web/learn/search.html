@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MantisNet &mdash; search &amp; training</title>
-<meta name="description" content="How Mantis Shrimp v2 picks a move — Gumbel sequential halving over deterministic lines — and how KLENT self-play trained it: the improved policy π′, λ-returns with mover-change signs, and a categorical critic.">
+<meta name="description" content="The MantisNet move selection (Gumbel sequential halving over deterministic lines) and the KLENT training loop, with replays of real searches.">
 <link rel="stylesheet" href="learn.css">
 </head>
 <body>
@@ -21,30 +21,29 @@
 
 <main class="learn-main">
 
-<h1>Search &amp; training <span class="h-dim">&mdash; the same idea twice</span></h1>
+<h1>Search &amp; training <span class="h-dim">&mdash; one operator, two uses</span></h1>
 
 <p class="lede">
-One formula runs this whole system: take the network&rsquo;s policy, re-weight it
-by what the critic knows, and you get a better policy. At play time the
-re-weighting is a short, sharp lookahead &mdash; Gumbel sequential halving over
-sixteen candidate moves. At training time it is the closed-form KLENT
-operator, and the network is pulled toward its own improvement, game after
-game. Both halves of this page run on real captured data from the served
-model.
+The critic applies new weights to the policy of the network, and the result
+is a better policy. This one operation is the core of the system. In play,
+the operation is a short lookahead: Gumbel sequential halving across 16
+candidate moves. In training, the operation is the closed-form KLENT
+operator, and the network learns from its own improvement. The two halves of
+this page use real captured data from the served model.
 </p>
 
-<h2 id="why"><span class="sec-no">01</span>why search at all</h2>
+<h2 id="why"><span class="sec-no">01</span>the effect of the search</h2>
 
 <!-- src: data/mantis_search.json (SSE capture, 64 sims, T=0): ply-11 prior
      favourite (0,1) 27% cut at 3 visits value +0.05; (-2,6) 7.2% deepened to
      +0.66, chosen; final game: the r=6 six-in-a-row through (-2,6) -->
 <p>
-On the featured position the raw policy&rsquo;s favourite is (0,&thinsp;1) at 27%.
-The search examined it, watched its line stall near 0, and cut it &mdash; while
-(&minus;2,&thinsp;6), the prior&rsquo;s <em>second</em> choice at 7%, kept
-revealing value the deeper its line ran, finishing at +0.66 and taking the
-move. Four turns later the game ended with a six-in-a-row through that exact
-cell. The prior proposes; the search disposes.
+On the featured position, the top move of the raw policy is (0,&thinsp;1) at
+27%. The search examined that line, measured a value near 0, and cut it. The
+cell (&minus;2,&thinsp;6) was the second choice of the prior at 7%. Its line
+showed more value at each depth. Its final value was +0.66, and the search
+selected it. Four turns later, the game ended with a six-in-a-row through
+that cell.
 </p>
 
 <h2 id="mech"><span class="sec-no">02</span>the mechanics</h2>
@@ -53,44 +52,42 @@ cell. The prior proposes; the search disposes.
      prior-argmax line extension, value-sorted halving, final_score; family
      adapter: root = softmax logits, leaves = π′/v̂, m = 16 candidates -->
 <p>
-The search is <b>Gumbel sequential halving over deterministic lines</b> &mdash;
-not a branching tree. One move decision runs:
+The search is <b>Gumbel sequential halving over deterministic lines</b>, not
+a branching tree. One move decision has these steps:
 </p>
 
 <ol>
-  <li><b>Root read.</b> One forward of the network gives the prior over all
-  legal cells (fig 3 on <a href="network.html#outputs">the network page</a>).
-  The root evaluation is outside the simulation budget.</li>
+  <li><b>Root read.</b> One forward of the network gives the prior across all
+  legal cells. The root read is not part of the simulation budget.</li>
   <li><b>Candidates.</b> The top <b>m&thinsp;=&thinsp;16</b> cells by
-  ln&thinsp;&pi; + Gumbel noise become candidate lines. On this site the noise
-  scale is <b>zero</b> &mdash; candidates are exactly the prior&rsquo;s top 16 and
-  every game against the same moves is reproducible.</li>
-  <li><b>Deepening waves.</b> Each surviving line extends one ply per wave:
-  the network evaluates the line&rsquo;s current position, and the line steps to
-  that evaluation&rsquo;s <em>most probable reply</em> &mdash; each line is a
-  principal variation, played out move by most-expected move. The line&rsquo;s
-  value is the newest evaluation&rsquo;s v&#770;, flipped into the root
-  player&rsquo;s frame. All of a wave&rsquo;s positions are evaluated in one batched
-  forward.</li>
-  <li><b>Halving.</b> After each round of waves, survivors are sorted by line
-  value and the bottom half is cut. The budget is spent evenly across rounds,
-  so later rounds probe half the lines twice as deep (fig 1).</li>
-  <li><b>Decision.</b> Among the final survivors, the move maximizing
+  ln&thinsp;&pi; + Gumbel noise become candidate lines. On this site, the
+  noise scale is zero. The candidates are the top 16 of the prior, and each
+  game with the same moves is reproducible.</li>
+  <li><b>Deepening waves.</b> In each wave, each line that continues extends
+  by one ply. The network evaluates the current position of the line, and
+  the line steps to the most probable reply in that evaluation. Each line is
+  a principal variation. The value of a line is the newest v&#770;, in the
+  frame of the root player. One batched forward evaluates all positions of a
+  wave.</li>
+  <li><b>Halving.</b> After each round of waves, the lines sort by value, and
+  the lower half is cut. The budget divides equally across the rounds. Later
+  rounds examine half the lines at two times the depth (fig 1).</li>
+  <li><b>Decision.</b> From the final survivors, the search plays the move
+  with the maximum of
   <div class="eq">gumbel + ln&thinsp;&pi;(a) + (50 + max_visits) &middot; value(a)</div>
-  is played. The value weight grows with depth, so by the wire the searched
-  values dominate the prior &mdash; a line that <em>proved</em> better wins even
-  from a modest prior.</li>
+  The value weight increases with the depth. At the end of the search, the
+  measured values control the result more than the prior.</li>
 </ol>
 
 <figure class="fig" id="fig-sched">
-  <figcaption>fig 1 &middot; <b>the halving schedules of this site&rsquo;s budgets</b>
-    &middot; 16 candidates; lines &times; waves per round</figcaption>
+  <figcaption>fig 1 &middot; <b>the halving schedules of the site budgets</b>
+    &middot; 16 candidates &middot; lines &times; waves in each round</figcaption>
   <div class="fig-body">
     <svg id="schedSvg" role="img" aria-label="Halving schedules at 16, 32, 64 and 128 simulations"></svg>
   </div>
   <div class="fig-readout" id="schedRo">
     <span class="ro-k">budgets</span>
-    <span class="ro-t">at 128 sims the last two survivors run 40 waves deep — a 47-ply principal variation on a two-stone-per-turn board.</span>
+    <span class="ro-t">at 128 sims, the last 2 lines get 40 waves. That is a principal variation of 47 plies.</span>
   </div>
 </figure>
 
@@ -99,14 +96,14 @@ not a branching tree. One move decision runs:
 <!-- src: data/mantis_search.json — every SSE frame of the two featured
      searches of the captured game, exactly as the live viewer received them -->
 <p>
-These are the actual telemetry frames of two searches from the captured game
-&mdash; the same frames the live viewer draws when you tick &ldquo;watch the bot
-think&rdquo;. Step through them: rings are candidates, bar length is the line&rsquo;s
-current value in blue&rsquo;s favour, dimmed rows are cut.
+These are the telemetry frames of two searches from the captured game. The
+live viewer draws the same frames when you set &ldquo;watch the bot
+think&rdquo;. Step through the frames. A ring is a candidate. The bar length
+is the current value of the line for blue. A dimmed row is cut.
 </p>
 
 <figure class="fig fig-wide" id="fig-replay">
-  <figcaption>fig 2 &middot; <b>search replay</b> &middot; drag or step through the frames</figcaption>
+  <figcaption>fig 2 &middot; <b>search replay</b> &middot; move the slider, or step with the arrow buttons</figcaption>
   <div class="fig-body" style="display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start">
     <svg id="repSvg" style="flex:1 1 340px;max-width:520px" role="img" aria-label="The searched position with candidate marks"></svg>
     <div class="vbars" id="repBars" style="flex:1 1 300px"></div>
@@ -121,7 +118,7 @@ current value in blue&rsquo;s favour, dimmed rows are cut.
   </div>
   <div class="fig-readout" id="repRo" aria-live="polite">
     <span class="ro-k">frame</span>
-    <span class="ro-t">use the slider or arrows.</span>
+    <span class="ro-t">use the slider or the arrow buttons.</span>
   </div>
 </figure>
 
@@ -132,27 +129,27 @@ current value in blue&rsquo;s favour, dimmed rows are cut.
      4096 games / 1024 envs / batch 4096, plain Adam fused); 402 iterations -->
 <p>
 The served checkpoint is iteration <b>402</b> of a KLENT self-play run. Each
-iteration plays <b>4,096 complete games</b> against itself across 1,024
-parallel environments, fits <b>one epoch</b> against that fresh buffer, then
-discards it &mdash; fully on-policy, no replay window. At every acting ply the
-<em>improved policy</em> is computed in closed form from the two heads:
+iteration plays <b>4,096 complete games</b> across 1,024 parallel
+environments, fits the network for one epoch on that buffer, and then
+discards the buffer. The training is fully on-policy, without a replay
+window. At each acting ply, the improved policy comes from the two heads in
+closed form:
 </p>
 
 <div class="eq">&pi;&prime;(a) &nbsp;&prop;&nbsp; exp[ (Q&#771;(a) + &tau;&middot;ln&thinsp;&pi;(a)) / (&tau; + &lambda;) ]</div>
 
 <p>
-&tau; keeps &pi;&prime; anchored to the policy (entropy temper), &lambda; is the
-KL leash that limits how far one improvement step may move, and
-Q&#771; is the critic&rsquo;s mass-normalized score from
-<a href="network.html#heads">the heads section</a>. The run trained with
-&tau;&thinsp;=&thinsp;0.1, &lambda;&thinsp;=&thinsp;0.01 &mdash; and those exact
-values ride inside the checkpoint export, because &pi;&prime; is meaningless
-under parameters the model did not train with. Play with the dials:
+&tau; holds &pi;&prime; near the policy. &lambda; is the KL limit for one
+improvement step. Q&#771; is the mass-normalized score of the critic
+(<a href="network.html#heads">the heads section</a>). The run trained with
+&tau;&thinsp;=&thinsp;0.1 and &lambda;&thinsp;=&thinsp;0.01. The checkpoint
+export contains these values, because &pi;&prime; has no meaning under
+different parameters. Use the two controls:
 </p>
 
 <figure class="fig" id="fig-pi">
-  <figcaption>fig 3 &middot; <b>&pi;&prime; on the featured position</b> &middot; ghost bars =
-    raw policy &middot; solid = &pi;&prime; under your &tau;, &lambda;</figcaption>
+  <figcaption>fig 3 &middot; <b>&pi;&prime; on the featured position</b> &middot; grey bars =
+    raw policy &middot; blue bars = &pi;&prime; under your &tau; and &lambda;</figcaption>
   <div class="fig-body">
     <div class="vbars" id="piBars"></div>
   </div>
@@ -166,30 +163,30 @@ under parameters the model did not train with. Play with the dials:
   </div>
   <div class="fig-readout" id="piRo">
     <span class="ro-k">&pi;&prime;</span>
-    <span class="ro-t">small &tau;, small &lambda; &rarr; trust the critic (sharp). Large &tau; &rarr; stay near the prior. This exact computation — same code path — also answers every search leaf.</span>
+    <span class="ro-t">a small &tau; and a small &lambda; give a sharp result near the critic. A large &tau; holds the result near the prior. Each search leaf uses this computation, with the same code path.</span>
   </div>
 </figure>
 
-<h3 id="targets">what the losses pull toward</h3>
+<h3 id="targets">the loss targets</h3>
 
 <!-- src: MODEL_SPEC.md §13: returns, critic CE target, policy CE; §7 the
      state head trains only in the supervised harness -->
 <p>
-Every acting ply writes one training row, and two losses fit it:
+Each acting ply writes one training row. Two losses fit the row:
 </p>
 
 <ul>
-  <li><b>Policy cross-entropy against &pi;&prime;.</b> The network&rsquo;s next
-  prior is pulled toward this ply&rsquo;s improvement &mdash; the policy
-  bootstraps on its own refinement.</li>
+  <li><b>Policy cross-entropy against &pi;&prime;.</b> The next prior of the
+  network moves to the improvement of this ply.</li>
   <li><b>Critic cross-entropy on the taken action.</b> The target return G is
-  a &lambda;-return over v&#770; (&lambda;<sub>ret</sub>&thinsp;=&thinsp;0.939,
-  &gamma;&thinsp;=&thinsp;0.99), and the three-way target is
-  <code>(max(G,0), max(&minus;G,0), 1&minus;|G|)</code> &mdash; a return of
-  +0.6 teaches 60% win-mass, 40% nothing-mass. Because Hexo interleaves two
-  placements per turn, consecutive steps flip perspective only at turn
-  handovers: the return chain carries <b>+1 within a turn, &minus;1 across
-  one</b> (fig 4).</li>
+  a &lambda;-return over v&#770;
+  (&lambda;<sub>ret</sub>&thinsp;=&thinsp;0.939,
+  &gamma;&thinsp;=&thinsp;0.99). The three-part target is
+  <code>(max(G,0), max(&minus;G,0), 1&minus;|G|)</code>. A return of +0.6
+  teaches 60% win mass and 40% zero mass. Hexo has two placements in each
+  turn, and the perspective changes only at a turn handover. The return
+  chain has the sign +1 in a turn and &minus;1 across a handover (fig
+  4).</li>
 </ul>
 
 <figure class="fig" id="fig-signs">
@@ -220,8 +217,8 @@ Every acting ply writes one training row, and two losses fit it:
         </g>
         <g font-size="10" fill="#79848f" text-anchor="middle">
           <text x="60"  y="70">opening</text>
-          <text x="240" y="70">P1&rsquo;s turn</text>
-          <text x="480" y="70">P0&rsquo;s turn</text>
+          <text x="240" y="70">P1 turn</text>
+          <text x="480" y="70">P0 turn</text>
           <text x="660" y="70">P1&hellip;</text>
         </g>
       </g>
@@ -230,13 +227,12 @@ Every acting ply writes one training row, and two losses fit it:
 </figure>
 
 <p>
-Nothing else is trained in self-play: the state-value head stays untouched
-(hence <a href="network.html#heads">the v&#770; note</a>), there is no
-Dirichlet noise, no forced playouts, and no symmetry augmentation &mdash; the
-inputs already cannot tell symmetric positions apart. An evaluation harness
-plays the checkpoint against fixed opponents every 25 iterations, but it only
-observes; nothing gates or rolls back. Iteration 402 was picked for serving
-by pooled evaluation over the run&rsquo;s late checkpoints.
+The self-play trains nothing else. The state-value head stays untouched
+(<a href="network.html#heads">the v&#770; note</a>). There is no Dirichlet
+noise, there are no forced playouts, and there is no symmetry augmentation.
+An evaluation harness plays each 25th checkpoint against fixed opponents.
+The harness measures only, and it does not gate the training. A pooled
+evaluation across the late checkpoints selected iteration 402.
 </p>
 
 <h2 id="serving"><span class="sec-no">05</span>how this site serves it</h2>
@@ -245,22 +241,21 @@ by pooled evaluation over the run&rsquo;s late checkpoints.
      CT 121 deploy (Arc A310, XPU eager paths, boot parity self-check);
      site-local opening_temperature=0; sims ladder 16/32/64/128 -->
 <p>
-The bot you play runs this exact stack on an Intel Arc A310 (4&thinsp;GB),
-through PyTorch&rsquo;s XPU backend in eager mode. Each search wave&rsquo;s leaf
-positions go through one batched forward; a numeric parity self-check runs at
-every boot before the worker accepts games. The sims picker is the search
-budget of fig 1 &mdash; 16, 32, 64, or 128 simulations per stone. Opening
-noise is disabled site-wide, so the bot is deterministic: replay the same
-moves and you get the same game.
+The bot operates this stack on an Intel Arc A310 (4&thinsp;GB), through the
+PyTorch XPU backend in eager mode. One batched forward evaluates the leaf
+positions of each wave. A numeric parity self-check operates at each boot,
+before the worker accepts games. The sims control sets the search budget of
+fig 1: 16, 32, 64, or 128 simulations for each stone. The opening noise is
+off on the full site. The bot is deterministic: the same moves give the same
+game.
 </p>
 
 <p>
-And the live viewer you can enable while playing is drawing the same frames
-as fig 2: the full-board fill is the policy prior, rings are the 16
-candidates, each ring&rsquo;s arc fills with its line&rsquo;s share of the budget,
-the centre tick colours by the line&rsquo;s current value, and a cell&rsquo;s
-brightness tracks its live ranking. When a candidate dims and stays, you just
-watched a halving round cut it.
+During play, the live viewer draws the frames of fig 2. The full-board fill
+is the policy prior, and the rings are the 16 candidates. The arc of a ring
+fills with the budget share of its line. The centre tick shows the current
+value of the line. The brightness of a cell follows its live rank. A
+candidate that becomes dim was cut in a halving round.
 </p>
 
 </main>
@@ -268,7 +263,7 @@ watched a halving round cut it.
 <footer class="learn-footer">
   <div class="foot-row">
     <a href="network.html">&larr; the network</a>
-    <a href="./">back to overview &rarr;</a>
+    <a href="./">back to the overview &rarr;</a>
   </div>
 </footer>
 
@@ -317,7 +312,7 @@ const wt = await M.fetchJSON("data/mantis_walkthrough.json");
 {
   const ro = M.readout($("repRo"));
   const slider = $("repSlider");
-  let tab = "overturn", frames = [], board = null, barRows = [];
+  let frames = [], board = null;
 
   function framesOf(name) {
     return search[name].frames.filter(f => Array.isArray(f.policy));
@@ -325,18 +320,18 @@ const wt = await M.fetchJSON("data/mantis_walkthrough.json");
 
   function describe(f) {
     if (f.kind === "bare_policy") {
-      return ["root read", `the raw policy over all ${f.policy.length} legal cells; ` +
-        `root v̂ ${M.fmtV(f.root_value)} — outside the simulation budget.`];
+      return ["root read", `the raw policy across all ${f.policy.length} legal cells. ` +
+        `Root v̂ ${M.fmtV(f.root_value)}. The root read is not part of the budget.`];
     }
     if (f.kind === "candidate_set") {
-      return ["candidates", "the prior's top 16 become deterministic lines (T = 0: no noise)."];
+      return ["candidates", "the top 16 cells of the prior become deterministic lines (noise scale 0)."];
     }
     if (f.kind === "search_complete") {
-      return ["decision", `(${f.action.q}, ${f.action.r}) plays; final root value ${M.fmtV(f.root_value)}.`];
+      return ["decision", `(${f.action.q}, ${f.action.r}) plays. The final root value is ${M.fmtV(f.root_value)}.`];
     }
     const alive = f.survivors.length;
     return [`round ${f.round} of ${f.rounds} · ${f.visits}/${f.target_visits} visits`,
-      `${alive} lines alive — value sorts, the bottom half is cut each round.`];
+      `${alive} lines continue. Each round sorts by value and cuts the lower half.`];
   }
 
   function setup(name) {
@@ -345,7 +340,7 @@ const wt = await M.fetchJSON("data/mantis_walkthrough.json");
     slider.value = "0";
     const bp = frames[0];
     const cellsAll = bp.policy.map(e => ({ q: e.q, r: e.r }));
-    // Stones for this ply: prefix of the game's move list.
+    // Stones for this ply: the prefix of the game's move list.
     const ply = search[name].ply;
     const stones = search.moves.slice(0, ply).map((m, i) => ({
       q: m[0], r: m[1], owner: plyOwner(i),
@@ -398,7 +393,7 @@ const wt = await M.fetchJSON("data/mantis_walkthrough.json");
       bars.appendChild(row);
     }
     if (f.kind === "bare_policy") {
-      bars.innerHTML = `<div class="pat-out">the full prior paints the board — no candidates yet.</div>`;
+      bars.innerHTML = `<div class="pat-out">the full prior colours the board. There are no candidates yet.</div>`;
     }
     const [k, t] = describe(f);
     ro.set(k, t);
@@ -414,12 +409,10 @@ const wt = await M.fetchJSON("data/mantis_walkthrough.json");
     render(Number(slider.value));
   });
   $("repTab11").addEventListener("click", () => {
-    tab = "overturn";
     $("repTab11").classList.add("sel"); $("repTab15").classList.remove("sel");
     setup("overturn");
   });
   $("repTab15").addEventListener("click", () => {
-    tab = "win_race";
     $("repTab15").classList.add("sel"); $("repTab11").classList.remove("sel");
     setup("win_race");
   });

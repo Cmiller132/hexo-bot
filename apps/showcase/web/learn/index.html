@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MantisNet &mdash; how it works</title>
-<meta name="description" content="How MantisNet (Mantis Shrimp v2) works: a graph transformer over stones, windows, and cells, a categorical critic, Gumbel sequential-halving search, and KLENT self-play training.">
+<meta name="description" content="How MantisNet (Mantis Shrimp v2) works: a graph transformer over stones, windows, and cells; a categorical critic; Gumbel sequential-halving search; KLENT self-play training.">
 <link rel="stylesheet" href="learn.css">
 </head>
 <body>
@@ -24,15 +24,12 @@
 <h1>MantisNet <span class="h-dim">&mdash; how Mantis Shrimp v2 works</span></h1>
 
 <p class="lede">
-The strongest bot on this site is a 5.2M-parameter graph network. Hexo&rsquo;s
-board is infinite, so there is no grid to convolve and no fixed input plane:
-MantisNet reads a position as its <em>entities</em> &mdash; the stones, the
-live six-cell windows, the legal cells &mdash; and passes typed messages
-between them. A short, sharp Gumbel search turns its judgments into moves,
-and a self-play loop called KLENT trained it from random play, using the same
-policy-improvement formula the search runs. These pages walk through every
-component, and every figure is driven by real data from the served
-checkpoint.
+Mantis Shrimp v2 is MantisNet, a graph network with 5,196,965 parameters. The
+model reads a position as a set of entities: the stones, the live windows, and
+the legal cells. The entities exchange typed messages. A Gumbel search
+converts the model outputs into moves. The KLENT self-play loop trained the
+model with the same policy-improvement formula that the search uses. Each
+figure on these pages shows real data from the served checkpoint.
 </p>
 
 <h2 id="loop"><span class="sec-no">01</span>the loop</h2>
@@ -41,16 +38,17 @@ checkpoint.
      1024 envs / one-epoch fit / checkpoint every 5 / eval every 25, observes
      only; iteration 402 picked by pooled evals -->
 <p>
-Training is one repeating cycle. Each iteration plays 4,096 complete games of
-self-play, fits exactly one epoch against that fresh buffer, and throws the
-buffer away &mdash; fully on-policy, no replay window. The improved network
-plays the next iteration&rsquo;s games. An evaluation harness watches from
-outside and never steers. The served checkpoint is iteration 402.
+The training is one cycle that repeats. Each iteration plays 4,096 games of
+self-play, fits the network for one epoch on that buffer, and then discards
+the buffer. The training is fully on-policy, without a replay window. The new
+network plays the games of the next iteration. An evaluation harness measures
+the checkpoints but does not control the training. The served checkpoint is
+iteration 402.
 </p>
 
 <figure class="fig fig-wide" id="system-map">
-  <figcaption>fig 1 &middot; <b>the mantisnet system</b> &middot; hover or focus a node
-    for detail &middot; click to open its page</figcaption>
+  <figcaption>fig 1 &middot; <b>the mantisnet system</b> &middot; point to a node
+    for detail &middot; click a node to open its page</figcaption>
   <svg class="sysmap" viewBox="0 0 860 378" role="group" aria-label="System map: self-play, buffer, fit, checkpoint, evaluation, and the acting path between search and network">
     <defs>
       <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -60,7 +58,7 @@ outside and never steers. The served checkpoint is iteration 402.
 
     <!-- return edge: checkpoint -> next iteration's self-play -->
     <path class="edge" d="M735 58 V22 H105 V50" marker-end="url(#ah)"/>
-    <text class="elab" x="420" y="15" text-anchor="middle">weights &rarr; the next iteration&rsquo;s self-play</text>
+    <text class="elab" x="420" y="15" text-anchor="middle">weights &rarr; the self-play of the next iteration</text>
 
     <!-- forward edges -->
     <path class="edge" d="M180 89 H232" marker-end="url(#ah)"/>
@@ -68,53 +66,53 @@ outside and never steers. The served checkpoint is iteration 402.
     <path class="edge" d="M390 89 H442" marker-end="url(#ah)"/>
     <text class="elab" x="420" y="137" text-anchor="middle">one epoch, then discarded</text>
     <path class="edge" d="M600 89 H652" marker-end="url(#ah)"/>
-    <text class="elab" x="630" y="137" text-anchor="middle">every 5 iterations</text>
+    <text class="elab" x="630" y="137" text-anchor="middle">each 5 iterations</text>
 
     <!-- eval branch -->
     <path class="edge" d="M735 120 V202" marker-end="url(#ah)"/>
-    <text class="elab dim" x="744" y="166" text-anchor="start">every 25 iterations</text>
+    <text class="elab dim" x="744" y="166" text-anchor="start">each 25 iterations</text>
 
     <!-- self-play <-> acting inset connector -->
     <path class="edge soft" d="M105 120 V186"/>
 
     <a class="map-node" href="search.html#klent" tabindex="0" data-k="self-play"
-       data-info="4,096 complete games per iteration over 1,024 parallel environments, each decision searched by the model itself. Every acting ply computes the improved policy π′ in closed form and writes one training row.">
+       data-info="Each iteration plays 4,096 games across 1,024 parallel environments. The model searches each decision. Each acting ply computes the improved policy π′ in closed form and writes one training row.">
       <rect x="30" y="58" width="150" height="62"/>
       <text class="nt" x="105" y="86" text-anchor="middle">self-play</text>
       <text class="ns" x="105" y="104" text-anchor="middle">4,096 games / iteration</text>
     </a>
 
     <a class="map-node" href="search.html#targets" tabindex="0" data-k="buffer"
-       data-info="One on-policy buffer per iteration: positions, the taken actions, π′ targets, and λ-returns over v̂ with mover-change signs (+1 within a turn, −1 at a handover). No replay window — the whole buffer dies after one fit.">
+       data-info="One on-policy buffer for each iteration: the positions, the actions, the π′ targets, and the λ-returns over v̂. The sign of the return chain changes at each turn handover. The loop discards the buffer after one fit.">
       <rect x="240" y="58" width="150" height="62"/>
       <text class="nt" x="315" y="86" text-anchor="middle">buffer</text>
       <text class="ns" x="315" y="104" text-anchor="middle">on-policy &middot; single use</text>
     </a>
 
     <a class="map-node" href="search.html#targets" tabindex="0" data-k="fit"
-       data-info="Adam at lr 1e-3, batch 4096: policy cross-entropy against π′ plus the taken action's categorical cross-entropy against (max(G,0), max(−G,0), 1−|G|). The state-value head is deliberately not in the loop.">
+       data-info="Adam at lr 1e-3, batch 4096. Two losses: policy cross-entropy against π′, and categorical cross-entropy on the taken action. The loop does not train the state-value head.">
       <rect x="450" y="58" width="150" height="62"/>
       <text class="nt" x="525" y="86" text-anchor="middle">fit</text>
       <text class="ns" x="525" y="104" text-anchor="middle">2 losses &middot; 1 epoch</text>
     </a>
 
     <a class="map-node" href="search.html#klent" tabindex="0" data-k="checkpoint"
-       data-info="One checkpoint every 5 iterations. The export served here is iteration 402, picked by pooled evaluation over the run's late checkpoints, and it carries the exact τ/λ/mass-floor it trained with — π′ is meaningless under parameters the model did not train with.">
+       data-info="The loop writes one checkpoint each 5 iterations. This site serves iteration 402. A pooled evaluation across the late checkpoints selected it. The export contains the τ, λ, and mass-floor values from the training.">
       <rect x="660" y="58" width="150" height="62"/>
       <text class="nt" x="735" y="86" text-anchor="middle">checkpoint</text>
       <text class="ns" x="735" y="104" text-anchor="middle">it 402 served</text>
     </a>
 
     <a class="map-node" href="search.html#klent" tabindex="0" data-k="evaluation"
-       data-info="Every 25 iterations the checkpoint plays a fixed roster (a frozen anchor bot and a scripted tactician). Evaluation observes and charts; it never gates, promotes, or rolls back training.">
+       data-info="Each 25 iterations, the checkpoint plays a fixed set of opponents. The evaluation measures and records. It does not gate, promote, or stop the training.">
       <rect x="660" y="210" width="150" height="62"/>
       <text class="nt" x="735" y="238" text-anchor="middle">evaluation</text>
-      <text class="ns" x="735" y="256" text-anchor="middle">observes &middot; never gates</text>
+      <text class="ns" x="735" y="256" text-anchor="middle">measures &middot; does not gate</text>
     </a>
 
     <!-- acting-path inset -->
     <rect class="inset-frame" x="30" y="190" width="390" height="170"/>
-    <text class="inset-tag" x="44" y="212">acting &mdash; inside self-play, and on this site</text>
+    <text class="inset-tag" x="44" y="212">acting &mdash; in self-play, and on this site</text>
 
     <path class="edge" d="M172 258 H270" marker-end="url(#ah)"/>
     <text class="elab dim" x="225" y="250" text-anchor="middle">line positions</text>
@@ -122,7 +120,7 @@ outside and never steers. The served checkpoint is iteration 402.
     <text class="elab dim" x="225" y="308" text-anchor="middle">&pi;&prime; &middot; v&#770;</text>
 
     <a class="map-node" href="search.html" tabindex="0" data-k="search"
-       data-info="Gumbel sequential halving over 16 deterministic lines: each candidate plays out a principal variation, rounds cut the weaker half by searched value, and a final rerank decides. The same search runs when you play the bot.">
+       data-info="Gumbel sequential halving across 16 deterministic lines. Each candidate plays a principal variation. Each round cuts the half with less value. A final score selects the move. The same search operates when you play the bot.">
       <rect x="52" y="232" width="120" height="88"/>
       <text class="nt" x="112" y="268" text-anchor="middle">search</text>
       <text class="ns" x="112" y="286" text-anchor="middle">gumbel halving</text>
@@ -130,7 +128,7 @@ outside and never steers. The served checkpoint is iteration 402.
     </a>
 
     <a class="map-node" href="network.html" tabindex="0" data-k="network"
-       data-info="A graph transformer: stones, live windows, legal cells, and four state latents exchange typed messages through four blocks; heads read a policy, a categorical action-value, and v̂ = E_π′[Q]. 5,196,965 parameters.">
+       data-info="A graph transformer. The stones, the live windows, the legal cells, and 4 state latents send typed messages through 4 blocks. The heads give a policy, a categorical action-value, and v̂ = E_π′[Q]. 5,196,965 parameters.">
       <rect x="278" y="232" width="120" height="88"/>
       <text class="nt" x="338" y="268" text-anchor="middle">network</text>
       <text class="ns" x="338" y="286" text-anchor="middle">5.2M params</text>
@@ -140,16 +138,16 @@ outside and never steers. The served checkpoint is iteration 402.
 
   <div class="fig-readout" id="mapReadout" aria-live="polite">
     <span class="ro-k">system map</span>
-    <span class="ro-t">hover or tab through the nodes; click one to open its page.</span>
+    <span class="ro-t">point to a node, or move through the nodes with the tab key. Click a node to open its page.</span>
   </div>
 </figure>
 
-<h2 id="numbers"><span class="sec-no">02</span>numbers at a glance</h2>
+<h2 id="numbers"><span class="sec-no">02</span>the numbers</h2>
 
 <p>
-Every number below is read from the served checkpoint, its recorded training
-configuration, or the vendored source this site runs; the interactive figures
-on the other pages are generated from the same stack.
+Each number below comes from the served checkpoint, from its recorded
+training configuration, or from the vendored source that this site runs. The
+figures on the other pages come from the same stack.
 </p>
 
 <div class="numstrip">
@@ -168,7 +166,7 @@ on the other pages are generated from the same stack.
   <!-- src: family adapter _DEFAULT_CANDIDATES -->
   <div class="ns-cell"><div class="ns-n">16</div><div class="ns-l">search candidates</div></div>
   <!-- src: production bots.toml sims ladder -->
-  <div class="ns-cell"><div class="ns-n">16&ndash;128</div><div class="ns-l">sims per stone here</div></div>
+  <div class="ns-cell"><div class="ns-n">16&ndash;128</div><div class="ns-l">sims for each stone</div></div>
   <!-- src: runs/cellnodes-1 config + status -->
   <div class="ns-cell"><div class="ns-n">402</div><div class="ns-l">iterations served</div></div>
   <div class="ns-cell"><div class="ns-n">4,096</div><div class="ns-l">games / iteration</div></div>
@@ -177,62 +175,62 @@ on the other pages are generated from the same stack.
   <div class="ns-cell"><div class="ns-n">&gamma; .99 &middot; &lambda;<small>ret</small> .939</div><div class="ns-l">returns</div></div>
 </div>
 
-<h2 id="unusual"><span class="sec-no">03</span>properties of the design</h2>
+<h2 id="unusual"><span class="sec-no">03</span>design properties</h2>
 
 <p>
-<b>A graph, not a grid.</b> The board is unbounded, so nothing is padded or
-cropped: the input is the position&rsquo;s own structure &mdash; stones, the
-154-or-so live windows, the ~400 legal cells &mdash; and it grows and shrinks
-with the game. Six-in-a-row tactics live in the window nodes <em>as
-entities</em>, not as a pattern a filter must rediscover.
+<b>A graph, not a grid.</b> The board has no limits, and the input is not
+padded or cropped. The input is the structure of the position: the stones,
+the live windows, and the legal cells. The input size changes with the game.
+Each possible win is one window node in the input.
 <a href="position.html">What the model sees &rarr;</a>
 </p>
 
 <p>
-<b>Symmetry by invisibility.</b> Every input &mdash; mover-relative ownership,
-reversal-folded window patterns, orbit-folded displacement classes &mdash; is
-invariant under the board&rsquo;s twelve symmetries. The network cannot tell a
-position from its rotation, so it answers identically, with zero augmentation
-spent. <a href="position.html#absent">What is deliberately absent &rarr;</a>
+<b>Symmetry by invariant inputs.</b> Each input value is invariant under the
+12 symmetries of the board. Ownership is relative to the side to move. The
+window patterns are folded under reversal. The displacement classes are
+folded under the symmetry group. As a result, the network cannot know the
+difference between a position and its rotation. The outputs are identical,
+and the training uses no augmentation.
+<a href="position.html#absent">What the input does not contain &rarr;</a>
 </p>
 
 <p>
-<b>A critic that can say &ldquo;nothing here&rdquo;.</b> The action-value head is
-categorical &mdash; win-mass, loss-mass, nothing-mass per move &mdash; and acting
-normalizes by the position&rsquo;s most committed action, so a quiet position&rsquo;s
-faint preferences still rank cleanly.
+<b>A categorical critic.</b> The action-value head gives three probabilities
+for each move: win mass, loss mass, and zero mass. The acting score divides Q
+by the largest committed mass in the position. As a result, weak preferences
+in a quiet position keep a clean rank order.
 <a href="network.html#heads">The three heads &rarr;</a>
 </p>
 
 <p>
-<b>One improvement operator, used twice.</b> &pi;&prime; &prop;
-exp[(Q&#771; + &tau;&thinsp;ln&thinsp;&pi;)/(&tau;+&lambda;)] answers every
-search leaf <em>and</em> is the training target for the policy &mdash; the
-search and the loss literally share the code path and the &tau;, &lambda;
-the checkpoint trained with.
+<b>One improvement operator, used two times.</b> The formula
+&pi;&prime; &prop; exp[(Q&#771; + &tau;&thinsp;ln&thinsp;&pi;)/(&tau;+&lambda;)]
+answers each search leaf. The same formula is the training target for the
+policy. The search and the loss use the same code path and the same &tau; and
+&lambda; from the checkpoint.
 <a href="search.html#klent">KLENT &rarr;</a>
 </p>
 
 <p>
-<b>The value you see is the value it acts on.</b> KLENT never trains the
-state-value head, so this site serves v&#770; = E<sub>&pi;&prime;</sub>[Q]
-everywhere a value appears &mdash; the model&rsquo;s acting-time evaluation, not a
-dead readout. <a href="network.html#heads">Why &rarr;</a>
+<b>The served value is the acting value.</b> KLENT does not train the
+state-value head. At each place where this site shows a value, the value is
+v&#770; = E<sub>&pi;&prime;</sub>[Q]. This is the evaluation that the model
+uses when it acts.
+<a href="network.html#heads">Why &rarr;</a>
 </p>
 
 <p>
-<b>Deterministic on this site.</b> Root exploration noise is disabled here,
-so the search is a pure argmax pipeline: play the same moves and the bot
-answers the same stones, every time. Watch it happen live with &ldquo;watch the
-bot think&rdquo; on the play screen, then read
-<a href="search.html#replay">the same telemetry replayed &rarr;</a>
+<b>Deterministic on this site.</b> The root noise scale is zero on this site.
+The search is a pure argmax pipeline. If you play the same moves, the bot
+plays the same stones.
+<a href="search.html#replay">A real search, replayed &rarr;</a>
 </p>
 
 <div class="note">
-Want the raw internals instead of prose? The <a href="lab.html">lab</a> runs
-the served checkpoint on any position you set up &mdash; policy, v&#770;,
-per-head attention over the placement sequence, activation norms, and the
-builder&rsquo;s feature planes, live.
+The <a href="lab.html">lab</a> runs the served checkpoint on each position
+that you set up. The lab shows the policy, v&#770;, the attention rows, the
+activation norms, and the feature planes.
 </div>
 
 </main>
@@ -251,7 +249,7 @@ builder&rsquo;s feature planes, live.
   var k = ro.querySelector(".ro-k");
   var t = ro.querySelector(".ro-t");
   var DEF_K = "system map";
-  var DEF_T = "hover or tab through the nodes; click one to open its page.";
+  var DEF_T = "point to a node, or move through the nodes with the tab key. Click a node to open its page.";
   function set(kk, tt) { k.textContent = kk; t.textContent = tt; }
   var nodes = document.querySelectorAll(".sysmap .map-node");
   for (var i = 0; i < nodes.length; i++) {

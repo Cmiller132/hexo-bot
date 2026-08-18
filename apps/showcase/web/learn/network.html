@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MantisNet &mdash; the network</title>
-<meta name="description" content="How MantisNet computes: four message-passing blocks over stones, windows, cells, and latents, then three heads — policy, a categorical action-value critic, and the value the model actually acts on.">
+<meta name="description" content="The MantisNet trunk and heads: four message-passing blocks over stones, windows, cells, and latents; a policy head; a categorical action-value head; the served value v-hat.">
 <link rel="stylesheet" href="learn.css">
 </head>
 <body>
@@ -21,15 +21,14 @@
 
 <main class="learn-main">
 
-<h1>The network <span class="h-dim">&mdash; messages between entities</span></h1>
+<h1>The network <span class="h-dim">&mdash; the trunk and the heads</span></h1>
 
 <p class="lede">
-MantisNet is a transformer-family graph network: every entity from the
-<a href="position.html">previous page</a> becomes a 128-wide row, and four
-identical blocks pass typed messages between the sets and run attention within
-them. There are no convolutions and no grid &mdash; when two things interact,
-it is because a relation from the frozen vocabularies connects them. The
-served model has <b>5,196,965 parameters</b>.
+Each entity from the <a href="position.html">previous page</a> becomes a row
+of width 128. Four identical blocks pass typed messages between the entity
+sets and apply attention in them. The model has no convolutions and no grid.
+Two entities interact only when a relation from the frozen vocabularies
+connects them. The served model has <b>5,196,965 parameters</b>.
 </p>
 
 <h2 id="embed"><span class="sec-no">01</span>from classes to rows</h2>
@@ -37,9 +36,9 @@ served model has <b>5,196,965 parameters</b>.
 <!-- src: MODEL_SPEC.md §2, §3; model.py MantisConfig (H=128, B=4, A=4, F=2);
      table sizes = vocab × H, verifiable arithmetic -->
 <p>
-Everything the builder emits is an id into a small vocabulary, and every
+Each builder output is the identifier of a class in a small vocabulary. Each
 vocabulary is a learned embedding table into the shared width
-H&thinsp;=&thinsp;128. The important ones:
+H&thinsp;=&thinsp;128:
 </p>
 
 <div class="numstrip">
@@ -54,13 +53,13 @@ H&thinsp;=&thinsp;128. The important ones:
 </div>
 
 <p>
-Stones start as their ownership embedding; windows as their pattern embedding;
-the four latents as a learned base plus the <code>moves_remaining</code>
-embedding; covered cells all start from <em>one shared learned row</em> and
-accrue identity purely through what they read, while uncovered cells start
-from three feature embeddings (occupancy, legality, bucketed nearest-stone
-distance). Per-class tables give each relation type its own contribution and
-score bias inside the message-passing stages.
+Stones start as the ownership embedding. Windows start as the pattern
+embedding. The 4 latents start from a learned base plus the
+<code>moves_remaining</code> embedding. All covered cells start from one
+shared learned row and get their identity from what they read. Uncovered
+cells start from three feature embeddings: occupancy, legality, and the
+nearest-stone distance bucket. In the message-passing stages, per-class
+tables give each relation type its own contribution and its own score bias.
 </p>
 
 <h2 id="block"><span class="sec-no">02</span>one block, six stages</h2>
@@ -69,13 +68,14 @@ score bias inside the message-passing stages.
      cellnodes-1 run): window_attention=False, cell_latents=True,
      cell_nodes=True, cell_node_scope=all — the §5.1c stage is absent -->
 <p>
-The trunk is <b>B&thinsp;=&thinsp;4</b> identical blocks. Every stage is a
-pre-LayerNorm residual update, and every ragged softmax runs in fp32
-regardless of autocast. In the served configuration one block runs, in order:
+The trunk is <b>B&thinsp;=&thinsp;4</b> identical blocks. Each stage is a
+residual update with a pre-LayerNorm. Each ragged softmax operates in fp32,
+also under autocast. In the served configuration, one block does these six
+stages in sequence:
 </p>
 
 <figure class="fig fig-wide" id="fig-block">
-  <figcaption>fig 1 &middot; <b>one trunk block</b> &middot; hover or tab through the stages</figcaption>
+  <figcaption>fig 1 &middot; <b>one trunk block</b> &middot; point to a stage, or move through the stages with the tab key</figcaption>
   <svg class="sysmap" viewBox="0 0 860 330" role="group" aria-label="The six stages of a trunk block, connecting windows, cells, stones, and latents">
     <defs>
       <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -93,52 +93,45 @@ regardless of autocast. In the served configuration one block runs, in order:
     <path class="edge soft" d="M90 204 H846"/>
     <path class="edge soft" d="M90 284 H846"/>
 
-    <!-- stage 1: windows <- stones -->
     <g class="map-node" tabindex="0" data-k="1 · windows ← stones"
-       data-info="Each window sums its stones' rows (sum, not mean — the count is the signal) plus the sum of its 1458-class incidence rows, and updates through a two-input MLP. Full windows sharpen; contested windows learn they are dead.">
+       data-info="Each window sums the rows of its stones plus the sum of its 1458-class rows. The update goes through a two-input MLP. The aggregation is a sum, not a mean, because the count is a signal.">
       <rect x="100" y="28" width="88" height="192"/>
       <text class="nt" x="144" y="66" text-anchor="middle">5.1</text>
       <text class="ns" x="144" y="82" text-anchor="middle">win &larr; stones</text>
     </g>
-    <path class="edge" d="M144 204 V222" marker-end="url(#ah)" transform="rotate(180 144 213)"/>
 
-    <!-- stage 2: cell state -->
     <g class="map-node" tabindex="0" data-k="2 · cell state"
-       data-info="Covered cells read their (at most 18) containing windows under the 726-class typing; every legal cell then reads the stones within radius 8 through the 192-class edges; finally the windows read back from their (at most 5) empty candidate cells. A full window has no empty cells and reads zero.">
+       data-info="Covered cells read their windows (maximum 18) with the 726-class types. Each legal cell then reads the stones in radius 8 through the 192-class edges. Then the windows read from their empty candidate cells (maximum 5). A full window has no empty cells and reads zero.">
       <rect x="220" y="28" width="88" height="192"/>
       <text class="nt" x="264" y="66" text-anchor="middle">5.1b</text>
       <text class="ns" x="264" y="82" text-anchor="middle">cell state</text>
       <text class="ns" x="264" y="96" text-anchor="middle">win &harr; cell &larr; stone</text>
     </g>
 
-    <!-- stage 3: stones <- windows -->
     <g class="map-node" tabindex="0" data-k="3 · stones ← windows"
-       data-info="The mirror of stage 1: each stone aggregates the rows of every window it sits in, plus its class-row sum — after stages 1–2 those windows already carry cell and opponent context.">
+       data-info="The mirror of stage 1: each stone aggregates the rows of its windows plus its class-row sum. After stages 1 and 2, these windows contain cell context and opponent context.">
       <rect x="340" y="28" width="88" height="192"/>
       <text class="nt" x="384" y="66" text-anchor="middle">5.2</text>
       <text class="ns" x="384" y="82" text-anchor="middle">stones &larr; win</text>
     </g>
 
-    <!-- stage 4: stone self-attention -->
     <g class="map-node" tabindex="0" data-k="4 · stone self-attention"
-       data-info="Multi-head attention (4 heads) over [latents; stones], block-diagonal per position, biased by two learned tables: bucketed hex distance (1..12, then SELF, then TOKEN) and an extra on-axis bias for pairs sharing a board axis. The only stage where any two stones talk directly.">
+       data-info="Multi-head attention (4 heads) over [latents; stones], block-diagonal for each position. Two learned tables give the bias: the hex-distance buckets (1..12, then SELF, then TOKEN) and an on-axis bias for pairs with a shared axis. Only this stage connects two stones directly.">
       <rect x="460" y="28" width="88" height="264"/>
       <text class="nt" x="504" y="66" text-anchor="middle">5.3</text>
       <text class="ns" x="504" y="82" text-anchor="middle">stone attn</text>
       <text class="ns" x="504" y="96" text-anchor="middle">+ latents</text>
     </g>
 
-    <!-- stage 5: window-latent cycle -->
     <g class="map-node" tabindex="0" data-k="5 · window–latent cycle"
-       data-info="The four latents attend over the position's window set, mix among themselves (dense 4×4 attention), and broadcast back to every window — global context in, position-level summary out.">
+       data-info="The 4 latents attend over the windows of the position, mix in a dense 4×4 attention, and broadcast back to each window. Global context goes in, and a position-level summary comes out.">
       <rect x="580" y="28" width="88" height="264"/>
       <text class="nt" x="624" y="66" text-anchor="middle">5.4</text>
       <text class="ns" x="624" y="82" text-anchor="middle">win &harr; latents</text>
     </g>
 
-    <!-- stage 6: FFN -->
     <g class="map-node" tabindex="0" data-k="6 · feed-forward"
-       data-info="One shared 2× feed-forward over stones and latents closes the block. After the last block, a single LayerNorm produces the head inputs: stone rows, window rows, refined cell rows, and the latents' normalized mean g.">
+       data-info="One shared 2× feed-forward over the stones and the latents completes the block. After the last block, one LayerNorm gives the head inputs: the stone rows, the window rows, the refined cell rows, and the mean latent row g.">
       <rect x="700" y="28" width="88" height="264"/>
       <text class="nt" x="744" y="66" text-anchor="middle">FFN</text>
       <text class="ns" x="744" y="82" text-anchor="middle">&times;2 expansion</text>
@@ -146,58 +139,57 @@ regardless of autocast. In the served configuration one block runs, in order:
   </svg>
   <div class="fig-readout" id="blockRo" aria-live="polite">
     <span class="ro-k">one of four blocks</span>
-    <span class="ro-t">information flows stones &rarr; windows &rarr; cells and back every block; four rounds are enough for any two entities on the board to have exchanged influence.</span>
+    <span class="ro-t">data flows stones &rarr; windows &rarr; cells and back in each block. After 4 blocks, each pair of entities on the board is connected.</span>
   </div>
 </figure>
 
 <div class="note">
-The architecture also implements a typed window-pair attention stage (§5.1c)
-between stages 2 and 3; the served configuration trains with it
-<b>off</b> &mdash; its job is covered by the persistent cell state, which
-connects crossing windows through their shared cells at lower cost. Knobs are
-validated jointly at construction, and a knob at its default is
-byte-identical to a build without the knob&rsquo;s code.
+The architecture also has a typed window-pair attention stage (§5.1c)
+between stages 2 and 3. The served configuration trains with this stage off:
+the persistent cell state connects crossing windows through their shared
+cells at a lower cost. The constructor validates the knobs together. With a
+knob at its default, the outputs are byte-identical to a build without the
+code of the knob.
 </div>
 
-<h2 id="heads"><span class="sec-no">03</span>three heads, one shared reading</h2>
+<h2 id="heads"><span class="sec-no">03</span>three heads, one shared read</h2>
 
 <!-- src: MODEL_SPEC.md §6, §7, appendix B; model.py CRITIC_LOGITS = 3,
      zero-initialized decoder outputs -->
 <p>
-After the last block, both per-cell heads read the same rows: each legal
-cell&rsquo;s refined latent (uncovered cells carry the normalized shared base),
-its own 726-class incidence sum, and its own extension of the shared
-action-row encoding &mdash; fed through a two-input MLP whose other input is the
-global context <code>g</code>. Both output layers are zero-initialized: an
-untrained MantisNet plays exactly uniformly over legal cells.
+After the last block, the two per-cell heads read the same rows for each
+legal cell: the refined cell latent (an uncovered cell keeps the normalized
+shared base), the sum of its 726-class incidence rows, and an extension of
+the shared action-row encoding. A two-input MLP combines this with the
+global context <code>g</code>. Both output layers initialize to zero. An
+untrained MantisNet plays uniformly across the legal cells.
 </p>
 
 <ul>
-  <li><b>Policy head</b> &mdash; one raw logit per legal cell; softmax per
-  position. This is the <em>prior</em> the search starts from.</li>
-  <li><b>Action-value head</b> &mdash; three logits per legal cell, softmaxed to
-  <code>(p&#8330;, p&#8331;, p&#8320;)</code>: the probability the signed return
-  after this move is positive, negative, or zero. From the simplex:
+  <li><b>Policy head</b> &mdash; one raw logit for each legal cell, then a
+  softmax for each position. This is the prior for the search.</li>
+  <li><b>Action-value head</b> &mdash; three logits for each legal cell, then
+  a softmax to <code>(p&#8330;, p&#8331;, p&#8320;)</code>: the probability
+  that the signed return after the move is positive, negative, or zero. From
+  the simplex:
   <div class="eq">Q = p&#8330; &minus; p&#8331; &nbsp;&nbsp;&nbsp;&nbsp; M = p&#8330; + p&#8331; &nbsp;&nbsp;(committed mass)</div>
-  Acting ranks by the <b>mass-normalized score</b>
-  Q&#771; = Q / max(max<sub>b</sub>&thinsp;M(b), 0.2) &mdash; one positive divisor
-  per position, which keeps Q&rsquo;s order but expresses it in units of the
-  position&rsquo;s most committed action.</li>
-  <li><b>State-value head</b> &mdash; four learned queries attend over
-  [<code>g</code>; window rows] and an MLP emits a 65-bin distribution over
-  [&minus;1,&thinsp;1]. It exists for supervised experiments only &mdash; see
-  the note below.</li>
+  The acting score is Q&#771; = Q / max(max<sub>b</sub>&thinsp;M(b), 0.2).
+  One positive divisor for each position keeps the order of Q and sets the
+  scale to the most committed action of the position.</li>
+  <li><b>State-value head</b> &mdash; 4 learned queries attend over
+  [<code>g</code>; window rows], and an MLP gives a distribution across 65
+  bins on [&minus;1,&thinsp;1]. Only supervised experiments use this head.
+  Refer to the note below.</li>
 </ul>
 
 <div class="note">
-<b>The value you see on this site is not the state-value head.</b> The
-self-play loop that trained this model (<a href="search.html">next page</a>)
-never trains that head, so on the served checkpoint it is an untrained readout
-of a trained trunk &mdash; smooth, structured, and meaningless. Every value the
-site shows is <b>v&#770; = E<sub>&pi;&prime;</sub>[Q]</b>: the expected
-action-value under the model&rsquo;s improved policy &mdash; the evaluation the
-model actually acts on. On the featured position the dead head reads
-&minus;0.30 while v&#770; reads +0.02, which matches the balanced board.
+<b>The value on this site is not the state-value head.</b> The self-play
+loop (<a href="search.html">next page</a>) does not train that head. On the
+served checkpoint, that head is an untrained readout of a trained trunk.
+Each value on the site is <b>v&#770; = E<sub>&pi;&prime;</sub>[Q]</b>: the
+expected action value under the improved policy. This is the evaluation that
+the model uses when it acts. On the position below, the untrained head reads
+&minus;0.30, and v&#770; reads +0.02 on a level board.
 </div>
 
 <h2 id="outputs"><span class="sec-no">04</span>the real outputs, on the real position</h2>
@@ -206,18 +198,15 @@ model actually acts on. On the featured position the dead head reads
      from the served checkpoint on the featured position; max diff vs the
      live SSE stream of the same search: 1.9e-6 -->
 <p>
-The featured position again &mdash; this time coloured by what comes out. The
-three fills are the model&rsquo;s raw policy, the improved policy &pi;&prime;
-(the training-time refinement of the prior by the critic, explained on the
-<a href="search.html">next page</a>), and the per-cell action value Q on the
-blue&ndash;red convention. v&#770; on this position: <b>+0.019</b> &mdash; the
-model calls it dead even, and the game record agrees it was still anyone&rsquo;s
-game here.
+This is the same position, coloured by the outputs. The three fills are the
+raw policy, the improved policy &pi;&prime; (refer to the
+<a href="search.html">next page</a>), and the action value Q on the
+blue&ndash;red convention. v&#770; for this position is <b>+0.019</b>.
 </p>
 
 <figure class="fig fig-wide" id="fig-out">
-  <figcaption>fig 2 &middot; <b>what the heads say</b> &middot; the served checkpoint on
-    the featured position &middot; hover cells</figcaption>
+  <figcaption>fig 2 &middot; <b>what the heads give</b> &middot; the served checkpoint on
+    the featured position &middot; point to the cells</figcaption>
   <div class="fig-body">
     <svg id="outSvg" style="width:100%;max-width:600px;display:block;margin:0 auto" role="img" aria-label="The featured position coloured by policy prior, improved policy, or action value"></svg>
   </div>
@@ -229,35 +218,37 @@ game here.
   </div>
   <div class="fig-readout" id="outRo" aria-live="polite">
     <span class="ro-k">heads</span>
-    <span class="ro-t">prior favourite: (0, 1) at 27%. The critic leans elsewhere — switch to Q and find (&minus;2, 6).</span>
+    <span class="ro-t">the prior points to (0, 1) at 27%. The critic points to (&minus;2, 6). Use the Q button.</span>
   </div>
 </figure>
 
-<h2 id="batch"><span class="sec-no">05</span>batching, numerics, and proof it matches</h2>
+<h2 id="batch"><span class="sec-no">05</span>batching, numerics, and parity</h2>
 
 <!-- src: MODEL_SPEC.md §9, §10, §12; boot parity self-check numbers from the
      production deploy logs (|dpolicy| 1.5e-5, |dvalue| 2.7e-7) -->
 <p>
-Positions batch by concatenation with per-position index offsets: message
-passing never crosses positions, attention is masked block-diagonal, and a
-missing index tensor is an error, never a silently substituted default. The
-production input builder is the Rust encoder shared with the engine bindings;
-the Python builder is its oracle, and parity between them is a test
-obligation. Weights are fp32; the forward runs under bf16/fp16 autocast
-without assuming it, and the ragged softmaxes, segment reductions, and
-categorical compositions stay fp32 unconditionally.
+Positions batch by concatenation, with index offsets for each position.
+Message passing does not cross positions, and attention has a block-diagonal
+mask. A missing index tensor causes an error, not a default. The production
+input builder is the Rust encoder. The Python builder is its oracle, and a
+parity test compares them.
 </p>
 
 <p>
-The same discipline reaches this website: the server runs a numeric self-check
-at every boot, forwarding a fixed position and comparing against frozen
-reference outputs (last deploy: max policy drift 1.5&times;10<sup>&minus;5</sup>,
-value drift 2.7&times;10<sup>&minus;7</sup> on the Arc A310), and the data
-behind these figures was generated by that same stack &mdash; the priors here
-match the live game&rsquo;s telemetry to 2&times;10<sup>&minus;6</sup>. You can
-watch the internals yourself: the <a href="lab.html">lab</a> runs this model
-on any position you set up, with attention rows, activation norms, and
-feature planes exposed.
+The weights are fp32. The forward operates under bf16 autocast but does not
+assume it. The ragged softmaxes, the segment reductions, and the categorical
+compositions stay in fp32.
+</p>
+
+<p>
+The server does a numeric self-check at each boot: it forwards a fixed
+position and compares the result with frozen reference outputs. At the last
+deploy, the maximum policy drift was 1.5&times;10<sup>&minus;5</sup> and the
+value drift was 2.7&times;10<sup>&minus;7</sup> on the Arc A310. The data for
+these figures comes from the same stack, and the priors here agree with the
+live game telemetry to 2&times;10<sup>&minus;6</sup>. The
+<a href="lab.html">lab</a> runs this model on each position that you set up
+and shows the attention rows, the activation norms, and the feature planes.
 </p>
 
 </main>
@@ -274,7 +265,7 @@ import * as M from "./mantis.js";
 
 const $ = id => document.getElementById(id);
 
-/* ---------- fig 1: stage hover ---------- */
+/* ---------- fig 1: stage details ---------- */
 {
   const ro = M.readout($("blockRo"));
   for (const n of document.querySelectorAll(".sysmap .map-node")) {
@@ -300,7 +291,7 @@ const $ = id => document.getElementById(id);
   function paint() {
     board.clearFills();
     if (mode === "q") {
-      // Q is mover-POV; to_move is P0 here, so positive = blue by convention.
+      // Q is mover-POV; the mover is P0, and positive shows as blue.
       for (const c of cells) {
         const v = wt.to_move === 0 ? c.q_value : -c.q_value;
         board.setFill(c.q, c.r, M.qColor(v), Math.min(0.85, Math.abs(c.q_value) * 14));
@@ -316,7 +307,7 @@ const $ = id => document.getElementById(id);
         if (p(c) > 1e-5) board.setFill(c.q, c.r, tint, (0.8 * w).toFixed(3));
       }
       legend.innerHTML =
-        `<span class="lg"><span class="sw" style="background:${tint}"></span>brighter = more probability (blue is to move)</span>`;
+        `<span class="lg"><span class="sw" style="background:${tint}"></span>a brighter cell has more probability (blue is to move)</span>`;
     }
   }
   paint();

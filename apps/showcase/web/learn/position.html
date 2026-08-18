@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MantisNet &mdash; what the model sees</title>
-<meta name="description" content="What MantisNet reads from a Hexo position: stones, live windows, state latents, and legal cells, encoded through frozen symmetry-folded vocabularies — no grid, no coordinates.">
+<meta name="description" content="The MantisNet input: stones, live windows, state latents, and legal cells, encoded through frozen symmetry-folded vocabularies.">
 <link rel="stylesheet" href="learn.css">
 </head>
 <body>
@@ -21,65 +21,52 @@
 
 <main class="learn-main">
 
-<h1>What the model sees <span class="h-dim">&mdash; entities, not pixels</span></h1>
+<h1>What the model sees <span class="h-dim">&mdash; the input entities</span></h1>
 
 <p class="lede">
-Hexo is played on an unbounded board, so there is no canvas to convolve over
-and no fixed input vector to fill in. MantisNet reads a position as a small
-graph of typed entities &mdash; the stones, the live windows, four position-level
-latents, and the legal cells &mdash; connected by relations drawn from frozen,
-symmetry-folded vocabularies. Everything on this page is drawn from one real
-position of a real game against the served model, rebuilt by the production
-input builder.
+The Hexo board has no limits. Because of this, the model has no grid and no
+fixed input vector. The builder converts each position into a graph of typed
+entities: the stones, the live windows, 4 state latents, and the legal cells.
+Relations from frozen vocabularies connect the entities, and each vocabulary
+is folded under the 12 symmetries of the board. All data on this page comes
+from one real position of a real game against the served model.
 </p>
 
-<h2 id="game"><span class="sec-no">01</span>the game, in five sentences</h2>
-
-<!-- src: crates/hexo-engine/README.md (normative); MODEL_SPEC.md §1 -->
-<p>
-Hexo is a two-player placement game on an infinite hexagonal board in axial
-coordinates <code>(q, r)</code>. Player 0 opens with a single stone at the
-origin; thereafter each player places <b>two stones per turn</b>. A placement
-must be an empty cell within <b>8 hex steps</b> of some occupied cell. Six or
-more of a player&rsquo;s stones consecutive along one of the board&rsquo;s three axes
-win, checked after <em>every</em> placement &mdash; a turn can end on its first
-stone. There are no draws, passes, or captures, and stones are permanent.
-</p>
-
-<h2 id="entities"><span class="sec-no">02</span>the four entity sets</h2>
+<h2 id="entities"><span class="sec-no">01</span>the four entity sets</h2>
 
 <!-- src: MODEL_SPEC.md §3.1–§3.4; counts from data/mantis_walkthrough.json
      (ply-11 position of the captured showcase game, 64 sims, T = 0) -->
 <p>
-The featured position below is eleven stones into a real showcase game &mdash;
-Mantis Shrimp v2 (blue, player 0) is about to place the first stone of its
-third full turn. The builder turns it into:
+The position below comes from ply 11 of the captured showcase game. Mantis
+Shrimp v2 (blue, player 0) will place the first stone of its turn. The
+builder makes these entities:
 </p>
 
 <ul>
-  <li><b>11 stones</b> &mdash; one node each. The <em>only</em> per-stone feature
-  is ownership relative to the side to move (own / opponent). A stone&rsquo;s
-  coordinates never enter its features; geometry acts only through the typed
-  relations below.</li>
-  <li><b>154 live windows</b> &mdash; a <span class="term" title="six consecutive cells along one of the three axes">window</span>
-  is any six-cell line segment currently holding at least one stone, of either
-  player or both. Windows are the tactical vocabulary of the game: every
-  possible win is a window, and every threat is a window filling up.</li>
-  <li><b>4 state latents</b> &mdash; position-level rows with no board location.
-  They initialize from a learned base plus an embedding of
-  <code>moves_remaining</code> (1 or 2 stones left this turn &mdash; the only
-  whole-position scalar the model consumes) and carry global context through
-  the trunk.</li>
-  <li><b>420 legal cells</b> &mdash; every empty cell within 8 steps of a stone,
-  in the engine&rsquo;s canonical order. <b>152</b> of them are
-  <span class="term" title="contained in at least one live window">covered</span>;
-  the other 268 lie beyond every live window and start from generic feature
-  embeddings instead.</li>
+  <li><b>11 stones</b> &mdash; one node for each stone. The only node feature
+  is ownership relative to the side to move (own or opponent). The
+  coordinates of a stone do not enter its features. Geometry enters only
+  through the typed relations below.</li>
+  <li><b>154 live windows</b> &mdash; a
+  <span class="term" title="six adjacent cells along one of the three axes">window</span>
+  is a segment of six cells along one axis. A window is live when it contains
+  one stone or more, of one player or of both players. Each possible win is
+  one window.</li>
+  <li><b>4 state latents</b> &mdash; position-level rows without a board
+  location. Each latent initializes from a learned base plus an embedding of
+  <code>moves_remaining</code> (1 or 2 stones left in the turn).
+  <code>moves_remaining</code> is the only whole-position scalar in the
+  input. The latents carry global context through the trunk.</li>
+  <li><b>420 legal cells</b> &mdash; each empty cell in a distance of 8 or
+  less from a stone, in the canonical order of the engine. 152 cells are
+  <span class="term" title="contained in one live window or more">covered</span>.
+  The other 268 cells are not in a live window and start from generic
+  feature embeddings.</li>
 </ul>
 
 <figure class="fig fig-wide" id="fig-board">
   <figcaption>fig 1 &middot; <b>a real position, as the builder sees it</b>
-    &middot; ply 11 of the captured showcase game &middot; hover cells; switch layers below</figcaption>
+    &middot; ply 11 of the captured showcase game &middot; point to the cells &middot; use the layer buttons</figcaption>
   <div class="fig-body">
     <svg id="boardSvg" style="width:100%;max-width:600px;display:block;margin:0 auto" role="img" aria-label="The featured 11-stone position with its legal cells"></svg>
   </div>
@@ -91,144 +78,147 @@ third full turn. The builder turns it into:
   </div>
   <div class="fig-readout" id="boardRo" aria-live="polite">
     <span class="ro-k">board</span>
-    <span class="ro-t">hover a cell or stone; deeper tiles are uncovered legal cells.</span>
+    <span class="ro-t">point to a cell or a stone. The darker tiles are uncovered legal cells.</span>
   </div>
 </figure>
 
 <div class="note" id="checkNote" hidden>
-  A self-check failed while validating this page&rsquo;s JS transcription of the
-  builder&rsquo;s vocabularies against the real builder&rsquo;s output; the affected
-  figures are disabled. This should never happen &mdash; please report it.
+  A self-check found a difference between the JS vocabularies of this page
+  and the output of the real builder. The related figures do not operate.
+  This is a defect. Report it.
 </div>
 
-<h2 id="patterns"><span class="sec-no">03</span>window patterns &mdash; a 377-word vocabulary</h2>
+<h2 id="patterns"><span class="sec-no">02</span>window patterns &mdash; a vocabulary of 377</h2>
 
 <!-- src: MODEL_SPEC.md §3.2; builder.py TERN_PATTERNS = 377, asserted:
      378 reversal orbits of 729 ternary strings (27 palindromes), 377 nonempty -->
 <p>
-A window&rsquo;s state is its six slots, each empty, own, or opponent &mdash; a
-ternary string, read mover-relatively (own = the side to move). Reading the
-string backwards describes the same physical window from the other end, so
-patterns are folded under reversal: of the 728 nonempty length-6 ternary
-strings, 351 mirror pairs and 26 palindromes leave a vocabulary of
-<b>377 canonical patterns</b>. Each live window enters the network as the
-learned embedding of its pattern &mdash; the pattern <em>is</em> the window&rsquo;s
-initial state, and own-only / opponent-only / contested status is a pure
-function of it, so no separate status feature exists.
+The state of a window is its six slots. Each slot is empty, own, or opponent,
+relative to the side to move. This gives a ternary string. The same physical
+window, read from the other end, gives the string in reverse. Because of
+this, the patterns are folded under reversal. The 728 ternary strings that
+are not empty make 351 mirror pairs and 26 palindromes: <b>377 canonical
+patterns</b>.
+</p>
+
+<p>
+Each live window enters the network as the learned embedding of its pattern.
+The status of a window (own only, opponent only, contested) is a function of
+the pattern, and a separate status feature does not exist.
 </p>
 
 <figure class="fig" id="fig-pattern">
-  <figcaption>fig 2 &middot; <b>the reversal fold</b> &middot; click slots to build a window</figcaption>
+  <figcaption>fig 2 &middot; <b>the reversal fold</b> &middot; click the slots to make a window</figcaption>
   <div class="fig-body">
     <div class="pat-slots" id="patSlots"></div>
     <div class="pat-out" id="patOut"></div>
   </div>
   <div class="fig-readout" id="patRo">
     <span class="ro-k">pattern</span>
-    <span class="ro-t">each slot cycles empty &rarr; own &rarr; opponent. The class id is what the network embeds.</span>
+    <span class="ro-t">each click sets the slot to empty, then own, then opponent. The network embeds the class id.</span>
   </div>
 </figure>
 
-<h2 id="relations"><span class="sec-no">04</span>typed relations &mdash; how entities connect</h2>
+<h2 id="relations"><span class="sec-no">03</span>typed relations</h2>
 
 <p>
-Entities alone say nothing about <em>where</em> things stand. All geometry
-enters through relation types, and every vocabulary is folded under the
-board&rsquo;s twelve symmetries, so a position and its rotation, reflection, or
-colour swap produce identical inputs:
+All geometry enters through relation types. Each vocabulary is folded under
+the 12 symmetries of the board. As a result, a position and its rotation,
+reflection, or colour swap give identical inputs.
 </p>
 
 <!-- src: MODEL_SPEC.md §4.2–§4.4; builder.py asserts: 726 + 1458 = 2184
      (of 2187 joint orbits; the empty pattern's 3 slot-orbits are excluded),
      TERN_POST1_CLASSES = 729, RADIUS_CLASSES = 48*2*2 = 192 -->
 <ul>
-  <li><b>Stone &harr; window: 1,458 occupancy classes.</b> When a stone talks to
-  a window that contains it, the message is typed by the <em>joint</em> of the
-  window&rsquo;s whole pattern and which slot the stone occupies &mdash; folded under
-  simultaneous reversal of both. A stone lies in up to 18 windows (six per
-  axis).</li>
-  <li><b>Cell &harr; window: 726 decoder classes.</b> The same joint typing for
-  a window&rsquo;s <em>empty</em> slots: the pattern plus which vacancy the cell is.
-  These classes type both the trunk&rsquo;s cell reads and the output heads&rsquo;
-  incidence terms.</li>
-  <li><b>Stone &rarr; cell: 192 radius classes.</b> Every legal cell reads the
-  stones within hex radius 8 through edges typed by three invariant
-  classifications multiplied together: the offset vector&rsquo;s
-  <b>orbit-48</b> class (fig 3), own / opponent, and whether the pair shares
-  a board axis &mdash; 48 &times; 2 &times; 2.</li>
-  <li><b>Action rows: 729 post-placement classes.</b> Every legal move is also
-  encoded by its consequences: the 18 windows the placed stone would occupy,
-  each typed by the joint of its <em>post-placement</em> pattern and the
+  <li><b>Stone &harr; window: 1,458 occupancy classes.</b> A message between a
+  stone and a window that contains it has a type. The type is the joint of
+  the full window pattern and the slot of the stone. The fold applies to the
+  pattern and the slot together. A stone is in a maximum of 18 windows (six
+  on each axis).</li>
+  <li><b>Cell &harr; window: 726 decoder classes.</b> The same joint typing,
+  for the empty slots of a window: the pattern plus the position of the
+  vacancy. These classes type the cell reads in the trunk and the incidence
+  terms in the heads.</li>
+  <li><b>Stone &rarr; cell: 192 radius classes.</b> Each legal cell reads the
+  stones in a hex radius of 8. The type of each edge is the product of three
+  invariant classes: the orbit-48 class of the offset vector (fig 3), own or
+  opponent, and shared axis or not. 48 &times; 2 &times; 2 = 192.</li>
+  <li><b>Action rows: 729 post-placement classes.</b> Each legal move is also
+  encoded by its results: the 18 windows that the new stone would occupy.
+  The type of each window is its post-placement pattern, joint with the
   placement slot (fig 5).</li>
 </ul>
 
 <div class="note">
-The joint tables are one enumeration: the 729 patterns &times; 6 slots give
-2,187 reversal orbits, of which the empty pattern&rsquo;s three belong to no live
-window &mdash; the remaining 2,184 split exactly into the 726 decoder classes
-(empty slots) and 1,458 occupancy classes (occupied slots). These identities
-are asserted in the builder at import time.
+The joint tables are one enumeration. The 729 patterns &times; 6 slots give
+2,187 reversal orbits. No live window uses the three orbits of the empty
+pattern. The 2,184 orbits that remain divide into the 726 decoder
+classes (empty slots) and the 1,458 occupancy classes (occupied slots). The
+builder asserts these identities at import time.
 </div>
 
 <figure class="fig" id="fig-orbit">
   <figcaption>fig 3 &middot; <b>orbit-48: displacement classes under the 12 symmetries</b>
-    &middot; hover a cell to light its whole orbit</figcaption>
+    &middot; point to a cell to see its full orbit</figcaption>
   <div class="fig-body">
     <svg id="orbitSvg" style="width:100%;max-width:420px;display:block;margin:0 auto" role="img" aria-label="Hex disc coloured by orbit-48 displacement class"></svg>
   </div>
   <div class="fig-readout" id="orbitRo">
     <span class="ro-k">orbit-48</span>
-    <span class="ro-t">every offset a cell can see a stone at (distances 1&ndash;12; shown to 5 here) falls into one of 48 classes; the 12 symmetric images of an offset share one class, so no parameter re-learns a rotated relationship.</span>
+    <span class="ro-t">each offset from a cell to a stone (distance 1&ndash;12; 1&ndash;5 shown) has one of 48 classes. The 12 symmetric images of an offset have the same class. No parameter learns a rotated copy of a relation.</span>
   </div>
 </figure>
 
 <!-- src: focus-cell exhibit from data/mantis_walkthrough.json (cell (-2,6),
-     the move the search eventually chose); orbit/own/axis per edge emitted
-     by builder.orbit48_id against the real position -->
+     the move the search selects); orbit/own/axis per edge emitted by
+     builder.orbit48_id against the real position -->
 <figure class="fig fig-wide" id="fig-edges">
   <figcaption>fig 4 &middot; <b>what one cell reads</b> &middot; the radius edges into
-    (&minus;2,&thinsp;6) &mdash; the cell the search ends up choosing &middot; hover an edge</figcaption>
+    (&minus;2,&thinsp;6), the cell that the search selects &middot; point to an edge</figcaption>
   <div class="fig-body">
     <svg id="edgeSvg" style="width:100%;max-width:560px;display:block;margin:0 auto" role="img" aria-label="Radius edges from the eight in-range stones into the focus cell"></svg>
   </div>
   <div class="fig-readout" id="edgeRo">
     <span class="ro-k">radius edges</span>
-    <span class="ro-t">8 of the 11 stones lie within radius 8 of this cell; each edge is one typed message. Solid = shares a win axis with the cell; blue = own stone, red = opponent.</span>
+    <span class="ro-t">8 of the 11 stones are in radius 8 of this cell. Each edge is one typed message. A solid line has a shared win axis. Blue = own stone. Red = opponent stone.</span>
   </div>
 </figure>
 
 <figure class="fig" id="fig-actions">
   <figcaption>fig 5 &middot; <b>the action rows of the same cell</b> &middot; the 18
-    windows a stone at (&minus;2,&thinsp;6) would occupy &middot; hover a row</figcaption>
+    windows that a stone at (&minus;2,&thinsp;6) would occupy &middot; point to a row</figcaption>
   <div class="fig-body">
     <svg id="actSvg" role="img" aria-label="Three axes of six post-placement windows each, with class ids"></svg>
   </div>
   <div class="fig-readout" id="actRo">
     <span class="ro-k">action rows</span>
-    <span class="ro-t">rows marked EMPTY would hold only the new stone; the three EMPTY orbits share learned rows, so a far-from-everything cell is encoded purely by its EMPTY-count signature.</span>
+    <span class="ro-t">a row with the EMPTY mark would contain only the new stone. The 3 EMPTY orbits use shared rows. A cell far from all stones is encoded only by its EMPTY-count signature.</span>
   </div>
 </figure>
 
-<h2 id="absent"><span class="sec-no">05</span>what is deliberately absent</h2>
+<h2 id="absent"><span class="sec-no">04</span>what the input does not contain</h2>
 
 <!-- src: MODEL_SPEC.md §3.5, §8 -->
 <p>
-No absolute coordinates. No axis identity as a feature. No move history, no
-ply number, no hand-crafted tactical scalars. Everything the model knows
-arrives through the entities and typed relations above &mdash; and every one of
-them is invariant under the board&rsquo;s twelve symmetries. The consequence is
-structural: the network <em>cannot represent</em> the difference between a
-position and its rotation, reflection, or colour swap, so it computes
-identical outputs for all of them (up to the engine&rsquo;s reordering of the
-legal list). A replay test transforms whole game histories through the engine
-and demands the permuted outputs back.
+The input does not contain absolute coordinates, axis identity, move history,
+the ply number, or manual tactical scalars. All model knowledge enters
+through the entities and the typed relations above.
+</p>
+
+<p>
+Each input value is invariant under the 12 symmetries of the board. As a
+result, the network cannot know the difference between a position and its
+rotation, reflection, or colour swap. The outputs for all of them are
+identical. Only the order of the legal list can change. A replay test
+transforms full game histories through the engine and compares the permuted
+outputs.
 </p>
 
 <div class="note">
-This is a different route to symmetry than weight-tied <em>equivariant</em>
-architectures: there, constrained weights make rotated inputs produce rotated
-outputs; here, rotated inputs <b>are the same inputs</b>. Both spend zero
-training on augmentation.
+Equivariant architectures tie the weights: inputs that turn give outputs
+that turn. Here the inputs are invariant: inputs that turn are the same
+inputs. The two methods use zero augmentation.
 </div>
 
 </main>
@@ -260,7 +250,7 @@ if (drift) {
   const byKey = new Map(cells.map(c => [board.key(c.q, c.r), c]));
   const stoneByKey = new Map(wt.stones.map(s => [board.key(s.q, s.r), s]));
 
-  // Windows through each cell, for the hover highlight.
+  // Windows through each cell, for the highlight.
   const winsAt = new Map();
   wt.windows.forEach((w, i) => {
     for (const [q, r] of w.cells) {
@@ -285,13 +275,13 @@ if (drift) {
         const t = 1 - (c.nearest - 1) / 8;
         board.setFill(c.q, c.r, "#9fb6d0", (0.06 + 0.5 * t * t).toFixed(3));
       }
-      setLegend([["#9fb6d0", "bright = adjacent to a stone · dark = distance 8"]]);
+      setLegend([["#9fb6d0", "a brighter cell is nearer to a stone (distance 1–8)"]]);
     } else {
       for (const c of cells) board.setTileClass(c.q, c.r, "mb-uncov", !c.covered);
       setLegend(layer === "cover"
         ? [[M.P0, "P0 stone"], [M.P1, "P1 stone"],
            ["#12161c", "covered legal cell"], ["#0e1116", "uncovered"]]
-        : [["#12161c", "hover any stone or cell to trace its windows"]]);
+        : [["#12161c", "point to a stone or a cell to see its windows"]]);
     }
   }
   paint();
@@ -325,13 +315,13 @@ if (drift) {
     const s = stoneByKey.get(k);
     const c = byKey.get(k);
     if (s) {
-      ro.set(`stone (${s.q}, ${s.r}) — ${s.owner === 0 ? "P0 (own: P0 is to move)" : "P1 (opponent)"}`,
-        `sits in ${wins.length} live windows; its only node feature is own/opponent.`);
+      ro.set(`stone (${s.q}, ${s.r}) — ${s.owner === 0 ? "P0 (own; P0 is to move)" : "P1 (opponent)"}`,
+        `this stone is in ${wins.length} live windows. Its only node feature is own/opponent.`);
     } else if (c) {
       ro.set(`legal cell (${c.q}, ${c.r})`,
         `${c.covered ? "covered" : "uncovered"} · nearest stone at distance ${c.nearest}` +
         ` · policy prior ${M.fmtPct(c.prior)}` +
-        (layer === "windows" ? ` · lies in ${wins.length} live windows` : ""));
+        (layer === "windows" ? ` · in ${wins.length} live windows` : ""));
     }
   });
   board.svg.addEventListener("pointerleave", () => { unlight(); ro.reset(); });
@@ -357,10 +347,10 @@ if (drift) {
     const code = M.ternCode(digits);
     const rev = M.ternReverse(code);
     out.innerHTML = code === 0
-      ? `an all-empty window is not live — it has no node and no class`
+      ? `a window with no stones is not live. It has no node and no class.`
       : `code <b>${code}</b> · reversed <b>${rev}</b> · canonical <b>${Math.min(code, rev)}</b>` +
         ` · class <b>${M.ternRank(code)}</b> of 377` +
-        (code === rev ? ` · <b>palindrome</b> (its own mirror)` : "");
+        (code === rev ? ` · <b>palindrome</b> (equal to its mirror)` : "");
   }
   render();
 }
@@ -399,8 +389,7 @@ if (!drift) {
     }
     const [q, r] = k.split(",").map(Number);
     ro.set(`offset (${q}, ${r}) → orbit class ${o}`,
-      `${n} offsets on this disc share the class — the rotations and ` +
-      `reflections of one relationship, learned once.`);
+      `${n} offsets on this disc have this class. They are the symmetric images of one relation, learned one time.`);
   });
   board.svg.addEventListener("pointerleave", () => {
     board.clearTileClass("mb-focus"); ro.reset();
@@ -426,7 +415,7 @@ if (!drift) {
     line.addEventListener("pointerenter", () => {
       ro.set(`stone (${e.stone[0]}, ${e.stone[1]}) → cell (${f.q}, ${f.r})`,
         `distance ${e.distance} · orbit class ${e.orbit} · ` +
-        `${e.own ? "own" : "opponent"} · ${e.shared_axis ? "shares a win axis" : "off-axis"}` +
+        `${e.own ? "own" : "opponent"} · ${e.shared_axis ? "shared win axis" : "off-axis"}` +
         ` — one of the 192 radius classes`);
     });
     line.addEventListener("pointerleave", () => ro.reset());
@@ -460,7 +449,7 @@ if (!drift) {
     g.addEventListener("pointerenter", () => {
       ro.set(`axis ${M.AXIS_NAMES[row.axis]} · placement in slot ${row.slot}`,
         row.empty
-          ? "the new stone would be alone in this window — one of the 3 shared EMPTY orbits"
+          ? "the new stone would be the only stone in this window — one of the 3 shared EMPTY orbits"
           : `post-placement pattern, joint with slot ${row.slot} → class ${row.cls} of 729`);
     });
     g.addEventListener("pointerleave", () => ro.reset());
