@@ -177,11 +177,9 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 }
 .heatcell{pointer-events:none}
 .heattop{fill:none;stroke-width:1.5;pointer-events:none}
-/* Live-search updates reconcile keyed SVG cells instead of clearing the layer.
-   Opacity carries candidate elimination and concentration; a cell keeps its
-   node for the whole stone, so every change is one interpolation rather than a
-   delete and a rebuild. Durations stay below the shortest frame dwell (see
-   liveFrameDwell) so a frame settles before the next one retargets it.
+/* Live-search updates reconcile keyed SVG nodes instead of clearing the
+   layer. The base policy fill is painted once per stone and never
+   re-weighted -- all motion belongs to the search marks drawn over it.
    Analysis heat remains non-animated. */
 .live-heatcell{
   transition:opacity .19s cubic-bezier(.22,.61,.36,1),fill .19s ease;
@@ -198,12 +196,28 @@ main{max-width:1120px;margin:0 auto;padding:28px}
    Dashed so it reads as "the search's favourite" against the solid ring on the
    move value/certificate selection actually chose. */
 .live-heatlead{stroke-dasharray:3 3;stroke-width:1.2}
-/* Candidates sequential halving has eliminated. They stay on the board for the
-   rest of the stone -- the search narrowing onto two cells IS the picture, and
-   anything removed here only had to be rebuilt on the completion frame. Their
-   one fade down is slower than an ordinary reweight so elimination reads as
-   settling out rather than blinking off; no later frame retargets it. */
-.live-heatcut{transition-duration:.3s}
+/* One search mark per candidate line, drawn over the constant policy fill:
+   the outline says "candidate", the arc filling that outline says how much
+   of the budget the line has earned (app.js normalizes against a fair
+   share), the tick says what the search currently thinks of it, and the
+   whole-cell flash pulses once per wave that evaluated it. */
+.search-mark{
+  pointer-events:none;
+  opacity:1;
+  transition:opacity .19s cubic-bezier(.22,.61,.36,1);
+}
+/* Candidates the halving has eliminated. They stay on the board for the rest
+   of the stone -- where the search stopped looking is half the picture --
+   but inert: dimmed as a whole, arc frozen at whatever effort they had
+   earned. The slower settle reads as withdrawing, not blinking off. */
+.search-mark.cut{opacity:.24;transition-duration:.45s}
+.search-flash{pointer-events:none}
+.search-ring{fill:none;stroke-width:1;opacity:.4}
+.search-arc{
+  fill:none;stroke-width:2.4;stroke-linejoin:round;
+  transition:stroke-dasharray .3s ease;
+}
+.search-tick{transition:opacity .2s ease,fill .3s ease}
 .search-preview{
   pointer-events:none;
   opacity:.94;
@@ -736,7 +750,7 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 @media (prefers-reduced-motion:reduce){
   .status.think .dot{animation:none}
   .toast{animation:none}
-  .live-heatcell,.live-heattop,.live-heatlead,.live-heatcut{transition:none}
+  .live-heatcell,.live-heattop,.live-heatlead,.search-mark,.search-arc,.search-tick{transition:none}
   .search-preview{animation:none}
 }
 

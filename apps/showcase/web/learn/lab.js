@@ -13,7 +13,7 @@
  * lab must not edit the play bundle.
  */
 
-import { S, axialX, axialY, createBoard, findWin, hexPts, key } from "../board.js?v=11";
+import { S, axialX, axialY, createBoard, findWin, hexPts, key } from "../board.js?v=12";
 import { buildModelPicker, defaultCheckpoint, normalizeCheckpoints } from "../checkpoints.js?v=12";
 import * as LF from "./lab_features.js?v=1";
 
