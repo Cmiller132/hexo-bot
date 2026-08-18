@@ -235,6 +235,84 @@ The harness measures only, and it does not gate the training. A pooled
 evaluation across the late checkpoints selected iteration 402.
 </p>
 
+<h3 id="paper">the changes from the paper</h3>
+
+<!-- src: docs/KLENT_FOR_HEXO.md §9 (adaptation table) + §10 (reference
+     configuration). Paper: Ota, Osa, Omura, Harada, "Revisiting Regularized
+     Policy Optimization for Stable and Efficient Reinforcement Learning in
+     Two-Player Games", ICML 2026 (arXiv:2602.10894); its hyperparameters
+     (alpha, beta, lambda) = (0.03, 0.1, e^-1/8), gamma = 1, 6-block ResNet,
+     random init, reactive-policy evaluation. Run side re-verified against
+     the run's config.json; the first line of its invocations.jsonl records
+     init_lab_cell = step13-prefit (the supervised pre-fit).
+     0.939^2 = 0.8817 ~= e^-1/8 = 0.8825. -->
+<p>
+KLENT comes from &ldquo;Revisiting Regularized Policy Optimization for
+Stable and Efficient Reinforcement Learning in Two-Player Games&rdquo; (Ota,
+Osa, Omura, and Harada; ICML 2026). The paper names the entropy coefficient
+&alpha; and the reverse-KL coefficient &beta;. This site and the codebase
+name them &lambda; and &tau;. The run keeps the update rule of the paper and
+changes the parts in this table. Measured comparison runs on Hexo selected
+the changed coefficients.
+</p>
+
+<div class="tablewrap"><table class="divtable">
+  <thead><tr><th>part</th><th>the paper</th><th>this run</th></tr></thead>
+  <tbody>
+    <tr><td>MDP step</td><td>one game action</td>
+      <td>one stone placement, with the mover-change signs of fig 4</td></tr>
+    <tr><td>reverse-KL &tau;</td><td>&beta; = 0.1</td>
+      <td>0.1 &mdash; not changed</td></tr>
+    <tr><td>entropy &lambda;</td><td>&alpha; = 0.03</td>
+      <td>0.01</td></tr>
+    <tr><td>discount &gamma;</td><td>1</td>
+      <td>0.99 for each placement</td></tr>
+    <tr><td>return mix &lambda;<sub>ret</sub></td>
+      <td>e<sup>&minus;1/8</sup> &asymp; 0.882 for each action</td>
+      <td>0.939 &asymp; e<sup>&minus;1/16</sup> for each placement</td></tr>
+    <tr><td>critic</td><td>one scalar Q, squared-error loss</td>
+      <td>three outcome logits (p&#8330;, p&#8331;, p&#8320;), cross-entropy
+      loss; Q = p&#8330; &minus; p&#8331;</td></tr>
+    <tr><td>acting score</td><td>raw Q</td>
+      <td>Q&#771; = Q / max(max<sub>b</sub>&thinsp;M, 0.2)</td></tr>
+    <tr><td>network</td><td>ResNet, 6 blocks, fixed board tensor</td>
+      <td>MantisNet: typed entities and ragged legal-cell decoders</td></tr>
+    <tr><td>start weights</td><td>random</td>
+      <td>a supervised pre-fit checkpoint; the head output layers start at
+      zero</td></tr>
+    <tr><td>fitting</td><td>buffer cleared each iteration; epoch count not
+      stated</td>
+      <td>one epoch, then the corpus is discarded; the next corpus collects
+      during the fit</td></tr>
+    <tr><td>capped games</td><td>fixed transition blocks with masked
+      tails</td>
+      <td>a game that reaches 512 plies is dropped whole</td></tr>
+    <tr><td>evaluation</td><td>reactive policy against fixed anchors</td>
+      <td>the section 02 search at 32 simulations, against an alpha-beta
+      engine and a fixed anchor</td></tr>
+  </tbody>
+</table></div>
+
+<p>
+The placement-level MDP is the structural change. A Hexo turn after the
+opening has two placements, and a win can end either one. Because of this,
+the return chain steps by placements, with the signs of fig 4. The
+per-placement mix 0.939 gives 0.939&sup2; &asymp; 0.882 across a full turn.
+That equals the per-action value of the paper, so the return horizon in
+turns does not change. The discount &gamma; = 0.99 adds a small preference
+for the fast win.
+</p>
+
+<p>
+The categorical critic replaces the scalar critic of the paper because
+acting needs the committed mass M
+(<a href="network.html#heads">the heads section</a>). The score Q&#771;
+divides Q by the largest M of the position. A position where the critic
+expects mostly zero returns keeps a usable score scale. The other changes
+hold the loop strictly on-policy: one epoch on each corpus, no replay
+window, and whole-game drops at the ply cap.
+</p>
+
 <h2 id="serving"><span class="sec-no">05</span>how this site serves it</h2>
 
 <!-- src: family adapter (root=softmax logits, leaves π′/v̂, wave batching);

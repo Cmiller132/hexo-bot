@@ -62,7 +62,126 @@ nearest-stone distance bucket. In the message-passing stages, per-class
 tables give each relation type its own contribution and its own score bias.
 </p>
 
-<h2 id="block"><span class="sec-no">02</span>one block, six stages</h2>
+<h2 id="whole"><span class="sec-no">02</span>the whole network, one view</h2>
+
+<!-- src: MODEL_SPEC.md §3, §5, §6, §7 — dataflow: builder classes →
+     embedding tables → entity rows → B=4 blocks → shared output LayerNorm →
+     heads; g = normalized mean of the 4 latent rows. Entity counts are the
+     featured position's (data/mantis_walkthrough.json): 154 windows,
+     11 stones, 420 legal cells, 4 latents. -->
+<p>
+One forward pass has four parts. The builder classes become rows. The trunk
+connects the rows. One LayerNorm prepares the head inputs, and the heads
+read them.
+</p>
+
+<figure class="fig fig-wide" id="fig-whole">
+  <figcaption>fig 1 &middot; <b>the whole network</b> &middot; point to a part, or move
+    through the parts with the tab key &middot; entity counts are from the featured position</figcaption>
+  <svg class="sysmap" viewBox="0 0 860 286" role="group" aria-label="Dataflow from builder classes through embeddings and the trunk to the three heads">
+    <defs>
+      <marker id="ahW" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
+      </marker>
+    </defs>
+
+    <g class="map-node" tabindex="0" data-k="builder classes"
+       data-info="The builder emits class identifiers and index lists. It emits no coordinates and no feature planes. The previous page defines every vocabulary.">
+      <rect x="16" y="82" width="120" height="140"/>
+      <text class="nt" x="76" y="130" text-anchor="middle">classes</text>
+      <text class="ns" x="76" y="150" text-anchor="middle">377 &middot; 1458 &middot; 726</text>
+      <text class="ns" x="76" y="164" text-anchor="middle">192 &middot; 729 &middot; buckets</text>
+      <text class="ns" x="76" y="178" text-anchor="middle">+ index lists</text>
+    </g>
+    <path class="edge" d="M136 152 H172" marker-end="url(#ahW)"/>
+
+    <g class="map-node" tabindex="0" data-k="embedding tables"
+       data-info="Each class identifier selects one learned row of width 128. The tables of section 01 hold these rows.">
+      <rect x="176" y="82" width="120" height="140"/>
+      <text class="nt" x="236" y="138" text-anchor="middle">embedding</text>
+      <text class="ns" x="236" y="158" text-anchor="middle">tables</text>
+      <text class="ns" x="236" y="172" text-anchor="middle">class &rarr; row of 128</text>
+    </g>
+    <path class="edge" d="M296 48 C316 48 316 48 332 48" marker-end="url(#ahW)"/>
+    <path class="edge" d="M296 108 H332" marker-end="url(#ahW)"/>
+    <path class="edge" d="M296 168 H332" marker-end="url(#ahW)"/>
+    <path class="edge" d="M296 228 H332" marker-end="url(#ahW)"/>
+
+    <g class="map-node" tabindex="0" data-k="window rows"
+       data-info="Each live window has one row. The pattern embedding is the initial state.">
+      <rect x="336" y="26" width="140" height="44"/>
+      <text class="nt" x="406" y="44" text-anchor="middle">windows</text>
+      <text class="ns" x="406" y="60" text-anchor="middle">154 &times; 128</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="stone rows"
+       data-info="Each stone has one row. The ownership embedding is the initial state.">
+      <rect x="336" y="86" width="140" height="44"/>
+      <text class="nt" x="406" y="104" text-anchor="middle">stones</text>
+      <text class="ns" x="406" y="120" text-anchor="middle">11 &times; 128</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="cell rows"
+       data-info="Each legal cell has one row. A covered cell starts from the shared base. An uncovered cell starts from its three feature embeddings.">
+      <rect x="336" y="146" width="140" height="44"/>
+      <text class="nt" x="406" y="164" text-anchor="middle">cells</text>
+      <text class="ns" x="406" y="180" text-anchor="middle">420 &times; 128</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="latent rows"
+       data-info="The four latents are position-level rows. They start from a learned base plus the moves_remaining embedding.">
+      <rect x="336" y="206" width="140" height="44"/>
+      <text class="nt" x="406" y="224" text-anchor="middle">latents</text>
+      <text class="ns" x="406" y="240" text-anchor="middle">4 &times; 128</text>
+    </g>
+    <path class="edge" d="M476 48 H512" marker-end="url(#ahW)"/>
+    <path class="edge" d="M476 108 H512" marker-end="url(#ahW)"/>
+    <path class="edge" d="M476 168 H512" marker-end="url(#ahW)"/>
+    <path class="edge" d="M476 228 H512" marker-end="url(#ahW)"/>
+
+    <g class="map-node" tabindex="0" data-k="trunk"
+       data-info="The trunk has four identical blocks. Each block does the six stages of fig 2. Every stage is a residual update.">
+      <rect x="516" y="26" width="120" height="224"/>
+      <text class="nt" x="576" y="130" text-anchor="middle">trunk</text>
+      <text class="ns" x="576" y="150" text-anchor="middle">4 blocks</text>
+      <text class="ns" x="576" y="164" text-anchor="middle">6 stages each</text>
+      <text class="ns" x="576" y="178" text-anchor="middle">fig 2</text>
+    </g>
+    <path class="edge" d="M636 138 H656" marker-end="url(#ahW)"/>
+
+    <g class="map-node" tabindex="0" data-k="output LayerNorm"
+       data-info="One shared LayerNorm operates after the last block. It prepares all head inputs. The mean of the four latent rows becomes the global context g.">
+      <rect x="660" y="26" width="30" height="224"/>
+      <text class="nt" x="675" y="142" text-anchor="middle">LN</text>
+    </g>
+    <text class="elab" x="675" y="268" text-anchor="middle">&rarr; g</text>
+    <path class="edge" d="M690 66 H710" marker-end="url(#ahW)"/>
+    <path class="edge" d="M690 138 H710" marker-end="url(#ahW)"/>
+    <path class="edge" d="M690 210 H710" marker-end="url(#ahW)"/>
+
+    <g class="map-node" tabindex="0" data-k="policy head"
+       data-info="The head emits one raw logit for each legal cell. A softmax for each position gives the prior of the search.">
+      <rect x="714" y="36" width="130" height="60"/>
+      <text class="nt" x="779" y="61" text-anchor="middle">policy</text>
+      <text class="ns" x="779" y="77" text-anchor="middle">1 logit / cell</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="action-value head"
+       data-info="Three logits for each legal cell give (p&#8330;, p&#8331;, p&#8320;). Q = p&#8330; &minus; p&#8331;. Fig 4 shows the read path.">
+      <rect x="714" y="108" width="130" height="60"/>
+      <text class="nt" x="779" y="133" text-anchor="middle">action value</text>
+      <text class="ns" x="779" y="149" text-anchor="middle">3 logits / cell</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="state-value head" opacity="0.55"
+       data-info="The self-play loop does not train this head. The site does not read it. Each value on the site is v&#770;.">
+      <rect x="714" y="180" width="130" height="60"/>
+      <text class="nt" x="779" y="205" text-anchor="middle">state value</text>
+      <text class="ns" x="779" y="221" text-anchor="middle">not trained</text>
+    </g>
+  </svg>
+  <div class="fig-readout" id="wholeRo" aria-live="polite">
+    <span class="ro-k">one forward pass</span>
+    <span class="ro-t">classes become rows. The trunk connects the rows. The heads read them.</span>
+  </div>
+</figure>
+
+<h2 id="block"><span class="sec-no">03</span>one block, six stages</h2>
 
 <!-- src: MODEL_SPEC.md §5 stage order; production config (config.json of the
      cellnodes-1 run): window_attention=False, cell_latents=True,
@@ -75,7 +194,7 @@ stages in sequence:
 </p>
 
 <figure class="fig fig-wide" id="fig-block">
-  <figcaption>fig 1 &middot; <b>one trunk block</b> &middot; point to a stage, or move through the stages with the tab key</figcaption>
+  <figcaption>fig 2 &middot; <b>one trunk block</b> &middot; point to a stage, or move through the stages with the tab key</figcaption>
   <svg class="sysmap" viewBox="0 0 860 330" role="group" aria-label="The six stages of a trunk block, connecting windows, cells, stones, and latents">
     <defs>
       <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -152,7 +271,118 @@ knob at its default, the outputs are byte-identical to a build without the
 code of the knob.
 </div>
 
-<h2 id="heads"><span class="sec-no">03</span>three heads, one shared read</h2>
+<h2 id="params"><span class="sec-no">04</span>where the parameters sit</h2>
+
+<!-- src: grouped from the state dict of the served export
+     mantis_cellnodes1_it402_infer.pt (fp32). The seven model groups sum to
+     5,196,965 and the six block stages sum to 1,160,728 exactly. Stage
+     assignment follows model.py's § comments (u → §5.1, v → §5.2).
+     Table sizes: e_ws = e_sw = 1458×128 = 186,624; cr_vclass = e_pw =
+     e_qw = 726×128 = 92,928; act_table = 729×128 = 93,312. -->
+<p>
+The checkpoint holds <b>5,196,965 parameters</b>, and the trunk holds 89% of
+them. The two 1458-class tables hold 373,248 parameters in each block.
+Across the four blocks, these stone&ndash;window tables alone hold 1.49
+million parameters. That is 29% of the model, and no other vocabulary holds
+more.
+</p>
+
+<figure class="fig fig-wide" id="fig-params">
+  <figcaption>fig 3 &middot; <b>the parameter budget</b> &middot; left: the whole model &middot;
+    right: one trunk block &middot; point to a row</figcaption>
+  <div class="fig-body" style="display:flex;flex-wrap:wrap;gap:26px;align-items:flex-start">
+    <div class="vbars pbars" style="flex:1 1 340px">
+      <div class="pat-out">the model &middot; <b>5,196,965</b></div>
+      <div class="vbar" tabindex="0" data-k="trunk &middot; 89.3%"
+           data-info="Each block holds 1,160,728 parameters. The right panel divides one block.">
+        <span class="vb-l">trunk &middot; 4 blocks</span>
+        <span class="vb-track"><span class="vb-bar" style="width:89.3%;background:#2a3644"></span></span>
+        <span class="vb-v">4,642,912</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="action-value head &middot; 3.1%"
+           data-info="The 726-class table of the head holds 92,928 of these parameters.">
+        <span class="vb-l">action-value head</span>
+        <span class="vb-track"><span class="vb-bar" style="width:3.1%;background:#2a3644"></span></span>
+        <span class="vb-v">158,979</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="policy head &middot; 3.1%"
+           data-info="The 726-class table of the head holds 92,928 of these parameters.">
+        <span class="vb-l">policy head</span>
+        <span class="vb-track"><span class="vb-bar" style="width:3.1%;background:#2a3644"></span></span>
+        <span class="vb-v">158,721</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="action-row encoder &middot; 2.1%"
+           data-info="The shared 729-class table holds 93,312 parameters. Both cell heads read this encoder.">
+        <span class="vb-l">action-row encoder</span>
+        <span class="vb-track"><span class="vb-bar" style="width:2.1%;background:#2a3644"></span></span>
+        <span class="vb-v">109,952</span>
+      </div>
+      <div class="vbar cut" tabindex="0" data-k="state-value head &middot; 1.4%"
+           data-info="The self-play loop does not train this head. On the served checkpoint, its output has no meaning.">
+        <span class="vb-l">state-value head</span>
+        <span class="vb-track"><span class="vb-bar" style="width:1.4%;background:#2a3644"></span></span>
+        <span class="vb-v">74,817</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="input embeddings &middot; 1.0%"
+           data-info="The 377-pattern window table holds 48,256 of these parameters.">
+        <span class="vb-l">input embeddings</span>
+        <span class="vb-track"><span class="vb-bar" style="width:1.0%;background:#2a3644"></span></span>
+        <span class="vb-v">51,328</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="output LayerNorm &middot; &lt;0.1%"
+           data-info="This is the one shared LayerNorm after the last block.">
+        <span class="vb-l">output LayerNorm</span>
+        <span class="vb-track"><span class="vb-bar" style="width:0.005%;background:#2a3644"></span></span>
+        <span class="vb-v">256</span>
+      </div>
+    </div>
+    <div class="vbars pbars" style="flex:1 1 340px">
+      <div class="pat-out">one block &middot; <b>1,160,728</b></div>
+      <div class="vbar" tabindex="0" data-k="5.1b cell state &middot; 27.9%"
+           data-info="The 726-class value rows hold 92,928 parameters. The three attention reads of the stage hold the rest.">
+        <span class="vb-l">5.1b cell state</span>
+        <span class="vb-track"><span class="vb-bar" style="width:27.9%;background:#2a3644"></span></span>
+        <span class="vb-v">323,376</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="5.1 win &larr; stones &middot; 21.8%"
+           data-info="The 1458-class table holds 186,624 parameters. The update MLP and the projection hold the rest.">
+        <span class="vb-l">5.1 win &larr; stones</span>
+        <span class="vb-track"><span class="vb-bar" style="width:21.8%;background:#2a3644"></span></span>
+        <span class="vb-v">252,928</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="5.2 stones &larr; win &middot; 21.8%"
+           data-info="This stage mirrors stage 5.1. Its own 1458-class table holds 186,624 parameters.">
+        <span class="vb-l">5.2 stones &larr; win</span>
+        <span class="vb-track"><span class="vb-bar" style="width:21.8%;background:#2a3644"></span></span>
+        <span class="vb-v">252,928</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="5.4 win &harr; latents &middot; 17.1%"
+           data-info="The stage has three attention passes: read, mix, and broadcast. Each pass holds about 66,000 parameters.">
+        <span class="vb-l">5.4 win &harr; latents</span>
+        <span class="vb-track"><span class="vb-bar" style="width:17.1%;background:#2a3644"></span></span>
+        <span class="vb-v">199,040</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="5.3 stone attention &middot; 5.7%"
+           data-info="The attention projections hold almost all of this group. The distance and axis bias tables hold 104 parameters.">
+        <span class="vb-l">5.3 stone attention</span>
+        <span class="vb-track"><span class="vb-bar" style="width:5.7%;background:#2a3644"></span></span>
+        <span class="vb-v">66,280</span>
+      </div>
+      <div class="vbar" tabindex="0" data-k="FFN &middot; 5.7%"
+           data-info="The shared 2&times; feed-forward holds 65,920 parameters. Its LayerNorm holds the rest.">
+        <span class="vb-l">FFN</span>
+        <span class="vb-track"><span class="vb-bar" style="width:5.7%;background:#2a3644"></span></span>
+        <span class="vb-v">66,176</span>
+      </div>
+    </div>
+  </div>
+  <div class="fig-readout" id="paramRo" aria-live="polite">
+    <span class="ro-k">parameters</span>
+    <span class="ro-t">the bar length is the share of the panel total. The counts come from the served checkpoint.</span>
+  </div>
+</figure>
+
+<h2 id="heads"><span class="sec-no">05</span>three heads, one shared read</h2>
 
 <!-- src: MODEL_SPEC.md §6, §7, appendix B; model.py CRITIC_LOGITS = 3,
      zero-initialized decoder outputs -->
@@ -182,6 +412,88 @@ untrained MantisNet plays uniformly across the legal cells.
   Refer to the note below.</li>
 </ul>
 
+<figure class="fig fig-wide" id="fig-headread">
+  <figcaption>fig 4 &middot; <b>one legal cell through a head</b> &middot; the two cell heads
+    share this shape with separate parameters &middot; point to a part</figcaption>
+  <svg class="sysmap" viewBox="0 0 860 250" role="group" aria-label="The per-cell read path: three summed inputs and g feed a two-input MLP with two output branches">
+    <defs>
+      <marker id="ahH" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 .5 L7.5 4 L0 7.5 Z" class="ah"/>
+      </marker>
+    </defs>
+
+    <g class="map-node" tabindex="0" data-k="cell row"
+       data-info="The head projects the refined cell row from the trunk with its own matrix. An uncovered cell keeps the normalized shared base row.">
+      <rect x="16" y="16" width="150" height="52"/>
+      <text class="nt" x="91" y="38" text-anchor="middle">cell row</text>
+      <text class="ns" x="91" y="54" text-anchor="middle">from the trunk</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="class rows"
+       data-info="The head sums its own 726-class rows over the cell's window incidences. An uncovered cell has no incidences and sums zero.">
+      <rect x="16" y="96" width="150" height="52"/>
+      <text class="nt" x="91" y="118" text-anchor="middle">class rows</text>
+      <text class="ns" x="91" y="134" text-anchor="middle">&Sigma; over 726-class</text>
+    </g>
+    <g class="map-node" tabindex="0" data-k="action rows"
+       data-info="The shared 729-class encoder describes the windows after the placement. Each head extends the encoding with its own matrix.">
+      <rect x="16" y="176" width="150" height="52"/>
+      <text class="nt" x="91" y="198" text-anchor="middle">action rows</text>
+      <text class="ns" x="91" y="214" text-anchor="middle">729-class encoder</text>
+    </g>
+    <path class="edge" d="M166 42 C196 42 200 108 208 114" marker-end="url(#ahH)"/>
+    <path class="edge" d="M166 122 H206" marker-end="url(#ahH)"/>
+    <path class="edge" d="M166 202 C196 202 200 136 208 130" marker-end="url(#ahH)"/>
+
+    <circle cx="228" cy="122" r="14" fill="#171c23" stroke="#242c35"/>
+    <text class="nt" x="228" y="127" text-anchor="middle">+</text>
+    <path class="edge" d="M242 122 H264" marker-end="url(#ahH)"/>
+
+    <g class="map-node" tabindex="0" data-k="g &middot; global context"
+       data-info="g is the normalized mean of the four latent rows. It is one row for the whole position.">
+      <rect x="300" y="12" width="100" height="36"/>
+      <text class="nt" x="350" y="35" text-anchor="middle">g</text>
+    </g>
+    <path class="edge" d="M350 48 V92" marker-end="url(#ahH)"/>
+
+    <g class="map-node" tabindex="0" data-k="two-input MLP"
+       data-info="The cell half reads the sum. The position half reads g. The output layer starts at zero.">
+      <rect x="268" y="96" width="170" height="52"/>
+      <text class="nt" x="353" y="118" text-anchor="middle">two-input MLP</text>
+      <text class="ns" x="353" y="134" text-anchor="middle">cell half + g half</text>
+    </g>
+    <path class="edge" d="M438 114 C462 114 462 82 476 82" marker-end="url(#ahH)"/>
+    <path class="edge" d="M438 130 C462 130 462 172 476 172" marker-end="url(#ahH)"/>
+
+    <g class="map-node" tabindex="0" data-k="policy output"
+       data-info="The output is one raw logit. The per-position softmax gives the prior &pi;.">
+      <rect x="480" y="56" width="150" height="52"/>
+      <text class="nt" x="555" y="78" text-anchor="middle">policy</text>
+      <text class="ns" x="555" y="94" text-anchor="middle">1 logit</text>
+    </g>
+    <text class="elab" x="644" y="86">&rarr; softmax &rarr; &pi;</text>
+    <g class="map-node" tabindex="0" data-k="action-value output"
+       data-info="The output is three logits. A softmax gives (p&#8330;, p&#8331;, p&#8320;).">
+      <rect x="480" y="146" width="150" height="52"/>
+      <text class="nt" x="555" y="168" text-anchor="middle">action value</text>
+      <text class="ns" x="555" y="184" text-anchor="middle">3 logits</text>
+    </g>
+    <path class="edge" d="M630 172 H662" marker-end="url(#ahH)"/>
+
+    <g class="map-node" tabindex="0" data-k="critic composition"
+       data-info="Q = p&#8330; &minus; p&#8331;. M = p&#8330; + p&#8331;. Q&#771; = Q / max(max&#8337; M, 0.2). The composition stays in fp32.">
+      <rect x="666" y="130" width="178" height="84"/>
+      <text class="ns" x="755" y="156" text-anchor="middle">softmax &rarr; (p&#8330;, p&#8331;, p&#8320;)</text>
+      <text class="ns" x="755" y="172" text-anchor="middle">Q = p&#8330; &minus; p&#8331;</text>
+      <text class="ns" x="755" y="188" text-anchor="middle">M = p&#8330; + p&#8331;</text>
+      <text class="ns" x="755" y="204" text-anchor="middle">Q&#771; = Q / max(max M, 0.2)</text>
+    </g>
+  </svg>
+  <div class="fig-readout" id="headRo" aria-live="polite">
+    <span class="ro-k">the shared read</span>
+    <span class="ro-t">each head reads the same rows. Each head applies its own tables.</span>
+  </div>
+</figure>
+
 <div class="note">
 <b>The value on this site is not the state-value head.</b> The self-play
 loop (<a href="search.html">next page</a>) does not train that head. On the
@@ -192,7 +504,7 @@ the model uses when it acts. On the position below, the untrained head reads
 &minus;0.30, and v&#770; reads +0.02 on a level board.
 </div>
 
-<h2 id="outputs"><span class="sec-no">04</span>the real outputs, on the real position</h2>
+<h2 id="outputs"><span class="sec-no">06</span>the real outputs, on the real position</h2>
 
 <!-- src: data/mantis_walkthrough.json — prior/π′/Q per legal cell and v̂
      from the served checkpoint on the featured position; max diff vs the
@@ -205,7 +517,7 @@ blue&ndash;red convention. v&#770; for this position is <b>+0.019</b>.
 </p>
 
 <figure class="fig fig-wide" id="fig-out">
-  <figcaption>fig 2 &middot; <b>what the heads give</b> &middot; the served checkpoint on
+  <figcaption>fig 5 &middot; <b>what the heads give</b> &middot; the served checkpoint on
     the featured position &middot; point to the cells</figcaption>
   <div class="fig-body">
     <svg id="outSvg" style="width:100%;max-width:600px;display:block;margin:0 auto" role="img" aria-label="The featured position coloured by policy prior, improved policy, or action value"></svg>
@@ -222,7 +534,7 @@ blue&ndash;red convention. v&#770; for this position is <b>+0.019</b>.
   </div>
 </figure>
 
-<h2 id="batch"><span class="sec-no">05</span>batching, numerics, and parity</h2>
+<h2 id="batch"><span class="sec-no">07</span>batching, numerics, and parity</h2>
 
 <!-- src: MODEL_SPEC.md §9, §10, §12; boot parity self-check numbers from the
      production deploy logs (|dpolicy| 1.5e-5, |dvalue| 2.7e-7) -->
@@ -265,19 +577,28 @@ import * as M from "./mantis.js";
 
 const $ = id => document.getElementById(id);
 
-/* ---------- fig 1: stage details ---------- */
+/* ---------- figs 1, 2, 4: sysmap details; fig 3: budget rows ---------- */
 {
-  const ro = M.readout($("blockRo"));
-  for (const n of document.querySelectorAll(".sysmap .map-node")) {
-    const show = () => ro.set(n.dataset.k, n.dataset.info);
-    n.addEventListener("mouseenter", show);
-    n.addEventListener("focus", show);
-    n.addEventListener("mouseleave", () => ro.reset());
-    n.addEventListener("blur", () => ro.reset());
+  const wire = (el, ro) => {
+    const show = () => ro.set(el.dataset.k, el.dataset.info);
+    el.addEventListener("mouseenter", show);
+    el.addEventListener("focus", show);
+    el.addEventListener("mouseleave", () => ro.reset());
+    el.addEventListener("blur", () => ro.reset());
+  };
+  for (const [figId, roId] of [
+    ["fig-whole", "wholeRo"],
+    ["fig-block", "blockRo"],
+    ["fig-headread", "headRo"],
+  ]) {
+    const ro = M.readout($(roId));
+    for (const n of $(figId).querySelectorAll(".map-node")) wire(n, ro);
   }
+  const pro = M.readout($("paramRo"));
+  for (const row of $("fig-params").querySelectorAll(".vbar[data-info]")) wire(row, pro);
 }
 
-/* ---------- fig 2: real outputs ---------- */
+/* ---------- fig 5: real outputs ---------- */
 {
   const wt = await M.fetchJSON("data/mantis_walkthrough.json");
   const cells = wt.cells;
