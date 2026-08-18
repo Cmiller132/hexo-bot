@@ -96,6 +96,7 @@ def _load_checkpoint(path: Path) -> Any:
 
 class ShrimpFamily:
     name = "shrimp"
+    supports_live_telemetry = False
 
     def prepare_serve_process(self, device: str) -> None:
         """No extra import-time serve setup beyond the existing shrimp path."""

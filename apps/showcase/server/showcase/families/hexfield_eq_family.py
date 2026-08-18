@@ -195,6 +195,7 @@ class HexfieldEqSearchProfile:
 
 class HexfieldEqFamily:
     name = "hexfield_eq"
+    supports_live_telemetry = True
 
     _FREE_ZEROED = ("own_recency", "opp_recency", "opp_last_turn")
     _INTROSPECTION_REASON = (

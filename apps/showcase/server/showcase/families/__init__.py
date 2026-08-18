@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from .base import ModelFamily
 from .hexfield_eq_family import HexfieldEqFamily
+from .mantisnet_family import MantisnetFamily
 from .shrimp_family import ShrimpFamily
 
 _FAMILIES: dict[str, ModelFamily] = {
     "shrimp": ShrimpFamily(),
     "hexfield_eq": HexfieldEqFamily(),
+    "mantisnet": MantisnetFamily(),
 }
 
 
@@ -22,4 +24,10 @@ def get_family(name: str) -> ModelFamily:
         ) from exc
 
 
-__all__ = ["get_family", "ModelFamily", "ShrimpFamily", "HexfieldEqFamily"]
+__all__ = [
+    "get_family",
+    "ModelFamily",
+    "ShrimpFamily",
+    "HexfieldEqFamily",
+    "MantisnetFamily",
+]

@@ -546,7 +546,7 @@ class _WorkerRuntime:
                     pass
             return out
 
-        post_search_only = bot.spec.family != "hexfield_eq"
+        post_search_only = not getattr(bot.family, "supports_live_telemetry", False)
         if post_search_only:
             # This family has no native live-round recorder. Tell the viewer
             # before the first search starts so its eventual result-derived
@@ -587,7 +587,7 @@ class _WorkerRuntime:
                 "seed": seed * 5003 + ply,
                 "temperature": bot.profile.move_temperature(ply),
             }
-            if bot.spec.family == "hexfield_eq":
+            if not post_search_only:
                 result = bot.profile.search_one(
                     bot.session, bot.evaluator, state,
                     telemetry_callback=on_raw_telemetry,

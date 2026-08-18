@@ -31,6 +31,10 @@ class ModelFamily(Protocol):
     """Extension point for one checkpoint/model/search implementation."""
 
     name: str
+    # Whether this family's search streams native live-round telemetry through
+    # `search_one`'s `telemetry_callback`. Families without it get the
+    # post-search fallback reveal, labelled honestly by the worker.
+    supports_live_telemetry: bool
 
     def prepare_process(self, specs: Sequence[Any]) -> None: ...
     def prepare_serve_process(self, device: str) -> None: ...
