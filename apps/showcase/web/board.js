@@ -411,16 +411,17 @@ export function createBoard(svg, opts = {}) {
     if (!legalSet) hoverGhost.style.display = "none";
   }
 
-  /* Live-search layers, built around one invariant: the policy fill is
-   * CONSTANT. setLiveBase paints the net's full policy once per stone -- pale
+  /* Live-search layers. setLiveBase paints the net's policy prior -- pale
    * hue-shifted bot-family tints, the same visual language as the analysis
-   * heat, never the stone colors -- and no later frame repaints, rescales, or
-   * narrows it. Everything the search does happens to the border layer
-   * setSearchMarks draws on top: candidacy is an outline, effort is that
+   * heat, never the stone colors -- over the whole board, and then over
+   * every non-candidate cell for the rest of the stone: outside the
+   * search's own field the prior never re-scales, never narrows, never
+   * moves. On the candidate cells setSearchMarks owns everything: the fill
+   * is the search's live ranking, candidacy is an outline, effort is that
    * outline filling in with visits, judgment is a small value tick, and
-   * elimination dims the mark. The fill underneath never changes, so "what
-   * the net thinks" and "what the search is doing" stay two separate visual
-   * channels instead of one channel that keeps changing meaning. */
+   * elimination dims the mark. One glance separates the channels: a bare
+   * fill is what the NET thinks, a fill wearing an outline is what the
+   * SEARCH thinks right now. */
   const liveBaseCells = new Map();
   const searchMarks = new Map();
   const bestMark = { cls: "heattop live-heattop", el: null, at: null };
@@ -520,14 +521,16 @@ export function createBoard(svg, opts = {}) {
     }, LIVE_FADE_MS);
   }
 
-  /* The base fill: the net's policy over every legal cell. Keyed and
-   * reconciled like any live layer, but by contract app.js paints it once per
-   * stone and then leaves it alone -- the prior does not change while the
-   * search runs, so neither does this layer. Opacity carries the probability
-   * (gamma below 1 keeps the middle of the distribution separable); there is
-   * no pedestal, so a zero-weight cell renders as nothing rather than as a
-   * faint tint. */
-  function setLiveBase(rows, tint, opa) {
+  /* The base fill: the net's policy prior. Keyed and reconciled like any
+   * live layer, but by contract app.js repaints it only when its SCOPE
+   * changes (the whole board, then the non-candidate cells once the search
+   * marks own the candidates' fill) -- the prior itself never changes while
+   * the search runs. Opacity carries the probability against `basis` (the
+   * full-board prior maximum, passed in so a narrower repaint never
+   * re-scales the cells that stay); gamma below 1 keeps the middle of the
+   * distribution separable, and there is no pedestal, so a zero-weight cell
+   * renders as nothing rather than as a faint tint. */
+  function setLiveBase(rows, tint, opa, basis) {
     const seq = (Array.isArray(rows) ? rows : []).filter(row =>
       row && Number.isFinite(row.q) && Number.isFinite(row.r));
     const revision = ++liveHeatRevision;
@@ -536,8 +539,10 @@ export function createBoard(svg, opts = {}) {
       return;
     }
     liveLayer();
-    let maxP = 0;
-    for (const row of seq) maxP = Math.max(maxP, Number.isFinite(row.p) ? row.p : 0);
+    let maxP = Number.isFinite(basis) && basis > 0 ? basis : 0;
+    if (!(maxP > 0)) {
+      for (const row of seq) maxP = Math.max(maxP, Number.isFinite(row.p) ? row.p : 0);
+    }
     if (!(maxP > 0)) maxP = 1;
     const active = new Set();
     const born = [];
@@ -578,24 +583,29 @@ export function createBoard(svg, opts = {}) {
   }
 
   /* The search layer: one keyed mark per candidate line, four nodes each.
+   * `fill` is the whole-cell fill carrying the search's CURRENT ranking
+   * (app.js sends `fill` normalized 0..1 against the live leader; the base
+   * layer withdraws from candidate cells, so this is the only fill there) --
+   * the favourite is always the brightest cell on the board, and because the
+   * fill rides the mark's group opacity, a cut line's ranking fill sinks to
+   * a faint remnant alongside its dimmed outline.
    * `ring` is the full outline (this cell is a candidate), `arc` is the
-   * portion of that outline filled in (effort -- app.js sends `arc` already
-   * normalized to 0..1, so the board needs no knowledge of budgets), `tick`
-   * is the small value readout, `flash` is a whole-cell fill pulsed once when
-   * `pulse` is set -- "evaluated this wave". `cut` dims the whole mark via
-   * its class and freezes it in place; a cut mark stays until the stone
-   * lands, because where the search stopped looking is half the picture.
+   * portion of that outline filled in (effort -- `arc` arrives normalized to
+   * 0..1, so the board needs no knowledge of budgets), `tick` is the small
+   * value readout. `cut` dims the whole mark via its class and freezes it in
+   * place; a cut mark stays until the stone lands, because where the search
+   * stopped looking is half the picture.
    *
    * Fade-in/out runs on the group's inline opacity, which is only ever "0"
    * or "" -- the resting value lives in CSS so the cut dim (a class rule)
    * is never overridden by an inline "1".
    *
    * `chosen` is the move the bot actually played and takes the solid ring
-   * unconditionally (temperature sampling, LCB-of-Q and certificates can all
-   * override the score leader); before a move exists the ring tracks
-   * `leader`, the search's current favourite. The dashed marker appears only
-   * when both exist and disagree -- the disagreement is the information. */
-  function setSearchMarks(marks, ringTint, chosen, leader) {
+   * unconditionally (LCB-of-Q and certificates can override the score
+   * leader); before a move exists the ring tracks `leader`, the search's
+   * current favourite. The dashed marker appears only when both exist and
+   * disagree -- the disagreement is the information. */
+  function setSearchMarks(marks, tint, ringTint, chosen, leader) {
     const mark = cell => (
       cell && Number.isFinite(cell.q) && Number.isFinite(cell.r)
         ? { q: Number(cell.q), r: Number(cell.r) }
@@ -622,10 +632,10 @@ export function createBoard(svg, opts = {}) {
           `translate(${axialX(m.q, m.r).toFixed(2)} ${axialY(m.r).toFixed(2)})`,
         );
         g.style.opacity = "0";
-        const flash = document.createElementNS(NS, "polygon");
-        flash.setAttribute("points", hexPts(0, 0, S * DRAW));
-        flash.setAttribute("class", "search-flash");
-        flash.style.opacity = "0";
+        const fill = document.createElementNS(NS, "polygon");
+        fill.setAttribute("points", hexPts(0, 0, S * DRAW));
+        fill.setAttribute("class", "search-fill");
+        fill.style.opacity = "0";
         const ring = document.createElementNS(NS, "polygon");
         ring.setAttribute("points", hexPts(0, 0, S * 0.72));
         ring.setAttribute("class", "search-ring");
@@ -640,18 +650,21 @@ export function createBoard(svg, opts = {}) {
         tick.setAttribute("class", "search-tick");
         tick.setAttribute("r", (S * 0.18).toFixed(2));
         tick.style.opacity = "0";
-        g.append(flash, ring, arc, tick);
+        g.append(fill, ring, arc, tick);
         liveMarksG.appendChild(g);
-        mk = { g, flash, ring, arc, tick, fade: 0 };
+        mk = { g, fill, ring, arc, tick, fade: 0 };
         searchMarks.set(k, mk);
         born.push(mk);
       }
       mk.fade = 0;   // rescues a mark caught mid fade-out
       mk.g.setAttribute("class", m.cut ? "search-mark cut" : "search-mark");
       if (!fresh) mk.g.style.opacity = "";
+      mk.fill.style.fill = tint;
+      const w = Number.isFinite(m.fill) ? Math.min(1, Math.max(0, m.fill)) : 0;
+      mk.fill.style.opacity = w > 0
+        ? (0.8 * Math.pow(w, HEAT_GAMMA)).toFixed(3) : "0";
       mk.ring.style.stroke = ringTint;
       mk.arc.style.stroke = ringTint;
-      mk.flash.style.fill = ringTint;
       const f = Number.isFinite(m.arc) ? Math.min(1, Math.max(0, m.arc)) : 0;
       mk.arc.style.strokeDasharray = `${f.toFixed(4)} 1`;
       if (Number.isFinite(m.tick)) {
@@ -659,12 +672,6 @@ export function createBoard(svg, opts = {}) {
         mk.tick.style.opacity = "1";
       } else {
         mk.tick.style.opacity = "0";
-      }
-      if (m.pulse === true && typeof mk.flash.animate === "function") {
-        mk.flash.animate(
-          [{ opacity: 0.32 }, { opacity: 0 }],
-          { duration: 300, easing: "ease-out" },
-        );
       }
     }
     if (born.length) {

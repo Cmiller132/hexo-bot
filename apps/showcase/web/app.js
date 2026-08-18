@@ -10,7 +10,7 @@
  * changes incompatibly. */
 import * as api from "./api.js?v=14";
 import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=13";
-import { createBoard, findWin, key } from "./board.js?v=12";
+import { createBoard, findWin, key } from "./board.js?v=13";
 import { initStats, refreshStats } from "./stats.js?v=21";
 
 "use strict";
@@ -125,7 +125,7 @@ const play = {
     stream: null, generation: 0, runId: null, lastSeq: -1,
     done: false, failed: false,
     stoneOrder: new Map(), currentStone: 1,
-    previews: [], scene: null,
+    previews: [], scene: null, lastCompleteAt: 0,
   },
 };
 
@@ -384,7 +384,7 @@ function newScene(stoneKey) {
   return {
     stoneKey,
     base: new Map(),      // key -> {q,r,p}: the prior, held for the readout
-    basePainted: false,
+    baseScope: "",        // "" unpainted, "board" full prior, "rest" non-candidates
     cands: new Map(),     // key -> {q,r,visits,value,score,cut}
     cand0: 0,             // candidate count at the draw; sets the arc scale
     round: null, rounds: null, visits: null, target: null,
@@ -406,16 +406,13 @@ function liveScene(event) {
   return live.scene;
 }
 
-/* Fold one frame into the scene. Returns the cells whose visit count just
- * rose -- the lines the wave behind this frame actually evaluated -- for the
- * board to pulse. */
+/* Fold one frame into the scene. */
 function foldLiveFrame(scene, event) {
   for (const field of ["round", "rounds", "visits"]) {
     if (Number.isInteger(event[field])) scene[field] = event[field];
   }
   if (Number.isInteger(event.target_visits)) scene.target = event.target_visits;
 
-  const pulses = new Set();
   const rows = (Array.isArray(event.policy) ? event.policy : [])
     .filter(row => coordKey(row) !== null);
   if (event.kind === "bare_policy") {
@@ -425,7 +422,7 @@ function foldLiveFrame(scene, event) {
         p: Number.isFinite(row.p) ? Math.max(0, Number(row.p)) : 0,
       });
     }
-    return pulses;
+    return;
   }
 
   for (const row of rows) {
@@ -439,10 +436,7 @@ function foldLiveFrame(scene, event) {
       scene.cands.set(k, cand);
     }
     const rowVisits = Number.isFinite(row.visits) ? Number(row.visits) : null;
-    if (rowVisits !== null && rowVisits > cand.visits) {
-      pulses.add(k);
-      cand.visits = rowVisits;
-    }
+    if (rowVisits !== null && rowVisits > cand.visits) cand.visits = rowVisits;
     // A frame that reports visit counts also reports a placeholder 0.0 Q for
     // lines nothing has visited yet; only a visited line's Q is real. Frames
     // without visit counts (the post-search replay of the non-telemetry
@@ -477,7 +471,6 @@ function foldLiveFrame(scene, event) {
     scene.lcbOverride = event.lcb_override === true;
     scene.playPruned = event.play_pruned === true;
   }
-  return pulses;
 }
 
 /* The line the search currently favours: the top-scored candidate still in
@@ -515,9 +508,14 @@ function sceneVerdict(scene) {
 }
 
 /* Draw the whole scene. The base is handed to the board at most once per
- * stone -- the policy fill is constant by design, so there is nothing to
- * re-paint. The marks re-derive every time from candidate state:
+ * stone -- outside the candidate set the policy fill is constant by design,
+ * so there is nothing to re-paint. The marks re-derive every time from
+ * candidate state:
  *
+ *   fill  the search's CURRENT ranking, the only fill on candidate cells
+ *         (the base withdraws there): the favourite is always the visibly
+ *         brightest cell, and a cut line's fill sinks with its mark to a
+ *         faint remnant.
  *   arc   effort. v/(v+share) of the outline, where share = target/candidates
  *         is one line's fair slice of the budget -- so a half-filled outline
  *         reads "got its fair share" and a full one "got far more", at any
@@ -525,33 +523,49 @@ function sceneVerdict(scene) {
  *   tick  judgment, on the site-wide value convention (blue = P0 favoured,
  *         red = P1) -- the engine reports Q from the searching side's view,
  *         so the bot's colour flips it to the absolute frame.
- *   cut   elimination; the mark dims and freezes but stays on the board.
- *   pulse evaluated by the wave behind this very frame. */
-function paintScene(scene, pulses) {
+ *   cut   elimination; the mark dims and freezes but stays on the board. */
+function paintScene(scene) {
   const live = play.live;
   const tint = live.botColor === 0 ? H0 : H1;
   const ringTint = live.botColor === 0 ? H0R : H1R;
-  if (!scene.basePainted && scene.base.size) {
-    scene.basePainted = true;
-    playBoard.setLiveBase([...scene.base.values()], tint, 0.8);
+  // The base is the prior over every legal cell until the candidate set is
+  // known, then the prior over every NON-candidate cell: on the candidate
+  // cells the mark's live ranking fill is the only fill, so "brightest cell"
+  // can never mean "had a strong prior once" when the search has moved on.
+  // Both paints share the full-board prior maximum as the brightness basis,
+  // so withdrawing the candidates never re-scales the rest of the board.
+  const baseScope = scene.cands.size ? "rest" : "board";
+  if (scene.base.size && scene.baseScope !== baseScope) {
+    scene.baseScope = baseScope;
+    let maxP = 0;
+    for (const row of scene.base.values()) maxP = Math.max(maxP, row.p);
+    const rows = [...scene.base.values()].filter(row =>
+      baseScope === "board" || !scene.cands.has(key(row.q, row.r)));
+    playBoard.setLiveBase(rows, tint, 0.8, maxP);
   }
   if (!scene.cands.size) return;
   const share = Math.max(
     1, (scene.target || 0) / Math.max(1, scene.cand0 || scene.cands.size)
   );
-  const reduced = liveReducedMotion();
+  let maxScore = 0;
+  for (const cand of scene.cands.values()) {
+    if (!cand.cut && Number.isFinite(cand.score)) {
+      maxScore = Math.max(maxScore, cand.score);
+    }
+  }
   const marks = [];
-  for (const [k, cand] of scene.cands) {
+  for (const [, cand] of scene.cands) {
     marks.push({
       q: cand.q, r: cand.r,
+      fill: maxScore > 0 && Number.isFinite(cand.score)
+        ? Math.min(1, Math.max(0, cand.score) / maxScore) : 0,
       arc: cand.visits > 0 ? cand.visits / (cand.visits + share) : 0,
       tick: Number.isFinite(cand.value)
         ? (live.botColor === 0 ? cand.value : -cand.value) : null,
       cut: cand.cut,
-      pulse: !reduced && pulses.has(k),
     });
   }
-  playBoard.setSearchMarks(marks, ringTint, scene.chosen, sceneLeader(scene));
+  playBoard.setSearchMarks(marks, tint, ringTint, scene.chosen, sceneLeader(scene));
 }
 
 function scenePhaseText(scene, event) {
@@ -602,9 +616,10 @@ function renderLiveEvent(event) {
     // engine sent, and that reaches here as a frame with no policy at all.
     // Folding it moves nothing: the scene holds the last good picture and
     // only the phase line advances.
-    const pulses = foldLiveFrame(scene, event);
-    paintScene(scene, pulses);
+    foldLiveFrame(scene, event);
+    paintScene(scene);
     setSearchPhase(scenePhaseText(scene, event));
+    if (event.kind === "search_complete") live.lastCompleteAt = Date.now();
     return;
   }
 
@@ -622,13 +637,24 @@ function renderLiveEvent(event) {
       live.previews = live.previews.slice(0, 2);
       playBoard.setPreviewStones(live.previews);
     }
-    // The stone is down and its search is over. Retiring the scene here is
-    // what stops stone 1's finished picture from sitting on the board through
-    // the whole of stone 2's search -- the single most misleading state the
-    // overlay could be in, because the stale picture looks live and the next
-    // stone lands nowhere near it.
-    live.scene = null;
-    playBoard.clearLiveSearch();
+    // The stone is down and its search is over. Retiring the scene is what
+    // stops stone 1's finished picture from sitting on the board through the
+    // whole of stone 2's search -- but the completion frame lands only a
+    // breath before this one, so the retire waits out the remainder of a
+    // quarter second first: long enough to register the final ranking, short
+    // enough that the board never feels paused. The identity guard keeps a
+    // late timer off the NEXT stone's scene.
+    const held = live.scene;
+    const wait = liveReducedMotion() ? 0 :
+      Math.max(0, 250 - (Date.now() - live.lastCompleteAt));
+    const retire = () => {
+      if (play.live.scene === held) {
+        play.live.scene = null;
+        playBoard.clearLiveSearch();
+      }
+    };
+    if (wait > 0) setTimeout(retire, wait);
+    else retire();
     const stoneNo = Math.max(1, live.previews.length);
     live.currentStone = Math.min(2, stoneNo + 1);
     setSearchPhase(
@@ -641,14 +667,24 @@ function renderLiveEvent(event) {
 
   if (event.kind === "turn_complete") {
     setSearchPhase("search complete · placing move");
-    if (event.snapshot && event.snapshot.id === play.id) {
-      ingestPlay(event.snapshot);
-      return;
-    }
-    const id = play.id;
-    api.getGame(id).then(snap => {
-      if (play.id === id) ingestPlay(snap);
-    }).catch(() => { /* polling remains authoritative */ });
+    // Same quarter-second courtesy as the stone frame: the authoritative
+    // ingest clears every live layer, and it arrives on the heels of the
+    // final completion frame.
+    const wait = liveReducedMotion() ? 0 :
+      Math.max(0, 250 - (Date.now() - live.lastCompleteAt));
+    const commit = () => {
+      if (event.snapshot && event.snapshot.id === play.id) {
+        ingestPlay(event.snapshot);
+        return;
+      }
+      const id = play.id;
+      if (!id) return;
+      api.getGame(id).then(snap => {
+        if (play.id === id) ingestPlay(snap);
+      }).catch(() => { /* polling remains authoritative */ });
+    };
+    if (wait > 0) setTimeout(commit, wait);
+    else commit();
   }
 }
 

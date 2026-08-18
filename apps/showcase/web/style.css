@@ -178,9 +178,8 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 .heatcell{pointer-events:none}
 .heattop{fill:none;stroke-width:1.5;pointer-events:none}
 /* Live-search updates reconcile keyed SVG nodes instead of clearing the
-   layer. The base policy fill is painted once per stone and never
-   re-weighted -- all motion belongs to the search marks drawn over it.
-   Analysis heat remains non-animated. */
+   layer. The base prior fill never re-weights a cell it keeps -- all motion
+   belongs to the search marks. Analysis heat remains non-animated. */
 .live-heatcell{
   transition:opacity .19s cubic-bezier(.22,.61,.36,1),fill .19s ease;
   will-change:opacity;
@@ -196,11 +195,12 @@ main{max-width:1120px;margin:0 auto;padding:28px}
    Dashed so it reads as "the search's favourite" against the solid ring on the
    move value/certificate selection actually chose. */
 .live-heatlead{stroke-dasharray:3 3;stroke-width:1.2}
-/* One search mark per candidate line, drawn over the constant policy fill:
-   the outline says "candidate", the arc filling that outline says how much
-   of the budget the line has earned (app.js normalizes against a fair
-   share), the tick says what the search currently thinks of it, and the
-   whole-cell flash pulses once per wave that evaluated it. */
+/* One search mark per candidate line. Its fill IS the cell's fill (the base
+   prior withdraws from candidate cells): brightness = the search's current
+   ranking, so the favourite is always the brightest cell on the board. The
+   outline says "candidate", the arc filling that outline says how much of
+   the budget the line has earned (app.js normalizes against a fair share),
+   and the tick says what the search currently thinks of it. */
 .search-mark{
   pointer-events:none;
   opacity:1;
@@ -208,10 +208,10 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 }
 /* Candidates the halving has eliminated. They stay on the board for the rest
    of the stone -- where the search stopped looking is half the picture --
-   but inert: dimmed as a whole, arc frozen at whatever effort they had
+   but inert: dimmed as a whole, fill and arc frozen at whatever they had
    earned. The slower settle reads as withdrawing, not blinking off. */
 .search-mark.cut{opacity:.24;transition-duration:.45s}
-.search-flash{pointer-events:none}
+.search-fill{transition:opacity .28s ease}
 .search-ring{fill:none;stroke-width:1;opacity:.4}
 .search-arc{
   fill:none;stroke-width:2.4;stroke-linejoin:round;
@@ -750,7 +750,7 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 @media (prefers-reduced-motion:reduce){
   .status.think .dot{animation:none}
   .toast{animation:none}
-  .live-heatcell,.live-heattop,.live-heatlead,.search-mark,.search-arc,.search-tick{transition:none}
+  .live-heatcell,.live-heattop,.live-heatlead,.search-mark,.search-fill,.search-arc,.search-tick{transition:none}
   .search-preview{animation:none}
 }
 
