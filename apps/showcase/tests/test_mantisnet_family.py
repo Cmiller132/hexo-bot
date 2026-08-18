@@ -207,6 +207,25 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     assert searched["visits"] > 0 and searched["visit_policy"]
     assert "w" in searched["visit_policy"][0]
 
+    # -- the web-side decoder accepts the family's frames --------------------
+    from showcase.live_search import expand_worker_event
+
+    public: list[dict] = []
+    for frame in frames:
+        if frame.get("kind") == "search_telemetry":
+            public.extend(expand_worker_event(frame))
+    kinds = [event["kind"] for event in public]
+    assert "bare_policy" in kinds and "candidate_set" in kinds
+    assert "search_complete" in kinds
+    bare = next(e for e in public if e["kind"] == "bare_policy")
+    # The decoder drops a policy whose buffers disagree; surviving rows carry
+    # real cells with normalized-ish weights.
+    assert bare["policy"] and all(
+        set(row) >= {"q", "r", "p"} for row in bare["policy"]
+    )
+    complete = next(e for e in public if e["kind"] == "search_complete")
+    assert complete["policy"] and complete["policy_kind"] == "visits"
+
 
 def test_verify_device_family_branch_on_cpu(tiny_mantis_checkpoint):
     from types import SimpleNamespace
