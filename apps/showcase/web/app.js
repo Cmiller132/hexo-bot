@@ -11,7 +11,7 @@
 import * as api from "./api.js?v=13";
 import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=12";
 import { createBoard, findWin, key } from "./board.js?v=11";
-import { initStats, refreshStats } from "./stats.js?v=19";
+import { initStats, refreshStats } from "./stats.js?v=20";
 
 "use strict";
 
@@ -403,7 +403,9 @@ function coordKey(row) {
  * search. The survivor set is still honoured, but as a *marking*: on a round
  * frame the candidates that halving just eliminated are flagged `out` and
  * dimmed, so the cut is visible instead of silent. The complete frame is drawn
- * whole. */
+ * whole -- still every exported cell -- but when it names its own final
+ * survivor set (the sequential-halving families do) the final cut is marked
+ * the same way rather than everything relighting at once. */
 function livePolicyRows(event) {
   const policy = Array.isArray(event.policy) ? event.policy : [];
   const rows = policy
@@ -416,8 +418,12 @@ function livePolicyRows(event) {
     }));
 
   // Round frames report the pre-halving candidate set with the SH scores that
-  // ranked it, plus the survivors that ranking kept.
-  if (event.kind === "search_round") {
+  // ranked it, plus the survivors that ranking kept. A completion frame that
+  // names its own survivor set gets the same marking: that set is the final
+  // cut, and leaving it unmarked was what made low-budget searches end on a
+  // wall of equally-lit candidates. Completion frames without survivors (the
+  // visit-share families) still paint whole.
+  if (event.kind === "search_round" || event.kind === "search_complete") {
     const survivorKeys = new Set(
       (Array.isArray(event.survivors) ? event.survivors : [])
         .map(coordKey).filter(Boolean)

@@ -189,7 +189,7 @@ def _run_search(
     root_read = None
     root_priors: list[float] = []
     emitted_start = False
-    last_round = 0
+    last_progress = (0, 0)
     while True:
         decided, leaves = search.pump()
         snap = search.snapshot()
@@ -199,9 +199,16 @@ def _run_search(
             emit(_start_frame(
                 game_key, legal_ids, root_priors, float(root_read.value[0]), snap,
             ))
-        if snap is not None and emitted_start and snap["round"] > last_round and not decided:
-            last_round = snap["round"]
-            emit(_round_frame(game_key, snap))
+        # One frame per completed wave, not just per halving: the deepening
+        # rounds are many waves long at higher budgets, and without the
+        # per-wave ticks the overlay froze between cuts. The (round, visits)
+        # pair identifies the wave; the viewer coalesces same-round frames it
+        # has not yet drawn.
+        if snap is not None and emitted_start and not decided:
+            progress = (int(snap["round"]), int(snap["completed_visits"]))
+            if progress != last_progress and progress[1] > 0:
+                last_progress = progress
+                emit(_round_frame(game_key, snap))
 
         if decided:
             break
@@ -315,6 +322,20 @@ def _round_frame(game_key: int, snap: dict) -> dict:
 def _complete_frame(
     game_key: int, action_id: int, result: dict, snap: dict,
 ) -> dict:
+    """The answer frame: the final SH ranking, not the raw visit counts.
+
+    Sequential halving spreads visits almost evenly at the served budgets
+    (at 16 sims every line has exactly one), so a visit-share paint lights
+    the whole candidate set — the search looked like it never narrowed.
+    The softmax of the final scores is the ranking the decision was actually
+    taken from, and the final survivor set rides along so the viewer can dim
+    the lines the last cut eliminated. Per-line visits and values stay as
+    hover readouts.
+    """
+    ids = [_pack(q, r) for q, r in snap["actions"]]
+    survivors = set(int(i) for i in snap["survivors"])
+    survivor_ids = [ids[i] for i in sorted(survivors)]
+    weights = _softmax([float(s) for s in snap["scores"]])
     return {
         "phase": "complete",
         "game_key": game_key,
@@ -324,13 +345,14 @@ def _complete_frame(
         "target_visits": int(snap["target_visits"]),
         "root_value": float(result["root_value"]),
         "action_id": action_id,
-        "visit_policy_action_ids_bytes": result["visit_policy_action_ids_bytes"],
-        "visit_policy_weights_bytes": result["visit_policy_weights_bytes"],
-        "visit_policy_q_bytes": result["visit_policy_q_bytes"],
-        "visit_policy_count": int(result["visit_policy_count"]),
-        "policy_action_ids_bytes": result["visit_policy_action_ids_bytes"],
-        "policy_weights_bytes": result["visit_policy_weights_bytes"],
-        "policy_count": int(result["visit_policy_count"]),
+        "policy_kind": "score",
+        "policy_action_ids_bytes": _u32_bytes(ids),
+        "policy_weights_bytes": _f32_bytes(weights),
+        "policy_visits_bytes": _u32_bytes(int(v) for v in snap["visits"]),
+        "policy_q_bytes": _f32_bytes(float(v) for v in snap["values"]),
+        "policy_count": len(ids),
+        "survivor_action_ids_bytes": _u32_bytes(survivor_ids),
+        "survivor_count": len(survivor_ids),
     }
 
 

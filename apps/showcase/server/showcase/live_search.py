@@ -226,8 +226,12 @@ def expand_worker_event(event: dict[str, Any]) -> tuple[dict[str, Any], ...]:
         if phase == "round":
             return ({"kind": "search_round", "policy_kind": "score", **tags, **fields},)
         if phase == "complete":
+            # A family may declare what quantity its completion weights are
+            # (mantisnet paints the final SH scores); the historical default
+            # is the visit share.
+            kind = str(event.get("policy_kind") or "visits")
             return (
-                {"kind": "search_complete", "policy_kind": "visits", **tags, **fields},
+                {"kind": "search_complete", "policy_kind": kind, **tags, **fields},
             )
     except Exception:
         # Telemetry remains strictly observational.

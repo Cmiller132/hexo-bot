@@ -128,6 +128,9 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     )
     phases = [f.get("phase") for f in frames if f.get("kind") == "search_telemetry"]
     assert phases[0] == "start" and "complete" in phases
+    # The driver ticks once per completed wave, so even a small budget yields
+    # round frames between the start and the answer.
+    assert phases.count("round") >= 2
     assert not any(f.get("_post_search") for f in frames), (
         "a native-telemetry family must never take the post-search fallback"
     )
@@ -135,8 +138,15 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     assert len(start["policy_action_ids_bytes"]) == start["policy_count"] * 4
     assert len(start["policy_weights_bytes"]) == start["policy_count"] * 4
     assert start["visits"] == 0
+    # The answer frame carries the final SH ranking (scores), per-line visit
+    # and value readouts, and the final survivor set for the last-cut dim.
     complete = next(f for f in frames if f.get("phase") == "complete")
-    assert len(complete["visit_policy_q_bytes"]) == complete["visit_policy_count"] * 4
+    assert complete["policy_kind"] == "score"
+    assert len(complete["policy_weights_bytes"]) == complete["policy_count"] * 4
+    assert len(complete["policy_visits_bytes"]) == complete["policy_count"] * 4
+    assert len(complete["policy_q_bytes"]) == complete["policy_count"] * 4
+    assert 1 <= complete["survivor_count"] <= complete["policy_count"]
+    assert len(complete["survivor_action_ids_bytes"]) == complete["survivor_count"] * 4
     without_telemetry = runtime.bot_turn(
         bot_slug="tiny-mantis", game_key=5, actions=list(actions), seed=4, visits=8,
     )
@@ -241,7 +251,7 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
             public.extend(expand_worker_event(frame))
     kinds = [event["kind"] for event in public]
     assert "bare_policy" in kinds and "candidate_set" in kinds
-    assert "search_complete" in kinds
+    assert "search_round" in kinds and "search_complete" in kinds
     bare = next(e for e in public if e["kind"] == "bare_policy")
     # The decoder drops a policy whose buffers disagree; surviving rows carry
     # real cells with normalized-ish weights.
@@ -249,7 +259,10 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
         set(row) >= {"q", "r", "p"} for row in bare["policy"]
     )
     complete = next(e for e in public if e["kind"] == "search_complete")
-    assert complete["policy"] and complete["policy_kind"] == "visits"
+    assert complete["policy"] and complete["policy_kind"] == "score"
+    assert complete["survivors"], "the final cut must reach the viewer"
+    assert any("visits" in row for row in complete["policy"])
+    assert any("value" in row for row in complete["policy"])
 
 
 def test_verify_device_family_branch_on_cpu(tiny_mantis_checkpoint):
