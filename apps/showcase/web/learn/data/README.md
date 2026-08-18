@@ -1,57 +1,49 @@
 # Learn-section data
 
-Static JSON consumed by the learn pages and the lab. Two generations coexist.
+Static JSON consumed by the learn pages and the lab.
 
 Shared conventions: coordinates are axial `[q, r]` integers; `owner` /
-`to_move` are `0` (player 0, moves first) or `1`; a position's `moves` /
-`records` list is the chronological placement history under the fixed turn
-structure (1 opening stone, then 2 per turn) — replaying it reproduces the
-board exactly.
+`to_move` are `0` (player 0, moves first) or `1`; a position's `moves` list is
+the chronological placement history under the fixed turn structure (1 opening
+stone, then 2 per turn) — replaying it reproduces the board exactly.
 
-## hexfield_eq demo data (the "how it works" pages)
+## MantisNet demo data (the "how it works" pages)
 
-Exported from the hexfield_eq package itself by
-`scripts/export_eq_learn_data.py` (run from the repo root with
-`scripts/prefit_env/hexfield_eq_raytap_a5.env` sourced). Regenerate with that
-script; do not hand-edit.
+Both files come from one real 64-sim showcase game against the served
+`mantis-cellnodes1-it402` checkpoint. Opening noise is disabled site-wide
+(temperature 0), so replaying the recorded moves against the same checkpoint
+reproduces the game — and this data — exactly.
 
-### eq_group_tables.json (~10 KB)
+### mantis_walkthrough.json (~66 KB)
 
-The D6 group action the symmetry demos render.
-
-| field | meaning |
-|---|---|
-| `group_order` | 12 |
-| `coord_mats[g]` | 2×2 integer matrix: element `g`'s action on axial `(q, r)` (columns = images of the basis vectors); `g` 0–5 rotations, 6–11 reflections |
-| `mult`, `inv` | 12×12 composition table and inverses |
-| `slot_perms[g]` | the regular representation: under `g`, slot `h`'s channels move to slot `slot_perms[g][h]` |
-| `tap_perms[g]` | length-7 conv-tap permutation (tap 0 = center, fixed; taps 1–6 = the six directions) |
-| `axis_perms[g]` | where each win axis {Q, R, QR} lands |
-| `cosets`, `coset_of_slot` | the 3 cosets of the order-4 Q-axis-preserving subgroup — the head partition |
-| `bias.disk` | `[dq, dr, row]` for every exact offset (hex-dist ≤ 8, 217 rows) |
-| `bias.joint_classes` | (237, 3) tied-class id per (row, head); `bias.free_values` = 81 |
-| `conv_tie_classes` | (7, 12, 12) free-block class per (tap, slot-in, slot-out); `conv_free_blocks` = 84 |
-| `linear_tie_classes` | (12, 12) 1×1 tie classes; `linear_free_blocks` = 12 |
-| `constants` | production architecture numbers (channels 192 = 12×16, trunk CCACCACA, 46 features + 12 raylen, 65 bins, ...) |
-
-### eq_walkthrough.json (~105 KB)
-
-The explainer's §6 position (`docs/explainer_assets/walkthrough_position.json`,
-a real ply-40 self-play decision) through the production featurizer.
+The ply-11 position (11 stones, player 0 to place the first stone of a turn)
+through the exact vendored builder and served weights. Generated **inside the
+production container** by `apps/showcase/scripts/mantis_learn_walkthrough.py`
+(see its docstring); regenerate with that script, do not hand-edit.
 
 | field | meaning |
 |---|---|
-| `records` | 40 × `[q, r, owner, placement_index]` — all that is ever stored |
-| `current_player`, `phase`, `first_stone` | decision state (`SecondStone`) |
-| `n_nodes`, `legal_count`, `stone_count`, `halo_count` | 402 = 288 + 40 + 74, node order `[legal | stones | halo]` |
-| `coords`, `nbr`, `dist` | (402, 2) axial coords, (402, 6) neighbour rows (−1 absent), BFS distance |
-| `feats` | (402, 46) feature planes, 4 dp |
-| `raylen` | (402, 12) ray lengths, flat order `side*6 + axis*2 + dir` |
-| `model_params` | 627343 — HexfieldNet under the production env |
+| `params`, `config`, `klent` | read from the loaded checkpoint: 5,196,965 parameters, the architecture knobs, and the as-trained τ/λ/mass-floor |
+| `moves`, `stones`, `to_move`, `moves_remaining` | the position |
+| `windows` | all 154 live windows: axis, start, 6 cells, mover-relative digits, canonical pattern class |
+| `cells` | all 420 legal cells in engine order: covered flag, nearest-stone distance, and the real head outputs — `prior`, `pi_prime`, `q_value`, `q_score` |
+| `v_hat`, `state_head_untrained` | the served value v̂ and, for contrast, the untrained state-value head's readout |
+| `focus` | the exhibit cell (−2, 6): its 192-class radius edges (orbit/own/axis per in-range stone) and its 18 action rows (post-placement classes, EMPTY flags) |
 
-The interactive featurizer in `../eq.js` (support BFS, window scan, ray walk)
-is a transcription of the Python oracle (`hexfield_eq/features.py`,
-`support.py`) and is validated against this file.
+The in-page JS transcription of the pattern/orbit vocabularies (`../mantis.js`)
+is validated against this file at page load; a drift disables the affected
+figures.
+
+### mantis_search.json (~52 KB)
+
+The live-search SSE frames of two searches of the same game, exactly as the
+live viewer received them: `overturn` (ply 11 — the prior's favourite is cut
+and the eventual game-winning cell is chosen from a 7% prior) and `win_race`
+(ply 15 — the last two survivors are both winning-line placements). Plus the
+full move list, the result, the winning line, and the exact halving schedules
+of the site's four budgets. Captured with a scripted client (create a game
+with `?watch_search=1`, keep the flag on every move, record
+`/api/game/{id}/search-stream`).
 
 ## Lab data (the shrimp sandbox, reached from the analysis view)
 
