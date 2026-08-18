@@ -14,7 +14,7 @@
  */
 
 import { S, axialX, axialY, createBoard, findWin, hexPts, key } from "../board.js?v=12";
-import { buildModelPicker, defaultCheckpoint, normalizeCheckpoints } from "../checkpoints.js?v=12";
+import { buildModelPicker, defaultCheckpoint, normalizeCheckpoints } from "../checkpoints.js?v=13";
 import * as LF from "./lab_features.js?v=1";
 
 "use strict";

@@ -7,7 +7,7 @@
  * {checkpoints, sims} shape.
  */
 
-import { normalizeCheckpoints } from "./checkpoints.js?v=12";
+import { normalizeCheckpoints } from "./checkpoints.js?v=13";
 
 export class ApiError extends Error {
   constructor(status, message, network = false) {

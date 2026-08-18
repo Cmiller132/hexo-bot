@@ -28,7 +28,7 @@ function fmtParams(n) {
 export function normalizeCheckpoints(raw) {
   const list = raw && Array.isArray(raw.checkpoints) ? raw.checkpoints : [];
   const reserved = ["id", "label", "run", "epoch", "group", "family", "search",
-                    "params", "featured", "strongest", "default"];
+                    "params", "featured", "strongest", "default", "sims"];
   return list.map(c => {
     const extras = Object.entries(c)
       .filter(([k, v]) => !reserved.includes(k) &&
@@ -45,6 +45,11 @@ export function normalizeCheckpoints(raw) {
       epoch: c.epoch,
       params: typeof c.params === "number" ? c.params : null,
       search: typeof c.search === "string" ? c.search : "",
+      // A checkpoint's own sims ladder (a family whose per-eval cost is an
+      // order of magnitude different declares one); null means the global set.
+      sims: Array.isArray(c.sims) && c.sims.length &&
+            c.sims.every(n => Number.isFinite(n))
+        ? c.sims.map(Number) : null,
       featured: !!c.featured,
       strongest: !!c.strongest,
       isDefault: !!c.default,

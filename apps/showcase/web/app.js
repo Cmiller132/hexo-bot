@@ -8,10 +8,10 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=13";
-import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=12";
+import * as api from "./api.js?v=14";
+import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=13";
 import { createBoard, findWin, key } from "./board.js?v=12";
-import { initStats, refreshStats } from "./stats.js?v=20";
+import { initStats, refreshStats } from "./stats.js?v=21";
 
 "use strict";
 

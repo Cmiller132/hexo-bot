@@ -11,7 +11,7 @@
  * shapes are the frozen /api/stats + /api/games contract.
  */
 
-import { groupByModel } from "./checkpoints.js?v=12";
+import { groupByModel } from "./checkpoints.js?v=13";
 
 const $ = id => document.getElementById(id);
 
