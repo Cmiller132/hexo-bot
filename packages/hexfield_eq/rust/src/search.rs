@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 
 use hexo_engine::{
-    apply_placement, pack_coord, unpack_coord, HexoState as RustHexoState, PackedCoord, Placement,
+    apply_placement, pack_coord, unpack_coord, HexCoord, HexoState as RustHexoState, PackedCoord,
+    Placement,
 };
 
 use crate::cache::{
@@ -4913,10 +4914,14 @@ pub fn mix_seed(base_seed: u64, game_key: u64, ply: u32, stream: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-fn classify_root_move(root_state: &RustHexoState, action_id: PackedCoord) -> i8 {
+/// One-ply tactical class of `coord` for the side to move at `root_state`:
+/// `1` the move wins now (immediately, or by a λ¹ verdict that reads as a win
+/// for us in the child), `-1` the move is λ¹-refuted, `0` neither. An illegal
+/// move classifies as `0`. Shared with the Python-driven surface (`tss_py`),
+/// so both guards rank moves by exactly one definition.
+pub(crate) fn classify_root_move(root_state: &RustHexoState, coord: HexCoord) -> i8 {
     let me = root_state.current_player();
     let mut child = root_state.clone();
-    let coord = unpack_coord(action_id);
     match apply_placement(&mut child, Placement { coord }) {
         Err(_) => 0,
         Ok(res) => {
@@ -4951,7 +4956,7 @@ fn tactical_guard_weights(
     }
     let classes: Vec<i8> = action_ids
         .iter()
-        .map(|&id| classify_root_move(root_state, id))
+        .map(|&id| classify_root_move(root_state, unpack_coord(id)))
         .collect();
     let mut guarded = weights.to_vec();
     if classes.iter().any(|&c| c == 1) {
@@ -6014,5 +6019,132 @@ mod fallback_tests {
         full.gumbel_nonroot_select = true;
         policy.divergences_full = full;
         assert!(policy.request_logits());
+    }
+}
+
+/// The λ¹ root guard: the move classifier and the weight mask it drives. Both
+/// are consumed by the hexfield tree AND by the Python-driven surface
+/// (`tss_py`), so a coordinate mistake here would be a silent tactical
+/// regression in two lineages at once — the fixtures below are the detector.
+#[cfg(test)]
+mod tactical_guard_tests {
+    use super::*;
+    use hexo_engine::{HexCoord, HexoState as RustHexoState};
+
+    fn replay(coords: &[(i16, i16)]) -> RustHexoState {
+        let mut state = RustHexoState::new();
+        for &(q, r) in coords {
+            apply_placement(
+                &mut state,
+                Placement {
+                    coord: HexCoord { q, r },
+                },
+            )
+            .unwrap();
+        }
+        state
+    }
+
+    /// P0 holds five in a row with ONE placement left this turn, so exactly the
+    /// two completions win now.
+    fn win_now_one_stone() -> RustHexoState {
+        replay(&[
+            (0, 0),
+            (0, 8),
+            (2, 7),
+            (1, 0),
+            (2, 0),
+            (4, 6),
+            (6, 5),
+            (3, 0),
+            (4, 0),
+            (8, 4),
+            (10, 3),
+            (0, -5),
+        ])
+    }
+
+    /// P1 to move against P0's five in a row: (-1, 0) and (5, 0) are the only
+    /// cells that kill it.
+    fn forced_defence() -> RustHexoState {
+        replay(&[
+            (0, 0),
+            (0, 8),
+            (2, 7),
+            (1, 0),
+            (2, 0),
+            (4, 6),
+            (6, 5),
+            (3, 0),
+            (4, 0),
+        ])
+    }
+
+    fn coord(q: i16, r: i16) -> HexCoord {
+        HexCoord { q, r }
+    }
+
+    #[test]
+    fn classifier_names_the_two_completions_and_nothing_else() {
+        let state = win_now_one_stone();
+        assert_eq!(classify_root_move(&state, coord(5, 0)), 1);
+        assert_eq!(classify_root_move(&state, coord(-1, 0)), 1);
+        // A quiet cell neither wins nor is refuted, and (0, 5) is NOT (5, 0):
+        // a q/r swap would read as a win here.
+        assert_eq!(classify_root_move(&state, coord(0, 5)), 0);
+        assert_eq!(classify_root_move(&state, coord(-4, 6)), 0);
+    }
+
+    #[test]
+    fn classifier_refutes_every_non_answer_to_a_live_five() {
+        let state = forced_defence();
+        assert_eq!(classify_root_move(&state, coord(5, 0)), 0);
+        assert_eq!(classify_root_move(&state, coord(-1, 0)), 0);
+        assert_eq!(classify_root_move(&state, coord(0, 5)), -1);
+        assert_eq!(classify_root_move(&state, coord(-4, 6)), -1);
+    }
+
+    #[test]
+    fn guard_keeps_only_the_win_when_one_exists() {
+        let state = win_now_one_stone();
+        let ids: Vec<PackedCoord> = [(0, 5), (5, 0), (-4, 6)]
+            .iter()
+            .map(|&(q, r)| pack_coord(coord(q, r)))
+            .collect();
+        let guarded = tactical_guard_weights(&state, &ids, &[0.5, 0.2, 0.3]);
+        assert_eq!(guarded, vec![0.0, 0.2, 0.0]);
+    }
+
+    #[test]
+    fn guard_keeps_only_the_answers_under_a_live_threat() {
+        let state = forced_defence();
+        let ids: Vec<PackedCoord> = [(0, 5), (5, 0), (-1, 0)]
+            .iter()
+            .map(|&(q, r)| pack_coord(coord(q, r)))
+            .collect();
+        let guarded = tactical_guard_weights(&state, &ids, &[0.5, 0.2, 0.3]);
+        assert_eq!(guarded, vec![0.0, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn guard_falls_back_when_every_move_is_refuted() {
+        let state = forced_defence();
+        let ids: Vec<PackedCoord> = [(0, 5), (-4, 6)]
+            .iter()
+            .map(|&(q, r)| pack_coord(coord(q, r)))
+            .collect();
+        let weights = vec![0.5, 0.5];
+        assert_eq!(tactical_guard_weights(&state, &ids, &weights), weights);
+    }
+
+    #[test]
+    fn guard_is_inert_with_no_own_win_and_no_opponent_threat() {
+        let state = replay(&[(0, 0), (3, 1), (1, 4), (-2, 2), (2, -3)]);
+        let ids: Vec<PackedCoord> = [(0, 5), (5, 0)]
+            .iter()
+            .map(|&(q, r)| pack_coord(coord(q, r)))
+            .collect();
+        let weights = vec![0.7, 0.3];
+        assert_eq!(tactical_guard_weights(&state, &ids, &weights), weights);
     }
 }

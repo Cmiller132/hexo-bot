@@ -39,6 +39,14 @@ pub(crate) fn states_from_py_states(
     Ok(roots)
 }
 
+/// One live engine state, cloned into an owned `RustHexoState`.
+pub(crate) fn state_from_py_state(
+    py: Python<'_>,
+    state: &Bound<'_, PyAny>,
+) -> PyResult<RustHexoState> {
+    state_from_py_state_with_api(engine_state_api(py)?, state)
+}
+
 fn engine_state_api(py: Python<'_>) -> PyResult<&'static HexoStateApi> {
     // The capsule is exposed by `hexo_engine._rust` and provides the C ABI
     // pointers in `HexoStateApi`.
