@@ -81,7 +81,12 @@ so the showcase holds exactly one definition of Hexo threat semantics.
   follow the forced continuation.
 - **The root.** The same guard on the root priors, plus one verified deep
   solve running concurrently with the whole search. A proven win overrides
-  the decision and reports `action_selection = "tss_deep_root_win"`.
+  the decision and reports `action_selection = "tss_deep_root_win"`. The root
+  solve carries its own node cap and its own wall clock (20000 nodes / 3000 ms,
+  against 500 / 1500 at the leaves): it runs once per move and can replace the
+  played move, so it is worth budgeting on a different scale — the three forced
+  wins the served bot missed in game 34e4cb07 needed 1577, 1952 and 12880
+  solver nodes, and none of them is visible at 500.
 
 The driver mirrors each candidate line's position, so it knows every leaf's
 placement path from the root and names solves by that path: the solver reads

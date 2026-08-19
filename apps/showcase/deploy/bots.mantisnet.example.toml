@@ -5,6 +5,14 @@
 # is roughly an order of magnitude above shrimp's, and its as-evaled anchor
 # profile ran 32 sims — 16/32/64 brackets that. Without the override the
 # entry would inherit the global 64-512 ladder.
+#
+# Threat-Space Search needs no key here: it is ON by default, per-game
+# switchable from game setup, and every knob has a shipped default (leaf
+# node_cap 500 / wall_budget_ms 1500, root_node_cap 20000 /
+# root_wall_budget_ms 3000, leaf_gate "threats", workers 3). Override them
+# only by adding a `search_profile` toml with a `[tss]` table — the knobs and
+# why the root cap is 40x the leaf cap are in apps/showcase/README.md,
+# "Threat-Space Search". Unknown `[tss]` keys fail catalogue load.
 
 [[checkpoint]]
 id = "mantis-cellnodes1-it402"

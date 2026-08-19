@@ -97,9 +97,11 @@ epoch = 0
 # is the lineage's as-evaled Gumbel sequential halving; keep the sims budget
 # LOW (16-64) — its per-eval cost is higher than shrimp's. An optional
 # search_profile toml may override [search] candidates/temperature and the
-# [tss] Threat-Space Search knobs (enabled / node_cap / leaf_gate / workers /
-# wall_budget_ms; see apps/showcase/README.md "Threat-Space Search"). Without
-# a profile the shipped TSS defaults apply, and TSS is ON.
+# [tss] Threat-Space Search knobs (enabled / node_cap / root_node_cap /
+# leaf_gate / workers / wall_budget_ms / root_wall_budget_ms — the root solve
+# is budgeted apart from the leaf solves; see apps/showcase/README.md
+# "Threat-Space Search"). Without a profile the shipped TSS defaults apply,
+# and TSS is ON.
 # [[checkpoint]]
 # id = "mantis-cellnodes1-it402"
 # family = "mantisnet"

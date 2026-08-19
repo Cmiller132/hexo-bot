@@ -26,11 +26,13 @@ a stone set: the solver reads the turn phase (which stone of the turn is
 pending, and which cell was the first), and only a true placement history
 carries it.
 
-Budgets. ``node_cap`` bounds each solve deterministically. ``wall_budget_ms``
-bounds the whole move: once it passes, no further solve is submitted and no
-unfinished solve is waited on — those leaves take the net's value. A partial
-solve never produces a value, so the wall clock can cost strength and can never
-cost soundness.
+Budgets. The root and the leaves are budgeted separately: a leaf solve is one
+of hundreds per move and only sharpens a line's value (``node_cap``,
+``wall_budget_ms``), while the root solve runs once and can replace the played
+move (``root_node_cap``, ``root_wall_budget_ms``). Node caps bound each solve
+deterministically; the wall clocks bound the move — past a clock nothing new is
+submitted and nothing unfinished is waited on. A partial solve never produces a
+value, so a wall clock can cost strength and can never cost soundness.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as _FutureTimeout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 # Deep solve at every undecided leaf ("all"), or only where the engine's
@@ -50,28 +52,47 @@ _LEAF_GATES = ("threats", "all")
 class TssConfig:
     """TSS knobs for one MantisNet search.
 
-    Defaults are the live main_5 serve solver shape (`node_cap`) plus serve
-    budgets chosen for the showcase's CPU box; `apps/showcase/README.md`
-    documents them for operators.
+    The root and the leaves get SEPARATE budgets, because they are different
+    jobs. A leaf solve runs hundreds of times per move and only sharpens one
+    line's value, so it is capped tight. The root solve runs ONCE per move and
+    can replace the played move outright, so it is worth two orders of
+    magnitude more nodes — post-mortem of game 34e4cb07: the forced wins the
+    bot missed needed 1577, 1952 and 12880 solver nodes at the root, all of
+    them invisible at the leaf cap of 500 and all of them under 600 ms.
 
-    enabled         run TSS at all. Off is the bare Gumbel search, byte for byte.
-    node_cap        solver node expansions per solve (root and leaf alike).
-    leaf_gate       "threats" (default) solves only leaves with a live >=4
-                    window; "all" solves every leaf with an undecided λ¹.
-    workers         threads for leaf solves. The root solve gets its own thread
-                    and never competes with them.
-    wall_budget_ms  per-move ceiling on waiting for solves.
+    `apps/showcase/README.md` documents these for operators.
+
+    enabled              run TSS at all. Off is the bare Gumbel search, byte
+                         for byte.
+    node_cap             solver nodes per LEAF solve.
+    root_node_cap        solver nodes for the one root solve.
+    leaf_gate            "threats" (default) solves only leaves with a live
+                         >=4 window; "all" solves every leaf with an
+                         undecided λ¹.
+    workers              threads for leaf solves. The root solve gets its own
+                         thread and never competes with them.
+    wall_budget_ms       per-move ceiling on waiting for LEAF solves.
+    root_wall_budget_ms  per-move ceiling on waiting for the ROOT solve. Its
+                         own clock: the root solve is worth waiting for after
+                         the search has decided, and must never stall a move
+                         past this.
     """
 
     enabled: bool = True
     node_cap: int = 500
+    root_node_cap: int = 20_000
     leaf_gate: str = "threats"
     workers: int = 3
     wall_budget_ms: int = 1500
+    root_wall_budget_ms: int = 3000
 
     def __post_init__(self) -> None:
         if self.node_cap < 1:
             raise ValueError(f"tss node_cap must be >= 1, got {self.node_cap}")
+        if self.root_node_cap < 1:
+            raise ValueError(
+                f"tss root_node_cap must be >= 1, got {self.root_node_cap}"
+            )
         if self.leaf_gate not in _LEAF_GATES:
             raise ValueError(
                 f"tss leaf_gate must be one of {list(_LEAF_GATES)}, got {self.leaf_gate!r}"
@@ -81,6 +102,10 @@ class TssConfig:
         if self.wall_budget_ms < 1:
             raise ValueError(
                 f"tss wall_budget_ms must be >= 1, got {self.wall_budget_ms}"
+            )
+        if self.root_wall_budget_ms < 1:
+            raise ValueError(
+                f"tss root_wall_budget_ms must be >= 1, got {self.root_wall_budget_ms}"
             )
 
     @classmethod
@@ -99,22 +124,20 @@ class TssConfig:
         return cls(
             enabled=bool(raw.get("enabled", defaults.enabled)),
             node_cap=int(raw.get("node_cap", defaults.node_cap)),
+            root_node_cap=int(raw.get("root_node_cap", defaults.root_node_cap)),
             leaf_gate=str(raw.get("leaf_gate", defaults.leaf_gate)),
             workers=int(raw.get("workers", defaults.workers)),
             wall_budget_ms=int(raw.get("wall_budget_ms", defaults.wall_budget_ms)),
+            root_wall_budget_ms=int(
+                raw.get("root_wall_budget_ms", defaults.root_wall_budget_ms)
+            ),
         )
 
     def with_enabled(self, enabled: bool) -> "TssConfig":
         """The per-game UI toggle: it decides `enabled` and nothing else."""
         if bool(enabled) == self.enabled:
             return self
-        return TssConfig(
-            enabled=bool(enabled),
-            node_cap=self.node_cap,
-            leaf_gate=self.leaf_gate,
-            workers=self.workers,
-            wall_budget_ms=self.wall_budget_ms,
-        )
+        return replace(self, enabled=bool(enabled))
 
 
 class LeafPlan:
@@ -193,6 +216,10 @@ class TssRunner:
         self._probe = _rust.TssProbe(_engine_state(moves))
         self._started = time.monotonic()
         self._deadline = self._started + config.wall_budget_ms / 1000.0
+        # The root gets its own clock. Leaf solves are worth nothing once the
+        # wave they belong to has been answered, but the root solve stays worth
+        # waiting for right up to the decision.
+        self._root_deadline = self._started + config.root_wall_budget_ms / 1000.0
         self._leaf_pool = ThreadPoolExecutor(
             max_workers=config.workers, thread_name_prefix="tss-leaf"
         )
@@ -213,6 +240,7 @@ class TssRunner:
             "deep_loss": 0,
             "deep_unknown": 0,
             "deep_timeouts": 0,
+            "root_timeouts": 0,
             "deep_nodes": 0,
             "verify_failed": 0,
         }
@@ -238,7 +266,7 @@ class TssRunner:
                 max_workers=1, thread_name_prefix="tss-root"
             )
             self._root_future = self._root_pool.submit(
-                self._timed_solve, [], self._config.node_cap
+                self._timed_solve, [], self._config.root_node_cap
             )
             self._counters["deep_attempted"] += 1
             self._root_status = "running"
@@ -247,18 +275,25 @@ class TssRunner:
         return guard_weights(priors, classes)
 
     def decision_override(self) -> tuple[int, int] | None:
-        """The proven root move, or None. Waits out the remaining wall budget."""
+        """The proven root move, or None.
+
+        Waits out whatever is left of the ROOT budget: if the search decided
+        first, a proven win is worth that wait; if the budget is already gone,
+        the solve is dropped and the search's own move stands.
+        """
         if self._root_resolved:
             return self._proven_move
         self._root_resolved = True
         if self._root_future is None:
             return None
         try:
-            out, elapsed_ms = self._root_future.result(timeout=self._remaining())
+            out, elapsed_ms = self._root_future.result(
+                timeout=max(0.0, self._root_deadline - time.monotonic())
+            )
         except _FutureTimeout:
             self._root_future.cancel()
             self._root_status = "timeout"
-            self._counters["deep_timeouts"] += 1
+            self._counters["root_timeouts"] += 1
             return None
         self._absorb(out)
         self._root_status = str(out["status"])
@@ -331,6 +366,7 @@ class TssRunner:
             "root_ms": round(self._root_ms, 3),
             "total_ms": round((time.monotonic() - self._started) * 1000.0, 3),
             "node_cap": self._config.node_cap,
+            "root_node_cap": self._config.root_node_cap,
             "leaf_gate": self._config.leaf_gate,
         }
 

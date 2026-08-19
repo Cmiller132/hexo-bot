@@ -392,7 +392,74 @@ def test_tss_on_is_inert_where_there_is_nothing_to_prove(moves):
     assert on["action_selection"] == "gumbel_sh_score"
 
 
-# --- 5. the per-game toggle reaches the family ------------------------------
+# --- 5. the real miss: game 34e4cb07 ----------------------------------------
+
+# Placement prefixes from the one game mantis-cellnodes1-it402 lost on the site
+# (34e4cb07, sims 128). Literals, so this needs neither the game record nor the
+# live checkpoint. At both positions the deep solver proves a win for the side
+# to move and the bot played neither, because the ROOT solve ran at the LEAF
+# cap of 500 while the proofs need 1577 and 12880 nodes.
+LOST_GAME_IDX25 = [
+    (0, 0), (1, 2), (0, 1), (3, -1), (2, 2), (2, 0), (2, 6), (1, 6), (4, 1),
+    (7, -2), (5, -1), (7, -1), (-2, 8), (-2, 4), (0, 7), (-3, 9), (-4, 10),
+    (0, 6), (1, 1), (1, 3), (0, 4), (0, 8), (-1, 5), (-1, 3), (0, 10),
+]
+LOST_GAME_IDX25_WIN = (1, 7)      # proven in 1577 solver nodes
+LOST_GAME_IDX34 = LOST_GAME_IDX25 + [
+    (-2, 1), (-1, 1), (3, 1), (-3, 1), (-2, 2), (-2, 3), (-2, 5), (-2, 0),
+    (1, 7),
+]
+LOST_GAME_IDX34_WIN = (-1, 9)     # proven in 12880 solver nodes
+
+_MISSES = [
+    (LOST_GAME_IDX25, LOST_GAME_IDX25_WIN),
+    (LOST_GAME_IDX34, LOST_GAME_IDX34_WIN),
+]
+
+
+@pytest.mark.parametrize("prefix,proven", _MISSES, ids=["idx25", "idx34"])
+def test_the_missed_forced_wins_are_proven_at_the_default_root_cap(prefix, proven):
+    from showcase.families.mantis_tss import TssConfig
+
+    off = _run(prefix, tss=TssConfig(enabled=False))
+    assert _decision(off) != proven, (
+        "the fixture needs the bare search to miss the win, as the live bot did"
+    )
+    on = _run(prefix, tss=TssConfig())
+    assert _decision(on) == proven
+    assert on["action_selection"] == "tss_deep_root_win"
+    assert on["tss"]["root_status"] == "win"
+    assert on["tss"]["root_timeouts"] == 0
+    assert on["tss"]["verify_failed"] == 0
+    assert on["root_value"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("prefix,proven", _MISSES, ids=["idx25", "idx34"])
+def test_the_leaf_cap_alone_would_not_have_found_them(prefix, proven):
+    """Why the root needs its own cap: at 500 nodes neither proof exists."""
+    from showcase.families.mantis_tss import TssConfig
+
+    off = _run(prefix, tss=TssConfig(enabled=False))
+    capped = _run(prefix, tss=TssConfig(root_node_cap=500))
+    assert capped["tss"]["root_status"] == "unknown"
+    assert capped["action_selection"] == "gumbel_sh_score"
+    assert _decision(capped) == _decision(off) != proven
+
+
+def test_the_root_budget_is_its_own_clock():
+    """A 1 ms root budget drops the solve; the search's own move stands."""
+    from showcase.families.mantis_tss import TssConfig
+
+    off = _run(LOST_GAME_IDX34, tss=TssConfig(enabled=False))
+    starved = _run(LOST_GAME_IDX34, tss=TssConfig(root_wall_budget_ms=1))
+    assert starved["tss"]["root_status"] == "timeout"
+    assert starved["tss"]["root_timeouts"] == 1
+    assert starved["tss"]["deep_timeouts"] == 0, "a root drop is not a leaf drop"
+    assert starved["action_selection"] == "gumbel_sh_score"
+    assert _decision(starved) == _decision(off)
+
+
+# --- 6. the per-game toggle reaches the family ------------------------------
 
 
 def _mantis_catalogue(path, checkpoint):
@@ -474,7 +541,7 @@ def test_create_game_carries_the_tss_flag(tiny_mantis_checkpoint, tmp_path):
         resign(client, game["id"], headers)
 
 
-# --- 6. config -------------------------------------------------------------
+# --- 7. config -------------------------------------------------------------
 
 
 def test_tss_config_refuses_nonsense():
@@ -482,14 +549,30 @@ def test_tss_config_refuses_nonsense():
 
     with pytest.raises(ValueError, match="node_cap"):
         TssConfig(node_cap=0)
+    with pytest.raises(ValueError, match="root_node_cap"):
+        TssConfig(root_node_cap=0)
     with pytest.raises(ValueError, match="leaf_gate"):
         TssConfig(leaf_gate="sometimes")
     with pytest.raises(ValueError, match="workers"):
         TssConfig(workers=0)
     with pytest.raises(ValueError, match="wall_budget_ms"):
         TssConfig(wall_budget_ms=0)
+    with pytest.raises(ValueError, match="root_wall_budget_ms"):
+        TssConfig(root_wall_budget_ms=0)
     with pytest.raises(ValueError, match=r"unknown \[tss\] profile keys"):
         TssConfig.from_profile({"node_capp": 100})
-    assert TssConfig.from_profile({"leaf_gate": "all"}).leaf_gate == "all"
+    # every knob is settable from a profile, and nothing else is
+    assert TssConfig.from_profile({
+        "enabled": False, "node_cap": 7, "root_node_cap": 9, "leaf_gate": "all",
+        "workers": 2, "wall_budget_ms": 11, "root_wall_budget_ms": 13,
+    }) == TssConfig(
+        enabled=False, node_cap=7, root_node_cap=9, leaf_gate="all",
+        workers=2, wall_budget_ms=11, root_wall_budget_ms=13,
+    )
     assert TssConfig.from_profile(None) == TssConfig()
-    assert TssConfig().with_enabled(False).enabled is False
+    # the shipped defaults: the root gets 40x the leaf cap and its own clock
+    shipped = TssConfig()
+    assert (shipped.node_cap, shipped.root_node_cap) == (500, 20_000)
+    assert (shipped.wall_budget_ms, shipped.root_wall_budget_ms) == (1500, 3000)
+    # the toggle changes `enabled` and nothing else
+    assert TssConfig().with_enabled(False) == TssConfig(enabled=False)

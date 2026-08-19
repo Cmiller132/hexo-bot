@@ -115,6 +115,14 @@ defaults apply to every entry without a `[tss]` table in its search profile
 (`apps/showcase/README.md`, "Threat-Space Search"). The solver lives in the
 hexfield_eq wheel, so a TSS change is likewise a rebuild, not a restart.
 
+The ROOT deep solve is budgeted apart from the leaf solves — `root_node_cap`
+20000 nodes, `root_wall_budget_ms` 3000 ms, against 500 / 1500 at the leaves.
+It runs once per move, concurrently with the search: on a quiet position it
+returns in a handful of nodes and costs nothing, and on a tactical one it is
+the piece that turns a proven win into the played move. After a deploy, watch
+`tss_stats.root_timeouts` in the live-search stream — a nonzero rate means the
+root clock is too tight for this box and `root_wall_budget_ms` should go up.
+
 4. **Launch**:
 
    ```bash

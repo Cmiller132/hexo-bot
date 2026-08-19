@@ -149,9 +149,14 @@ column for it, so a finished game reconstructed from the DB could not report
 one — and a payload that said `true` there would be a guess, not a record.
 
 The per-move Threat-Space Search counters ride the live-search `complete`
-event as `tss_stats` (λ¹ leaf hits, deep solves attempted/won/lost/unknown,
-timeouts, solver nodes, root status and ms, total ms), and a deep root proof
-that overrode the search raises the existing `tss` "proven win" badge.
+event as `tss_stats`: `lambda1_leaf_hits`, `lambda1_root_guard`,
+`leaf_guards`, `deep_attempted`, `deep_win` / `deep_loss` / `deep_unknown`,
+`deep_timeouts` (leaf solves dropped on the leaf clock), `root_timeouts` (the
+root solve dropped on its own clock), `deep_nodes`, `verify_failed` (FATAL if
+nonzero), `root_status` (`win` / `loss` / `unknown` / `timeout` /
+`lambda1_win` / `lambda1_loss` / `skipped`), `root_ms`, `total_ms`,
+`node_cap`, `root_node_cap`, `leaf_gate`. A deep root proof that overrode the
+search raises the existing `tss` "proven win" badge.
 
 ### GET /api/bots
 
@@ -340,20 +345,34 @@ candidates = 16
 temperature = 1.0
 
 [tss]
-enabled = true        # run TSS at all for this checkpoint
-node_cap = 500        # solver node expansions per solve (root and leaf)
-leaf_gate = "threats" # "threats": solve leaves with a live >=4 window
-                      # "all":     solve every leaf with an undecided lambda-1
-workers = 3           # threads for leaf solves; the root solve has its own
-wall_budget_ms = 1500 # per-move ceiling on waiting for solves
+enabled = true             # run TSS at all for this checkpoint
+node_cap = 500             # solver nodes per LEAF solve
+root_node_cap = 20000      # solver nodes for the one ROOT solve
+leaf_gate = "threats"      # "threats": solve leaves with a live >=4 window
+                           # "all":     solve every leaf with an undecided lambda-1
+workers = 3                # threads for leaf solves; the root solve has its own
+wall_budget_ms = 1500      # per-move ceiling on waiting for LEAF solves
+root_wall_budget_ms = 3000 # per-move ceiling on waiting for the ROOT solve
 ```
 
 Those values are the defaults, so a catalogue entry with no profile serves
-exactly them. `node_cap = 500` is the live main_5 serve cap; the two budget
-knobs are serve choices for the showcase's CPU box and are the ones to retune
-if moves get slow. The wall budget can cost strength — an abandoned solve
-leaves its leaf on the net's value — and can never cost soundness, because a
-partial solve never produces a value.
+exactly them.
+
+**The root and the leaves are budgeted separately, deliberately.** A leaf solve
+is one of hundreds per move and only sharpens one line's value, so it keeps the
+live main_5 cap of 500. The root solve runs ONCE per move and can replace the
+played move outright, so it is worth far more: the post-mortem of the bot's one
+lost game (34e4cb07) found three forced wins it played past, needing 1577, 1952
+and 12880 solver nodes at the root — every one of them invisible at a cap of
+500, and every one under 600 ms. `root_node_cap = 20000` covers all three.
+
+The two wall clocks bound the move. A leaf solve is abandoned once
+`wall_budget_ms` passes and that leaf takes the net's value. The root solve has
+its own clock because it stays worth waiting for after the search has already
+decided: if the search finishes first the driver waits out
+`root_wall_budget_ms` for the proof, and drops it — counting `root_timeouts` —
+only when that runs out. A wall clock can cost strength and can never cost
+soundness, because a partial solve never produces a value.
 
 Analysis and the lab have no per-game toggle: they follow the profile, so a
 served analysis matches how the bot plays.
