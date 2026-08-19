@@ -18,6 +18,11 @@ between evaluation waves and packs frames from tensors it already computed.
 The session is never called from telemetry, no extra forward runs, and the
 evaluator call schedule is identical with the overlay on or off — parity-safe
 by construction.
+
+Threat-Space Search rides the same seam (`mantis_tss.py`): the driver mirrors
+each Gumbel line's position so it knows every leaf's placement path from the
+root, and answers the session with proofs where proofs exist. TSS off is the
+bare search above, byte for byte.
 """
 
 from __future__ import annotations
@@ -26,6 +31,8 @@ import math
 import tomllib
 from pathlib import Path
 from typing import Any
+
+from .mantis_tss import TssConfig, TssRunner
 
 _SEED_MASK = (1 << 64) - 1
 
@@ -126,18 +133,21 @@ class MantisnetSearchProfile:
         opening_temperature: float | None,
     ) -> None:
         candidates, temperature = _DEFAULT_CANDIDATES, _DEFAULT_TEMPERATURE
+        tss = TssConfig()
         if profile_path is not None:
             with open(profile_path, "rb") as fh:
                 raw = tomllib.load(fh)
             search = raw.get("search", {})
             candidates = int(search.get("candidates", candidates))
             temperature = float(search.get("temperature", temperature))
+            tss = TssConfig.from_profile(raw.get("tss"))
         if candidates < 1:
             raise ValueError(f"profile candidates must be >= 1, got {candidates}")
         if not (math.isfinite(temperature) and temperature >= 0.0):
             raise ValueError(f"profile temperature must be finite >= 0, got {temperature}")
         self.candidates = candidates
         self.temperature = temperature
+        self.tss = tss
         self.opening_plies = int(opening_plies)
         self.opening_temperature = (
             float(opening_temperature)
@@ -153,30 +163,141 @@ class MantisnetSearchProfile:
     def search_one(
         self, session: Any, evaluator: Any, state: Any, *,
         game_key: int, visits: int, seed: int, temperature: float,
+        tss_enabled: bool,
         telemetry_callback: Any | None = None,
     ) -> dict:
-        moves = _moves_from_state(state)
         return _run_search(
             evaluator,
-            _replay(moves),
+            _moves_from_state(state),
             candidates=self.candidates,
             visits=int(visits),
             seed=int(seed) & _SEED_MASK,
             temperature=float(temperature),
             game_key=int(game_key),
+            # The per-game toggle can turn TSS OFF; it never turns on what this
+            # checkpoint's search profile disabled.
+            tss=self.tss.with_enabled(self.tss.enabled and bool(tss_enabled)),
             telemetry_callback=telemetry_callback,
         )
 
 
+class _Line:
+    """The driver's mirror of one Gumbel candidate line.
+
+    The session owns the real line positions and never shows them, so the
+    driver keeps its own copy in lockstep — the position, and the placement
+    path from the search root that produced it. The path is what a TSS solve
+    names its position by.
+    """
+
+    __slots__ = ("position", "path", "policy_rank", "evaluated", "terminal")
+
+    def __init__(self, position: Any, path: list[tuple[int, int]]) -> None:
+        self.position = position
+        self.path = path
+        self.policy_rank: int | None = None
+        self.evaluated = False
+        self.terminal = bool(position.is_terminal)
+
+
+def _prior_argmax(priors: list[float]) -> int:
+    """First index of the maximum — the vendored session's `prior_argmax` tie
+    rule, which decides how a line is extended."""
+    best = 0
+    for index in range(1, len(priors)):
+        if priors[index] > priors[best]:
+            best = index
+    return best
+
+
+def _init_lines(root: Any, snap: dict) -> list[_Line]:
+    """Mirror the candidate set the root evaluation produced.
+
+    `snapshot()["actions"]` is the candidates in Gumbel-top order, which is the
+    session's own line order; each line's position is the root advanced by its
+    candidate.
+    """
+    lines: list[_Line] = []
+    for q, r in snap["actions"]:
+        position = root.copy()
+        position.advance(int(q), int(r))
+        lines.append(_Line(position, [(int(q), int(r))]))
+    return lines
+
+
+def _advance_lines(lines: list[_Line], snap: dict) -> list[int]:
+    """Replay one wave's line extensions and return the lines it will emit.
+
+    The session extends every already-evaluated surviving line through the
+    prior argmax it was last given, drops any line that goes terminal, and
+    emits the rest — in survivor order. This mirrors that exactly.
+    """
+    expected: list[int] = []
+    for index in snap["survivors"]:
+        line = lines[int(index)]
+        if line.terminal:
+            continue
+        if line.evaluated:
+            if line.policy_rank is None:
+                raise RuntimeError(
+                    "TSS line mirror: an evaluated line has no recorded prior argmax"
+                )
+            q, r = line.position.nth_legal(line.policy_rank)
+            line.position.advance(int(q), int(r))
+            line.path.append((int(q), int(r)))
+            if line.position.is_terminal:
+                line.terminal = True
+                continue
+        expected.append(int(index))
+    return expected
+
+
+def _match_leaves(
+    lines: list[_Line], expected: list[int], leaves: list
+) -> list[int]:
+    """Map each pumped leaf to its mirrored line, by Zobrist hash.
+
+    Two lines can transpose to the same position, so a hash bucket may hold
+    several candidates; the wave-order candidate is preferred, which is the
+    session's own emission order. A leaf that matches no mirrored line, or a
+    mirrored line that was never emitted, means the mirror has drifted from the
+    session — a bug, not a position to guess at.
+    """
+    buckets: dict[int, list[int]] = {}
+    for slot, index in enumerate(expected):
+        buckets.setdefault(int(lines[index].position.zobrist), []).append(slot)
+    order: list[int] = []
+    for leaf_index, (_key, leaf) in enumerate(leaves):
+        bucket = buckets.get(int(leaf.zobrist))
+        if not bucket:
+            raise RuntimeError(
+                f"TSS line mirror: pumped leaf {leaf_index} (zobrist "
+                f"{int(leaf.zobrist):#x}, {leaf.stone_count} stones) matches no "
+                f"mirrored line of the {len(expected)} this wave expected"
+            )
+        slot = leaf_index if leaf_index in bucket else bucket[0]
+        bucket.remove(slot)
+        if not bucket:
+            del buckets[int(leaf.zobrist)]
+        order.append(expected[slot])
+    if buckets:
+        raise RuntimeError(
+            f"TSS line mirror: {sum(len(b) for b in buckets.values())} mirrored "
+            f"lines were not emitted by the wave"
+        )
+    return order
+
+
 def _run_search(
     evaluator: MantisnetEvaluator,
-    root: Any,
+    moves: list[tuple[int, int]],
     *,
     candidates: int,
     visits: int,
     seed: int,
     temperature: float,
     game_key: int,
+    tss: TssConfig,
     telemetry_callback: Any | None,
 ) -> dict:
     """Drive one Gumbel search and assemble the showcase result dict."""
@@ -193,20 +314,40 @@ def _run_search(
             # Presentation is best-effort and must never fail the search.
             return
 
+    root = _replay(moves)
     legal = root.legal_moves()
     legal_ids = [_pack(q, r) for q, r in legal]
 
     search = _rust.GumbelSearch(max(1, visits), candidates, temperature, seed)
     search.begin(root)
 
+    runner = TssRunner(moves, tss) if tss.enabled else None
+    try:
+        return _drive_search(
+            search, root, legal, legal_ids, evaluator, runner, emit,
+            visits=visits, game_key=game_key, torch=torch,
+        )
+    finally:
+        if runner is not None:
+            runner.close()
+
+
+def _drive_search(
+    search: Any, root: Any, legal: list[tuple[int, int]], legal_ids: list[int],
+    evaluator: MantisnetEvaluator, runner: TssRunner | None,
+    emit: Any, *, visits: int, game_key: int, torch: Any,
+) -> dict:
     root_read = None
     root_priors: list[float] = []
     emitted_start = False
     last_progress = (0, 0)
+    lines: list[_Line] | None = None
     while True:
         decided, leaves = search.pump()
         snap = search.snapshot()
 
+        if runner is not None and lines is None and snap is not None:
+            lines = _init_lines(root, snap)
         if root_read is not None and not emitted_start and snap is not None:
             emitted_start = True
             emit(_start_frame(
@@ -227,6 +368,16 @@ def _run_search(
         if decided:
             break
         keys = [key for key, _leaf in leaves]
+        # TSS runs BEFORE the forward: λ¹ decides which leaves earn a deep
+        # solve, and those solves are already in flight while the net runs.
+        order: list[int] = []
+        plans = None
+        if runner is not None and root_read is not None:
+            order = _match_leaves(lines, _advance_lines(lines, snap), leaves)
+            plans = runner.plan_wave(
+                [lines[index].path for index in order],
+                [leaf.legal_moves() for _key, leaf in leaves],
+            )
         read = evaluator.read([leaf for _key, leaf in leaves])
         if root_read is None:
             # The root wave: answer with the bare policy — the Gumbel MuZero
@@ -236,7 +387,11 @@ def _run_search(
                 row = read.row(j)
                 priors = torch.softmax(read.logits[row], dim=0).tolist()
                 if j == 0:
+                    # The start frame paints the model's policy; the search
+                    # samples from the guarded copy below.
                     root_priors = priors
+                    if runner is not None:
+                        priors = runner.begin_root(legal, priors)
                 value = max(-1.0, min(1.0, float(read.value[j])))
                 search.resume(key, priors, value)
         else:
@@ -245,12 +400,31 @@ def _run_search(
                 row = read.row(j)
                 priors = read.improved.probs[row].tolist()
                 value = max(-1.0, min(1.0, float(read.improved.v_hat[j])))
+                if plans is not None:
+                    priors = runner.leaf_priors(plans[j], priors)
+                    value = runner.leaf_value(plans[j], value)
                 search.resume(key, priors, value)
+                if plans is not None:
+                    line = lines[order[j]]
+                    line.policy_rank = _prior_argmax(priors)
+                    line.evaluated = True
 
     move = search.decision()
     final = search.snapshot()
     if move is None:
         raise RuntimeError("the Gumbel session finished without a decision")
+
+    proven: tuple[int, int] | None = None
+    action_selection: str | None = None
+    if runner is not None:
+        proven = runner.decision_override()
+        # The badge marks a proof that CHANGED the move, the same rule the
+        # hexfield_eq root guard uses for `tss_deep_root_win`. A proof that
+        # agrees with the search still carries its +1 into the export.
+        changed = proven is not None and proven != (int(move[0]), int(move[1]))
+        if changed:
+            move = proven
+        action_selection = "tss_deep_root_win" if changed else "gumbel_sh_score"
     action_id = _pack(*move)
 
     result: dict[str, Any] = {
@@ -258,10 +432,23 @@ def _run_search(
         "visits": int(final["completed_visits"]) if final else int(visits),
         "root_value": 0.0,
     }
+    if action_selection is not None:
+        result["action_selection"] = action_selection
+    if runner is not None:
+        result["tss"] = runner.stats()
     if final is not None:
         ids = [_pack(q, r) for q, r in final["actions"]]
         line_visits = [int(v) for v in final["visits"]]
         values = [float(v) for v in final["values"]]
+        if proven is not None:
+            # A proven win is worth +1 and the export must carry the cell the
+            # bot actually played, even though no line ever searched it.
+            if action_id in ids:
+                values[ids.index(action_id)] = 1.0
+            else:
+                ids.append(action_id)
+                line_visits.append(0)
+                values.append(1.0)
         try:
             chosen = ids.index(action_id)
             result["root_value"] = values[chosen]
@@ -274,7 +461,10 @@ def _run_search(
         result["visit_policy_weights_bytes"] = _f32_bytes(float(v) for v in line_visits)
         result["visit_policy_q_bytes"] = _f32_bytes(values)
         result["visit_policy_count"] = len(ids)
-        emit(_complete_frame(game_key, action_id, result, final))
+        emit(_complete_frame(
+            game_key, action_id, result, final,
+            proven=proven, tss_stats=result.get("tss"),
+        ))
     elif root_read is not None:
         result["root_value"] = _served_value(root_read, 0)
         result["visit_policy_action_ids_bytes"] = _u32_bytes(legal_ids)
@@ -340,6 +530,8 @@ def _round_frame(game_key: int, snap: dict) -> dict:
 
 def _complete_frame(
     game_key: int, action_id: int, result: dict, snap: dict,
+    *, proven: tuple[int, int] | None = None,
+    tss_stats: dict | None = None,
 ) -> dict:
     """The answer frame: the final SH ranking, not the raw visit counts.
 
@@ -350,12 +542,29 @@ def _complete_frame(
     taken from, and the final survivor set rides along so the viewer can dim
     the lines the last cut eliminated. Per-line visits and values stay as
     hover readouts.
+
+    A TSS-proven root move joins the frame at weight 0 with value +1: the
+    board must be able to draw the cell the bot played even when no line
+    searched it.
     """
     ids = [_pack(q, r) for q, r in snap["actions"]]
     survivors = set(int(i) for i in snap["survivors"])
     survivor_ids = [ids[i] for i in sorted(survivors)]
     weights = _softmax([float(s) for s in snap["scores"]])
-    return {
+    line_visits = [int(v) for v in snap["visits"]]
+    values = [float(v) for v in snap["values"]]
+    if proven is not None:
+        proven_id = _pack(*proven)
+        if proven_id in ids:
+            values[ids.index(proven_id)] = 1.0
+        else:
+            ids.append(proven_id)
+            weights.append(0.0)
+            line_visits.append(0)
+            values.append(1.0)
+        if proven_id not in survivor_ids:
+            survivor_ids.append(proven_id)
+    frame = {
         "phase": "complete",
         "game_key": game_key,
         "round": int(snap["round"]),
@@ -367,12 +576,15 @@ def _complete_frame(
         "policy_kind": "score",
         "policy_action_ids_bytes": _u32_bytes(ids),
         "policy_weights_bytes": _f32_bytes(weights),
-        "policy_visits_bytes": _u32_bytes(int(v) for v in snap["visits"]),
-        "policy_q_bytes": _f32_bytes(float(v) for v in snap["values"]),
+        "policy_visits_bytes": _u32_bytes(line_visits),
+        "policy_q_bytes": _f32_bytes(values),
         "policy_count": len(ids),
         "survivor_action_ids_bytes": _u32_bytes(survivor_ids),
         "survivor_count": len(survivor_ids),
     }
+    if tss_stats is not None:
+        frame["tss_stats"] = dict(tss_stats)
+    return frame
 
 
 def _policy_rows(read: Any, position: Any, *, floor: float) -> list[dict]:
@@ -475,14 +687,17 @@ class MantisnetFamily:
     ) -> dict:
         import numpy as np
 
+        # No per-game toggle reaches analysis or the lab: those readouts follow
+        # the profile, so a served analysis matches how the bot plays.
         result = _run_search(
             evaluator,
-            _replay(moves),
+            moves,
             candidates=profile.candidates,
             visits=int(visits),
             seed=int(seed) & _SEED_MASK,
             temperature=0.0,
             game_key=int(game_key),
+            tss=profile.tss,
             telemetry_callback=None,
         )
         best_q, best_r = self.decode_action(int(result["action_id"]))

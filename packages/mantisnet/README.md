@@ -60,6 +60,39 @@ root value) is v̂ = E_{π′}[Q], side-to-move POV. The state-value head is
 never served: KLENT self-play trains the action-value pathway only, so on
 these checkpoints that head is an untrained readout of the trained trunk.
 
+## Threat-Space Search (TSS-Gumbel)
+
+The served family answers the session's questions with proofs where proofs
+exist. It is on by default and switchable per game (the "Tactics" control in
+game setup; `tss` on `POST /api/game`). The layer lives in
+`apps/showcase/server/showcase/families/mantis_tss.py`; every verdict,
+classification, and solve comes from `hexfield_eq._rust.TssProbe`, the
+marshalling surface over the same Rust functions the hexfield_eq tree calls,
+so the showcase holds exactly one definition of Hexo threat semantics.
+
+- **Leaf values.** A leaf whose λ¹ analysis is decided answers ±1 instead of
+  v̂. An undecided leaf that passes the deep gate gets a verified deep solve,
+  submitted before the wave's forward so the two overlap; a verified win/loss
+  answers ±1, an unknown or unfinished solve answers v̂.
+- **Priors.** Always the net's, then the λ¹ move guard (zero everything but
+  the win-now moves when one exists, else zero the λ¹-refuted replies, and
+  fall back to the raw priors if that would zero everything). The session
+  extends a line through `prior_argmax`, so the guard is what makes a line
+  follow the forced continuation.
+- **The root.** The same guard on the root priors, plus one verified deep
+  solve running concurrently with the whole search. A proven win overrides
+  the decision and reports `action_selection = "tss_deep_root_win"`.
+
+The driver mirrors each candidate line's position, so it knows every leaf's
+placement path from the root and names solves by that path: the solver reads
+the turn phase, and only a true placement history carries it. A pumped leaf
+that matches no mirrored line is a hard error, never a guess.
+
+TSS off is the bare search above, byte for byte —
+`apps/showcase/tests/test_mantisnet_tss.py` pins that against golden vectors
+recorded from the pre-TSS driver, and pins the mirror, the guard, and the
+root override.
+
 ## Build / test
 
 Built like the other model packages: `maturin develop --release -m
@@ -74,3 +107,6 @@ showcase Dockerfiles). Python-side deps are ambient (torch, numpy).
   correctness gate for the vendoring plus the pyo3 marshaling.
 - `apps/showcase/tests/test_mantisnet_family.py` — the family end to end:
   catalogue, worker runtime, telemetry parity, device self-check, HTTP.
+- `apps/showcase/tests/test_mantisnet_tss.py` — TSS-Gumbel: line-mirror
+  exactness, the λ¹ guard and leaf values, the verified deep root override,
+  and TSS-off parity with the pre-TSS driver.
