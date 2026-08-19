@@ -136,7 +136,8 @@ search_profile = "{profile.as_posix()}"
         list(catalogue.checkpoints), settings, device_override="cpu"
     )
     result = runtime.bot_turn(
-        bot_slug="hexfield-main2-ep70", game_key=91, actions=[], seed=7, visits=8
+        bot_slug="hexfield-main2-ep70", game_key=91, actions=[], seed=7, visits=8,
+        tss_enabled=True,
     )
     assert result["actions"]
 

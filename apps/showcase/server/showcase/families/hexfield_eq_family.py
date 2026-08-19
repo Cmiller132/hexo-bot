@@ -161,6 +161,7 @@ class HexfieldEqSearchProfile:
     def search_one(
         self, session: Any, evaluator: Any, state: Any, *,
         game_key: int, visits: int, seed: int, temperature: float,
+        tss_enabled: bool,
         telemetry_callback: Any | None = None,
     ) -> dict:
         from hexfield_eq.config import build_eval_search_kwargs
@@ -171,6 +172,9 @@ class HexfieldEqSearchProfile:
             virtual_batch_size=self.virtual_batch_size,
             active_root_limit=self.selfplay.active_root_limit,
         )
+        # The per-game toggle can turn TSS OFF; it never turns on what this
+        # checkpoint's as-trained profile disabled.
+        kwargs["tss_enabled"] = kwargs["tss_enabled"] and bool(tss_enabled)
         if telemetry_callback is not None:
             def safe_telemetry(raw: Any) -> None:
                 try:

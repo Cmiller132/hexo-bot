@@ -109,6 +109,12 @@ its architecture from each checkpoint's own `model_config`.
 Adding the family is an image change (a new wheel), so the first deploy
 requires a full rebuild rather than a `docker compose restart app`.
 
+The family runs Threat-Space Search by default and needs no catalogue key for
+it: the game-setup "Tactics" control switches it per game, and the shipped
+defaults apply to every entry without a `[tss]` table in its search profile
+(`apps/showcase/README.md`, "Threat-Space Search"). The solver lives in the
+hexfield_eq wheel, so a TSS change is likewise a rebuild, not a restart.
+
 4. **Launch**:
 
    ```bash

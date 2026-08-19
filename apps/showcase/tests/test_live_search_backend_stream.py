@@ -147,7 +147,8 @@ def test_runtime_watch_maps_two_stones_and_preserves_return_bytes():
     actions = [pack_coord_id(AxialCoord(q=0, r=0))]
     runtime, profile = _fake_runtime()
     plain = runtime.bot_turn(
-        bot_slug="fake", game_key=7, actions=actions, seed=11, visits=8
+        bot_slug="fake", game_key=7, actions=actions, seed=11, visits=8,
+        tss_enabled=True,
     )
     assert profile.callback_flags == [False, False]
 
@@ -158,7 +159,7 @@ def test_runtime_watch_maps_two_stones_and_preserves_return_bytes():
 
     watched = runtime.bot_turn(
         bot_slug="fake", game_key=7, actions=actions, seed=11, visits=8,
-        progress_callback=loop_side_callback,
+        tss_enabled=True, progress_callback=loop_side_callback,
     )
     assert watched == plain
     assert profile.callback_flags[-2:] == [True, True]
@@ -183,7 +184,7 @@ def test_non_hex_watch_uses_post_search_result_fallback_only():
     watched = runtime.bot_turn(
         bot_slug="fake", game_key=7,
         actions=[pack_coord_id(AxialCoord(q=0, r=0))],
-        seed=11, visits=8, progress_callback=loop_side_callback,
+        seed=11, visits=8, tss_enabled=True, progress_callback=loop_side_callback,
     )
     assert watched["actions"]
     assert profile.callback_flags == [False, False]
@@ -253,7 +254,7 @@ def test_complete_frame_carries_the_selection_verdict_and_per_cell_q():
     runtime.bot_turn(
         bot_slug="fake", game_key=7,
         actions=[pack_coord_id(AxialCoord(q=0, r=0))],
-        seed=11, visits=8,
+        seed=11, visits=8, tss_enabled=True,
         progress_callback=lambda event: events.extend(expand_worker_event(event)),
     )
     complete = next(e for e in events if e["kind"] == "search_complete")

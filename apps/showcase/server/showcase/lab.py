@@ -392,6 +392,9 @@ def search_payload(
         result = profile.search_one(
             session, evaluator, state,
             game_key=game_key, visits=visits, seed=seed, temperature=0.0,
+            # No per-game toggle reaches the lab: it follows the checkpoint's
+            # search profile, so a lab search matches how the bot plays.
+            tss_enabled=True,
         )
     finally:
         session.discard(game_key)

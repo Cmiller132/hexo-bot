@@ -136,6 +136,10 @@ class CreateGameRequest(BaseModel):
     # the server flips a coin; the resolved 0/1 is echoed as `human_color` in
     # the game-state payload. Plain 0/1 stays the wire format for back-compat.
     human_color: Literal[0, 1, "random"] = 0
+    # Threat-Space Search for the bot in this game: proven tactics at the
+    # search root and at every search leaf. On by default; fixed for the whole
+    # game and echoed back as `bot.tss` in the game-state payload.
+    tss: bool = True
 
 
 class MoveRequest(BaseModel):
@@ -444,6 +448,7 @@ def create_app(settings: Settings) -> FastAPI:
                 actions=session.actions,
                 seed=session.seed,
                 visits=session.sims,
+                tss_enabled=session.tss_enabled,
             )
             if progress_callback is not None:
                 turn_kwargs["progress_callback"] = progress_callback
@@ -585,6 +590,7 @@ def create_app(settings: Settings) -> FastAPI:
             bot_slug=spec.slug, bot_db_id=bot_db_id, bot_label=spec.label,
             bot_epoch=spec.epoch, sims=body.sims, human_color=human_color,
             client_hash=client_hash,
+            tss_enabled=body.tss,
             watch_search=watch_search,
         )
         # One token per client: reuse the cookie so a client's games all

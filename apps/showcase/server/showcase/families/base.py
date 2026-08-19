@@ -23,6 +23,9 @@ class SearchProfile(Protocol):
         visits: int,
         seed: int,
         temperature: float,
+        # The per-game Threat-Space Search toggle, from game setup. Every
+        # family honours it; the caller always states it.
+        tss_enabled: bool,
         telemetry_callback: Any | None = None,
     ) -> dict: ...
 

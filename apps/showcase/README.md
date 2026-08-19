@@ -92,7 +92,7 @@ worker pool once, and drives full games over HTTP.
 The frontend track builds against this section.
 
 ```
-POST /api/game                  {checkpoint_id, sims, human_color} -> state + cookie
+POST /api/game                  {checkpoint_id, sims, human_color, tss} -> state + cookie
 GET  /api/game/{id}             state: owner-only while active; PUBLIC once finished
 POST /api/game/{id}/move        {q, r}    (cookie-gated)
 POST /api/game/{id}/resign                (cookie-gated)
@@ -136,6 +136,22 @@ red), or `"random"` (the server flips a coin); the resolved 0/1 is echoed as
 `human_color` in every game-state payload. With the human as player 1 the bot
 owns the opening move — the create response arrives as `bot_thinking` and the
 client polls until the bot's first stone lands.
+
+`tss` is Threat-Space Search for this game's bot (default `true`): proven
+tactics at the search root and at every search leaf. It is fixed for the whole
+game — search semantics cannot change mid-game — and every family honours it.
+`tss: false` turns the solver off for that game; it never turns TSS ON for a
+checkpoint whose search profile disabled it. Matches created through
+`/api/match` always run with TSS on.
+
+The setting is NOT echoed in the game-state payload. The games row has no
+column for it, so a finished game reconstructed from the DB could not report
+one — and a payload that said `true` there would be a guess, not a record.
+
+The per-move Threat-Space Search counters ride the live-search `complete`
+event as `tss_stats` (λ¹ leaf hits, deep solves attempted/won/lost/unknown,
+timeouts, solver nodes, root status and ms, total ms), and a deep root proof
+that overrode the search raises the existing `tss` "proven win" badge.
 
 ### GET /api/bots
 
@@ -307,3 +323,37 @@ search_profile = "shrimp_main_5"
 group = "earlier runs"
 search = "puct"
 ```
+
+### Threat-Space Search
+
+Every family runs TSS by default; the per-game `tss` flag turns it off for
+one game. shrimp and hexfield_eq take the flag straight into their Rust
+search's `tss_enabled`; mantisnet runs the TSS-Gumbel layer described in
+[`packages/mantisnet/README.md`](../../packages/mantisnet/README.md).
+
+A mantisnet `search_profile` may carry a `[tss]` table. Unknown keys fail
+catalogue load rather than reading as defaults:
+
+```toml
+[search]
+candidates = 16
+temperature = 1.0
+
+[tss]
+enabled = true        # run TSS at all for this checkpoint
+node_cap = 500        # solver node expansions per solve (root and leaf)
+leaf_gate = "threats" # "threats": solve leaves with a live >=4 window
+                      # "all":     solve every leaf with an undecided lambda-1
+workers = 3           # threads for leaf solves; the root solve has its own
+wall_budget_ms = 1500 # per-move ceiling on waiting for solves
+```
+
+Those values are the defaults, so a catalogue entry with no profile serves
+exactly them. `node_cap = 500` is the live main_5 serve cap; the two budget
+knobs are serve choices for the showcase's CPU box and are the ones to retune
+if moves get slow. The wall budget can cost strength — an abandoned solve
+leaves its leaf on the net's value — and can never cost soundness, because a
+partial solve never produces a value.
+
+Analysis and the lab have no per-game toggle: they follow the profile, so a
+served analysis matches how the bot plays.

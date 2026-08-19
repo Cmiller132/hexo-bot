@@ -191,6 +191,9 @@ def searched_eval(
         result = profile.search_one(
             session, evaluator, state,
             game_key=game_key, visits=visits, seed=seed, temperature=0.0,
+            # No per-game toggle reaches analysis: it follows the checkpoint's
+            # search profile, so a served analysis matches how the bot plays.
+            tss_enabled=True,
         )
     finally:
         session.discard(game_key)

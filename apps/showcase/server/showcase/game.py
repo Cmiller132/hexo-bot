@@ -171,6 +171,13 @@ class GameSession:
     sims: int
     human_color: int
     client_hash: str
+    # Threat-Space Search for this game's bot: chosen at game setup, on by
+    # default, fixed for the whole game. It is search semantics, so it rides
+    # the session rather than a per-request flag. Deliberately absent from
+    # `snapshot()` and from the games row: the DB record has no column for it,
+    # and a finished game reconstructed from the DB must not report a setting
+    # the DB never stored.
+    tss_enabled: bool = True
     # Who occupies the non-server seat: "human" (browser play, cookie auth) or
     # "match" (external agent via /api/match, bearer auth). Endpoints of one
     # kind never operate on sessions of the other.
@@ -204,6 +211,7 @@ class GameSession:
     def create(
         cls, *, bot_slug: str, bot_db_id: int, bot_label: str, bot_epoch: int,
         sims: int, human_color: int, client_hash: str, watch_search: bool = False,
+        tss_enabled: bool = True,
     ) -> "GameSession":
         session = cls(
             game_id=str(uuid.uuid4()),
@@ -215,6 +223,7 @@ class GameSession:
             sims=sims,
             human_color=human_color,
             client_hash=client_hash,
+            tss_enabled=bool(tss_enabled),
             watch_search=bool(watch_search),
         )
         # The opening single is forced to the origin, so place it at creation

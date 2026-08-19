@@ -24,13 +24,16 @@ def fresh_ip() -> dict[str, str]:
 
 def create_game(
     client, headers, checkpoint_id: str = "tiny", sims: int = 8,
-    human_color: int | str = 0,
+    human_color: int | str = 0, tss: bool | None = None,
 ) -> dict:
-    resp = client.post(
-        "/api/game",
-        json={"checkpoint_id": checkpoint_id, "sims": sims, "human_color": human_color},
-        headers=headers,
-    )
+    body = {
+        "checkpoint_id": checkpoint_id, "sims": sims, "human_color": human_color,
+    }
+    # Omitted, not defaulted: leaving `tss` off the body is what exercises the
+    # server's own default.
+    if tss is not None:
+        body["tss"] = bool(tss)
+    resp = client.post("/api/game", json=body, headers=headers)
     assert resp.status_code == 200, resp.text
     return resp.json()
 

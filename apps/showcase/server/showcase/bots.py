@@ -497,7 +497,8 @@ class _WorkerRuntime:
 
     def bot_turn(
         self, *, bot_slug: str, game_key: int, actions: list[int], seed: int,
-        visits: int, progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        visits: int, tss_enabled: bool,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict:
         """Play the bot's whole turn (1-2 stones) from the given move history
         at the given visit budget.
@@ -505,6 +506,9 @@ class _WorkerRuntime:
         Replays the history into a fresh engine state, then searches and
         applies placements until the turn passes or the game ends. Returns the
         packed action ids played plus per-move diagnostics.
+
+        `tss_enabled` is the game's Threat-Space Search setting, chosen at game
+        setup and honoured by every family.
         """
         import hexo_engine as engine
         from hexo_engine.types import PlacementAction, unpack_coord_id
@@ -524,6 +528,7 @@ class _WorkerRuntime:
                     visits=int(visits),
                     seed=seed * 5003 + ply,
                     temperature=bot.profile.move_temperature(ply),
+                    tss_enabled=bool(tss_enabled),
                 )
                 action_id = int(result["action_id"])
                 q, r = bot.family.decode_action(action_id)
@@ -601,6 +606,7 @@ class _WorkerRuntime:
                 "visits": int(visits),
                 "seed": seed * 5003 + ply,
                 "temperature": bot.profile.move_temperature(ply),
+                "tss_enabled": bool(tss_enabled),
             }
             if not post_search_only:
                 result = bot.profile.search_one(
@@ -1680,12 +1686,12 @@ class BotPool:
 
     async def bot_turn(
         self, *, game_key: int, bot_slug: str, actions: list[int], seed: int,
-        visits: int,
+        visits: int, tss_enabled: bool,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict:
         kwargs = {
             "bot_slug": bot_slug, "game_key": game_key, "actions": list(actions),
-            "seed": seed, "visits": int(visits),
+            "seed": seed, "visits": int(visits), "tss_enabled": bool(tss_enabled),
         }
         if progress_callback is not None:
             kwargs["watch_search"] = True

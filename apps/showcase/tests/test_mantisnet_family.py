@@ -109,6 +109,7 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     # -- bot_turn plays a full two-stone turn of engine-legal moves ---------
     out = runtime.bot_turn(
         bot_slug="tiny-mantis", game_key=5, actions=list(actions), seed=3, visits=8,
+        tss_enabled=True,
     )
     assert len(out["actions"]) == 2
     for move in out["actions"]:
@@ -124,7 +125,7 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     frames: list[dict] = []
     with_telemetry = runtime.bot_turn(
         bot_slug="tiny-mantis", game_key=5, actions=list(actions), seed=4, visits=8,
-        progress_callback=frames.append,
+        tss_enabled=True, progress_callback=frames.append,
     )
     phases = [f.get("phase") for f in frames if f.get("kind") == "search_telemetry"]
     assert phases[0] == "start" and "complete" in phases
@@ -157,6 +158,7 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     assert len(complete["survivor_action_ids_bytes"]) == complete["survivor_count"] * 4
     without_telemetry = runtime.bot_turn(
         bot_slug="tiny-mantis", game_key=5, actions=list(actions), seed=4, visits=8,
+        tss_enabled=True,
     )
     assert [m["action_id"] for m in with_telemetry["actions"]] == [
         m["action_id"] for m in without_telemetry["actions"]

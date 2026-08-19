@@ -55,6 +55,7 @@ class SearchProfile:
     def search_one(
         self, session: Any, evaluator: Any, state: Any, *,
         game_key: int, visits: int, seed: int, temperature: float,
+        tss_enabled: bool,
     ) -> dict:
         sp = self.selfplay
         return session.search(
@@ -73,7 +74,9 @@ class SearchProfile:
             widening_max_children=sp.widening_max_children,
             widening_min_children=sp.widening_min_children,
             fpu_reduction=sp.fpu_reduction,
-            tss_enabled=sp.tss_enabled,
+            # The per-game toggle can turn TSS OFF; it never turns on what this
+            # checkpoint's as-trained profile disabled.
+            tss_enabled=sp.tss_enabled and bool(tss_enabled),
             search_parity_mode=sp.search_parity_mode,
         )[0]
 

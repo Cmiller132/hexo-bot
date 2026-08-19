@@ -74,6 +74,13 @@
           <button data-color="random" class="sel" role="radio" aria-checked="true"
                   title="Coin flip">Random</button>
         </div>
+        <h2 class="k gap">Tactics</h2>
+        <div class="seg" id="tssSeg" role="radiogroup" aria-label="Threat-Space Search">
+          <button data-tss="1" class="sel" role="radio" aria-checked="true"
+                  title="Threat-Space Search: the bot proves forced wins and answers forced threats">On</button>
+          <button data-tss="0" role="radio" aria-checked="false"
+                  title="No tactical solver: the network and its search alone">Off</button>
+        </div>
       </div>
 
       <div class="sec">
@@ -377,6 +384,6 @@ print(result["result"])        # {"winner": ..., "termination": ...}</code></pre
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=28"></script>
+<script type="module" src="./app.js?v=29"></script>
 </body>
 </html>

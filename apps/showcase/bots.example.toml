@@ -96,7 +96,10 @@ epoch = 0
 # meta. `epoch` records the training ITERATION for this lineage. The search
 # is the lineage's as-evaled Gumbel sequential halving; keep the sims budget
 # LOW (16-64) — its per-eval cost is higher than shrimp's. An optional
-# search_profile toml may override [search] candidates/temperature.
+# search_profile toml may override [search] candidates/temperature and the
+# [tss] Threat-Space Search knobs (enabled / node_cap / leaf_gate / workers /
+# wall_budget_ms; see apps/showcase/README.md "Threat-Space Search"). Without
+# a profile the shipped TSS defaults apply, and TSS is ON.
 # [[checkpoint]]
 # id = "mantis-cellnodes1-it402"
 # family = "mantisnet"

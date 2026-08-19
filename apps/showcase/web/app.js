@@ -1114,13 +1114,18 @@ async function newGame() {
     const snap = await api.createGame({
       ...botsNorm.payloadFor(sel.ckpt, sel.sims),
       human_color: sel.color,
+      tss: sel.tss,
     }, watch);
     play.id = snap.id;
     play.moves = [];
     play.staged = null;
     play.label = (snap.bot && snap.bot.label) || sel.ckptLabel;
     play.sims = (snap.bot && (snap.bot.sims ?? snap.bot.visits)) || sel.sims;
-    playTag.textContent = `field · ∞ · vs ${play.label} · ${play.sims} sims`;
+    // TSS off is a real strength change, so the frame tag says so rather than
+    // leaving it invisible. The setting is not echoed by the server (it is not
+    // on the game record), so this is the request we just made.
+    const noTss = sel.tss ? "" : " · no TSS";
+    playTag.textContent = `field · ∞ · vs ${play.label} · ${play.sims} sims${noTss}`;
     nickForm.hidden = true;
     analyzeBtn.hidden = true;
     armLiveTurn(snap, watch);
@@ -1186,7 +1191,8 @@ analyzeBtn.addEventListener("click", () => {
 
 let botsNorm = null;
 // color: 0 (first, blue) | 1 (second, red) | "random" — default is a coin flip
-const sel = { ckpt: null, ckptLabel: "", sims: 0, color: "random" };
+// tss: Threat-Space Search for the bot this game, on by default
+const sel = { ckpt: null, ckptLabel: "", sims: 0, color: "random", tss: true };
 
 /* The picker itself (model grouping, per-model epoch dropdown, tags, default
  * pick) lives in the shared checkpoints.js so play, analysis and the lab never
@@ -1257,6 +1263,20 @@ if (colorSegEl) colorSegEl.addEventListener("click", e => {
   if (!b) return;
   sel.color = b.dataset.color === "random" ? "random" : +b.dataset.color;
   colorSegEl.querySelectorAll("button").forEach(x => {
+    const on = x === b;
+    x.classList.toggle("sel", on);
+    x.setAttribute("aria-checked", on);
+  });
+});
+/* Threat-Space Search on/off for the next game. Guarded the same way as the
+ * color segment: a cached pre-tssSeg index.html must not abort this module,
+ * and such a client just keeps the server's default (on). */
+const tssSegEl = $("tssSeg");
+if (tssSegEl) tssSegEl.addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  sel.tss = b.dataset.tss === "1";
+  tssSegEl.querySelectorAll("button").forEach(x => {
     const on = x === b;
     x.classList.toggle("sel", on);
     x.setAttribute("aria-checked", on);

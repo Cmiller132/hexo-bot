@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import struct
 from collections import deque
 from dataclasses import dataclass, field
@@ -151,6 +152,22 @@ def _decoded_fields(raw: dict[str, Any], phase: str) -> dict[str, Any]:
         fields["selection"] = selection
     if selection == "tss_deep_root_win":
         fields["tss"] = True
+    # Per-move Threat-Space Search counters, when the family reports them
+    # (mantisnet does). Scalars only, and finite: the SSE encoder refuses NaN.
+    stats = raw.get("tss_stats")
+    if isinstance(stats, dict):
+        clean: dict[str, Any] = {}
+        for key, value in stats.items():
+            if isinstance(value, bool):
+                clean[str(key)] = value
+            elif isinstance(value, int):
+                clean[str(key)] = int(value)
+            elif isinstance(value, float) and math.isfinite(value):
+                clean[str(key)] = float(value)
+            elif isinstance(value, str):
+                clean[str(key)] = value
+        if clean:
+            fields["tss_stats"] = clean
     if raw.get("lcb_override"):
         fields["lcb_override"] = True
     if raw.get("play_pruned"):
