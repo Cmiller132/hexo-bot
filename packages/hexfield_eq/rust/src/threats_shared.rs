@@ -69,6 +69,15 @@ pub(crate) struct ThreatAnalysis {
     // surface); the hexfield lineages construct but never read it.
     #[allow(dead_code)]
     pub(crate) opp_threat_count: usize,
+    /// Empties of every opponent >=4 window — the live threat family the
+    /// analysis already collected for `min_hitting_set`. Returned so callers
+    /// that need the family (the deep solver's defender kernels and pair
+    /// plans) reuse this scan instead of re-walking the window store. Family
+    /// ORDER follows the live-threat index and is not canonical: consumers
+    /// must be order-independent or sort.
+    // Consumed by the hexfield deep solver; other lineages ignore it.
+    #[allow(dead_code)]
+    pub(crate) opp_empties: Vec<Vec<HexCoord>>,
 }
 
 impl ThreatAnalysis {
@@ -153,7 +162,7 @@ pub(crate) fn analyze(state: &RustHexoState) -> ThreatAnalysis {
     // Threat-free short-circuit (the common case). With no active >= 4 window the
     // loop below buckets nothing: own_win_now stays false and `opp_empties` stays
     // empty, so `min_hitting_set(&[], b) == Some(0)` and `opp_threat_count == 0`.
-    // This returns exactly that, skipping the O(all-touched-windows) scan. The
+    // This returns exactly that, skipping the threat iteration. The
     // `has_threats()` index is an exact mirror of the scan, so the result is
     // bit-identical.
     if !state.board().windows().has_threats() {
@@ -162,12 +171,18 @@ pub(crate) fn analyze(state: &RustHexoState) -> ThreatAnalysis {
             own_win_now: false,
             min_hitting_set: Some(0),
             opp_threat_count: 0,
+            opp_empties: Vec::new(),
         };
     }
     let me = state.current_player();
     let mut own_win_now = false;
     let mut opp_empties: Vec<Vec<HexCoord>> = Vec::new();
-    for (player, entry) in state.board().windows().threats() {
+    // The live-threat index yields the same windows as the full `threats()`
+    // scan in a different order. Every output here is order-independent:
+    // `own_win_now` is a disjunction, `opp_threat_count` a count, and
+    // `min_hitting_set` an existence value over the family as a set. The
+    // returned `opp_empties` family order is documented non-canonical.
+    for (player, entry) in state.board().windows().live_threat_entries() {
         if player == me {
             // own win-now: count-5 (1 placement) any B; count-4 only at B==2.
             match entry.count(me) {
@@ -186,6 +201,7 @@ pub(crate) fn analyze(state: &RustHexoState) -> ThreatAnalysis {
         own_win_now,
         min_hitting_set,
         opp_threat_count,
+        opp_empties,
     }
 }
 
@@ -344,6 +360,7 @@ mod tests {
             own_win_now: true,
             min_hitting_set: None,
             opp_threat_count: 1,
+            opp_empties: Vec::new(),
         };
         assert_eq!(win.verdict(), Some(1.0));
         assert!(!win.forced_loss());
@@ -353,6 +370,7 @@ mod tests {
             own_win_now: false,
             min_hitting_set: None,
             opp_threat_count: 2,
+            opp_empties: Vec::new(),
         };
         assert_eq!(loss.verdict(), Some(-1.0));
         assert!(loss.forced_loss());
@@ -362,6 +380,7 @@ mod tests {
             own_win_now: false,
             min_hitting_set: Some(1),
             opp_threat_count: 1,
+            opp_empties: Vec::new(),
         };
         assert_eq!(quiet.verdict(), None);
         assert!(!quiet.forced_loss());

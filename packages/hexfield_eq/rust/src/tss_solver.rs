@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use hexo_engine::{
     apply_placement, hex_distance, Axis, HexCoord, HexoState as RustHexoState, Placement, Player,
-    TurnPhase, WindowKey,
+    TurnPhase, WindowEntry, WindowKey,
 };
 
 use crate::threats_shared as threats;
@@ -1876,6 +1876,37 @@ struct WidePositionKey {
     fp: u128,
 }
 
+/// Pass-through hasher for the 128-bit fingerprint keys. The fingerprint is
+/// already two independently mixed 64-bit lanes (`wide_mix64`/`wide_mix64b`),
+/// so re-hashing it through the default SipHash buys no distribution — the
+/// map hash is simply the low lane. The transposition maps are never iterated
+/// in a decision-bearing order (the one key iteration is an order-free byte
+/// sum), so this changes lookup cost only, never search behavior.
+#[derive(Default)]
+struct WideFpHasher(u64);
+
+impl std::hash::Hasher for WideFpHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    /// Correctness fallback only — `WidePositionKey` hashes through
+    /// `write_u128` below. XOR-fold keeps this sound if that ever changes.
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.0 ^= u64::from_ne_bytes(word);
+        }
+    }
+
+    fn write_u128(&mut self, n: u128) {
+        self.0 = n as u64;
+    }
+}
+
+type WideFpBuildHasher = std::hash::BuildHasherDefault<WideFpHasher>;
+
 /// SplitMix64 finalizer: the per-lane bijection behind the stone and meta
 /// mixes. Fixed constants keep every solve deterministic.
 fn wide_mix64(mut x: u64) -> u64 {
@@ -2022,6 +2053,28 @@ impl WidePositionKey {
             fp: fp ^ wide_meta_first_stone(player_code(claimant), placements),
         }
     }
+
+    /// The key of the NONTERMINAL defender SecondStone position reached after
+    /// one defender placement at `coord` on the board `stones_fp`/`stones_len`
+    /// describe — the mid-turn child of a forced B == 2 defender node. Caller
+    /// contract (the forced boundary rules out a defender win-now, and B == 2
+    /// win-now covers count-4 windows too): no defender >= 4 window exists at
+    /// the parent, so the placement cannot complete six and the child is
+    /// exactly (defender to move, SecondStone at `coord`, non-terminal).
+    fn for_defender_midturn(
+        stones_fp: u128,
+        stones_len: u32,
+        claimant: Player,
+        coord: HexCoord,
+    ) -> Self {
+        let owner = player_code(claimant.other());
+        let placements = stones_len.saturating_add(1);
+        let w1 = u64::from(owner) | (u64::from(placements) << 8) | (2u64 << 40);
+        let w2 = (u64::from(coord.q as u16) << 48) | (u64::from(coord.r as u16) << 32);
+        Self {
+            fp: stones_fp ^ wide_stone_fp(coord.q, coord.r, owner) ^ wide_meta_fp(w1, w2),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2060,11 +2113,11 @@ struct WideDefenderPairPlan {
 fn forced_defender_pair_plan_dynamic(
     state: &mut RustHexoState,
     claimant: Player,
+    root_analysis: &threats::ThreatAnalysis,
 ) -> Option<WideDefenderPairPlan> {
     if state.current_player() == claimant || !matches!(state.phase(), TurnPhase::FirstStone) {
         return None;
     }
-    let root_analysis = threats::analyze(state);
     if root_analysis.b != 2
         || root_analysis.opp_threat_count == 0
         || root_analysis.own_win_now
@@ -2073,12 +2126,10 @@ fn forced_defender_pair_plan_dynamic(
         return None;
     }
 
-    let mut kernel = forced_defender_replies(
-        state,
-        claimant,
-        root_analysis.b,
-        WidthOptions::vcf_pair_complete(),
-    );
+    // The caller's turn-start analysis carries the claimant threat family;
+    // the kernel filter treats it as a set over a sorted universe, so this
+    // is the same kernel `forced_defender_replies` would rebuild by scanning.
+    let mut kernel = extendable_hit_kernel_for_family(&root_analysis.opp_empties, 2);
     let root_frame = canonical_frame(state);
     kernel.sort_by_key(|coord| canonical_coord_key(root_frame, *coord));
     kernel.dedup();
@@ -2227,11 +2278,11 @@ fn forced_defender_pair_plan_dynamic(
 fn forced_defender_pair_plan_direct(
     state: &RustHexoState,
     claimant: Player,
+    analysis: &threats::ThreatAnalysis,
 ) -> Option<WideDefenderPairPlan> {
     if state.current_player() == claimant || !matches!(state.phase(), TurnPhase::FirstStone) {
         return None;
     }
-    let analysis = threats::analyze(state);
     if analysis.b != 2
         || analysis.opp_threat_count == 0
         || analysis.own_win_now
@@ -2240,12 +2291,11 @@ fn forced_defender_pair_plan_direct(
         return None;
     }
 
-    let family = state
-        .board()
-        .windows()
-        .threats()
-        .filter_map(|(owner, entry)| (owner == claimant).then(|| entry.empty_cells()))
-        .collect::<Vec<_>>();
+    // The caller's turn-start analysis already collected the claimant threat
+    // family (at a defender node the opponent IS the claimant); reusing it
+    // skips a window scan. Family order is non-canonical, and everything
+    // below treats it as a set.
+    let family = &analysis.opp_empties;
     if family.is_empty() || family.iter().any(|edge| !(1..=2).contains(&edge.len())) {
         return None;
     }
@@ -2253,7 +2303,7 @@ fn forced_defender_pair_plan_direct(
     // Preserve the reference kernel's canonical order exactly. Membership is
     // the union of the directly enumerated minimum covers; presentation order
     // remains independent of the cover enumeration below.
-    let mut kernel = extendable_hit_kernel_for_family(&family, 2);
+    let mut kernel = extendable_hit_kernel_for_family(family, 2);
     let root_frame = canonical_frame(state);
     kernel.sort_by_key(|coord| canonical_coord_key(root_frame, *coord));
     kernel.dedup();
@@ -2316,11 +2366,12 @@ fn forced_defender_pair_plan_direct(
 fn forced_defender_pair_plan(
     state: &mut RustHexoState,
     claimant: Player,
+    analysis: &threats::ThreatAnalysis,
 ) -> Option<WideDefenderPairPlan> {
-    if let Some(direct) = forced_defender_pair_plan_direct(state, claimant) {
+    if let Some(direct) = forced_defender_pair_plan_direct(state, claimant, analysis) {
         #[cfg(debug_assertions)]
         {
-            let reference = forced_defender_pair_plan_dynamic(state, claimant);
+            let reference = forced_defender_pair_plan_dynamic(state, claimant, analysis);
             assert_eq!(
                 reference.as_ref(),
                 Some(&direct),
@@ -2329,7 +2380,7 @@ fn forced_defender_pair_plan(
         }
         return Some(direct);
     }
-    forced_defender_pair_plan_dynamic(state, claimant)
+    forced_defender_pair_plan_dynamic(state, claimant, analysis)
 }
 
 /// Accounted heap footprint of one installed child vector. Fingerprint keys
@@ -2421,12 +2472,12 @@ struct WidePnSearch<'store> {
     cancel: Option<Arc<AtomicBool>>,
 
     entries: Vec<WidePnEntry>,
-    by_position: HashMap<WidePositionKey, usize>,
+    by_position: HashMap<WidePositionKey, usize, WideFpBuildHasher>,
     /// Prospective fingerprint identity for lazy defender thunks. This
     /// preserves the first eager admission's prior/depth and lets a selected
     /// attacker thunk recover that transposed state without pre-linking an
     /// arena/TT entry.
-    deferred_by_position: HashMap<WidePositionKey, WideDeferredPosition>,
+    deferred_by_position: HashMap<WidePositionKey, WideDeferredPosition, WideFpBuildHasher>,
     /// Exact window-substructure cache shared by attacker OR generations in
     /// this search. Keys include both occupancy masks, so a position delta
     /// invalidates precisely the windows it changes.
@@ -2643,8 +2694,8 @@ impl<'store> WidePnSearch<'store> {
             cancel: None,
 
             entries: Vec::new(),
-            by_position: HashMap::new(),
-            deferred_by_position: HashMap::new(),
+            by_position: HashMap::default(),
+            deferred_by_position: HashMap::default(),
             generation_memo: RefCell::new(WindowGenerationMemo::default()),
             fragment_store,
             fragment_lookups: 0,
@@ -3917,14 +3968,20 @@ impl<'store> WidePnSearch<'store> {
             self.refresh(id);
             return WidePnStepOutcome::Progress;
         }
-        if !matches!(state.phase(), TurnPhase::Opening) {
-            let analysis = threats::analyze(state);
-            if let Some(winner) = winner_from_analysis(state, &analysis) {
+        // One threat analysis per expansion: the winner check and the defender
+        // frontier below consume the same pure `analyze(state)` result, so it
+        // is computed once here and moved into the defender branch. (Opening
+        // has no windows to analyze; the defender arm computes it lazily for
+        // that shape.)
+        let pre_analysis = (!matches!(state.phase(), TurnPhase::Opening))
+            .then(|| threats::analyze(state));
+        if let Some(analysis) = pre_analysis.as_ref() {
+            if let Some(winner) = winner_from_analysis(state, analysis) {
                 if winner == self.claimant {
                     match typed_lambda_leaf(
                         state,
                         winner,
-                        &analysis,
+                        analysis,
                         WidthOptions::vcf_pair_complete(),
                     ) {
                         Some(leaf) if node_resolution(&leaf) <= self.semantic_horizon => {
@@ -3975,13 +4032,17 @@ impl<'store> WidePnSearch<'store> {
             }
             (WidePnKind::Choice, children)
         } else {
-            let analysis = threats::analyze(state);
+            let analysis = match pre_analysis {
+                Some(analysis) => analysis,
+                // Opening defender node: no pre-analysis was computed.
+                None => threats::analyze(state),
+            };
             let implicit_dispatch = !matches!(state.phase(), TurnPhase::Opening)
                 && analysis.opp_threat_count > 0
                 && !analysis.own_win_now
                 && analysis.min_hitting_set == Some(analysis.b);
             if implicit_dispatch {
-                let children = self.defender_boundary_children(state, analysis.b);
+                let children = self.defender_boundary_children(state, &analysis);
                 (WidePnKind::Universal { implicit_dispatch }, children)
             } else if self.width.quiet_wide && !analysis.own_win_now {
                 // Unforcing profile: an unforced defender is a dispatch-free
@@ -4457,14 +4518,13 @@ impl<'store> WidePnSearch<'store> {
     fn defender_children(
         &mut self,
         state: &mut RustHexoState,
-        defender_budget: u8,
+        analysis: &threats::ThreatAnalysis,
     ) -> Vec<WidePnChild> {
-        let explicit = forced_defender_replies(
-            state,
-            self.claimant,
-            defender_budget,
-            WidthOptions::vcf_pair_complete(),
-        );
+        // The turn-start analysis carries the claimant threat family; the
+        // extendable-hit kernel over that family is exactly what
+        // `forced_defender_replies` (vcf_pair_complete width) rebuilds by
+        // scanning the window store.
+        let explicit = extendable_hit_kernel_for_family(&analysis.opp_empties, analysis.b);
         self.defender_children_from(state, explicit)
     }
 
@@ -4529,9 +4589,22 @@ impl<'store> WidePnSearch<'store> {
             .collect()
     }
 
-    /// One defender frontier from an explicit move list: apply, classify
-    /// (a defender completion refutes; a claimant completion cannot occur on
-    /// a defender placement), lazily defer or eagerly admit the child.
+    /// One defender frontier from an explicit move list, built STATELESSLY
+    /// from the turn-start position: no engine applies. This generator is
+    /// reached only through the forced boundary (defender to move, no
+    /// defender win-now — at B == 2 that rules out count-4 windows too), so
+    /// no reply can complete six and every child is Pending. Kernel cells are
+    /// threat-window empties, hence always legal. Per child:
+    ///  - SecondStone parent (B == 1): the child is the claimant's FirstStone
+    ///    node — its key is one stone XOR on the parent fingerprint, and its
+    ///    fork-degree prior comes from the shared turn-start window snapshot
+    ///    minus the windows through the placed cell.
+    ///  - FirstStone parent (B == 2 fallback): the child is the defender's
+    ///    own SecondStone node with placements_remaining == 1, where
+    ///    `min_hitting_set` is capped at 1 and `dn_from_tau` is therefore
+    ///    identically 1 — the prior is the constant {pn: 1, dn: 1}.
+    /// Debug builds assert key, prior, depth, and the no-completion contract
+    /// against the historical apply-and-probe path for every child.
     fn defender_children_from(
         &mut self,
         state: &mut RustHexoState,
@@ -4539,38 +4612,75 @@ impl<'store> WidePnSearch<'store> {
     ) -> Vec<WidePnChild> {
         let frame = canonical_frame(state);
         explicit.sort_by_key(|coord| canonical_coord_key(frame, *coord));
+        if explicit.is_empty() {
+            return Vec::new();
+        }
+
+        let claimant = self.claimant;
+        let stones_fp = wide_stones_fp(state);
+        let stones_len = u32::try_from(state.board().len()).unwrap_or(u32::MAX);
+        let depth = usize::try_from(
+            state
+                .placements_made()
+                .saturating_add(1)
+                .saturating_sub(self.root_ply),
+        )
+        .unwrap_or(usize::MAX);
+        let midturn = match state.phase() {
+            TurnPhase::SecondStone { .. } => false,
+            TurnPhase::FirstStone => true,
+            TurnPhase::Opening => {
+                unreachable!("forced defender boundary cannot occur at Opening")
+            }
+        };
+        let snapshot = (!midturn).then(|| DefenderChildSnapshot::build(state, claimant));
+        let mut degree_scratch: Vec<(HexCoord, (usize, usize))> = Vec::new();
+
         let mut children = Vec::with_capacity(explicit.len());
         for coord in explicit {
-            let Ok((result, delta)) = state.apply_with_delta(Placement { coord }) else {
-                continue;
-            };
-            let child_result = match result.outcome {
-                Some(outcome) if outcome.winner == self.claimant => {
-                    WidePnChildResult::ClaimantCompletion
+            let (key, prior) = match snapshot.as_ref() {
+                Some(snapshot) => {
+                    let fork = snapshot.child_fork_degree(coord, &mut degree_scratch);
+                    (
+                        WidePositionKey::for_defender_pair(
+                            stones_fp,
+                            stones_len,
+                            claimant,
+                            &[coord],
+                        ),
+                        WidePnPrior {
+                            pn: pn_from_fork_degree(fork),
+                            dn: 1,
+                        },
+                    )
                 }
-                Some(_) => WidePnChildResult::Refuted,
-                None => WidePnChildResult::Pending,
+                None => (
+                    WidePositionKey::for_defender_midturn(stones_fp, stones_len, claimant, coord),
+                    WidePnPrior { pn: 1, dn: 1 },
+                ),
             };
-            let prior = (child_result == WidePnChildResult::Pending)
-                .then(|| self.position_prior(state))
-                .unwrap_or(WidePnPrior::UNIFORM);
-            let (entry, future_key) = if child_result == WidePnChildResult::Pending {
-                let depth = usize::try_from(state.placements_made().saturating_sub(self.root_ply))
-                    .unwrap_or(usize::MAX);
-                let key = WidePositionKey::from_state(state);
-                if self.lazy_frontier {
-                    self.defer_position(&key, depth, prior);
-                    (None, Some(WideFutureKey::Virtual(key)))
-                } else {
-                    (Some(self.insert_position(key, depth, prior)), None)
-                }
+            debug_assert!({
+                let (result, delta) = state
+                    .apply_with_delta(Placement { coord })
+                    .expect("forced defender replies are always legal");
+                let checks = result.outcome.is_none()
+                    && key == WidePositionKey::from_state(state)
+                    && prior == self.position_prior(state)
+                    && depth
+                        == usize::try_from(state.placements_made().saturating_sub(self.root_ply))
+                            .unwrap_or(usize::MAX);
+                state.undo(delta);
+                checks
+            });
+            let (entry, future_key) = if self.lazy_frontier {
+                self.defer_position(&key, depth, prior);
+                (None, Some(WideFutureKey::Virtual(key)))
             } else {
-                (None, None)
+                (Some(self.insert_position(key, depth, prior)), None)
             };
-            state.undo(delta);
             children.push(WidePnChild {
                 mv: WidePnMove::One(coord),
-                result: child_result,
+                result: WidePnChildResult::Pending,
                 entry,
                 future_key,
                 prior,
@@ -4585,18 +4695,22 @@ impl<'store> WidePnSearch<'store> {
     fn defender_boundary_children(
         &mut self,
         state: &mut RustHexoState,
-        defender_budget: u8,
+        analysis: &threats::ThreatAnalysis,
     ) -> Vec<WidePnChild> {
-        if defender_budget == 2 && matches!(state.phase(), TurnPhase::FirstStone) {
-            if let Some(children) = self.defender_pair_children(state) {
+        if analysis.b == 2 && matches!(state.phase(), TurnPhase::FirstStone) {
+            if let Some(children) = self.defender_pair_children(state, analysis) {
                 return children;
             }
         }
-        self.defender_children(state, defender_budget)
+        self.defender_children(state, analysis)
     }
 
-    fn defender_pair_children(&mut self, state: &mut RustHexoState) -> Option<Vec<WidePnChild>> {
-        let plan = forced_defender_pair_plan(state, self.claimant)?;
+    fn defender_pair_children(
+        &mut self,
+        state: &mut RustHexoState,
+        analysis: &threats::ThreatAnalysis,
+    ) -> Option<Vec<WidePnChild>> {
+        let plan = forced_defender_pair_plan(state, self.claimant, analysis)?;
         let depth = usize::try_from(
             state
                 .placements_made()
@@ -4969,7 +5083,10 @@ impl WideProofMaterializer<'_, '_> {
         state: &mut RustHexoState,
         children: &[WidePnChild],
     ) -> Option<CertNodeId> {
-        let plan = forced_defender_pair_plan(state, self.search.claimant)?;
+        // Materialization visits each proven Universal once; a fresh analysis
+        // here is negligible against the search that produced it.
+        let analysis = threats::analyze(state);
+        let plan = forced_defender_pair_plan(state, self.search.claimant, &analysis)?;
         if plan.pairs.len() != children.len() {
             return None;
         }
@@ -7475,30 +7592,181 @@ fn compact_pair_family_min_hitting_set(scratch: &mut PairEvaluationScratch) -> O
 /// windows or only as defender blocks contribute exactly `T`. Building and
 /// sorting the full ranked candidate list for one scalar was the dominant
 /// cost of every attacker-node prior.
+/// Turn-start window snapshot for stateless defender-child priors: the
+/// aggregates `attacker_fork_degree` reads at each child of a forced B == 1
+/// defender node, reorganized so ONE full window-store pass serves every
+/// generated reply. A defender stone at `coord` changes the active family in
+/// exactly two ways — claimant windows containing `coord` become two-coloured
+/// (removed), and a defender count-3 window containing `coord` becomes a
+/// count-4 — so each child aggregate is the parent aggregate minus the
+/// windows through `coord`. `child_fork_degree` must stay bit-identical to
+/// `attacker_fork_degree` of the applied child (debug-asserted per child in
+/// `defender_children_from`).
+struct DefenderChildSnapshot {
+    /// Claimant single-colour windows with 2..=5 stones: key, stone count,
+    /// and the parent empty mask (for per-cell degree decrements).
+    claimant_ge2: Vec<(WindowKey, u8, u8)>,
+    /// Claimant >= 4 window count (the parent fork threat count).
+    threat_count: usize,
+    /// Parent per-cell (count-3, count-2) tallies over `claimant_ge2`.
+    degrees: Vec<(HexCoord, (usize, usize))>,
+    /// Any defender >= 4 window at the parent (it survives every child).
+    any_defender_ge4: bool,
+    /// Defender count-3 windows: a child gains a defender >= 4 window exactly
+    /// when one of these contains the placed cell. Consulted only when
+    /// `any_defender_ge4` is false.
+    defender_eq3: Vec<WindowKey>,
+}
+
+impl DefenderChildSnapshot {
+    fn build(state: &RustHexoState, claimant: Player) -> Self {
+        let mut snapshot = Self {
+            claimant_ge2: Vec::new(),
+            threat_count: 0,
+            degrees: Vec::new(),
+            any_defender_ge4: false,
+            defender_eq3: Vec::new(),
+        };
+        // Same index-backed iteration as `attacker_fork_degree`: only active
+        // >= 2-stone windows contribute, and every aggregate collected here
+        // is order-independent.
+        for (owner, entry) in state.board().windows().active_ge2_entries() {
+            let count = entry.count(owner);
+            if owner == claimant {
+                if count >= 4 {
+                    snapshot.threat_count += 1;
+                } else {
+                    let mut empties = entry.empty_mask();
+                    while empties != 0 {
+                        let index = empties.trailing_zeros() as u8;
+                        empties &= empties - 1;
+                        let cell = entry.key().coord_at(index);
+                        let slot = match snapshot
+                            .degrees
+                            .iter_mut()
+                            .find(|(seen, _)| *seen == cell)
+                        {
+                            Some((_, slot)) => slot,
+                            None => {
+                                snapshot.degrees.push((cell, (0, 0)));
+                                &mut snapshot.degrees.last_mut().expect("just pushed").1
+                            }
+                        };
+                        if count == 3 {
+                            slot.0 += 1;
+                        } else {
+                            slot.1 += 1;
+                        }
+                    }
+                }
+                snapshot
+                    .claimant_ge2
+                    .push((entry.key(), count, entry.empty_mask()));
+            } else if count >= 4 {
+                snapshot.any_defender_ge4 = true;
+            } else if count == 3 {
+                snapshot.defender_eq3.push(entry.key());
+            }
+        }
+        snapshot
+    }
+
+    /// `attacker_fork_degree` of the child reached by the defender playing
+    /// `coord`, from the turn-start snapshot alone. `scratch` is a reusable
+    /// degree buffer (copied from the parent tallies, then decremented for
+    /// the removed windows).
+    fn child_fork_degree(
+        &self,
+        coord: HexCoord,
+        scratch: &mut Vec<(HexCoord, (usize, usize))>,
+    ) -> usize {
+        scratch.clear();
+        scratch.extend_from_slice(&self.degrees);
+        let mut threat_count = self.threat_count;
+        let mut any_claimant_ge2 = false;
+        for &(key, count, empty_mask) in &self.claimant_ge2 {
+            if !key.contains(coord) {
+                any_claimant_ge2 = true;
+                continue;
+            }
+            if count >= 4 {
+                threat_count -= 1;
+                continue;
+            }
+            let mut empties = empty_mask;
+            while empties != 0 {
+                let index = empties.trailing_zeros() as u8;
+                empties &= empties - 1;
+                let cell = key.coord_at(index);
+                let slot = scratch
+                    .iter_mut()
+                    .find(|(seen, _)| *seen == cell)
+                    .map(|(_, slot)| slot)
+                    .expect("every 2/3-window empty is tallied in the snapshot");
+                if count == 3 {
+                    slot.0 -= 1;
+                } else {
+                    slot.1 -= 1;
+                }
+            }
+        }
+        let any_candidate = any_claimant_ge2
+            || self.any_defender_ge4
+            || self.defender_eq3.iter().any(|key| key.contains(coord));
+        if !any_candidate {
+            return 0;
+        }
+        scratch
+            .iter()
+            .map(|&(_, (c3, c2))| (threat_count + c3).max(c2))
+            .max()
+            .unwrap_or(0)
+            .max(threat_count)
+    }
+}
+
 fn attacker_fork_degree(state: &RustHexoState, claimant: Player) -> usize {
     let mut threat_count = 0usize;
     let mut any_candidate = false;
-    let mut degrees: HashMap<HexCoord, (usize, usize)> = HashMap::new();
-    for entry in state.board().windows().entries() {
-        let Some(owner) = entry.active_player() else {
-            continue;
-        };
+    // Per-cell (count-3, count-2) window tallies. The universe is the empties
+    // of the claimant's 2/3-count windows — a few dozen cells — so a linear
+    // scratch vector beats a hash map (this runs per generated defender
+    // child). Same tallies, same order-independent max: identical result.
+    let mut degrees: Vec<(HexCoord, (usize, usize))> = Vec::new();
+    let mut bump = |degrees: &mut Vec<(HexCoord, (usize, usize))>, entry: &WindowEntry, three: bool| {
+        let mut empties = entry.empty_mask();
+        while empties != 0 {
+            let index = empties.trailing_zeros() as u8;
+            empties &= empties - 1;
+            let cell = entry.key().coord_at(index);
+            let slot = match degrees.iter_mut().find(|(seen, _)| *seen == cell) {
+                Some((_, slot)) => slot,
+                None => {
+                    degrees.push((cell, (0, 0)));
+                    &mut degrees.last_mut().expect("just pushed").1
+                }
+            };
+            if three {
+                slot.0 += 1;
+            } else {
+                slot.1 += 1;
+            }
+        }
+    };
+    // The ge2 index yields exactly the windows that contribute here: count-1
+    // and mixed windows added nothing in the historical full scan, and every
+    // aggregate below is order-independent.
+    for (owner, entry) in state.board().windows().active_ge2_entries() {
         let count = entry.count(owner);
         if owner == claimant {
             if count >= 4 {
                 threat_count += 1;
             }
-            if count >= 2 {
-                any_candidate = true;
-            }
+            any_candidate = true;
             if count == 3 {
-                for cell in entry.empty_cells() {
-                    degrees.entry(cell).or_default().0 += 1;
-                }
+                bump(&mut degrees, &entry, true);
             } else if count == 2 {
-                for cell in entry.empty_cells() {
-                    degrees.entry(cell).or_default().1 += 1;
-                }
+                bump(&mut degrees, &entry, false);
             }
         } else if count >= 4 {
             // Defender-threat empties are wide-mode block candidates even
@@ -7510,8 +7778,8 @@ fn attacker_fork_degree(state: &RustHexoState, claimant: Player) -> usize {
         return 0;
     }
     degrees
-        .values()
-        .map(|&(c3, c2)| (threat_count + c3).max(c2))
+        .iter()
+        .map(|&(_, (c3, c2))| (threat_count + c3).max(c2))
         .max()
         .unwrap_or(0)
         .max(threat_count)
@@ -7588,10 +7856,12 @@ fn min_hitting_set_at_most_two(
 }
 
 /// Union of empties of every live claimant threat.  At a defender node this is
-/// the L1 hitting-cell universe, not a selected minimal hitting set.
+/// the L1 hitting-cell universe, not a selected minimal hitting set. Iterated
+/// through the live-threat index (same window set as the full scan, different
+/// order) — sound because the output is sorted and deduplicated.
 fn hitting_universe(state: &RustHexoState, claimant: Player) -> Vec<HexCoord> {
     let mut cells = Vec::new();
-    for (owner, entry) in state.board().windows().threats() {
+    for (owner, entry) in state.board().windows().live_threat_entries() {
         if owner == claimant {
             cells.extend(entry.empty_cells());
         }
@@ -7623,10 +7893,13 @@ fn forced_defender_replies(
 /// deliberately returns the full hitting universe for any future budget so an
 /// unsupported phase can lose performance but never lose a necessary reply.
 fn extendable_hit_kernel(state: &RustHexoState, claimant: Player, budget: u8) -> Vec<HexCoord> {
+    // Live-threat index order, not store order: `_for_family` treats the
+    // family as a set (sorted universe, all/any membership), so the kernel is
+    // identical.
     let family = state
         .board()
         .windows()
-        .threats()
+        .live_threat_entries()
         .filter_map(|(owner, entry)| (owner == claimant).then(|| entry.empty_cells()))
         .collect::<Vec<_>>();
     extendable_hit_kernel_for_family(&family, budget)
@@ -7932,36 +8205,81 @@ fn canonical_frame(state: &RustHexoState) -> u8 {
             )
         })
         .collect();
-    let mut best_phase: Option<(u8, i32, i32)> = None;
+
+    // The frame is argmin over the 12 symmetries of the lexicographic pair
+    // (phase key, sorted transformed stone list), first symmetry winning ties.
+    // Two exact prefilters avoid the 12 full stone sorts of the reference
+    // formulation (this runs once per defender expansion):
+    //   1. the phase key participates first in the comparison, so only
+    //      symmetries achieving the minimal phase key can win — at SecondStone
+    //      (the common defender shape) that is usually a single symmetry;
+    //   2. a sorted list's first element is the minimum transformed stone, so
+    //      among phase survivors only those achieving the minimal first stone
+    //      can win. Only the (rare) remaining ties pay for full sorts.
+    let phase_key = |symmetry: u8| match state.phase() {
+        TurnPhase::Opening => (0, 0, 0),
+        TurnPhase::FirstStone => (1, 0, 0),
+        TurnPhase::SecondStone { first } => {
+            let (q, r) = d6_coord_i32(first, symmetry);
+            (2, q, r)
+        }
+    };
+    let min_phase = (0..12u8).map(phase_key).min().expect("D6 is nonempty");
+    let mut candidates: Vec<u8> = (0..12u8)
+        .filter(|&symmetry| phase_key(symmetry) == min_phase)
+        .collect();
+    if let [only] = candidates.as_slice() {
+        return *only;
+    }
+
+    if !stones.is_empty() {
+        let min_stone = |symmetry: u8| {
+            stones
+                .iter()
+                .map(|&(coord, owner)| {
+                    let (q, r) = d6_coord_i32(coord, symmetry);
+                    (q, r, owner)
+                })
+                .min()
+                .expect("nonempty stones")
+        };
+        // One min-scan per candidate, kept alongside its symmetry so the
+        // filter below never rescans.
+        let mins: Vec<((i32, i32, u8), u8)> = candidates
+            .iter()
+            .map(|&symmetry| (min_stone(symmetry), symmetry))
+            .collect();
+        let best_first = mins
+            .iter()
+            .map(|&(min_stone, _)| min_stone)
+            .min()
+            .expect("nonempty candidates");
+        candidates = mins
+            .into_iter()
+            .filter(|&(min_stone, _)| min_stone == best_first)
+            .map(|(_, symmetry)| symmetry)
+            .collect();
+        if let [only] = candidates.as_slice() {
+            return *only;
+        }
+    }
+
     let mut best_stones = Vec::with_capacity(stone_count);
     let mut candidate_stones = Vec::with_capacity(stone_count);
-    let mut best_symmetry = 0;
-    for symmetry in 0..12u8 {
-        let phase = match state.phase() {
-            TurnPhase::Opening => (0, 0, 0),
-            TurnPhase::FirstStone => (1, 0, 0),
-            TurnPhase::SecondStone { first } => {
-                let (q, r) = d6_coord_i32(first, symmetry);
-                (2, q, r)
-            }
-        };
+    let mut best_symmetry: Option<u8> = None;
+    for &symmetry in &candidates {
         candidate_stones.clear();
         candidate_stones.extend(stones.iter().map(|&(coord, owner)| {
             let (q, r) = d6_coord_i32(coord, symmetry);
             (q, r, owner)
         }));
         candidate_stones.sort_unstable();
-        if best_phase
-            .as_ref()
-            .is_none_or(|best| (&phase, &candidate_stones) < (best, &best_stones))
-        {
-            best_phase = Some(phase);
-            best_symmetry = symmetry;
+        if best_symmetry.is_none() || candidate_stones < best_stones {
+            best_symmetry = Some(symmetry);
             std::mem::swap(&mut best_stones, &mut candidate_stones);
         }
     }
-    debug_assert!(best_phase.is_some(), "D6 contains identity");
-    best_symmetry
+    best_symmetry.expect("D6 contains identity")
 }
 
 fn canonical_coord_key(frame: u8, coord: HexCoord) -> (i32, i32) {
