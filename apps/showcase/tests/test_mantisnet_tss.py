@@ -606,6 +606,56 @@ def test_solve_position_proves_the_missed_wins(prefix, proven):
     assert 1 <= out["forced_through"] <= len(out["line"])
 
 
+def test_deep_solve_exports_a_walkable_certificate():
+    """A verified deep WIN carries its certificate in walkable form: the
+    root is a choice whose move IS the proven move, every referenced child
+    id resolves, and defender nodes list explicit reply edges."""
+    from hexfield_eq import _rust
+    from showcase.families.mantis_tss import _engine_state
+
+    probe = _rust.TssProbe(_engine_state(LOST_GAME_IDX25))
+    out = probe.deep_solve([], 100_000, 2 << 30, False)
+    assert out["status"] == "win"
+    cert = out["cert"]
+    assert cert is not None
+    nodes = cert["nodes"]
+    root = nodes[cert["root"]]
+    assert root["kind"] == "choice"
+    assert (root["q"], root["r"]) == tuple(out["move"])
+    universal_edges = 0
+    for node in nodes:
+        if node["kind"] == "choice":
+            assert 0 <= node["child"] < len(nodes)
+        elif node["kind"] == "universal":
+            # An empty edge list is legal: replies can be covered entirely
+            # by commutation or implicit-dispatch evidence, which the walk
+            # export deliberately omits (the walker falls back there).
+            for _q, _r, child in node["edges"]:
+                assert 0 <= child < len(nodes)
+                universal_edges += 1
+    assert universal_edges > 0, "a deep win's walk needs some reply edges"
+
+
+def test_walk_is_solve_free_when_the_certificate_covers_the_line():
+    """The endpoint's node count equals the ROOT solve's alone: the walk
+    follows the certificate instead of re-solving each winner ply. (Both
+    calls are deterministic, so exact equality is a stable pin; a future
+    walk change that reintroduces per-ply solves must show up here.)"""
+    from hexfield_eq import _rust
+    from showcase.families.mantis_tss import (
+        TssConfig, _engine_state, solve_position,
+    )
+
+    config = TssConfig()
+    root_only = _rust.TssProbe(_engine_state(LOST_GAME_IDX25)).deep_solve(
+        [], config.root_node_cap, config.solver_mem_bytes, False
+    )
+    assert root_only["status"] == "win"
+    out = solve_position(LOST_GAME_IDX25, config, line_cap=100)
+    assert out["status"] == "win"
+    assert out["nodes"] == int(root_only["nodes"])
+
+
 def test_solve_position_answers_a_win_now_from_lambda1():
     from showcase.families.mantis_tss import TssConfig, solve_position
 
