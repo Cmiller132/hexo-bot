@@ -98,10 +98,11 @@ class TssConfig:
     workers: int = 3
     wall_budget_ms: int = 1500
     root_wall_budget_ms: int = 3000
-    # 2 GiB: a quarter sizes the transposition index at 512 MiB — exactly the
-    # profile the hexgt reference gate proved the hardest corpus position
-    # (0l4291i, ~1.9M nodes) at. Below it the index refuses admissions and
-    # duplication inflates the node count.
+    # 2 GiB: measured on the hardest corpus position (0l4291i_live), the
+    # fingerprint-keyed solver proves it inside this budget with zero
+    # eviction passes (~1.9M nodes, peak ~1.2 GiB). Meaningfully below it
+    # the eviction machinery starts re-expanding cold branches and the node
+    # count inflates.
     solver_mem_bytes: int = 2_147_483_648
     unforcing: bool = False
 
@@ -507,14 +508,21 @@ def _hex_distance(a: tuple[int, int], b: tuple[int, int]) -> int:
 def _walk_line(
     probe: Any, replay: Any, winner: int, first: tuple[int, int],
     config: TssConfig, deadline: float, line_cap: int,
+    cert: dict[str, Any] | None = None,
 ) -> tuple[list[tuple[int, int]], int, int]:
     """Walk a proven root move down to the end of the game.
 
     Hexo turns place two stones, so the walk keys every ply on whose placement
     it is, not on alternation. On the winner's plies the next move must be
-    certified (λ¹ win-now, else a verified deep solve) — an uncertified ply,
-    the clock, or the depth cap ends the line early. On the defender's plies
-    the walk plays the first reply that survives the λ¹ guard (the first
+    certified: λ¹ win-now first, then the root solve's own verified
+    certificate (``cert``, the ``deep_solve`` payload's walkable export) —
+    the proof already names a winning continuation for every explicitly
+    searched defense, so following it costs nothing. Only when the walk
+    steps outside the certificate (an unrepresented defender reply, a λ-typed
+    leaf) does a ply fall back to a fresh verified deep solve, as before. An
+    uncertifiable ply, the clock, or the depth cap ends the line early. On
+    the defender's plies the walk plays a reply that survives the λ¹ guard,
+    preferring the first one the certificate explicitly answers (the first
     legal reply when the guard is inert or refutes everything) and keeps
     going until the winning six lands.
 
@@ -536,6 +544,24 @@ def _walk_line(
     line = [first]
     path = [first]
     forced_through: int | None = None  # None while the defense stays forced
+    # Certificate cursor: the cert node describing the CURRENT position.
+    # Starts below the root Choice (whose move is `first`); goes dead the
+    # first time the walked position leaves the certificate.
+    cert_nodes: list[dict[str, Any]] | None = None
+    cursor: int | None = None
+    if cert:
+        cert_nodes = cert["nodes"]
+        root = cert_nodes[int(cert["root"])]
+        if root.get("kind") == "choice" and (
+            int(root["q"]), int(root["r"])
+        ) == (int(first[0]), int(first[1])):
+            cursor = int(root["child"])
+
+    def cert_at(node_id: int | None) -> dict[str, Any] | None:
+        if node_id is None or cert_nodes is None:
+            return None
+        return cert_nodes[node_id]
+
     while len(line) < line_cap and time.monotonic() < deadline:
         position = replay(path)
         if position.is_terminal:
@@ -547,6 +573,21 @@ def _walk_line(
             nxt = None
             if read["verdict"] is not None and float(read["verdict"]) > 0.0:
                 nxt = _win_now_move(legal, classes, replay, path)
+                cursor = None
+            if nxt is None:
+                node = cert_at(cursor)
+                if node is not None:
+                    kind = node.get("kind")
+                    if kind == "choice":
+                        nxt = (int(node["q"]), int(node["r"]))
+                        cursor = int(node["child"])
+                    elif kind == "completion":
+                        nxt = (int(node["q"]), int(node["r"]))
+                        cursor = None
+                    else:
+                        # λ-typed leaf or opaque node: explicit certificate
+                        # moves end here; the solve below re-certifies.
+                        cursor = None
             if nxt is None:
                 out = _timed_deep_solve(
                     probe, path, config.root_node_cap, config.solver_mem_bytes,
@@ -577,12 +618,40 @@ def _walk_line(
                 forced_through = len(line)
             if keep:
                 nxt = keep[0]
+                # Among surviving replies, prefer the first one the
+                # certificate explicitly answers: the attacker's response is
+                # then already proven and the walk stays solve-free. Any
+                # surviving reply is an equally valid demonstration.
+                node = cert_at(cursor)
+                if node is not None and node.get("kind") == "universal":
+                    edges = {
+                        (int(q), int(r)): int(child)
+                        for q, r, child in node["edges"]
+                    }
+                    covered = next(
+                        (cell for cell in keep if cell in edges), None
+                    )
+                    if covered is not None:
+                        nxt = covered
             else:
                 # Every reply is refuted: any reply demonstrates, so the
                 # defense at least fights near the action rather than
                 # conceding from a far corner.
                 cells = [(int(q), int(r)) for q, r in legal]
                 nxt = min(cells, key=lambda c: _hex_distance(c, line[-1]))
+            node = cert_at(cursor)
+            if node is not None and node.get("kind") == "universal":
+                edge_child = next(
+                    (
+                        int(child)
+                        for q, r, child in node["edges"]
+                        if (int(q), int(r)) == nxt
+                    ),
+                    None,
+                )
+                cursor = edge_child
+            else:
+                cursor = None
             line.append(nxt)
             path.append(nxt)
     return line, (len(line) if forced_through is None else forced_through), nodes
@@ -620,6 +689,7 @@ def solve_position(
 
     mem_stopped = False
     mem_peak_mb = 0.0
+    cert: dict[str, Any] | None = None
     if read["verdict"] is not None:
         status = "win" if float(read["verdict"]) > 0.0 else "loss"
         source = "lambda1"
@@ -646,13 +716,14 @@ def solve_position(
             if status == "win" and out["move"] is not None:
                 q, r = out["move"]
                 proven = (int(q), int(r))
+                cert = out.get("cert")
 
     line: list[tuple[int, int]] = []
     forced_through = 0
     if proven is not None:
         line, forced_through, walk_nodes = _walk_line(
             probe, replay, int(root.current_player), proven,
-            config, deadline, line_cap,
+            config, deadline, line_cap, cert,
         )
         nodes += walk_nodes
 

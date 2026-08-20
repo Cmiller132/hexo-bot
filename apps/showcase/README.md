@@ -136,8 +136,11 @@ mem_stopped, mem_peak_mb, ms}` — `mem_stopped` marks an unknown that hit the
 server-side solver memory ceiling (`solver_mem_bytes`) rather than a budget —
 the engine-level Threat-Space solver at the request's budgets: λ¹
 first, then the verified deep root solve, then a line walked from the proven
-move to the end of the game — every winner ply certified, the defense playing
-its first λ¹-surviving reply once it has choices; `forced_through` counts the
+move to the end of the game — every winner ply certified (the root solve's
+own certificate names the continuation for every explicitly searched defense,
+so the walk re-solves only off-certificate positions), the defense playing a
+λ¹-surviving reply once it has choices, preferring one the certificate
+answers; `forced_through` counts the
 leading plies while the defense was uniquely forced (`cls`: 1 win-now, -1
 refuted, else neutral). A terminal position is a 422.
 
