@@ -15,7 +15,7 @@ use std::ptr;
 use hexo_engine::{HexoState as RustHexoState, MoveError};
 
 const STATE_API_CAPSULE_NAME: &str = "hexo_engine._rust.state_api";
-const STATE_API_VERSION: u32 = 2;
+const STATE_API_VERSION: u32 = 3;
 
 #[repr(C)]
 struct HexoStateApi {

@@ -284,8 +284,7 @@ impl HexoState {
     ///
     /// This is the engine's MCTS hot path: the model crates
     /// (hexo_models/dense_cnn, hexo_models/hexgt, hexgnn) drive search via
-    /// apply/undo on capsule-cloned states. Note `previous_last_turn` clones a
-    /// heap Vec on every placement purely to support `undo`.
+    /// apply/undo on capsule-cloned states.
     pub fn apply_with_delta(
         &mut self,
         placement: Placement,
@@ -296,7 +295,10 @@ impl HexoState {
         let previous_phase = self.phase;
         let previous_placements_made = self.placements_made;
         let previous_terminal = self.terminal;
-        let previous_last_turn = self.last_turn.clone();
+        // Move (not clone) the old record into the delta: nothing reads
+        // `last_turn` between here and `record_turn_progress` overwriting it,
+        // and `undo` moves it straight back.
+        let previous_last_turn = self.last_turn.take();
         let previous_history_len = self.placement_history.len();
 
         let player = self.current_player;

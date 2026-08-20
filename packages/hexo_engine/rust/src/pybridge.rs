@@ -8,8 +8,11 @@
 //! - Model accelerator crates (hexo_models/dense_cnn, hexo_models/hexgt,
 //!   hexgnn — each rust/src/state.rs) fetch `state_api_capsule()` at batch-MCTS
 //!   time to clone live `PyHexoState` objects into owned Rust states via the
-//!   C-ABI fn pointers; they must check `version == STATE_API_VERSION` (2) and
-//!   fail loudly on mismatch.
+//!   C-ABI fn pointers; they must check `version == STATE_API_VERSION` (3) and
+//!   fail loudly on mismatch. The version tracks the LAYOUT of `HexoState`
+//!   (the consumer dereferences a provider-allocated state with its own
+//!   compiled layout), so any struct change in this crate bumps it — v3 added
+//!   the `active_ge2` window index and the inline window delta.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -22,7 +25,7 @@ use crate::{
 };
 
 const STATE_API_CAPSULE_NAME: &str = "hexo_engine._rust.state_api";
-const STATE_API_VERSION: u32 = 2;
+const STATE_API_VERSION: u32 = 3;
 const STATE_API_OK: i32 = 0;
 const STATE_API_NULL_ARGUMENT: i32 = -1;
 const STATE_API_TYPE_ERROR: i32 = -2;

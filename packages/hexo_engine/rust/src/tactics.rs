@@ -8,6 +8,7 @@ use super::coord::{hex_distance, HexCoord};
 use super::state::Player;
 use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map;
 use std::{fmt, ops::Deref};
 
 /// Number of cells in a win/threat window.
@@ -348,15 +349,51 @@ pub struct WindowStore {
     /// `restore_delta` (only the <= 18 windows a placement touches can change
     /// threat status, so this is O(18) per placement). It is an exact mirror of
     /// `entries().filter_map(threat_player)` and changes NO public output — it
-    /// exists only so `has_threats()` is O(1), letting the hexgt TSS hot path
-    /// skip its full `threats()` scan in the (common) threat-free case.
+    /// exists only so `has_threats()` is O(1) and `live_threat_entries()` is
+    /// O(#threats), letting threat-family consumers skip the full window scan.
     live_threats: AHashMap<WindowKey, Player>,
+    /// Incrementally maintained set of active (single-colour) windows holding
+    /// >= 2 stones, keyed window -> owner. Same maintenance discipline as
+    /// `live_threats` (guarded on membership transitions), exact mirror of
+    /// `entries()` filtered on `active_player` with count >= 2 (asserted by
+    /// the mirror tests). Serves `active_ge2_entries()` — the deep solver's
+    /// fork-degree and defender-snapshot aggregates — in index order, so its
+    /// consumers must be order-independent.
+    active_ge2: AHashMap<WindowKey, Player>,
 }
 
-/// Incremental window-mask changes made by one placement.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Owner of an active window with at least two stones, from raw masks.
+fn ge2_owner(masks: [u8; 2]) -> Option<Player> {
+    match (masks[0] != 0, masks[1] != 0) {
+        (true, false) if masks[0].count_ones() >= 2 => Some(Player::Player0),
+        (false, true) if masks[1].count_ones() >= 2 => Some(Player::Player1),
+        _ => None,
+    }
+}
+
+/// Incremental window-mask changes made by one placement. A placement touches
+/// exactly `WINDOWS_PER_PLACEMENT` windows, so the record is a fixed inline
+/// array — no heap allocation on the apply/undo hot path.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowStoreDelta {
-    previous_masks: Vec<(WindowKey, Option<[u8; 2]>)>,
+    previous_masks: [(WindowKey, Option<[u8; 2]>); WINDOWS_PER_PLACEMENT],
+    len: u8,
+}
+
+impl Default for WindowStoreDelta {
+    fn default() -> Self {
+        Self {
+            previous_masks: [(EMPTY_WINDOW_KEY, None); WINDOWS_PER_PLACEMENT],
+            len: 0,
+        }
+    }
+}
+
+impl WindowStoreDelta {
+    fn push(&mut self, key: WindowKey, previous: Option<[u8; 2]>) {
+        self.previous_masks[usize::from(self.len)] = (key, previous);
+        self.len += 1;
+    }
 }
 
 impl WindowStore {
@@ -411,6 +448,33 @@ impl WindowStore {
         !self.live_threats.is_empty()
     }
 
+    /// The same (player, window) set as `threats()`, iterated through the
+    /// incrementally maintained `live_threats` index: O(#threats) plus one
+    /// mask lookup per threat, instead of a scan over every touched window.
+    /// Iteration ORDER differs from `threats()` (index order, not store
+    /// order), so this is for order-independent consumers — aggregates,
+    /// families that get sorted, existence checks. Order-bearing consumers
+    /// keep `threats()`.
+    pub fn live_threat_entries(&self) -> impl Iterator<Item = (Player, WindowEntry)> + '_ {
+        self.live_threats.iter().map(|(&key, &player)| {
+            let entry = self.entry(key).expect("live threat window is stored");
+            debug_assert_eq!(entry.threat_player(), Some(player));
+            (player, entry)
+        })
+    }
+
+    /// Active (single-colour) windows holding >= 2 stones, via the
+    /// incrementally maintained index: O(#active windows) instead of a scan
+    /// over every touched window. Index order — order-independent consumers
+    /// only (aggregates such as the deep solver's fork degree).
+    pub fn active_ge2_entries(&self) -> impl Iterator<Item = (Player, WindowEntry)> + '_ {
+        self.active_ge2.iter().map(|(&key, &owner)| {
+            let entry = self.entry(key).expect("active ge2 window is stored");
+            debug_assert_eq!(ge2_owner(entry.masks), Some(owner));
+            (owner, entry)
+        })
+    }
+
     /// Build a window store from a flat placement list, without a full
     /// `HexoState`.
     ///
@@ -452,10 +516,16 @@ impl WindowStore {
         for axis in Axis::ALL {
             for offset in 0..WINDOW_LEN as u8 {
                 let (key, bit) = window_containing(coord, axis, offset);
-                delta
-                    .previous_masks
-                    .push((key, self.masks_by_key.get(&key).copied()));
-                let masks = self.masks_by_key.entry(key).or_insert([0; 2]);
+                // One map probe per window: the entry API yields the previous
+                // masks (for the undo delta) and the mutable slot together.
+                let (previous, masks) = match self.masks_by_key.entry(key) {
+                    hash_map::Entry::Occupied(occupied) => {
+                        let slot = occupied.into_mut();
+                        (Some(*slot), slot)
+                    }
+                    hash_map::Entry::Vacant(vacant) => (None, vacant.insert([0; 2])),
+                };
+                delta.push(key, previous);
                 debug_assert_eq!((masks[0] | masks[1]) & bit, 0);
                 masks[player.index()] |= bit;
 
@@ -469,15 +539,34 @@ impl WindowStore {
                     update.winning_windows.push(key);
                 }
 
-                // Keep the incremental threat index exact: this window's threat
-                // status is fully determined by its new mask, so set-or-clear
-                // unconditionally (idempotent; correct regardless of prior state).
-                match entry.threat_player() {
-                    Some(owner) => {
-                        self.live_threats.insert(key, owner);
+                // Keep the incremental threat index exact. The window's status
+                // is fully determined by its mask on each side of the update,
+                // so mutate the index only on an actual status transition —
+                // identical final state to the historical unconditional
+                // set-or-clear, without its per-window map probes.
+                let old_threat =
+                    previous.and_then(|masks| WindowEntry { key, masks }.threat_player());
+                let new_threat = entry.threat_player();
+                if old_threat != new_threat {
+                    match new_threat {
+                        Some(owner) => {
+                            self.live_threats.insert(key, owner);
+                        }
+                        None => {
+                            self.live_threats.remove(&key);
+                        }
                     }
-                    None => {
-                        self.live_threats.remove(&key);
+                }
+                let old_ge2 = previous.and_then(ge2_owner);
+                let new_ge2 = ge2_owner(entry.masks);
+                if old_ge2 != new_ge2 {
+                    match new_ge2 {
+                        Some(owner) => {
+                            self.active_ge2.insert(key, owner);
+                        }
+                        None => {
+                            self.active_ge2.remove(&key);
+                        }
                     }
                 }
             }
@@ -487,12 +576,20 @@ impl WindowStore {
     }
 
     pub(crate) fn restore_delta(&mut self, delta: WindowStoreDelta) {
-        for (key, previous) in delta.previous_masks.into_iter().rev() {
-            if let Some(masks) = previous {
-                self.masks_by_key.insert(key, masks);
-                // Restore the threat index from the restored mask (set-or-clear,
-                // mirroring the forward update above).
-                match (WindowEntry { key, masks }).threat_player() {
+        for &(key, previous) in delta.previous_masks[..usize::from(delta.len)].iter().rev() {
+            let replaced = if let Some(masks) = previous {
+                self.masks_by_key.insert(key, masks)
+            } else {
+                self.masks_by_key.remove(&key)
+            };
+            // Guarded index restore, mirroring the forward update: mutate only
+            // on a status transition between the replaced and restored masks.
+            let old_threat =
+                replaced.and_then(|masks| WindowEntry { key, masks }.threat_player());
+            let new_threat =
+                previous.and_then(|masks| WindowEntry { key, masks }.threat_player());
+            if old_threat != new_threat {
+                match new_threat {
                     Some(owner) => {
                         self.live_threats.insert(key, owner);
                     }
@@ -500,9 +597,18 @@ impl WindowStore {
                         self.live_threats.remove(&key);
                     }
                 }
-            } else {
-                self.masks_by_key.remove(&key);
-                self.live_threats.remove(&key);
+            }
+            let old_ge2 = replaced.and_then(ge2_owner);
+            let new_ge2 = previous.and_then(ge2_owner);
+            if old_ge2 != new_ge2 {
+                match new_ge2 {
+                    Some(owner) => {
+                        self.active_ge2.insert(key, owner);
+                    }
+                    None => {
+                        self.active_ge2.remove(&key);
+                    }
+                }
             }
         }
     }
@@ -802,6 +908,40 @@ mod tests {
             store.has_threats(),
             !scan.is_empty(),
             "has_threats() disagreed with the full scan"
+        );
+        // The index-backed iterator yields the same (window, player, masks)
+        // set as the store-order `threats()` scan.
+        let mut via_index: Vec<_> = store
+            .live_threat_entries()
+            .map(|(player, entry)| (entry.key(), player, entry.mask(player)))
+            .collect();
+        via_index.sort_by_key(|(k, _, _)| sort_key(*k));
+        let mut via_scan: Vec<_> = store
+            .threats()
+            .map(|(player, entry)| (entry.key(), player, entry.mask(player)))
+            .collect();
+        via_scan.sort_by_key(|(k, _, _)| sort_key(*k));
+        assert_eq!(
+            via_index, via_scan,
+            "live_threat_entries() diverged from threats()"
+        );
+        // The ge2 index yields exactly the active >= 2-stone windows.
+        let mut ge2_via_index: Vec<_> = store
+            .active_ge2_entries()
+            .map(|(owner, entry)| (entry.key(), owner, entry.mask(owner)))
+            .collect();
+        ge2_via_index.sort_by_key(|(k, _, _)| sort_key(*k));
+        let mut ge2_via_scan: Vec<_> = store
+            .entries()
+            .filter_map(|entry| {
+                let owner = entry.active_player()?;
+                (entry.count(owner) >= 2).then(|| (entry.key(), owner, entry.mask(owner)))
+            })
+            .collect();
+        ge2_via_scan.sort_by_key(|(k, _, _)| sort_key(*k));
+        assert_eq!(
+            ge2_via_index, ge2_via_scan,
+            "active_ge2_entries() diverged from the full scan"
         );
     }
 

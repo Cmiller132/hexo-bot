@@ -133,6 +133,14 @@ impl LegalMoveStore {
         let mut changed = self.remove_recorded(coord, &mut delta.removed);
 
         for candidate in coords_within_radius(coord, LEGAL_RADIUS) {
+            // Already-legal cells — the common case deep in a game, where most
+            // of the new stone's disk is covered by earlier stones — cost one
+            // membership probe. Membership implies empty-within-radius (the
+            // placed cell itself was removed above), so the board lookup and
+            // the insert probe are needed only for cells not yet legal.
+            if self.membership.contains(&pack_coord(candidate)) {
+                continue;
+            }
             if is_cell_empty(candidate) {
                 changed |= self.insert_recorded(candidate, &mut delta.inserted);
             }
