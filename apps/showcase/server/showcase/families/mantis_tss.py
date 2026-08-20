@@ -27,12 +27,16 @@ pending, and which cell was the first), and only a true placement history
 carries it.
 
 Budgets. The root and the leaves are budgeted separately: a leaf solve is one
-of hundreds per move and only sharpens a line's value (``node_cap``,
-``wall_budget_ms``), while the root solve runs once and can replace the played
-move (``root_node_cap``, ``root_wall_budget_ms``). Node caps bound each solve
-deterministically; the wall clocks bound the move — past a clock nothing new is
-submitted and nothing unfinished is waited on. A partial solve never produces a
-value, so a wall clock can cost strength and can never cost soundness.
+of hundreds per move and only sharpens a line's value (``node_cap``), while
+the root solve runs once and can replace the played move (``root_node_cap``,
+``root_wall_budget_ms``). Node caps bound each solve deterministically. LEAF
+solves carry no wall clock at all — every submitted solve is waited to
+completion, so a leaf's value never depends on host load (owner ruling
+2026-08-20: consistency over latency; a timed-out leaf silently answering
+with the net's value was the inconsistency). The ROOT solve keeps its own
+clock: it is worth waiting for after the search has decided, but must not
+stall a move forever. A partial solve never produces a value, so the root
+clock can cost strength and can never cost soundness.
 """
 
 from __future__ import annotations
@@ -64,14 +68,16 @@ class TssConfig:
 
     enabled              run TSS at all. Off is the bare Gumbel search, byte
                          for byte.
-    node_cap             solver nodes per LEAF solve.
+    node_cap             solver nodes per LEAF solve — the ONLY leaf budget.
+                         Leaf solves have no wall clock: every submitted
+                         solve is waited to completion, so leaf values are
+                         load-independent and play stays consistent.
     root_node_cap        solver nodes for the one root solve.
     leaf_gate            "threats" (default) solves only leaves with a live
                          >=4 window; "all" solves every leaf with an
                          undecided λ¹.
     workers              threads for leaf solves. The root solve gets its own
                          thread and never competes with them.
-    wall_budget_ms       per-move ceiling on waiting for LEAF solves.
     root_wall_budget_ms  per-move ceiling on waiting for the ROOT solve. Its
                          own clock: the root solve is worth waiting for after
                          the search has decided, and must never stall a move
@@ -96,7 +102,6 @@ class TssConfig:
     root_node_cap: int = 20_000
     leaf_gate: str = "threats"
     workers: int = 3
-    wall_budget_ms: int = 1500
     root_wall_budget_ms: int = 3000
     # 2 GiB: measured on the hardest corpus position (0l4291i_live), the
     # fingerprint-keyed solver proves it inside this budget with zero
@@ -119,10 +124,6 @@ class TssConfig:
             )
         if self.workers < 1:
             raise ValueError(f"tss workers must be >= 1, got {self.workers}")
-        if self.wall_budget_ms < 1:
-            raise ValueError(
-                f"tss wall_budget_ms must be >= 1, got {self.wall_budget_ms}"
-            )
         if self.root_wall_budget_ms < 1:
             raise ValueError(
                 f"tss root_wall_budget_ms must be >= 1, got {self.root_wall_budget_ms}"
@@ -151,7 +152,6 @@ class TssConfig:
             root_node_cap=int(raw.get("root_node_cap", defaults.root_node_cap)),
             leaf_gate=str(raw.get("leaf_gate", defaults.leaf_gate)),
             workers=int(raw.get("workers", defaults.workers)),
-            wall_budget_ms=int(raw.get("wall_budget_ms", defaults.wall_budget_ms)),
             root_wall_budget_ms=int(
                 raw.get("root_wall_budget_ms", defaults.root_wall_budget_ms)
             ),
@@ -243,10 +243,9 @@ class TssRunner:
         self._config = config
         self._probe = _rust.TssProbe(_engine_state(moves))
         self._started = time.monotonic()
-        self._deadline = self._started + config.wall_budget_ms / 1000.0
-        # The root gets its own clock. Leaf solves are worth nothing once the
-        # wave they belong to has been answered, but the root solve stays worth
-        # waiting for right up to the decision.
+        # Only the ROOT solve has a clock. Leaf solves are node-capped and
+        # always waited to completion — a leaf's value must never depend on
+        # host load (owner ruling 2026-08-20: consistency over latency).
         self._root_deadline = self._started + config.root_wall_budget_ms / 1000.0
         self._leaf_pool = ThreadPoolExecutor(
             max_workers=config.workers, thread_name_prefix="tss-leaf"
@@ -267,7 +266,6 @@ class TssRunner:
             "deep_win": 0,
             "deep_loss": 0,
             "deep_unknown": 0,
-            "deep_timeouts": 0,
             "root_timeouts": 0,
             "deep_nodes": 0,
             "verify_failed": 0,
@@ -351,10 +349,8 @@ class TssRunner:
                 self._counters["leaf_guards"] += 1
             verdict = read["verdict"]
             future = None
-            if (
-                verdict is None
-                and (self._config.leaf_gate == "all" or read["has_threats"])
-                and self._remaining() > 0.0
+            if verdict is None and (
+                self._config.leaf_gate == "all" or read["has_threats"]
             ):
                 future = self._leaf_pool.submit(
                     self._probe.deep_solve,
@@ -372,18 +368,17 @@ class TssRunner:
 
     def leaf_value(self, plan: LeafPlan, net_value: float) -> float:
         """The value to answer this leaf with: λ¹, then a verified deep solve,
-        then the net."""
+        then the net.
+
+        The wait is unbounded by design: the solve is node-capped (tens of
+        milliseconds), and answering with the net instead whenever the host
+        happened to be busy made the bot's play load-dependent."""
         if plan.hard_value is not None:
             self._counters["lambda1_leaf_hits"] += 1
             return float(plan.hard_value)
         if plan.future is None:
             return net_value
-        try:
-            out = plan.future.result(timeout=self._remaining())
-        except _FutureTimeout:
-            plan.future.cancel()
-            self._counters["deep_timeouts"] += 1
-            return net_value
+        out = plan.future.result()
         self._absorb(out)
         value = out["value"]
         return net_value if value is None else float(value)
@@ -420,9 +415,6 @@ class TssRunner:
             self._config.unforcing,
         )
         return out, (time.monotonic() - started) * 1000.0
-
-    def _remaining(self) -> float:
-        return max(0.0, self._deadline - time.monotonic())
 
     def _absorb(self, out: dict[str, Any]) -> None:
         status = str(out["status"])

@@ -454,7 +454,9 @@ def test_the_root_budget_is_its_own_clock():
     starved = _run(LOST_GAME_IDX34, tss=TssConfig(root_wall_budget_ms=1))
     assert starved["tss"]["root_status"] == "timeout"
     assert starved["tss"]["root_timeouts"] == 1
-    assert starved["tss"]["deep_timeouts"] == 0, "a root drop is not a leaf drop"
+    # Leaf solves have no clock at all, so a leaf-timeout counter must not
+    # even exist (a leaf's value never depends on host load).
+    assert "deep_timeouts" not in starved["tss"]
     assert starved["action_selection"] == "gumbel_sh_score"
     assert _decision(starved) == _decision(off)
 
@@ -510,7 +512,7 @@ def test_worker_turn_honours_the_tss_flag(tiny_mantis_checkpoint, tmp_path):
     assert all("tss_stats" not in frame for frame in off)
     for frame in on:
         assert set(frame["tss_stats"]) >= {
-            "lambda1_leaf_hits", "deep_attempted", "deep_timeouts",
+            "lambda1_leaf_hits", "deep_attempted", "root_timeouts",
             "root_status", "root_ms", "total_ms",
         }
         assert frame["action_selection"] in (
@@ -555,25 +557,28 @@ def test_tss_config_refuses_nonsense():
         TssConfig(leaf_gate="sometimes")
     with pytest.raises(ValueError, match="workers"):
         TssConfig(workers=0)
-    with pytest.raises(ValueError, match="wall_budget_ms"):
-        TssConfig(wall_budget_ms=0)
     with pytest.raises(ValueError, match="root_wall_budget_ms"):
         TssConfig(root_wall_budget_ms=0)
     with pytest.raises(ValueError, match=r"unknown \[tss\] profile keys"):
         TssConfig.from_profile({"node_capp": 100})
+    # the retired leaf wall clock must fail loudly, not read as a default
+    # (leaf solves have no clock; owner ruling 2026-08-20)
+    with pytest.raises(ValueError, match=r"unknown \[tss\] profile keys"):
+        TssConfig.from_profile({"wall_budget_ms": 1500})
     # every knob is settable from a profile, and nothing else is
     assert TssConfig.from_profile({
         "enabled": False, "node_cap": 7, "root_node_cap": 9, "leaf_gate": "all",
-        "workers": 2, "wall_budget_ms": 11, "root_wall_budget_ms": 13,
+        "workers": 2, "root_wall_budget_ms": 13,
     }) == TssConfig(
         enabled=False, node_cap=7, root_node_cap=9, leaf_gate="all",
-        workers=2, wall_budget_ms=11, root_wall_budget_ms=13,
+        workers=2, root_wall_budget_ms=13,
     )
     assert TssConfig.from_profile(None) == TssConfig()
-    # the shipped defaults: the root gets 40x the leaf cap and its own clock
+    # the shipped defaults: the root gets 40x the leaf cap and the ONLY clock
     shipped = TssConfig()
     assert (shipped.node_cap, shipped.root_node_cap) == (500, 20_000)
-    assert (shipped.wall_budget_ms, shipped.root_wall_budget_ms) == (1500, 3000)
+    assert shipped.root_wall_budget_ms == 3000
+    assert not hasattr(shipped, "wall_budget_ms")
     # the toggle changes `enabled` and nothing else
     assert TssConfig().with_enabled(False) == TssConfig(enabled=False)
 

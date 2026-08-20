@@ -183,7 +183,7 @@ one — and a payload that said `true` there would be a guess, not a record.
 The per-move Threat-Space Search counters ride the live-search `complete`
 event as `tss_stats`: `lambda1_leaf_hits`, `lambda1_root_guard`,
 `leaf_guards`, `deep_attempted`, `deep_win` / `deep_loss` / `deep_unknown`,
-`deep_timeouts` (leaf solves dropped on the leaf clock), `root_timeouts` (the
+`root_timeouts` (the
 root solve dropped on its own clock), `deep_nodes`, `verify_failed` (FATAL if
 nonzero), `root_status` (`win` / `loss` / `unknown` / `timeout` /
 `lambda1_win` / `lambda1_loss` / `skipped`), `root_ms`, `total_ms`,
@@ -397,8 +397,9 @@ root_node_cap = 20000      # solver nodes for the one ROOT solve
 leaf_gate = "threats"      # "threats": solve leaves with a live >=4 window
                            # "all":     solve every leaf with an undecided lambda-1
 workers = 3                # threads for leaf solves; the root solve has its own
-wall_budget_ms = 1500      # per-move ceiling on waiting for LEAF solves
-root_wall_budget_ms = 3000 # per-move ceiling on waiting for the ROOT solve
+root_wall_budget_ms = 3000 # per-move ceiling on waiting for the ROOT solve;
+                           # LEAF solves have no wall clock — node-capped and
+                           # always waited to completion
 solver_mem_bytes = 2147483648  # HARD ceiling (2 GiB) on one solve's
                            # accounted Rust working set (PN arena +
                            # transposition index). Reaching it returns
@@ -425,13 +426,15 @@ lost game (34e4cb07) found three forced wins it played past, needing 1577, 1952
 and 12880 solver nodes at the root — every one of them invisible at a cap of
 500, and every one under 600 ms. `root_node_cap = 20000` covers all three.
 
-The two wall clocks bound the move. A leaf solve is abandoned once
-`wall_budget_ms` passes and that leaf takes the net's value. The root solve has
-its own clock because it stays worth waiting for after the search has already
-decided: if the search finishes first the driver waits out
-`root_wall_budget_ms` for the proof, and drops it — counting `root_timeouts` —
-only when that runs out. A wall clock can cost strength and can never cost
-soundness, because a partial solve never produces a value.
+Only the ROOT solve has a wall clock. Leaf solves are node-capped and always
+waited to completion — a leaf that timed out used to silently take the net's
+value, which made the bot's play depend on host load; leaf values are now
+load-independent by construction (owner ruling 2026-08-20: consistency over
+latency). The root solve keeps `root_wall_budget_ms` because it stays worth
+waiting for after the search has already decided: if the search finishes
+first the driver waits out the clock for the proof, and drops it — counting
+`root_timeouts` — only when that runs out. The root clock can cost strength
+and can never cost soundness, because a partial solve never produces a value.
 
 Analysis and the lab have no per-game toggle: they follow the profile, so a
 served analysis matches how the bot plays.
