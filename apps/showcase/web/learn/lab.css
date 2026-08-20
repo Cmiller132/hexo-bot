@@ -45,6 +45,9 @@
   font-family:var(--mono);font-size:10px;letter-spacing:.1em;
   color:var(--muted);
   padding:6px 10px;
+  /* the cursor read carries the full critic line under the eval/heads
+     overlays, so it wraps rather than running under the frame tag */
+  max-width:74%;text-align:right;line-height:1.5;
 }
 .frame-read b{color:var(--accent);font-weight:400}
 .board{width:100%;height:auto;display:block;touch-action:none}
@@ -105,12 +108,82 @@
 .heatcell{pointer-events:none}
 .heattop{fill:none;stroke-width:1.5;pointer-events:none}
 
+/* ---------- live-search layers (from ../style.css; scene.js paints them) ----------
+   The base prior fill never re-weights a cell it keeps: all motion belongs to
+   the search marks. A bare fill is what the NET thinks, a fill wearing an
+   outline is what the SEARCH thinks right now. */
+.live-heatcell{
+  transition:opacity .19s cubic-bezier(.22,.61,.36,1),fill .19s ease;
+  will-change:opacity;
+}
+/* One node per marker role, translated to the cell it marks, so the eye can
+   follow the search's favourite from round to round. */
+.live-heattop,.live-heatlead{
+  transition:opacity .17s ease,transform .21s cubic-bezier(.22,.61,.36,1);
+  will-change:opacity,transform;
+}
+.live-heatlead{stroke-dasharray:3 3;stroke-width:1.2}
+.search-mark{
+  pointer-events:none;
+  opacity:1;
+  transition:opacity .19s cubic-bezier(.22,.61,.36,1);
+}
+/* Eliminated candidates stay on the board for the rest of the search — where
+   it stopped looking is half the picture — but dimmed and frozen. */
+.search-mark.cut{opacity:.24;transition-duration:.45s}
+.search-fill{transition:opacity .28s ease}
+.search-ring{fill:none;stroke-width:1;opacity:.4}
+.search-arc{
+  fill:none;stroke-width:2.4;stroke-linejoin:round;
+  transition:stroke-dasharray .3s ease;
+}
+.search-tick{transition:opacity .2s ease,fill .3s ease}
+/* Proof-line stones: visual only, never part of the position. */
+.search-preview{
+  pointer-events:none;
+  opacity:.94;
+  stroke-width:1.35;
+  transform-box:fill-box;
+  transform-origin:center;
+  filter:drop-shadow(0 0 3px rgba(220,232,242,.34));
+  animation:searchStoneIn .22s cubic-bezier(.2,.75,.3,1);
+}
+/* The proven move. It can carry no policy weight at all, so it is held filled
+   bright red: the placement reads as deliberate rather than random. */
+.search-preview.tss-proven{
+  fill:#ff2f43;
+  stroke:#ffd7dc;
+  opacity:1;
+  filter:drop-shadow(0 0 7px rgba(255,47,67,.85));
+  animation:searchStoneIn .22s cubic-bezier(.2,.75,.3,1),
+            tssProvenPulse .34s ease-in-out .22s 2 alternate;
+}
+@keyframes tssProvenPulse{
+  from{filter:drop-shadow(0 0 6px rgba(255,47,67,.7))}
+  to{filter:drop-shadow(0 0 14px rgba(255,47,67,1))}
+}
+@keyframes searchStoneIn{
+  from{opacity:0;transform:scale(.72);transform-origin:center}
+  to{opacity:.94;transform:scale(1);transform-origin:center}
+}
+
 /* ---------- lab overlay layers (module visuals, above the stones) ---------- */
 .lab-ov polygon{pointer-events:none}
 .lab-ov .ov-fill{stroke:none}
 .lab-ov .ov-halo{fill:none;stroke:var(--dim);stroke-width:1;stroke-dasharray:3 3}
 .lab-ov .ov-ring{fill:none;stroke-width:1.5}
 .lab-ov .ov-query{fill:none;stroke:var(--accent);stroke-width:2}
+/* solver: refuted moves take a veil, win-now moves a bright ring */
+.lab-ov .ov-veil{fill:#05070a;fill-opacity:.5;stroke:none}
+.lab-ov .ov-guard{fill:none;stroke:#ffd7dc;stroke-width:1.5;opacity:.85}
+/* the heads table pointing at a cell */
+.lab-ov .ov-flash{
+  fill:none;stroke:var(--accent);stroke-width:2;
+  animation:ovFlash 1.4s ease-out forwards;
+}
+@keyframes ovFlash{
+  0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}
+}
 .lab-ov text{
   font-family:var(--mono);font-size:9px;fill:var(--text);
   text-anchor:middle;pointer-events:none;
@@ -136,6 +209,107 @@
 }
 .ed-note b{color:var(--muted);font-weight:400}
 .ed-note[hidden]{display:none}
+
+/* ply cursor: two step buttons around the cursor/length read */
+.step-pair{display:flex;align-items:center;gap:6px}
+.step-pair[hidden]{display:none}
+.step-pair .k-btn{padding:2px 9px;font-size:12px;line-height:1}
+.ply-read{
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  color:var(--accent);min-width:38px;text-align:center;
+}
+
+/* ---------- variation lines, bot play, import panels ---------- */
+.line-strip,.tool-strip,.ovl-strip{
+  border:1px solid var(--line);border-top:none;
+  background:linear-gradient(180deg,#171c23 0%,#141a20 100%);
+  padding:8px 12px;
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+}
+.line-strip[hidden],.tool-strip[hidden],.ovl-strip[hidden]{display:none}
+.strip-k{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--dim);flex:none;
+}
+.strip-hint{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;
+  color:var(--dim);
+}
+.ls-chips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.ls-chip{
+  display:inline-flex;align-items:stretch;
+  border:1px solid var(--line);
+}
+.ls-chip.sel{border-color:var(--accent-dim);background:#1a2027}
+.ls-pick,.ls-del{
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+  color:var(--muted);
+  padding:3px 8px;
+  transition:color .15s ease;
+}
+.ls-chip.sel .ls-pick{color:var(--accent)}
+.ls-pick:hover,.ls-del:hover:not(:disabled){color:var(--text)}
+.ls-del{border-left:1px solid var(--line);padding:3px 7px;color:var(--dim)}
+.ls-del:hover:not(:disabled){color:var(--p1-soft)}
+.ls-del:disabled{opacity:.3;cursor:default}
+.bot-phase{
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+  color:var(--accent);
+  margin-left:auto;text-align:right;
+}
+.ovl-strip .seg{flex:1;min-width:200px}
+
+/* revealed import panels */
+.io-panel{
+  border:1px solid var(--line);border-top:none;
+  background:linear-gradient(180deg,#171c23 0%,#141a20 100%);
+  padding:10px 12px;
+  display:flex;flex-direction:column;gap:8px;
+}
+.io-panel[hidden]{display:none}
+.io-l{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--dim);flex:none;
+}
+.io-panel textarea{
+  width:100%;resize:vertical;
+  font-family:var(--mono);font-size:11px;line-height:1.5;
+  color:var(--text);
+  background:var(--seam);
+  border:1px solid var(--line);
+  padding:7px 8px;
+  outline:none;
+}
+.io-panel textarea:focus{border-color:var(--accent-dim)}
+.io-panel .k-btn{align-self:flex-start}
+.io-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.io-num{
+  width:76px;
+  font-family:var(--mono);font-size:11px;
+  color:var(--text);
+  background:var(--seam);
+  border:1px solid var(--line);
+  padding:4px 6px;
+  outline:none;
+}
+.io-num:focus{border-color:var(--accent-dim)}
+.io-hint{font-family:var(--mono);font-size:9.5px;color:var(--dim)}
+.game-list{max-height:190px;overflow-y:auto;display:flex;flex-direction:column}
+.game-list::-webkit-scrollbar{width:6px}
+.game-list::-webkit-scrollbar-thumb{background:var(--line)}
+.game-row{
+  display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+  font-family:var(--mono);font-size:10.5px;
+  color:var(--muted);text-align:left;
+  padding:5px 6px;
+  border-bottom:1px solid var(--line-soft);
+  transition:color .15s ease,background .15s ease;
+}
+.game-row:last-child{border-bottom:none}
+.game-row:hover{color:var(--accent);background:#1a2028}
+.game-row .gr-n{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.game-row:hover .gr-n{color:var(--accent)}
+.game-row .gr-m{color:var(--dim);white-space:nowrap}
 
 /* module readout under the board (fixed strip, not a tooltip) */
 .lab-readout{
@@ -206,6 +380,8 @@
 }
 .line-btn:hover:not(:disabled){color:var(--accent);border-color:var(--accent-dim)}
 .line-btn:disabled{opacity:.4;cursor:default}
+.btn-row{display:flex;gap:8px}
+.btn-row .line-btn{flex:1}
 
 /* checkpoint model-grouped picker (same idiom as ../style.css #ckptList) */
 #ckptList{max-height:220px;overflow-y:auto}
@@ -328,6 +504,55 @@
 .rank-list .rk-c{color:var(--text)}
 .rank-list .rk-v{color:var(--accent)}
 
+/* ---------- heads module: served value, KL, and the per-cell table ---------- */
+.head-stats{
+  display:grid;grid-template-columns:repeat(3,1fr);gap:8px;
+  padding-bottom:10px;border-bottom:1px solid var(--line-soft);
+}
+.hs-v{font-family:var(--mono);font-size:15px;color:var(--text)}
+.hs-v.pos{color:var(--p0-soft)}
+.hs-v.neg{color:var(--p1-soft)}
+.hs-l{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.head-tbl{
+  width:100%;margin-top:10px;
+  border-collapse:collapse;
+  font-family:var(--mono);font-size:10.5px;
+  table-layout:fixed;
+}
+.head-tbl[hidden]{display:none}
+.head-tbl th{
+  font-size:9px;font-weight:400;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--dim);text-align:right;
+  padding:0 3px 5px;
+  border-bottom:1px solid var(--line-soft);
+}
+.head-tbl th:first-child{text-align:left}
+.head-tbl th.hd-bh{text-align:left;width:34%}
+.head-tbl td{
+  padding:3px;
+  border-bottom:1px solid var(--line-soft);
+  color:var(--muted);text-align:right;
+}
+.head-tbl tr:last-child td{border-bottom:none}
+.head-tbl tbody tr{cursor:pointer;transition:background .15s ease}
+.head-tbl tbody tr:hover{background:#1a2028}
+.head-tbl .hd-c{color:var(--text);text-align:left}
+.head-tbl .hd-q.is-p0{color:var(--p0-soft)}
+.head-tbl .hd-q.is-p1{color:var(--p1-soft)}
+/* win / loss / long masses, in that order; they sum to the whole bar */
+.head-tbl .hd-bar{
+  display:flex;align-items:center;height:9px;gap:1px;
+  padding:6px 3px;
+}
+.head-tbl .wl{height:7px;display:block}
+.head-tbl .wl.w{background:#9fd0ff}
+.head-tbl .wl.l{background:#ffb4aa}
+.head-tbl .wl.g{background:#b3a1e0}
+.head-more{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;
+  color:var(--dim);margin-top:6px;
+}
+
 /* scrub sliders */
 .scrub{margin-top:10px;display:flex;align-items:center;gap:10px}
 .scrub label{
@@ -372,14 +597,30 @@
 .toast.err{border-color:#5c2f2c;color:var(--p1-soft)}
 @keyframes toast-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
+/* ---------- reduced motion ---------- */
+/* honor the OS setting: the search replay skips straight to its final picture
+   (lab.js), so here the transitions and the toast slide are simply stilled. */
+@media (prefers-reduced-motion:reduce){
+  .toast{animation:none}
+  .live-heatcell,.live-heattop,.live-heatlead,
+  .search-mark,.search-fill,.search-arc,.search-tick{transition:none}
+  .search-preview{animation:none}
+  .lab-ov .ov-flash{animation:none;opacity:1}
+}
+
 /* ---------- responsive ---------- */
 @media (max-width:900px){
   .lab-grid{grid-template-columns:1fr;gap:18px}
 }
 @media (max-width:780px){
   .lab-main{padding:18px}
+  .bot-phase{margin-left:0;width:100%;text-align:left}
+  .strip-hint{display:none}
 }
 @media (max-width:420px){
   .lab-main{padding:12px}
   .feat-list{grid-template-columns:1fr}
+  .btn-row{flex-direction:column}
+  .head-tbl{font-size:9.5px}
+  .frame-read{max-width:60%}
 }

@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hexo &mdash; model lab</title>
-<meta name="description" content="Live sandbox: build a Hexo position and inspect the selected model family's inputs, evaluation, available internals, and search.">
+<meta name="description" content="Live sandbox: build a Hexo position, play the bot, and inspect the selected model family's inputs, evaluation, available internals, search, and forced-win solver.">
 <link rel="stylesheet" href="learn.css">
-<link rel="stylesheet" href="lab.css?v=3">
+<link rel="stylesheet" href="lab.css?v=4">
 </head>
 <body>
 
@@ -42,12 +42,15 @@
 
 <h1>lab <span class="h-dim">&mdash; the live model, on your position</span></h1>
 <p class="lab-lede">
-Build any position on the board, then inspect what the real network computes
-on it: the input features it is fed, its evaluation and move preferences, the
-attention pattern from any cell, how activity moves through the trunk, and a
-real (budget-capped) search. Everything on the right reads the position on the
-left. Positions from the analysis tab open here via their
-<code>?game=&hellip;&amp;ply=&hellip;</code> link.
+Build any position on the board. Then inspect what the real network computes
+on it: the input features, the evaluation, the move preferences. The heads
+module shows the policy and the critic cell by cell. The other modules show
+the attention pattern from any cell, the activity in the trunk, a real
+(budget-capped) search, and the forced-win solver. Everything on the right
+reads the position on the left. In legal-sequence mode the bot can also play
+its own moves. Step back and play a different move to start a new line; the
+old line stays on the strip. Positions from the analysis tab open here with
+their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
 </p>
 
 <div class="lab-grid">
@@ -78,16 +81,75 @@ left. Positions from the analysis tab open here via their
         <button data-tm="1" role="radio" aria-checked="false"
                 title="Red to move">red to move</button>
       </div>
-      <button class="k-btn" id="undoBtn">undo</button>
+      <div class="step-pair" id="stepPair">
+        <button class="k-btn" id="stepBack" title="Step one ply back">&lsaquo;</button>
+        <span class="ply-read" id="plyRead">0/0</span>
+        <button class="k-btn" id="stepFwd" title="Step one ply forward">&rsaquo;</button>
+      </div>
+      <button class="k-btn" id="undoBtn" hidden>undo</button>
       <button class="k-btn" id="clearBtn">clear</button>
       <button class="k-btn" id="copyLab">copy lab link</button>
     </div>
+
+    <div class="line-strip" id="lineStrip">
+      <span class="strip-k">lines</span>
+      <div class="ls-chips" id="lineChips"></div>
+      <span class="strip-hint">step back, then play another move to make a new line</span>
+    </div>
+
     <div class="ed-note" id="freeNote" hidden>
       free edit lets you place, recolor, or <b>erase</b> stones, and keeps the
       two colors within 2 stones of each other on every edit. it has no move
       history: the <b>own/opp recency</b> and <b>opponent-last-turn</b> input
-      features are zeroed, and the search module is unavailable (the engine
-      cannot replay an unreachable position).
+      features are zeroed, and the search, solver and bot controls are
+      unavailable (the engine cannot replay an unreachable position).
+    </div>
+
+    <div class="tool-strip">
+      <button class="k-btn" id="botMoveBtn"
+              title="Search this position and play the move the search picks">bot move</button>
+      <button class="k-btn" id="autoBtn"
+              title="Play bot moves until the game ends">autoplay</button>
+      <button class="k-btn" id="pasteToggle" aria-expanded="false"
+              title="Load a position from a move list">paste moves</button>
+      <button class="k-btn" id="gamesToggle" aria-expanded="false"
+              title="Load a position from a finished game">load a game</button>
+      <span class="bot-phase" id="botPhase" role="status" aria-live="polite"></span>
+    </div>
+
+    <div class="io-panel" id="pastePanel" hidden>
+      <label class="io-l" for="pasteBox">move list &mdash; one cell per pair, q,r;q,r</label>
+      <textarea id="pasteBox" rows="2" spellcheck="false"
+                placeholder="0,0;1,0;0,1"></textarea>
+      <button class="k-btn" id="pasteApply">apply</button>
+    </div>
+
+    <div class="io-panel" id="gamesPanel" hidden>
+      <div class="io-row">
+        <label class="io-l" for="gamePly">ply</label>
+        <input class="io-num" type="number" id="gamePly" min="0" step="1"
+               placeholder="last" aria-label="Ply to open the game at">
+        <button class="k-btn" id="gamesReload">reload</button>
+        <span class="io-hint">the 20 most recent finished games</span>
+      </div>
+      <div class="game-list" id="labGameList"></div>
+      <div class="mod-status" id="gamesStatus"></div>
+    </div>
+
+    <div class="ovl-strip" id="ovlStrip" hidden>
+      <span class="strip-k">board</span>
+      <div class="seg" id="ovlSeg" role="radiogroup" aria-label="Board overlay">
+        <button data-ovl="policy" class="sel" role="radio" aria-checked="true"
+                title="Policy prior: how likely the net is to play each cell">Policy</button>
+        <button data-ovl="q" role="radio" aria-checked="false"
+                title="Critic Q per move: blue = good for blue, red = good for red">Q</button>
+        <button data-ovl="pi2" role="radio" aria-checked="false"
+                title="Improved policy &pi;&prime;: the distribution the bot acts from">&pi;&prime;</button>
+        <button data-ovl="long" role="radio" aria-checked="false"
+                title="Long-game mass: after this move the model expects a long game">Long</button>
+        <button data-ovl="gap" role="radio" aria-checked="false"
+                title="Critic against policy: green = promoted, amber = demoted">&Delta;</button>
+      </div>
     </div>
 
     <div class="lab-readout" id="labReadout" aria-live="polite">
@@ -120,6 +182,7 @@ left. Positions from the analysis tab open here via their
       <div class="seg" id="modSeg" role="tablist" aria-label="Lab modules">
         <button data-mod="features" class="sel" role="tab" aria-selected="true">features</button>
         <button data-mod="eval" role="tab" aria-selected="false">net eval</button>
+        <button data-mod="heads" role="tab" aria-selected="false">heads</button>
         <button data-mod="attention" role="tab" aria-selected="false">attention</button>
         <button data-mod="activations" role="tab" aria-selected="false">activations</button>
         <button data-mod="search" role="tab" aria-selected="false">search</button>
@@ -159,14 +222,44 @@ left. Positions from the analysis tab open here via their
                   title="Auxiliary soft policy head">soft</button>
         </div>
         <ol class="rank-list" id="topList"></ol>
-        <h2 class="k gap">Value distribution &middot; 65 bins</h2>
-        <svg class="dist-chart" id="distChart" viewBox="0 0 300 72" role="img"
-             aria-label="65-bin value distribution"></svg>
+        <!-- shrimp-family readout; hidden for families that serve no bin
+             distribution (mantis serves v-hat only) -->
+        <div id="distSec">
+          <h2 class="k gap">Value distribution &middot; 65 bins</h2>
+          <svg class="dist-chart" id="distChart" viewBox="0 0 300 72" role="img"
+               aria-label="65-bin value distribution"></svg>
+        </div>
         <div class="mod-status" id="evalStatus"></div>
-        <p class="fineprint">bare-net readout &middot; no search &middot; value is side-to-move</p>
+        <p class="fineprint">bare-net readout &middot; no search &middot; the
+        board overlay picks what the board paints</p>
       </div>
 
-      <!-- module 3: attention explorer (server-computed, hooked forward) -->
+      <!-- module 3: policy / critic heads, cell by cell (server-computed) -->
+      <div class="mod" id="mod-heads" role="tabpanel">
+        <div class="head-stats">
+          <div class="hs-c"><div class="hs-v" id="hdValue">&mdash;</div><div class="hs-l">v&#770;</div></div>
+          <div class="hs-c"><div class="hs-v" id="hdKl">&mdash;</div><div class="hs-l">KL(&pi;&prime;&Vert;&pi;)</div></div>
+          <div class="hs-c"><div class="hs-v" id="hdEnt">&mdash;</div><div class="hs-l">norm entropy</div></div>
+        </div>
+        <p class="mod-note" id="headNote" hidden>
+          this model family serves a policy and a value only. it has no critic
+          read, so there is no per-cell table and no &pi;&prime;.
+        </p>
+        <table class="head-tbl" id="headTable">
+          <thead>
+            <tr><th>cell</th><th>&pi;</th><th>&pi;&prime;</th><th>Q</th>
+                <th class="hd-bh">win / loss / long</th></tr>
+          </thead>
+          <tbody id="headRows"></tbody>
+        </table>
+        <div class="head-more" id="headMore"></div>
+        <div class="mod-status" id="headsStatus"></div>
+        <p class="fineprint">click a row to mark that cell on the board
+        &middot; v&#770; is blue-positive &middot; Q and the masses are from the
+        side to move &middot; no search</p>
+      </div>
+
+      <!-- module 4: attention explorer (server-computed, hooked forward) -->
       <div class="mod" id="mod-attention" role="tabpanel">
         <p class="mod-note" style="margin-top:0;padding-top:0;border-top:none">
           tap any support cell on the board to use it as the attention query;
@@ -185,7 +278,7 @@ left. Positions from the analysis tab open here via their
         <div class="mod-status" id="attnStatus"></div>
       </div>
 
-      <!-- module 4: trunk activation flow (server-computed) -->
+      <!-- module 5: trunk activation flow (server-computed) -->
       <div class="mod" id="mod-activations" role="tabpanel">
         <p class="mod-note" style="margin-top:0;padding-top:0;border-top:none">
           per-cell activation L2 norms after each trunk stage: where the
@@ -202,7 +295,7 @@ left. Positions from the analysis tab open here via their
         <div class="mod-status" id="actStatus"></div>
       </div>
 
-      <!-- module 5: search visit map (server-computed, real search) -->
+      <!-- module 6: search visit map + forced-win solver (real search) -->
       <div class="mod" id="mod-search" role="tabpanel">
         <h2 class="k" style="margin-top:0">Visits</h2>
         <div class="seg" id="simsSeg" role="radiogroup" aria-label="Search budget">
@@ -210,7 +303,10 @@ left. Positions from the analysis tab open here via their
           <button data-sims="64" class="sel" role="radio" aria-checked="true">64</button>
           <button data-sims="256" role="radio" aria-checked="false">256</button>
         </div>
-        <button class="line-btn" id="searchBtn">run search</button>
+        <div class="btn-row">
+          <button class="line-btn" id="searchBtn">run search</button>
+          <button class="line-btn" id="solveBtn">forced win solver</button>
+        </div>
         <div class="value-read">
           <span class="value-big" id="searchVal">&mdash;</span>
           <span class="value-cap" id="searchCap"></span>
@@ -220,6 +316,12 @@ left. Positions from the analysis tab open here via their
         <p class="fineprint">real search under the checkpoint&rsquo;s as-trained
         profile &middot; greedy selection &middot; budget capped at 256 &middot;
         legal-sequence positions only</p>
+        <p class="mod-note">
+          the solver is the engine&rsquo;s own threat-space proof search, not
+          the network. it answers for the side to move. a proven win draws its
+          line on the board as pale stones, with the proven move marked. cells
+          the guard refutes take a dark veil.
+        </p>
       </div>
     </div>
 
@@ -230,6 +332,6 @@ left. Positions from the analysis tab open here via their
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./lab.js?v=9"></script>
+<script type="module" src="./lab.js?v=10"></script>
 </body>
 </html>

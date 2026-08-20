@@ -1,20 +1,27 @@
 /* lab.js — the lab page controller: shared position editor (legal-sequence /
- * free-edit) on one board, five inspection modules reading that position.
+ * free-edit) on one board, six inspection modules reading that position.
  *
  * Data flow per module:
  *   features     client-computed (lab_features.js mirrors the server featurizer)
  *   net eval     POST /api/lab/eval                       (worker forward)
+ *   heads        POST /api/lab/eval                       (the mantis klent block)
  *   attention    POST /api/lab/eval wants.attention_query (hooked forward)
  *   activations  POST /api/lab/eval wants.activations     (hooked forward)
- *   search       POST /api/lab/search                     (real capped search)
+ *   search       POST /api/lab/search + /api/lab/solve    (real search, solver)
  *
- * board.js is reused for rendering/pan/zoom; the small helpers duplicated
- * from app.js (toasts, checkpoint grouping, copy) stay here by design — the
- * lab must not edit the play bundle.
+ * In legal-sequence mode the sandbox holds a set of LINES. The board is the
+ * active line up to a ply cursor, so stepping back and playing a different
+ * move forks a new line and leaves the old one on the strip.
+ *
+ * board.js is reused for rendering/pan/zoom; scene.js folds and paints the
+ * search telemetry the bot-move replay shows. The small helpers duplicated
+ * from app.js (toasts, checkpoint grouping, copy, the deep-look phrasing)
+ * stay here by design — the lab must not edit the play bundle.
  */
 
-import { S, axialX, axialY, createBoard, findWin, hexPts, key } from "../board.js?v=13";
+import { S, axialX, axialY, createBoard, findWin, hexPts, key } from "../board.js?v=14";
 import { buildModelPicker, defaultCheckpoint, normalizeCheckpoints } from "../checkpoints.js?v=13";
+import { newScene, foldLiveFrame, sceneVerdict, paintSceneTo } from "../scene.js?v=1";
 import * as LF from "./lab_features.js?v=1";
 
 "use strict";
@@ -22,16 +29,29 @@ import * as LF from "./lab_features.js?v=1";
 const $ = id => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";
 const clamp = (lo, hi, v) => Math.max(lo, Math.min(hi, v));
+const sleep = ms => new Promise(res => setTimeout(res, ms));
 const fmtV = v => (v < 0 ? "−" : "+") + Math.abs(v).toFixed(2);
 const fmtCell = (q, r) => q + "," + r;
+const pct = (v, d = 1) => (v * 100).toFixed(d) + "%";
 
 /* overlay tone families (same choices as app.js): pale + hue-shifted so a
  * tinted cell never passes for a stone */
 const H0 = "#9fd0ff", H1 = "#ffb4aa";
 const H0R = "#d7ebff", H1R = "#ffddd6";
 const ACCENT = "#e8e2d6";
+/* Overlay tints outside the player frame: the Δ map's promoted/demoted pair
+ * and the long-game mass, deliberately neither side's color. */
+const GAP_POS = "#8fd6a8", GAP_NEG = "#e0aa5e";
+const LONG_TINT = "#b3a1e0";
+const OV_OPA = 0.85;
 
-const SEARCH_BUDGETS = [16, 64, 256];
+/* Autoplay stops here. A Hexo game ends long before 200 plies; the cap is the
+ * backstop for a position the bots shuffle in forever. */
+const AUTOPLAY_CAP = 200;
+
+const motionQuery = window.matchMedia
+  ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+const reducedMotion = () => !!(motionQuery && motionQuery.matches);
 
 // ---- toasts -------------------------------------------------------------------
 
@@ -75,14 +95,17 @@ async function requestJson(path, body) {
 
 const state = {
   mode: "sequence",              // "sequence" | "free"
-  moves: [],                     // sequence history, [[q, r], ...]
+  lines: [[]],                   // sequence variations, each [[q, r], ...]
+  lineIdx: 0,                    // the line the board shows
+  cursor: 0,                     // ply cursor into that line
   free: { p0: [], p1: [], toMove: 0 },
-  freeDirty: false,              // free stones diverged from `moves`
+  freeDirty: false,              // free stones diverged from the sequence
   brush: 0,                      // 0 | 1 | "erase"
   undo: [],                      // free-mode snapshots
   staged: null,                  // touch two-tap staging
   module: "features",
   feature: "support",            // "support" | feature name
+  ovl: "policy",                 // board overlay: policy | q | pi2 | long | gap
   ckpt: null,
   ckptLabel: "",
   ckptFamily: "shrimp",
@@ -97,7 +120,19 @@ const state = {
   evalCache: new Map(),          // request key -> payload promise
   searchCache: new Map(),
   lastPlaceT: 0,
+  /* Bot play. `run` is the cancel token every search and replay carries: any
+   * navigation the user drives bumps it, which orphans the frames in flight
+   * instead of letting them paint over a position they do not describe.
+   * `autoRun` does the same for the autoplay loop itself. */
+  bot: { run: 0, autoRun: 0, busy: false, auto: false, plies: 0 },
 };
+
+/* The winner when the position on the board is already decided, else null.
+ * renderPosition() is the one place that reads the board, so it owns this. */
+let termWinner = null;
+/* Per-cell critic read (the mantis `klent` block) for the hover text and the
+ * board overlays; null for a family that serves none. */
+let labKlent = null;
 
 // ---- board ----------------------------------------------------------------------
 
@@ -164,32 +199,119 @@ board.svg.addEventListener("click", e => {
   if (state.mode === "free" && t.classList.contains("occ")) freeTouchOccupied(q, r);
 });
 
+// ---- the line model (legal-sequence mode) -----------------------------------------
+
+const activeLine = () => state.lines[state.lineIdx];
+/* The position the board shows: the active line up to the ply cursor. */
+const curMoves = () => activeLine().slice(0, state.cursor);
+
+/* Drop every variation and start again from one line, cursor at its end.
+ * Presets, shared links, pasted move lists and game imports all land here. */
+function setLine(moves) {
+  state.lines = [moves.slice()];
+  state.lineIdx = 0;
+  state.cursor = moves.length;
+}
+
+/* Play `q, r` at the cursor of the active line. Replaying the move the line
+ * already holds steps forward; any other move forks a new line from the
+ * shared prefix and makes it active, which leaves the old line untouched. */
+function playMove(q, r) {
+  const line = activeLine();
+  const next = line[state.cursor];
+  if (next && next[0] === q && next[1] === r) {
+    state.cursor++;
+  } else if (state.cursor < line.length) {
+    state.lines.push(line.slice(0, state.cursor).concat([[q, r]]));
+    state.lineIdx = state.lines.length - 1;
+    state.cursor = activeLine().length;
+    toast(`forked line ${state.lineIdx + 1}`);
+  } else {
+    line.push([q, r]);
+    state.cursor = line.length;
+  }
+  positionChanged();
+}
+
+function stepCursor(delta) {
+  const next = clamp(0, activeLine().length, state.cursor + delta);
+  if (next === state.cursor) return;
+  cancelBot();
+  state.cursor = next;
+  positionChanged();
+}
+
+function selectLine(i) {
+  if (i === state.lineIdx || !state.lines[i]) return;
+  cancelBot();
+  state.lineIdx = i;
+  state.cursor = state.lines[i].length;
+  positionChanged();
+}
+
+function deleteLine(i) {
+  if (state.lines.length < 2) {
+    toast("the sandbox keeps at least one line");
+    return;
+  }
+  cancelBot();
+  state.lines.splice(i, 1);
+  if (state.lineIdx > i || state.lineIdx >= state.lines.length) state.lineIdx--;
+  state.cursor = activeLine().length;
+  positionChanged();
+}
+
+/* Replay a move list under the engine rules. `ok` is false when a placement
+ * is illegal or when play continues after six in a line. `winner` names the
+ * color whose final placement won, and is null while the game is live. */
+function replaySequence(moves) {
+  const staged = [];
+  for (const [q, r] of moves) {
+    if (!LF.isLegalPlacement(staged, q, r)) return { ok: false, winner: null };
+    staged.push([q, r]);
+    const stones = staged.map(([a, b], i) => ({ q: a, r: b, color: LF.recordPlayer(i) }));
+    if (findWin(stones)) {
+      return staged.length === moves.length
+        ? { ok: true, winner: LF.recordPlayer(staged.length - 1) }
+        : { ok: false, winner: null };
+    }
+  }
+  return { ok: true, winner: null };
+}
+
+/* A legal replay that is still live — the shape presets and game imports must
+ * land on, because a decided position has nothing left for the net to read. */
+function validSequence(moves) {
+  const rep = replaySequence(moves);
+  return rep.ok && rep.winner === null;
+}
+
 // ---- position accessors -----------------------------------------------------------
 
 /* Current stones as [{q, r, color}] in a stable render order. */
 function stoneList() {
   if (state.mode === "sequence") {
-    return state.moves.map(([q, r], i) => ({ q, r, color: LF.recordPlayer(i) }));
+    return curMoves().map(([q, r], i) => ({ q, r, color: LF.recordPlayer(i) }));
   }
   return state.free.p0.map(([q, r]) => ({ q, r, color: 0 }))
     .concat(state.free.p1.map(([q, r]) => ({ q, r, color: 1 })));
 }
 
 function currentToMove() {
-  if (state.mode === "sequence") return LF.recordPlayer(state.moves.length);
+  if (state.mode === "sequence") return LF.recordPlayer(state.cursor);
   return state.free.toMove;
 }
 
 function currentFacts() {
   return state.mode === "sequence"
-    ? LF.factsFromSequence(state.moves)
+    ? LF.factsFromSequence(curMoves())
     : LF.factsFromFree(state.free.p0, state.free.p1, state.free.toMove);
 }
 
 /* Server body for the current position ({actions} or {stones} + to_move). */
 function positionBody() {
   if (state.mode === "sequence") {
-    return { actions: state.moves.map(([q, r]) => ({ q, r })) };
+    return { actions: curMoves().map(([q, r]) => ({ q, r })) };
   }
   return {
     stones: {
@@ -202,7 +324,7 @@ function positionBody() {
 
 function posKey() {
   return state.mode === "sequence"
-    ? "s:" + state.moves.map(m => m.join(",")).join(";")
+    ? "s:" + curMoves().map(m => m.join(",")).join(";")
     : "f:" + state.free.p0.map(m => m.join(",")).join(";") +
       "|" + state.free.p1.map(m => m.join(",")).join(";") + "|" + state.free.toMove;
 }
@@ -210,19 +332,21 @@ function posKey() {
 // ---- editor: sequence mode ---------------------------------------------------------
 
 function trySequencePlace(q, r) {
-  if (!LF.isLegalPlacement(state.moves, q, r)) {
-    toast(state.moves.length ? "play within reach of the stones" : "the opening stone is forced to 0,0");
+  if (state.bot.busy) {
+    toast("the bot is moving — wait for the stone to land");
     return;
   }
-  const color = LF.recordPlayer(state.moves.length);
-  const next = stoneList().concat([{ q, r, color }]);
-  if (findWin(next)) {
-    toast("that completes six in a line — the net evaluates live positions only", true);
+  if (termWinner !== null) {
+    toast("the game is over — step back to keep exploring");
     return;
   }
+  if (!LF.isLegalPlacement(curMoves(), q, r)) {
+    toast(state.cursor ? "play within reach of the stones" : "the opening stone is forced to 0,0");
+    return;
+  }
+  cancelBot();
   state.lastPlaceT = Date.now();
-  state.moves.push([q, r]);
-  positionChanged();
+  playMove(q, r);
 }
 
 // ---- editor: free mode ---------------------------------------------------------------
@@ -302,7 +426,7 @@ function onBoardCell(q, r, ptrType) {
       clearStage();
       commitCell(q, r);
     } else if (state.mode === "free" ||
-               (LF.isLegalPlacement(state.moves, q, r))) {
+               (termWinner === null && LF.isLegalPlacement(curMoves(), q, r))) {
       state.staged = { q, r };
       board.stage(q, r);
       placeChip.classList.add("show");
@@ -320,8 +444,28 @@ placeChip.addEventListener("click", () => {
   commitCell(s.q, s.r);
 });
 
+/* The cursor readout names whatever the board currently encodes for the cell:
+ * the coordinate alone in the modules that paint their own map, plus the
+ * critic read wherever the eval/heads overlays are on the board. */
+function cursorText(q, r) {
+  const parts = [fmtCell(q, r)];
+  const cell = labKlent && labKlent.get(key(q, r));
+  if (cell && (state.module === "eval" || state.module === "heads")) {
+    if (state.ovl === "pi2" || state.module === "heads") {
+      parts.push(`π′ ${pct(cell.improved)} · π ${pct(cell.prior)}`);
+    } else {
+      parts.push(`π ${pct(cell.prior)}`);
+    }
+    parts.push(`Q ${fmtV(cell.q)}`);
+    parts.push(
+      `win ${pct(cell.win, 0)} · loss ${pct(cell.loss, 0)} · long ${pct(cell.long, 0)}`,
+    );
+  }
+  return parts.join(" · ");
+}
+
 function onBoardHover(q, r) {
-  cursorPos.textContent = q === null ? "—" : fmtCell(q, r);
+  cursorPos.textContent = q === null ? "—" : cursorText(q, r);
 }
 
 // ---- editor controls --------------------------------------------------------------
@@ -342,6 +486,7 @@ $("modeSeg").addEventListener("click", e => {
 
 function setMode(mode) {
   if (mode === state.mode) return;
+  cancelBot();
   if (mode === "free") {
     // carry the sequence position into the editable stone set
     state.free = {
@@ -375,31 +520,70 @@ $("tmSeg").addEventListener("click", e => {
   positionChanged();
 });
 
+/* Free-edit undo. Sequence mode has no undo button: the step pair owns the
+ * cursor, and stepping back never loses the line's moves. */
 $("undoBtn").addEventListener("click", () => {
-  if (state.mode === "sequence") {
-    if (!state.moves.length) return;
-    state.moves.pop();
-  } else {
-    const snap = state.undo.pop();
-    if (!snap) return;
-    state.free = JSON.parse(snap);
-    segSelect($("tmSeg"), b => +b.dataset.tm === state.free.toMove);
-  }
+  const snap = state.undo.pop();
+  if (!snap) return;
+  state.free = JSON.parse(snap);
+  segSelect($("tmSeg"), b => +b.dataset.tm === state.free.toMove);
   positionChanged();
 });
 
+$("stepBack").addEventListener("click", () => stepCursor(-1));
+$("stepFwd").addEventListener("click", () => stepCursor(1));
+
 $("clearBtn").addEventListener("click", () => {
-  if (state.mode === "sequence") state.moves = [];
+  cancelBot();
+  if (state.mode === "sequence") setLine([]);
   else { pushFreeUndo(); state.free = { p0: [], p1: [], toMove: 0 }; state.freeDirty = true; }
   $("presetSel").value = "";
   positionChanged();
 });
 
+$("lineChips").addEventListener("click", e => {
+  const pick = e.target.closest(".ls-pick");
+  if (pick) { selectLine(+pick.dataset.i); return; }
+  const del = e.target.closest(".ls-del");
+  if (del) deleteLine(+del.dataset.i);
+});
+
+/* One chip per variation: its number, its length, and a delete control. The
+ * active chip carries the cursor read, so the strip says both which line is
+ * on the board and how far into it the board is. */
+function renderLineStrip() {
+  $("plyRead").textContent = state.cursor + "/" + activeLine().length;
+  $("stepBack").disabled = state.cursor === 0;
+  $("stepFwd").disabled = state.cursor >= activeLine().length;
+  const chips = $("lineChips");
+  chips.textContent = "";
+  state.lines.forEach((line, i) => {
+    const chip = document.createElement("span");
+    chip.className = "ls-chip" + (i === state.lineIdx ? " sel" : "");
+    const pick = document.createElement("button");
+    pick.className = "ls-pick";
+    pick.dataset.i = i;
+    pick.textContent = `line ${i + 1} · ${line.length}`;
+    pick.title = `Show line ${i + 1}`;
+    const del = document.createElement("button");
+    del.className = "ls-del";
+    del.dataset.i = i;
+    del.textContent = "×";
+    del.title = `Delete line ${i + 1}`;
+    del.setAttribute("aria-label", `Delete line ${i + 1}`);
+    del.disabled = state.lines.length < 2;
+    chip.append(pick, del);
+    chips.appendChild(chip);
+  });
+}
+
 // ---- share link ----------------------------------------------------------------------
 
+/* The link carries the ACTIVE line up to the cursor — the position on the
+ * board. Variations are session-local: the schema is the one old links use. */
 function shareHash() {
   if (state.mode === "sequence") {
-    return "#m=" + state.moves.map(m => m.join(",")).join(";");
+    return "#m=" + curMoves().map(m => m.join(",")).join(";");
   }
   return "#f0=" + state.free.p0.map(m => m.join(",")).join(";") +
          "&f1=" + state.free.p1.map(m => m.join(",")).join(";") +
@@ -423,12 +607,14 @@ function applyHash(hash) {
   const params = new URLSearchParams(hash.slice(1));
   if (params.has("m")) {
     const moves = parseCells(params.get("m"));
-    if (moves === null || !validSequence(moves)) {
+    // A shared link may end on the move that won: the board shows the result
+    // and the modules report the position as over.
+    if (moves === null || !replaySequence(moves).ok) {
       toast("lab link position was not a legal sequence", true);
       return false;
     }
     state.mode = "sequence";
-    state.moves = moves;
+    setLine(moves);
     return true;
   }
   if (params.has("f0") || params.has("f1")) {
@@ -480,16 +666,6 @@ $("copyLab").addEventListener("click", () => {
 
 // ---- presets (learn/data contract; degrade to empty-board-only) -----------------------
 
-function validSequence(moves) {
-  const staged = [];
-  for (const [q, r] of moves) {
-    if (!LF.isLegalPlacement(staged, q, r)) return false;
-    staged.push([q, r]);
-    if (findWin(staged.map(([a, b], i) => ({ q: a, r: b, color: LF.recordPlayer(i) })))) return false;
-  }
-  return true;
-}
-
 async function loadPresets() {
   // Curated tactical positions from the learn/data snapshots (JSON contract:
   // doc.positions[].{id, title, moves}). Both files carry position lists;
@@ -523,13 +699,117 @@ async function loadPresets() {
 $("presetSel").addEventListener("change", function () {
   const opt = this.selectedOptions[0];
   const moves = opt && opt.dataset.moves ? JSON.parse(opt.dataset.moves) : [];
+  cancelBot();
   if (state.mode !== "sequence") setMode("sequence");
-  state.moves = moves;
+  setLine(moves);
   positionChanged();
   board.resetView();
 });
 
-// ---- game import (?game=<id>&ply=<n>) ---------------------------------------------------
+// ---- paste a move list ------------------------------------------------------------------
+
+const pastePanel = $("pastePanel"), gamesPanel = $("gamesPanel");
+
+/* One panel at a time under the strip: the toggles share the space. */
+function togglePanel(panel, btn) {
+  const show = panel.hidden;
+  for (const [p, b] of [[pastePanel, $("pasteToggle")], [gamesPanel, $("gamesToggle")]]) {
+    p.hidden = true;
+    b.setAttribute("aria-expanded", "false");
+    b.classList.remove("done");
+  }
+  panel.hidden = !show;
+  btn.setAttribute("aria-expanded", show ? "true" : "false");
+  btn.classList.toggle("done", show);
+  return show;
+}
+
+$("pasteToggle").addEventListener("click", () => {
+  if (togglePanel(pastePanel, $("pasteToggle"))) $("pasteBox").focus();
+});
+
+$("pasteApply").addEventListener("click", () => {
+  // Takes a bare move list and also a copied lab link, which is the same list
+  // behind a "#m=" prefix.
+  const raw = $("pasteBox").value;
+  const linked = /#m=([^&\s]*)/.exec(raw);
+  const text = (linked ? linked[1] : raw).replace(/\s+/g, "");
+  if (!text) {
+    toast("paste a move list first", true);
+    return;
+  }
+  const moves = parseCells(text);
+  if (moves === null) {
+    toast("moves must read q,r;q,r — one cell per pair", true);
+    return;
+  }
+  if (!replaySequence(moves).ok) {
+    toast("that move list is not a legal sequence", true);
+    return;
+  }
+  cancelBot();
+  if (state.mode !== "sequence") setMode("sequence");
+  setLine(moves);
+  positionChanged();
+  board.resetView();
+  toast(`loaded ${moves.length} plies as line 1`);
+});
+
+// ---- game import (?game=<id>&ply=<n>, and the picker) -------------------------------------
+
+$("gamesToggle").addEventListener("click", () => {
+  if (togglePanel(gamesPanel, $("gamesToggle")) && !$("labGameList").children.length) {
+    loadGames();
+  }
+});
+
+$("gamesReload").addEventListener("click", loadGames);
+
+/* The public feed, most recent first. The rows carry the id and the ply
+ * count; the ply field picks where in the game the sandbox opens. */
+async function loadGames() {
+  setStatus("gamesStatus", "loading…");
+  let raw;
+  try {
+    raw = await requestJson("/api/games");
+  } catch (e) {
+    setStatus("gamesStatus", e.status === 404
+      ? "this server build serves no public feed"
+      : (e.message || "could not load the games feed"), true);
+    return;
+  }
+  const rows = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.games) ? raw.games : []);
+  const list = $("labGameList");
+  list.textContent = "";
+  for (const g of rows.slice(0, 20)) {
+    const id = g.id ?? g.game_id;
+    if (!id) continue;
+    const plies = g.ply_count ?? g.plies ?? null;
+    const b = document.createElement("button");
+    b.className = "game-row";
+    b.dataset.id = id;
+    if (plies !== null) b.dataset.plies = plies;
+    b.innerHTML = `<span class="gr-n"></span><span class="gr-m"></span>`;
+    b.querySelector(".gr-n").textContent = g.nickname || "anonymous";
+    b.querySelector(".gr-m").textContent =
+      `vs ${(g.bot && g.bot.label) || g.bot_label || g.label || "?"}` +
+      (plies === null ? "" : ` · ${plies} ply`);
+    list.appendChild(b);
+  }
+  setStatus("gamesStatus", list.children.length ? "" : "no finished games yet");
+}
+
+$("labGameList").addEventListener("click", e => {
+  const row = e.target.closest(".game-row");
+  if (!row) return;
+  const typed = $("gamePly").value.trim();
+  // Empty ply field = the game's last ply, which is what the field's
+  // placeholder says. A finished game trims back to its last live position.
+  const ply = typed === ""
+    ? (row.dataset.plies ? +row.dataset.plies : NaN)
+    : parseInt(typed, 10);
+  importFromGame(row.dataset.id, ply);
+});
 
 async function importFromGame(id, ply) {
   try {
@@ -544,8 +824,9 @@ async function importFromGame(id, ply) {
     let moves = st.slice(0, upto).map(s => [s.q, s.r]);
     // A finished game's final placement may be terminal; trim to a decision state.
     while (moves.length && !validSequence(moves)) moves = moves.slice(0, -1);
-    state.mode = "sequence";
-    state.moves = moves;
+    cancelBot();
+    if (state.mode !== "sequence") { state.mode = "sequence"; syncModeUI(); }
+    setLine(moves);
     positionChanged();
     board.resetView();
     toast(`loaded game ${String(id).slice(0, 8)} at ply ${moves.length}`);
@@ -561,11 +842,13 @@ function renderCkpts() {
     selectedId: state.ckpt,
     onSelect: (id, c) => {
       if (id === state.ckpt) return;
+      cancelBot();
       state.ckpt = id;
       state.ckptLabel = c ? c.label : id;
       state.ckptFamily = c ? c.family : "shrimp";
       state.feature = "support";
       state.featureNames = null;
+      labKlent = null;
       buildFeatList();
       refreshModule();
     },
@@ -593,18 +876,32 @@ async function loadBots(preferredId = null) {
 $("modSeg").addEventListener("click", e => {
   const b = e.target.closest("button");
   if (!b || b.dataset.mod === state.module) return;
+  cancelBot();
   state.module = b.dataset.mod;
   segSelect($("modSeg"), x => x.dataset.mod === state.module);
   document.querySelectorAll(".mod").forEach(m => {
     m.classList.toggle("active", m.id === "mod-" + state.module);
   });
+  syncOvlUI();
   refreshModule();
 });
+
+/* The status line each module reports into. features computes in the page and
+ * says everything in the readout, so it has none. */
+const MOD_STATUS = {
+  eval: "evalStatus", heads: "headsStatus", attention: "attnStatus",
+  activations: "actStatus", search: "searchStatus",
+};
 
 function setStatus(id, msg, isErr = false) {
   const el = $(id);
   el.textContent = msg || "";
   el.className = "mod-status" + (isErr ? " err" : "");
+}
+
+function setModuleStatus(msg, isErr = false) {
+  const id = MOD_STATUS[state.module];
+  if (id) setStatus(id, msg, isErr);
 }
 
 // ---- server eval (cached, debounced, rate-limit aware) -------------------------------------
@@ -635,9 +932,41 @@ function fetchEval(wants = {}) {
   return prom;
 }
 
+/* Everything the board carries beyond the stones: module overlays, the heat
+ * layer the eval/heads maps and the search replay share, and the solver's
+ * proof-line previews. All of it describes one position, so all of it comes
+ * off together the moment that position changes. */
+function clearBoardPaint() {
+  clearOverlay();
+  board.resetLiveSearch();
+  board.clearPreviewStones();
+}
+
 let refreshT = null;
+function scheduleRefresh() {
+  clearTimeout(refreshT);
+  refreshT = setTimeout(() => { refreshT = null; refreshModule(); }, 350);
+}
+
+/* Run a waiting refresh now. A tool that takes the board over — the solver,
+ * a bot move — calls this first, so the panel it paints over is never one
+ * position behind. */
+function flushRefresh() {
+  if (refreshT === null) return;
+  clearTimeout(refreshT);
+  refreshT = null;
+  refreshModule();
+}
+
+/* An async module render is stale when the position moved on, another module
+ * took the panel, or the bot took the board. */
+const staleRender = (k, mod) =>
+  posKey() !== k || state.module !== mod || state.bot.busy;
+
 function positionChanged() {
   clearStage();
+  clearBoardPaint();
+  labKlent = null;
   renderPosition();
   history.replaceState(null, "", location.pathname + location.search + shareHash());
   // drop an attention query that left the support
@@ -645,29 +974,41 @@ function positionChanged() {
     const sup = LF.buildSupport(stoneList().map(s => [s.q, s.r]));
     if (!sup.index.has(key(state.attnCell[0], state.attnCell[1]))) state.attnCell = null;
   }
-  clearTimeout(refreshT);
-  refreshT = setTimeout(refreshModule, 350);
+  scheduleRefresh();
 }
 
 // ---- shared position rendering ---------------------------------------------------------------
 
 function renderPosition() {
   const stones = stoneList();
-  board.setStones(stones, null);
+  // Six in a line ends the sequence. The color comes from the winning run
+  // itself rather than the turn order, so the outline and the name agree.
+  const winCells = state.mode === "sequence" ? findWin(stones) : null;
+  const winStone = winCells
+    ? stones.find(s => s.q === winCells[0].q && s.r === winCells[0].r) : null;
+  termWinner = winStone ? winStone.color : null;
+  board.setStones(stones, winCells);
   board.setLegal(
-    state.mode === "sequence" && state.module !== "attention"
-      ? LF.legalCells(state.moves).map(([q, r]) => ({ q, r }))
+    state.mode === "sequence" && state.module !== "attention" && termWinner === null
+      ? LF.legalCells(curMoves()).map(([q, r]) => ({ q, r }))
       : null,
   );
   const facts = currentFacts();
   $("mgStones").textContent = stones.length;
-  const tm = facts.currentPlayer;
   const mg = $("mgToMove");
-  mg.textContent = tm === 0 ? "blue" : "red";
-  mg.className = "n " + (tm === 0 ? "is-p0" : "is-p1");
+  if (termWinner !== null) {
+    mg.textContent = "over";
+    mg.className = "n";
+  } else {
+    const tm = facts.currentPlayer;
+    mg.textContent = tm === 0 ? "blue" : "red";
+    mg.className = "n " + (tm === 0 ? "is-p0" : "is-p1");
+  }
   $("mgPhase").textContent =
     facts.phase === "Opening" ? "opening" :
     facts.phase === "SecondStone" ? "2nd stone" : "1st stone";
+  if (state.mode === "sequence") renderLineStrip();
+  syncPlayUI();
 }
 
 // ---- module: features (client-side) ------------------------------------------------------------
@@ -709,10 +1050,10 @@ function renderFeatures() {
     const k = posKey();
     setReadout("features", "computing family-specific input planes...");
     fetchEval({ features: true }).then(payload => {
-      if (posKey() !== k || state.module !== "features") return;
+      if (staleRender(k, "features")) return;
       renderServerFeatures(payload);
     }).catch(e => {
-      if (posKey() !== k || state.module !== "features") return;
+      if (staleRender(k, "features")) return;
       setReadout("features", e.message || "feature fetch failed");
     });
     return;
@@ -834,6 +1175,9 @@ function setBig(el, v, cls) {
 function renderDist(dist, value) {
   const svg = $("distChart");
   svg.textContent = "";
+  // A family that serves no bin distribution loses the whole section: an
+  // empty chart under a "65 bins" heading would read as a broken readout.
+  $("distSec").hidden = !dist;
   if (!dist) return;
   const W = 300, H = 72, B = 12, T = 4;
   const max = Math.max(...dist, 1e-9);
@@ -865,7 +1209,7 @@ function renderDist(dist, value) {
 
 function renderEvalPayload(payload) {
   const tm = payload.to_move;
-  const flip = v => (v === null || v === undefined ? null : tm === 0 ? v : -v);
+  const flip = v => (typeof v !== "number" ? null : tm === 0 ? v : -v);
   const v = flip(payload.value);
   setBig($("valNow"), v, "value-big");
   $("valWho").textContent =
@@ -874,14 +1218,15 @@ function renderEvalPayload(payload) {
   setBig($("stv2"), flip(stv["2"]), "hz-v");
   setBig($("stv6"), flip(stv["6"]), "hz-v");
   setBig($("stv16"), flip(stv["16"]), "hz-v");
-  $("mlNow").textContent = "~" + Math.max(0, Math.round(payload.moves_left));
+  // A family that serves no moves-left head says so: "~0" would read as a
+  // prediction the net never made.
+  $("mlNow").textContent = typeof payload.moves_left === "number"
+    ? "~" + Math.max(0, Math.round(payload.moves_left)) : "—";
   renderDist(payload.value_dist, payload.value);
 
   const rows = payload[evalHead] || [];
-  clearOverlay();
   const headMover = evalHead === "opp_policy" ? 1 - tm : tm;
-  paintFill(rows.map(h => ({ q: h.q, r: h.r, v: h.p })), headMover === 0 ? H0 : H1, 0.62);
-  if (rows.length) paintRing(rows[0].q, rows[0].r, headMover === 0 ? H0R : H1R);
+  paintOverlay(payload, rows, headMover);
 
   const list = $("topList");
   list.textContent = "";
@@ -889,12 +1234,15 @@ function renderEvalPayload(payload) {
     const li = document.createElement("li");
     li.innerHTML = `<span class="rk-c"></span><span class="rk-v"></span>`;
     li.querySelector(".rk-c").textContent = fmtCell(row.q, row.r);
-    li.querySelector(".rk-v").textContent = (row.p * 100).toFixed(1) + "%";
+    li.querySelector(".rk-v").textContent = pct(row.p);
     list.appendChild(li);
   }
   setReadout(
     "net eval · " + state.ckptLabel,
-    `${evalHead.replace("_", " ")} over ${payload.legal_count} legal cells · ` +
+    // In policy mode the board carries the head the selector picked, so the
+    // readout names that head rather than the overlay mode.
+    `${state.ovl === "policy" ? evalHead.replace("_", " ") : OVL_READ[state.ovl]}` +
+    ` over ${payload.legal_count} legal cells · ` +
     `value ${v === null ? "—" : fmtV(v)} (blue POV) · no search`,
   );
 }
@@ -903,12 +1251,206 @@ function renderEval() {
   setStatus("evalStatus", "computing…");
   const k = posKey();
   fetchEval({}).then(payload => {
-    if (posKey() !== k || state.module !== "eval") return;
+    if (staleRender(k, "eval")) return;
     setStatus("evalStatus", "");
     renderEvalPayload(payload);
   }).catch(e => {
-    if (posKey() !== k || state.module !== "eval") return;
+    if (staleRender(k, "eval")) return;
     setStatus("evalStatus", e.message || "eval failed", true);
+  });
+}
+
+// ---- board overlays for the eval and heads modules -----------------------------------------
+
+/* The mantis `klent` block as a map for the hover text and the overlays.
+ * Every value stays side-to-move POV as served; the painters flip to the
+ * site's blue/red frame where the mode calls for it. */
+function klentCells(payload) {
+  const k = payload && payload.klent;
+  if (!k || !Array.isArray(k.coords) || !Array.isArray(k.q)) return null;
+  const arr = (name, i) => {
+    const v = Array.isArray(k[name]) ? k[name][i] : null;
+    return Number.isFinite(v) ? v : 0;
+  };
+  const map = new Map();
+  k.coords.forEach((c, i) => {
+    if (!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) return;
+    map.set(key(c[0], c[1]), {
+      qc: c[0], rc: c[1],
+      q: arr("q", i), prior: arr("prior", i), improved: arr("improved", i),
+      win: arr("win", i), loss: arr("loss", i), long: arr("long", i),
+    });
+  });
+  return map.size ? map : null;
+}
+
+const OVL_READ = {
+  policy: "policy priors", q: "critic Q per move", pi2: "improved policy π′",
+  long: "long-game mass", gap: "critic against policy",
+};
+
+function syncOvlUI() {
+  const shown = state.module === "eval" || state.module === "heads";
+  $("ovlStrip").hidden = !shown;
+  $("ovlSeg").querySelectorAll("button").forEach(b => {
+    const on = b.dataset.ovl === state.ovl;
+    b.classList.toggle("sel", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+    // Every mode past policy reads the critic block, so a family that serves
+    // none disables them rather than painting the prior under another name.
+    b.disabled = b.dataset.ovl !== "policy" && !labKlent;
+  });
+}
+
+$("ovlSeg").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b || b.disabled || b.dataset.ovl === state.ovl) return;
+  state.ovl = b.dataset.ovl;
+  syncOvlUI();
+  refreshModule();
+});
+
+/* Paint the board for the module in front. `policyRows` is the distribution
+ * that module calls its policy (the eval module's head selector picks one),
+ * `policyMover` the side it belongs to. Every other mode reads the critic. */
+function paintOverlay(payload, policyRows, policyMover) {
+  labKlent = klentCells(payload);
+  if (!labKlent && state.ovl !== "policy") state.ovl = "policy";
+  syncOvlUI();
+  clearOverlay();
+  const mover = payload.to_move;
+  const tint = mover === 0 ? H0 : H1, ring = mover === 0 ? H0R : H1R;
+  if (state.ovl === "policy" || !labKlent) {
+    const rows = Array.isArray(policyRows) ? policyRows : [];
+    if (rows.length) {
+      board.setHeat(rows, policyMover === 0 ? H0 : H1,
+                    policyMover === 0 ? H0R : H1R, OV_OPA);
+    } else {
+      board.clearHeat();
+    }
+    return;
+  }
+  const cells = [...labKlent.values()];
+  if (state.ovl === "pi2") {
+    board.setHeat(
+      cells.map(c => ({ q: c.qc, r: c.rc, p: c.improved })).sort((a, b) => b.p - a.p),
+      tint, ring, OV_OPA,
+    );
+    return;
+  }
+  if (state.ovl === "long") {
+    board.setHeat(
+      cells.map(c => ({ q: c.qc, r: c.rc, p: c.long })).sort((a, b) => b.p - a.p),
+      LONG_TINT, LONG_TINT, OV_OPA,
+    );
+    return;
+  }
+  if (state.ovl === "q") {
+    // Q is win mass minus loss mass, so the scale is absolute — a faint board
+    // IS the critic seeing a close game. Blue/red is the site's value frame;
+    // the ring marks the best cell for the side to move.
+    const f = mover === 0 ? 1 : -1;
+    let best = null;
+    for (const c of cells) if (!best || c.q > best.q) best = c;
+    board.setSignedHeat(
+      cells.map(c => ({ q: c.qc, r: c.rc, v: f * c.q })), H0, H1, OV_OPA,
+      best ? { q: best.qc, r: best.rc } : null, ring,
+    );
+    return;
+  }
+  // gap: where the critic bends the policy. π′ − π per cell, normalized to
+  // the largest shift on the board so the map reads at any sharpness.
+  let scale = 0;
+  for (const c of cells) scale = Math.max(scale, Math.abs(c.improved - c.prior));
+  board.setSignedHeat(
+    cells.map(c => ({
+      q: c.qc, r: c.rc, v: scale > 0 ? (c.improved - c.prior) / scale : 0,
+    })),
+    GAP_POS, GAP_NEG, OV_OPA, null, ring,
+  );
+}
+
+// ---- module: heads (the served policy, critic and improved policy) --------------------------
+
+const HEAD_ROWS = 24;
+
+/* Ring one cell for a moment. The table rows use it to point at the board;
+ * the next module paint clears the overlay layer it lives on. */
+function flashCell(q, r) {
+  const el = ovPoly(q, r, S * 0.86, "ov-flash");
+  setTimeout(() => el.remove(), 1400);
+}
+
+$("headRows").addEventListener("click", e => {
+  const tr = e.target.closest("tr[data-q]");
+  if (tr) flashCell(+tr.dataset.q, +tr.dataset.r);
+});
+
+function renderHeadsPayload(payload) {
+  const tm = payload.to_move;
+  const v = typeof payload.value === "number" ? (tm === 0 ? payload.value : -payload.value) : null;
+  setBig($("hdValue"), v, "hs-v");
+  paintOverlay(payload, payload.policy || [], tm);
+  const kl = payload.klent || {};
+  $("hdKl").textContent = Number.isFinite(kl.kl) ? kl.kl.toFixed(3) : "—";
+  $("hdEnt").textContent = Number.isFinite(kl.norm_entropy)
+    ? kl.norm_entropy.toFixed(3) : "—";
+  const body = $("headRows");
+  body.textContent = "";
+  if (!labKlent) {
+    $("headTable").hidden = true;
+    $("headMore").textContent = "";
+    $("headNote").hidden = false;
+    setReadout("heads · " + state.ckptLabel,
+      "this family serves a policy and a value only. it has no critic read.");
+    return;
+  }
+  $("headNote").hidden = true;
+  $("headTable").hidden = false;
+  const cells = [...labKlent.values()].sort((a, b) => b.improved - a.improved);
+  for (const c of cells.slice(0, HEAD_ROWS)) {
+    const tr = document.createElement("tr");
+    tr.dataset.q = c.qc;
+    tr.dataset.r = c.rc;
+    tr.innerHTML =
+      `<td class="hd-c"></td><td></td><td></td><td class="hd-q"></td>` +
+      `<td class="hd-bar"><span class="wl w"></span><span class="wl l"></span>` +
+      `<span class="wl g"></span></td>`;
+    const td = tr.children;
+    td[0].textContent = fmtCell(c.qc, c.rc);
+    td[1].textContent = pct(c.prior);
+    td[2].textContent = pct(c.improved);
+    td[3].textContent = fmtV(c.q);
+    // Sign in the mover's frame, color in the site's: a move that is good for
+    // red carries red, whichever side is to move.
+    td[3].classList.add((tm === 0 ? c.q : -c.q) >= 0 ? "is-p0" : "is-p1");
+    const bar = td[4].children;
+    bar[0].style.width = pct(c.win);
+    bar[1].style.width = pct(c.loss);
+    bar[2].style.width = pct(c.long);
+    td[4].title = `win ${pct(c.win, 0)} · loss ${pct(c.loss, 0)} · long ${pct(c.long, 0)}`;
+    body.appendChild(tr);
+  }
+  const rest = cells.length - HEAD_ROWS;
+  $("headMore").textContent = rest > 0 ? `… ${rest} more cells` : "";
+  setReadout(
+    "heads · " + state.ckptLabel,
+    `${OVL_READ[state.ovl]} over ${cells.length} legal cells · ` +
+    `KL(π′‖π) ${Number.isFinite(kl.kl) ? kl.kl.toFixed(3) : "—"} · ` +
+    "point to a cell for its full read",
+  );
+}
+
+function renderHeads() {
+  setStatus("headsStatus", "computing…");
+  const k = posKey();
+  fetchEval({}).then(payload => {
+    if (staleRender(k, "heads")) return;
+    setStatus("headsStatus", "");
+    renderHeadsPayload(payload);
+  }).catch(e => {
+    if (staleRender(k, "heads")) return;
+    setStatus("headsStatus", e.message || "eval failed", true);
   });
 }
 
@@ -1026,7 +1568,7 @@ function renderAttention() {
   setStatus("attnStatus", "computing…");
   const k = posKey();
   fetchEval({ attention_query: { q, r } }).then(payload => {
-    if (posKey() !== k || state.module !== "attention") return;
+    if (staleRender(k, "attention")) return;
     if (!state.attnCell || state.attnCell[0] !== q || state.attnCell[1] !== r) return;
     setStatus("attnStatus", "");
     const attn = payload.attention;
@@ -1062,7 +1604,7 @@ function renderAttention() {
       `${(tokenMass * 100).toFixed(1)}% of the row on the ${row.tokens.length} summary token${row.tokens.length === 1 ? "" : "s"}`,
     );
   }).catch(e => {
-    if (posKey() !== k || state.module !== "attention") return;
+    if (staleRender(k, "attention")) return;
     setStatus("attnStatus", e.message || "attention fetch failed", true);
   });
 }
@@ -1108,7 +1650,7 @@ function renderActivations() {
   setStatus("actStatus", "computing…");
   const k = posKey();
   fetchEval({ activations: true }).then(payload => {
-    if (posKey() !== k || state.module !== "activations") return;
+    if (staleRender(k, "activations")) return;
     if (!payload.activations || payload.activations.available === false) {
       const reason = payload.activations && payload.activations.reason
         ? payload.activations.reason : "activation visualization unavailable";
@@ -1125,7 +1667,7 @@ function renderActivations() {
     range.value = state.actStage;
     renderActStage();
   }).catch(e => {
-    if (posKey() !== k || state.module !== "activations") return;
+    if (staleRender(k, "activations")) return;
     setStatus("actStatus", e.message || "activations fetch failed", true);
   });
 }
@@ -1137,6 +1679,7 @@ $("simsSeg").addEventListener("click", e => {
   if (!b) return;
   state.sims = +b.dataset.sims;
   segSelect($("simsSeg"), x => x === b);
+  syncPlayUI();
 });
 
 $("searchBtn").addEventListener("click", runSearch);
@@ -1169,7 +1712,7 @@ function renderSearchPayload(payload) {
 }
 
 function runSearch() {
-  if (state.mode !== "sequence") return;
+  if (state.mode !== "sequence" || termWinner !== null || state.bot.busy) return;
   if (!state.ckpt) { setStatus("searchStatus", "no checkpoint catalogue", true); return; }
   if (Date.now() < state.rlUntil) {
     setStatus("searchStatus", "rate-limited — try again shortly", true);
@@ -1190,21 +1733,21 @@ function runSearch() {
     if (state.searchCache.size > 40) {
       state.searchCache.delete(state.searchCache.keys().next().value);
     }
-    if (posKey() !== pk || state.module !== "search") return;
+    if (staleRender(pk, "search")) return;
     setStatus("searchStatus", "");
     renderSearchPayload(payload);
   }).catch(e => {
     if (e.status === 429) state.rlUntil = Date.now() + 15000;
-    if (posKey() !== pk || state.module !== "search") return;
+    if (staleRender(pk, "search")) return;
     setStatus("searchStatus", e.message || "search failed", true);
   }).finally(() => {
-    $("searchBtn").disabled = state.mode !== "sequence";
+    syncPlayUI();
   });
 }
 
 function renderSearchModule() {
   const free = state.mode !== "sequence";
-  $("searchBtn").disabled = free;
+  syncPlayUI();
   if (free) {
     clearOverlay();
     setStatus("searchStatus", "search needs a legal sequence — free-edit positions cannot be replayed", true);
@@ -1224,13 +1767,312 @@ function renderSearchModule() {
   }
 }
 
+// ---- the forced-win solver ---------------------------------------------------------------------------
+
+$("solveBtn").addEventListener("click", runSolve);
+
+/* λ¹ guard classes over the root's legal moves, under the proof line: a
+ * refuted move takes a dark veil, a move that wins at once takes a ring. */
+function paintGuard(guard) {
+  if (!Array.isArray(guard)) return;
+  for (const g of guard) {
+    if (!Number.isFinite(g.q) || !Number.isFinite(g.r)) continue;
+    if (g.cls === -1) ovPoly(g.q, g.r, S * 0.975, "ov-veil");
+    else if (g.cls === 1) paintRing(g.q, g.r, null, "ov-guard");
+  }
+}
+
+/* The verdict for the side to move, plus the proof line as preview stones.
+ * Line colors follow the engine's two-stone turn structure from this ply:
+ * the line's i-th move is placement record `ply + i`, and the proven first
+ * move pulses. */
+function renderSolveResult(res, mover, ply) {
+  const side = mover === 0 ? "blue" : "red";
+  const nodes = Number.isFinite(res.nodes) && res.nodes > 0
+    ? ` · ${res.nodes.toLocaleString()} nodes` : "";
+  const ms = Number.isFinite(res.ms) ? ` · ${(res.ms / 1000).toFixed(1)}s` : "";
+  clearOverlay();
+  board.clearPreviewStones();
+  paintGuard(res.guard);
+  if (res.status === "win") {
+    const walked = Array.isArray(res.line) ? res.line : [];
+    const line = walked.length ? walked : (res.proven ? [res.proven] : []);
+    board.setPreviewStones(line.map((c, i) => ({
+      q: c.q, r: c.r, color: LF.recordPlayer(ply + i), tss: i === 0,
+    })));
+    const lineRead = line.length > 1
+      ? ` · ${line.length}-ply ${res.line_forced ? "forced line" : "line (defense branches)"}`
+      : "";
+    setStatus("searchStatus", "");
+    setReadout("solver · forced win",
+      `${side} wins by force — proven${lineRead}${nodes}${ms}`);
+  } else if (res.status === "loss") {
+    setStatus("searchStatus", "");
+    setReadout("solver · lost",
+      `${side} is lost here — forced threats beat every reply${nodes}${ms}`);
+  } else if (res.status === "timeout") {
+    setStatus("searchStatus", "");
+    setReadout("solver · no answer",
+      `the solver hit its clock before an answer${nodes}${ms}`);
+  } else {
+    setStatus("searchStatus", "");
+    setReadout("solver · no forced win",
+      `no forced win found for ${side}${nodes}${ms}`);
+  }
+}
+
+async function runSolve() {
+  if (state.mode !== "sequence" || termWinner !== null || state.bot.busy) return;
+  if (!state.ckpt) { setStatus("searchStatus", "no checkpoint catalogue", true); return; }
+  if (Date.now() < state.rlUntil) {
+    setStatus("searchStatus", "rate-limited — try again shortly", true);
+    return;
+  }
+  flushRefresh();
+  const run = ++state.bot.run;
+  state.bot.busy = true;
+  syncPlayUI();
+  clearBoardPaint();
+  setStatus("searchStatus", "solver running · threat-space proof search");
+  const moves = curMoves();
+  const mover = currentToMove();
+  try {
+    const res = await requestJson("/api/lab/solve", {
+      checkpoint_id: state.ckpt,
+      actions: moves.map(([q, r]) => ({ q, r })),
+    });
+    if (state.bot.run !== run) return;
+    renderSolveResult(res, mover, moves.length);
+  } catch (e) {
+    if (e.status === 429) state.rlUntil = Date.now() + 15000;
+    if (state.bot.run !== run) return;
+    setStatus("searchStatus", e.status === 429
+      ? "solver rate-limited — wait a moment"
+      : (e.message || "solver unavailable"), true);
+  } finally {
+    if (state.bot.run === run) {
+      state.bot.busy = false;
+      syncPlayUI();
+    }
+  }
+}
+
+// ---- bot play ------------------------------------------------------------------------------------------
+
+const botPhaseEl = $("botPhase");
+function setBotPhase(text) {
+  botPhaseEl.textContent = text || "";
+}
+
+/* Orphan whatever the bot has in flight and stop autoplay. Every navigation
+ * the user drives calls this: the frames on screen describe the position that
+ * was on the board when the search ran, not the one replacing it. */
+function cancelBot() {
+  if (!state.bot.busy && !state.bot.auto) {
+    setBotPhase("");
+    return;
+  }
+  state.bot.run++;
+  state.bot.busy = false;
+  state.bot.auto = false;
+  setBotPhase("");
+  syncPlayUI();
+  scheduleRefresh();
+}
+
+const canBotPlay = () =>
+  state.mode === "sequence" && !!state.ckpt && termWinner === null &&
+  !state.bot.busy && Date.now() >= state.rlUntil;
+
+function syncPlayUI() {
+  const seq = state.mode === "sequence";
+  const idle = !state.bot.busy;
+  $("botMoveBtn").disabled = !seq || !state.ckpt || termWinner !== null || !idle;
+  $("autoBtn").disabled = !seq || !state.ckpt || (termWinner !== null && !state.bot.auto);
+  $("autoBtn").textContent = state.bot.auto ? "stop" : "autoplay";
+  $("autoBtn").classList.toggle("done", state.bot.auto);
+  $("searchBtn").disabled = !seq || termWinner !== null || !idle;
+  $("solveBtn").disabled = !seq || termWinner !== null || !idle;
+}
+
+/* The move the search settled on: the decision frame's action, or the payload
+ * `best` for a family that returns no frames. */
+function chosenMove(res) {
+  const frames = Array.isArray(res.frames) ? res.frames : [];
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const a = frames[i].action;
+    if (a && Number.isFinite(a.q) && Number.isFinite(a.r)) return { q: +a.q, r: +a.r };
+  }
+  const best = res.best;
+  return best && Number.isFinite(best.q) && Number.isFinite(best.r)
+    ? { q: +best.q, r: +best.r } : null;
+}
+
+/* Same phrasing as the analysis deep look, so one search reads the same way
+ * on both pages. */
+function botPhaseText(scene, kind) {
+  if (kind === "bare_policy") return "policy priors";
+  if (kind === "candidate_set") return `${scene.cands.size} candidates drawn`;
+  if (kind === "search_round") {
+    const round = Number.isInteger(scene.round) ? scene.round + 1 : "?";
+    const rounds = Number.isInteger(scene.rounds) ? scene.rounds : "?";
+    let alive = 0;
+    for (const cand of scene.cands.values()) if (!cand.cut) alive++;
+    const visitRead = Number.isFinite(scene.visits) && Number.isFinite(scene.target)
+      ? ` · ${scene.visits}/${scene.target} visits` : "";
+    return `round ${round}/${rounds} · ${alive} of ${scene.cands.size} alive${visitRead}`;
+  }
+  const value = Number.isFinite(scene.rootValue) ? ` · value ${fmtV(scene.rootValue)}` : "";
+  const verdict = sceneVerdict(scene);
+  return `search complete${value}${verdict ? ` · ${verdict}` : ""}`;
+}
+
+/* Replay the collected telemetry frames on the lab board at a fixed cadence —
+ * the live viewer's language, paced for watching. A family that sends no
+ * frames paints the searched distribution directly. */
+async function replayBotSearch(res, mover, run) {
+  const frames = Array.isArray(res.frames) ? res.frames : null;
+  if (!frames || !frames.length) {
+    const rows = Array.isArray(res.visit_policy) ? res.visit_policy : [];
+    if (rows.length) {
+      board.setHeat(rows, mover === 0 ? H0 : H1, mover === 0 ? H0R : H1R, OV_OPA);
+    }
+    setBotPhase(`${res.visits} visits · value ${fmtV(res.root_value)}`);
+    return;
+  }
+  const scene = newScene("lab");
+  const reduced = reducedMotion();
+  for (const event of frames) {
+    if (state.bot.run !== run) return;
+    foldLiveFrame(scene, event);
+    if (reduced) continue;
+    paintSceneTo(scene, board, mover);
+    setBotPhase(botPhaseText(scene, event.kind));
+    if (event.kind === "bare_policy") await sleep(420);
+    else if (event.kind === "candidate_set") await sleep(280);
+    else if (event.kind === "search_round") await sleep(130);
+  }
+  if (state.bot.run !== run) return;
+  if (reduced) paintSceneTo(scene, board, mover);
+  setBotPhase(botPhaseText(scene, "search_complete"));
+}
+
+/* One bot move: search the position, replay the search on the board, then
+ * play the search's own choice into the active line. Returns true when a
+ * stone landed. Bot searches are never cached — each one is a fresh search on
+ * the position in front of it. */
+async function botMove() {
+  if (!canBotPlay()) {
+    if (Date.now() < state.rlUntil) toast("rate-limited — try again shortly", true);
+    return false;
+  }
+  // Autoplay does not refresh the modules between moves: that would fire one
+  // eval per ply for a panel the replay is covering. The loop refreshes when
+  // it stops.
+  if (state.bot.auto) { clearTimeout(refreshT); refreshT = null; }
+  else flushRefresh();
+  const run = ++state.bot.run;
+  state.bot.busy = true;
+  syncPlayUI();
+  clearBoardPaint();
+  const moves = curMoves();
+  const mover = currentToMove();
+  setBotPhase(`searching · ${state.sims} visits`);
+  try {
+    const res = await requestJson("/api/lab/search", {
+      checkpoint_id: state.ckpt,
+      sims: state.sims,
+      frames: true,
+      actions: moves.map(([q, r]) => ({ q, r })),
+    });
+    if (state.bot.run !== run) return false;
+    await replayBotSearch(res, mover, run);
+    if (state.bot.run !== run) return false;
+    const move = chosenMove(res);
+    if (!move) {
+      toast("the search returned no move", true);
+      return false;
+    }
+    state.bot.busy = false;   // the placement is the lab's own edit
+    playMove(move.q, move.r);
+    if (termWinner !== null) {
+      setBotPhase(`${termWinner === 0 ? "blue" : "red"} wins — six in a line`);
+    }
+    return true;
+  } catch (e) {
+    if (e.status === 429) state.rlUntil = Date.now() + 15000;
+    if (state.bot.run !== run) return false;
+    setBotPhase("");
+    toast(e.status === 429
+      ? "search rate-limited — wait a moment"
+      : (e.message || "the bot could not search"), true);
+    return false;
+  } finally {
+    if (state.bot.run === run) {
+      state.bot.busy = false;
+      syncPlayUI();
+      if (!state.bot.auto) scheduleRefresh();
+    }
+  }
+}
+
+/* Autoplay: bot moves until the game ends, the user stops it, an error
+ * arrives, or the ply cap is reached. Each move is fully awaited and fully
+ * replayed, so the loop never runs two searches at once. */
+async function autoplay() {
+  const token = ++state.bot.autoRun;
+  state.bot.auto = true;
+  state.bot.plies = 0;
+  syncPlayUI();
+  while (state.bot.auto && state.bot.autoRun === token && termWinner === null) {
+    if (state.bot.plies >= AUTOPLAY_CAP) {
+      toast(`autoplay stopped after ${AUTOPLAY_CAP} plies`);
+      break;
+    }
+    if (!await botMove()) break;
+    state.bot.plies++;
+  }
+  if (state.bot.autoRun !== token) return;   // a newer run owns the controls
+  state.bot.auto = false;
+  syncPlayUI();
+  if (termWinner !== null) {
+    setReadout("game over",
+      `${termWinner === 0 ? "blue" : "red"} has six in a line. step back to keep exploring.`);
+  }
+  scheduleRefresh();
+}
+
+$("botMoveBtn").addEventListener("click", () => { botMove(); });
+
+$("autoBtn").addEventListener("click", () => {
+  if (state.bot.auto) cancelBot();
+  else autoplay();
+});
+
 // ---- module dispatch -------------------------------------------------------------------------------------
 
 function refreshModule() {
+  // A bot replay owns the board while it runs; the placement that ends it
+  // re-arms this through positionChanged().
+  if (state.bot.busy) return;
   renderPosition(); // legal ghost depends on the active module
+  // Modules paint different layers — the heat for the eval/heads maps, the
+  // overlay group for the rest — so each refresh starts from a bare board
+  // rather than under the last module's picture.
+  clearBoardPaint();
+  if (termWinner !== null) {
+    labKlent = null;
+    syncOvlUI();
+    setModuleStatus("the game is over — nothing left to evaluate");
+    setReadout("game over",
+      `${termWinner === 0 ? "blue" : "red"} has six in a line. step back to keep exploring.`);
+    return;
+  }
+  setModuleStatus("");
   switch (state.module) {
     case "features": renderFeatures(); break;
     case "eval": renderEval(); break;
+    case "heads": renderHeads(); break;
     case "attention": renderAttention(); break;
     case "activations": renderActivations(); break;
     case "search": renderSearchModule(); break;
@@ -1246,7 +2088,11 @@ function syncModeUI() {
   $("brushSeg").hidden = !free;
   $("tmSeg").hidden = !free;
   $("freeNote").hidden = !free;
+  $("stepPair").hidden = free;
+  $("lineStrip").hidden = free;
+  $("undoBtn").hidden = !free;
   if (free) segSelect($("tmSeg"), b => +b.dataset.tm === state.free.toMove);
+  syncPlayUI();
 }
 
 /* A lab link opened while the page is already loaded only changes the hash —
@@ -1254,6 +2100,7 @@ function syncModeUI() {
  * hash back via replaceState, which does not re-fire the event. */
 window.addEventListener("hashchange", () => {
   if (applyHash(location.hash)) {
+    cancelBot();
     state.freeDirty = false;
     state.undo = [];
     syncModeUI();
@@ -1266,10 +2113,12 @@ window.addEventListener("hashchange", () => {
   buildFeatList();
   const params = new URLSearchParams(location.search);
   const applied = applyHash(location.hash);
-  if (applied) syncModeUI();
+  syncModeUI();
+  syncOvlUI();
   renderPosition();
   refreshModule();
   await loadBots(params.get("checkpoint_id"));
+  syncPlayUI();   // the bot, search and solver controls need a checkpoint
   loadPresets();
   if (!applied && params.has("game")) {
     importFromGame(params.get("game"), parseInt(params.get("ply") ?? "", 10));
