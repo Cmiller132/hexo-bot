@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
 
 use hexo_engine::{apply_placement, HexCoord, HexoState as RustHexoState, Placement};
@@ -44,7 +44,7 @@ use crate::threats_shared as threats;
 use crate::tree::{tss_solve_verified_with_stats, SolverHorizon, TssCounters};
 use crate::tss_core::{ProofStatus, SolveGoal, ZoneSearchCaps};
 use crate::tss_solver::TssSolver;
-use crate::tss_verify::CertNode;
+use crate::tss_verify::{CertNode, TssCertificate};
 
 /// Serve-side deep-solve shape, copied from `configs/hexfield_eq_main_5.toml`.
 const SERVE_DUAL_PASS: bool = true;
@@ -74,6 +74,54 @@ fn replay_path(root: &RustHexoState, path: &[(i16, i16)]) -> Result<RustHexoStat
     Ok(state)
 }
 
+/// Walkable export of a verified WIN certificate: exactly what the line walk
+/// consumes — attacker moves and defender reply edges — nothing else. The
+/// walker treats any position it cannot follow here as a fresh-solve
+/// fallback, so this export is guidance, never authority: the certificate was
+/// already independently verified before it is exported.
+enum CertWalkNode {
+    /// Claimant placement that completes six immediately.
+    Completion { q: i16, r: i16 },
+    /// Claimant-to-move λ¹ win: explicit moves end here; the walker's
+    /// win-now logic takes over.
+    WinLeaf,
+    /// Defender-to-move λ loss contract: no explicit continuation.
+    LossLeaf,
+    /// Claimant move selecting one winning continuation.
+    Choice { q: i16, r: i16, child: u32 },
+    /// Explicitly searched defender replies. Commutation and
+    /// implicit-dispatch evidence is deliberately not exported: a walked
+    /// reply without an edge is a fallback, not an error.
+    Universal { edges: Vec<(i16, i16, u32)> },
+    /// Group-2 extension node: not walkable.
+    Opaque,
+}
+
+fn export_cert_walk(cert: &TssCertificate) -> (u32, Vec<CertWalkNode>) {
+    let nodes = cert
+        .nodes
+        .iter()
+        .map(|node| match node {
+            CertNode::OrCompletion { mv, .. } => CertWalkNode::Completion { q: mv.q, r: mv.r },
+            CertNode::Win { .. } => CertWalkNode::WinLeaf,
+            CertNode::Loss { .. } => CertWalkNode::LossLeaf,
+            CertNode::Choice { mv, child } => CertWalkNode::Choice {
+                q: mv.q,
+                r: mv.r,
+                child: *child,
+            },
+            CertNode::Universal { edges, .. } => CertWalkNode::Universal {
+                edges: edges
+                    .iter()
+                    .map(|edge| (edge.mv.q, edge.mv.r, edge.child))
+                    .collect(),
+            },
+            CertNode::UniversalGroup2V1(_) | CertNode::FhwGateV1(_) => CertWalkNode::Opaque,
+        })
+        .collect();
+    (cert.root_node, nodes)
+}
+
 /// One λ¹ read, plus the root-guard classes for the caller's move list.
 struct Lambda1Read {
     verdict: Option<f32>,
@@ -98,6 +146,21 @@ struct DeepRead {
     /// Memory-pressure eviction passes across the solve's attempts: how
     /// often the ceiling made the search forget cold branches to continue.
     evict_passes: u64,
+    /// Wide-search diagnostics (SolveStats pass-throughs): dedup losses,
+    /// eviction rework, phase wall, and structure sizes.
+    tt_hits: u64,
+    index_refusals: u64,
+    re_expansions: u64,
+    expand_nanos: u64,
+    refresh_nanos: u64,
+    evict_nanos: u64,
+    wide_entries: u64,
+    wide_index_entries: u64,
+    wide_arena_peak_bytes: u64,
+    wide_index_bytes: u64,
+    /// Walkable form of a verified WIN certificate (root id + nodes), for
+    /// the line walk. None for anything but a verified win.
+    cert_walk: Option<(u32, Vec<CertWalkNode>)>,
 }
 
 fn status_name(status: ProofStatus) -> &'static str {
@@ -243,7 +306,7 @@ impl TssProbe {
     /// and not the serving configuration. Every verdict passes the same
     /// independent certificate verifier (quiet Choices and dispatch-free
     /// full-legal Universals are first-class certificate forms).
-    #[pyo3(signature = (path, node_cap, mem_bytes, unforcing))]
+    #[pyo3(signature = (path, node_cap, mem_bytes, unforcing, tt_bytes=None))]
     fn deep_solve<'py>(
         &self,
         py: Python<'py>,
@@ -251,6 +314,7 @@ impl TssProbe {
         node_cap: u64,
         mem_bytes: u64,
         unforcing: bool,
+        tt_bytes: Option<u64>,
     ) -> PyResult<Bound<'py, PyDict>> {
         if node_cap == 0 {
             return Err(PyValueError::new_err("TSS node_cap must be at least 1"));
@@ -262,7 +326,20 @@ impl TssProbe {
         }
         let mem_bytes_cap = usize::try_from(mem_bytes)
             .map_err(|_| PyValueError::new_err("TSS mem_bytes does not fit this platform"))?;
-        let tt_bytes_cap = mem_bytes_cap / 4;
+        // Diagnostic override for the index/arena split; the serving default
+        // stays a quarter of the working-set budget.
+        let tt_bytes_cap = match tt_bytes {
+            Some(explicit) => {
+                if explicit == 0 || explicit > mem_bytes {
+                    return Err(PyValueError::new_err(
+                        "TSS tt_bytes must be in 1..=mem_bytes",
+                    ));
+                }
+                usize::try_from(explicit)
+                    .map_err(|_| PyValueError::new_err("TSS tt_bytes does not fit this platform"))?
+            }
+            None => mem_bytes_cap / 4,
+        };
         let root = self.root.clone();
         // Fresh solve, fresh flag: a cancel always belongs to the solve that
         // was in flight when it was issued (calls on one probe are serialized).
@@ -314,6 +391,9 @@ impl TssProbe {
                 } else {
                     None
                 };
+                let cert_walk = (status == ProofStatus::Win)
+                    .then(|| solved.cert.as_ref().map(export_cert_walk))
+                    .flatten();
                 Ok(DeepRead {
                     status,
                     proven_move,
@@ -322,6 +402,17 @@ impl TssProbe {
                     mem_stopped: stats.mem_stops > 0,
                     mem_peak_bytes: stats.peak_tt_bytes,
                     evict_passes: stats.arena_evict_passes,
+                    tt_hits: stats.tt_hits,
+                    index_refusals: stats.wide_index_refusals,
+                    re_expansions: stats.wide_re_expansions,
+                    expand_nanos: stats.wide_expand_nanos,
+                    refresh_nanos: stats.wide_refresh_nanos,
+                    evict_nanos: stats.wide_evict_nanos,
+                    wide_entries: stats.wide_entries,
+                    wide_index_entries: stats.wide_index_entries,
+                    wide_arena_peak_bytes: stats.wide_arena_peak_bytes,
+                    wide_index_bytes: stats.wide_index_bytes,
+                    cert_walk,
                 })
             })
             .map_err(PyValueError::new_err)?;
@@ -334,6 +425,50 @@ impl TssProbe {
         dict.set_item("mem_peak_bytes", read.mem_peak_bytes)?;
         dict.set_item("evict_passes", read.evict_passes)?;
         dict.set_item("verify_failed", read.verify_failed)?;
+        dict.set_item("tt_hits", read.tt_hits)?;
+        dict.set_item("index_refusals", read.index_refusals)?;
+        dict.set_item("re_expansions", read.re_expansions)?;
+        dict.set_item("expand_ms", read.expand_nanos / 1_000_000)?;
+        dict.set_item("refresh_ms", read.refresh_nanos / 1_000_000)?;
+        dict.set_item("evict_ms", read.evict_nanos / 1_000_000)?;
+        dict.set_item("wide_entries", read.wide_entries)?;
+        dict.set_item("wide_index_entries", read.wide_index_entries)?;
+        dict.set_item("arena_peak_bytes", read.wide_arena_peak_bytes)?;
+        dict.set_item("index_bytes", read.wide_index_bytes)?;
+        match &read.cert_walk {
+            None => dict.set_item("cert", py.None())?,
+            Some((root, nodes)) => {
+                let out_nodes = PyList::empty(py);
+                for node in nodes {
+                    let entry = PyDict::new(py);
+                    match node {
+                        CertWalkNode::Completion { q, r } => {
+                            entry.set_item("kind", "completion")?;
+                            entry.set_item("q", q)?;
+                            entry.set_item("r", r)?;
+                        }
+                        CertWalkNode::WinLeaf => entry.set_item("kind", "win")?,
+                        CertWalkNode::LossLeaf => entry.set_item("kind", "loss")?,
+                        CertWalkNode::Choice { q, r, child } => {
+                            entry.set_item("kind", "choice")?;
+                            entry.set_item("q", q)?;
+                            entry.set_item("r", r)?;
+                            entry.set_item("child", child)?;
+                        }
+                        CertWalkNode::Universal { edges } => {
+                            entry.set_item("kind", "universal")?;
+                            entry.set_item("edges", edges.clone())?;
+                        }
+                        CertWalkNode::Opaque => entry.set_item("kind", "opaque")?,
+                    }
+                    out_nodes.append(entry)?;
+                }
+                let cert = PyDict::new(py);
+                cert.set_item("root", root)?;
+                cert.set_item("nodes", out_nodes)?;
+                dict.set_item("cert", cert)?;
+            }
+        }
         Ok(dict)
     }
 }
