@@ -201,6 +201,29 @@ pub struct SolveStats {
     pub interior_gate_evaluations: u64,
     pub interior_gate_dismissals: u64,
     pub interior_gate_nanos: u64,
+    /// Wide-index insertions refused because the index byte cap was full.
+    /// Every refusal is silent dedup loss: a later transposition into that
+    /// position starts a duplicate subtree instead of linking the entry.
+    pub wide_index_refusals: u64,
+    /// Expansions that redid work eviction had released (the entry's children
+    /// were evicted under memory pressure and the search walked back into it).
+    pub wide_re_expansions: u64,
+    /// Wall spent inside wide `expand` (threat analysis, generation, linking).
+    /// Telemetry only — never consulted by any decision (tss_core §2.6).
+    pub wide_expand_nanos: u64,
+    /// Wall spent in whole-tree bottom-up refreshes (stage boundaries and
+    /// post-eviction renumbering).
+    pub wide_refresh_nanos: u64,
+    /// Wall spent in eviction sweeps, excluding the refresh they trigger.
+    pub wide_evict_nanos: u64,
+    /// Final wide arena entry count (high-water across attempts).
+    pub wide_entries: u64,
+    /// Final wide index entry count (high-water across attempts).
+    pub wide_index_entries: u64,
+    /// Peak accounted arena bytes (entries + child vectors + deferred).
+    pub wide_arena_peak_bytes: u64,
+    /// Final accounted index bytes (the index only grows within an attempt).
+    pub wide_index_bytes: u64,
 }
 
 impl SolveStats {
@@ -237,6 +260,21 @@ impl SolveStats {
         self.interior_gate_nanos = self
             .interior_gate_nanos
             .saturating_add(part.interior_gate_nanos);
+        self.wide_index_refusals = self
+            .wide_index_refusals
+            .saturating_add(part.wide_index_refusals);
+        self.wide_re_expansions = self
+            .wide_re_expansions
+            .saturating_add(part.wide_re_expansions);
+        self.wide_expand_nanos = self.wide_expand_nanos.saturating_add(part.wide_expand_nanos);
+        self.wide_refresh_nanos = self
+            .wide_refresh_nanos
+            .saturating_add(part.wide_refresh_nanos);
+        self.wide_evict_nanos = self.wide_evict_nanos.saturating_add(part.wide_evict_nanos);
+        self.wide_entries = self.wide_entries.max(part.wide_entries);
+        self.wide_index_entries = self.wide_index_entries.max(part.wide_index_entries);
+        self.wide_arena_peak_bytes = self.wide_arena_peak_bytes.max(part.wide_arena_peak_bytes);
+        self.wide_index_bytes = self.wide_index_bytes.max(part.wide_index_bytes);
     }
 }
 
