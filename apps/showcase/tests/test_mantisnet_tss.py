@@ -574,10 +574,12 @@ def test_tss_config_refuses_nonsense():
         workers=2, root_wall_budget_ms=13,
     )
     assert TssConfig.from_profile(None) == TssConfig()
-    # the shipped defaults: the root gets 40x the leaf cap and the ONLY clock
+    # the shipped defaults: the root gets 400x the leaf cap and the ONLY clock
+    # (raised 2026-08-20: 200k nodes / 15 s — a deeper root solve is worth
+    # the wait)
     shipped = TssConfig()
-    assert (shipped.node_cap, shipped.root_node_cap) == (500, 20_000)
-    assert shipped.root_wall_budget_ms == 3000
+    assert (shipped.node_cap, shipped.root_node_cap) == (500, 200_000)
+    assert shipped.root_wall_budget_ms == 15_000
     assert not hasattr(shipped, "wall_budget_ms")
     # the toggle changes `enabled` and nothing else
     assert TssConfig().with_enabled(False) == TssConfig(enabled=False)

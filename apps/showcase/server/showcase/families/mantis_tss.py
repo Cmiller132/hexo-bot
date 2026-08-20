@@ -59,10 +59,10 @@ class TssConfig:
     The root and the leaves get SEPARATE budgets, because they are different
     jobs. A leaf solve runs hundreds of times per move and only sharpens one
     line's value, so it is capped tight. The root solve runs ONCE per move and
-    can replace the played move outright, so it is worth two orders of
-    magnitude more nodes — post-mortem of game 34e4cb07: the forced wins the
-    bot missed needed 1577, 1952 and 12880 solver nodes at the root, all of
-    them invisible at the leaf cap of 500 and all of them under 600 ms.
+    can replace the played move outright, so it is worth orders of magnitude
+    more nodes — post-mortem of game 34e4cb07: the forced wins the bot missed
+    needed 1577, 1952 and 12880 solver nodes at the root, all of them
+    invisible at the leaf cap of 500 and all of them under 600 ms.
 
     `apps/showcase/README.md` documents these for operators.
 
@@ -99,10 +99,15 @@ class TssConfig:
 
     enabled: bool = True
     node_cap: int = 500
-    root_node_cap: int = 20_000
+    # 200k nodes / 15s (owner ruling 2026-08-20: a deeper root solve is worth
+    # the wait). At measured container speeds the wall covers roughly this
+    # many nodes, so the two budgets bind together: the cap on fast tactical
+    # positions, the wall under load. 200k nodes is ~130 MB of arena+index —
+    # far inside solver_mem_bytes even with co-resident leaf workers.
+    root_node_cap: int = 200_000
     leaf_gate: str = "threats"
     workers: int = 3
-    root_wall_budget_ms: int = 3000
+    root_wall_budget_ms: int = 15_000
     # 2 GiB: measured on the hardest corpus position (0l4291i_live), the
     # fingerprint-keyed solver proves it inside this budget with zero
     # eviction passes (~1.9M nodes, peak ~1.2 GiB). Meaningfully below it

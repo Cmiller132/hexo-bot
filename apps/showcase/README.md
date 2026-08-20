@@ -126,9 +126,9 @@ telemetry events in the public live-search schema (`bare_policy`,
 `candidate_set`, `search_round`, `search_complete`) so a client can replay the
 search in the live viewer; only families with live telemetry return them.
 `/api/lab/solve` takes `{checkpoint_id, actions}` plus optional budgets
-`node_cap` (1000–100000000, default 20000 — the wall clock binds first, so
+`node_cap` (1000–100000000, default 200000 — the wall clock binds first, so
 the ceiling is effectively "no cap"), `budget_ms` (250–600000, default
-3000 — the wall clock for the whole call) and `line_cap` (2–100, default 24);
+15000 — the wall clock for the whole call) and `line_cap` (2–100, default 24);
 out-of-range budgets are a 422, never clamped. It answers
 `{status: win|loss|unknown|timeout, source: lambda1|deep, proven: {q,r}|null,
 line: [{q,r}, …], forced_through, guard: [{q,r,cls}]|null, nodes,
@@ -393,11 +393,11 @@ temperature = 1.0
 [tss]
 enabled = true             # run TSS at all for this checkpoint
 node_cap = 500             # solver nodes per LEAF solve
-root_node_cap = 20000      # solver nodes for the one ROOT solve
+root_node_cap = 200000     # solver nodes for the one ROOT solve
 leaf_gate = "threats"      # "threats": solve leaves with a live >=4 window
                            # "all":     solve every leaf with an undecided lambda-1
 workers = 3                # threads for leaf solves; the root solve has its own
-root_wall_budget_ms = 3000 # per-move ceiling on waiting for the ROOT solve;
+root_wall_budget_ms = 15000 # per-move ceiling on waiting for the ROOT solve;
                            # LEAF solves have no wall clock — node-capped and
                            # always waited to completion
 solver_mem_bytes = 2147483648  # HARD ceiling (2 GiB) on one solve's
@@ -424,7 +424,11 @@ live main_5 cap of 500. The root solve runs ONCE per move and can replace the
 played move outright, so it is worth far more: the post-mortem of the bot's one
 lost game (34e4cb07) found three forced wins it played past, needing 1577, 1952
 and 12880 solver nodes at the root — every one of them invisible at a cap of
-500, and every one under 600 ms. `root_node_cap = 20000` covers all three.
+500, and every one under 600 ms. `root_node_cap = 200000` with a 15 s wall
+(owner ruling 2026-08-20: a deeper root solve is worth the wait) covers those
+with two orders of magnitude to spare; at measured container speeds the wall
+covers roughly the cap, so the two budgets bind together — the cap on fast
+tactical positions, the wall under load.
 
 Only the ROOT solve has a wall clock. Leaf solves are node-capped and always
 waited to completion — a leaf that timed out used to silently take the net's

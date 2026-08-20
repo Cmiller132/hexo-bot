@@ -8,8 +8,8 @@
 #
 # Threat-Space Search needs no key here: it is ON by default, per-game
 # switchable from game setup, and every knob has a shipped default (leaf
-# node_cap 500 with no leaf wall clock, root_node_cap 20000 /
-# root_wall_budget_ms 3000, leaf_gate "threats", workers 3). Override them
+# node_cap 500 with no leaf wall clock, root_node_cap 200000 /
+# root_wall_budget_ms 15000, leaf_gate "threats", workers 3). Override them
 # only by adding a `search_profile` toml with a `[tss]` table — the knobs and
 # why the root cap is 40x the leaf cap are in apps/showcase/README.md,
 # "Threat-Space Search". Unknown `[tss]` keys fail catalogue load.

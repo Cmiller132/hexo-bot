@@ -116,9 +116,11 @@ defaults apply to every entry without a `[tss]` table in its search profile
 hexfield_eq wheel, so a TSS change is likewise a rebuild, not a restart.
 
 The ROOT deep solve is budgeted apart from the leaf solves — `root_node_cap`
-20000 nodes, `root_wall_budget_ms` 3000 ms, against node-capped 500 at the
+200000 nodes, `root_wall_budget_ms` 15000 ms, against node-capped 500 at the
 leaves (leaf solves have no wall clock: they are always waited to completion
-so leaf values never depend on host load).
+so leaf values never depend on host load). A tactical move can therefore take
+up to ~15 s while the root solve finishes — deliberate: a proven win replaces
+the played move outright.
 It runs once per move, concurrently with the search: on a quiet position it
 returns in a handful of nodes and costs nothing, and on a tactical one it is
 the piece that turns a proven win into the played move. After a deploy, watch
