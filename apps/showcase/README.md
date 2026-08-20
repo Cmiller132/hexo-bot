@@ -139,7 +139,10 @@ this), served from the live session while it exists and reconstructed from the
 DB record afterwards. Public reads of finished games ride the analysis token
 bucket; global and per-IP active-game caps plus token buckets (keyed by
 `CF-Connecting-IP`, falling back to the peer address) guard game creation,
-moves, and analysis. 429 beyond caps.
+moves, and analysis. 429 beyond caps. Non-move pool jobs (analysis, summary,
+lab eval/search/solve) also pass a global concurrency gate
+(`SHOWCASE_BACKGROUND_JOBS_MAX`, default 2) that keeps them from queueing
+ahead of live game moves — 429 while full.
 
 ### POST /api/game
 

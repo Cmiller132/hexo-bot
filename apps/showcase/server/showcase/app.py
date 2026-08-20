@@ -110,13 +110,10 @@ _ANALYSIS_VERSION = 6
 # always >= 0, so -1 can never collide).
 _SUMMARY_PLY = -1
 
-# Global cap on concurrently in-flight NON-MOVE pool jobs (analysis, summary,
-# lab). These public, cookieless jobs share the worker pool with live game
-# moves; without a cap, per-IP token buckets still let a burst pile dozens of
-# multi-second jobs onto the single worker's FIFO queue ahead of every move.
-# Two slots keeps the analysis UI responsive while bounding the queue a move
-# can land behind.
-_BACKGROUND_JOBS_MAX = 2
+# The cap on concurrently in-flight NON-MOVE pool jobs (analysis, summary,
+# lab) lives in Settings.background_jobs_max (SHOWCASE_BACKGROUND_JOBS_MAX):
+# these public, cookieless jobs share the worker pool with live game moves,
+# and the cap bounds the queue a move can land behind.
 
 # analysis_cache rows key on a bots-table id. Default analysis (no selector)
 # keys under the game's own bot row, so pre-selector cache entries stay valid.
@@ -374,10 +371,10 @@ def create_app(settings: Settings) -> FastAPI:
 
     @asynccontextmanager
     async def _background_job_slot():
-        """Admission control for non-move pool jobs (see _BACKGROUND_JOBS_MAX).
-        Single event loop: the check-and-increment is atomic (no await between
-        them), so no lock is needed."""
-        if app.state.background_jobs >= _BACKGROUND_JOBS_MAX:
+        """Admission control for non-move pool jobs (see
+        Settings.background_jobs_max). Single event loop: the check-and-increment
+        is atomic (no await between them), so no lock is needed."""
+        if app.state.background_jobs >= settings.background_jobs_max:
             raise HTTPException(429, "analysis backend is busy; try again shortly")
         app.state.background_jobs += 1
         try:

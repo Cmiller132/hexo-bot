@@ -84,6 +84,11 @@ class Settings:
     lab_eval_per_minute: int = 60
     lab_search_per_minute: int = 10
     lab_search_visit_cap: int = 256
+    # Concurrency cap on in-flight non-move pool jobs (analysis, summary, lab
+    # eval/search/solve). These share the worker pool with live game moves, so
+    # the default keeps the queue a move can land behind short; a deploy whose
+    # analysis traffic is trusted raises it via env.
+    background_jobs_max: int = 2
     # Inference device request (auto | cpu | xpu | cuda) — resolved per worker
     # process at init by showcase.device.resolve_device; `auto` prefers xpu,
     # then cuda, then cpu. Defaults keep existing constructors (tests) on the
@@ -188,4 +193,5 @@ class Settings:
             lab_eval_per_minute=_env_int("SHOWCASE_LAB_EVAL_PER_MINUTE", 60),
             lab_search_per_minute=_env_int("SHOWCASE_LAB_SEARCH_PER_MINUTE", 10),
             lab_search_visit_cap=_env_int("SHOWCASE_LAB_SEARCH_VISIT_CAP", 256),
+            background_jobs_max=_env_int("SHOWCASE_BACKGROUND_JOBS_MAX", 2),
         )
