@@ -6,7 +6,7 @@
 <title>Hexo &mdash; model lab</title>
 <meta name="description" content="Live sandbox: build a Hexo position, play the bot, and inspect the selected model family's inputs, evaluation, available internals, search, and forced-win solver.">
 <link rel="stylesheet" href="learn.css">
-<link rel="stylesheet" href="lab.css?v=6">
+<link rel="stylesheet" href="lab.css?v=7">
 </head>
 <body>
 
@@ -83,6 +83,8 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
       </div>
       <div class="step-pair" id="stepPair">
         <button class="k-btn" id="stepBack" title="Step one ply back">&lsaquo;</button>
+        <input type="range" class="ply-slider" id="plySlider" min="0" max="0" value="0"
+               step="1" aria-label="Move timeline">
         <span class="ply-read" id="plyRead">0/0</span>
         <button class="k-btn" id="stepFwd" title="Step one ply forward">&rsaquo;</button>
       </div>
@@ -94,9 +96,18 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
     <div class="line-strip" id="lineStrip">
       <span class="strip-k">lines</span>
       <div class="ls-chips" id="lineChips"></div>
-      <span class="strip-hint">step back, then play another move to make a new line</span>
+      <span class="strip-hint">step back, then play another move to make a new line
+        &middot; arrow keys and the slider move the cursor
+        &middot; each line keeps its own cursor</span>
     </div>
     <div class="line-note" id="lineNote" hidden></div>
+
+    <div class="val-graph" id="valGraph" hidden>
+      <svg id="labValChart" viewBox="0 0 560 96" role="img"
+           aria-label="Value per ply of the active line"></svg>
+      <div class="vg-note" id="valGraphNote">value v&#770; per ply of the active
+        line &middot; blue POV &middot; click the chart to jump</div>
+    </div>
 
     <div class="ed-note" id="freeNote" hidden>
       free edit lets you place, recolor, or <b>erase</b> stones, and keeps the
@@ -352,6 +363,6 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./lab.js?v=12"></script>
+<script type="module" src="./lab.js?v=13"></script>
 </body>
 </html>

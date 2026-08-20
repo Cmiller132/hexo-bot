@@ -652,3 +652,44 @@
   .head-tbl{font-size:9.5px}
   .frame-read{max-width:60%}
 }
+
+/* ---- move timeline slider (sequence mode) ---------------------------------- */
+
+.ply-slider{
+  -webkit-appearance:none;appearance:none;
+  width:120px;height:3px;border-radius:2px;background:var(--line);
+  outline:none;cursor:pointer;
+}
+.ply-slider::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;
+  width:11px;height:11px;border-radius:50%;
+  background:var(--accent);border:1px solid var(--line);
+}
+.ply-slider::-moz-range-thumb{
+  width:10px;height:10px;border-radius:50%;
+  background:var(--accent);border:1px solid var(--line);
+}
+.ply-slider:focus-visible{outline:1px solid var(--accent);outline-offset:3px}
+
+/* ---- per-line value graph (the analysis chart's language) ------------------ */
+
+.val-graph{
+  margin-top:6px;padding:6px 8px 4px;
+  border:1px solid var(--line-soft);border-radius:6px;
+}
+.val-graph[hidden]{display:none}
+.val-graph svg{display:block;width:100%;height:auto;cursor:pointer;touch-action:none}
+.vg-note{
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--dim);
+  padding-top:2px;
+}
+.val-graph .ch-grid{stroke:var(--line-soft);stroke-width:1}
+.val-graph .ch-zero{stroke:var(--line);stroke-width:1}
+.val-graph .ch-lab{font-family:var(--mono);font-size:7.5px;fill:var(--dim);pointer-events:none}
+.val-graph .ch-lab.p0{fill:#54749e}
+.val-graph .ch-lab.p1{fill:#9c5a56}
+.val-graph .ch-line{fill:none;stroke:#93a0ac;stroke-width:1;pointer-events:none}
+.val-graph .ch-rule{stroke:var(--accent);stroke-width:1;opacity:.45;pointer-events:none}
+.val-graph .ch-dot{fill:var(--accent);pointer-events:none}
+.val-graph .ch-pt{fill:#93a0ac;pointer-events:none}
+.val-graph .ch-term{fill:var(--accent-dim);pointer-events:none}

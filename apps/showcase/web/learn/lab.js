@@ -97,6 +97,7 @@ const state = {
   mode: "sequence",              // "sequence" | "free"
   lines: [[]],                   // sequence variations, each [[q, r], ...]
   lineNotes: [null],             // per-line saved solve summary (parallel to lines)
+  lineCursors: [0],              // per-line remembered cursor (parallel to lines)
   lineIdx: 0,                    // the line the board shows
   cursor: 0,                     // ply cursor into that line
   free: { p0: [], p1: [], toMove: 0 },
@@ -211,6 +212,7 @@ const curMoves = () => activeLine().slice(0, state.cursor);
 function setLine(moves) {
   state.lines = [moves.slice()];
   state.lineNotes = [null];
+  state.lineCursors = [moves.length];
   state.lineIdx = 0;
   state.cursor = moves.length;
 }
@@ -224,10 +226,13 @@ function playMove(q, r) {
   if (next && next[0] === q && next[1] === r) {
     state.cursor++;
   } else if (state.cursor < line.length) {
+    // the old line remembers the fork point, so switching back lands there
+    state.lineCursors[state.lineIdx] = state.cursor;
     state.lines.push(line.slice(0, state.cursor).concat([[q, r]]));
     state.lineNotes.push(null);
     state.lineIdx = state.lines.length - 1;
     state.cursor = activeLine().length;
+    state.lineCursors.push(state.cursor);
     toast(`forked line ${state.lineIdx + 1}`);
   } else {
     line.push([q, r]);
@@ -244,11 +249,16 @@ function stepCursor(delta) {
   positionChanged();
 }
 
+/* Each line keeps its own cursor: switching lines restores the ply you left
+ * that line on, so two lines compare side by side at their own positions. */
 function selectLine(i) {
   if (i === state.lineIdx || !state.lines[i]) return;
   cancelBot();
+  state.lineCursors[state.lineIdx] = state.cursor;
   state.lineIdx = i;
-  state.cursor = state.lines[i].length;
+  const remembered = state.lineCursors[i];
+  state.cursor = clamp(0, state.lines[i].length,
+    Number.isInteger(remembered) ? remembered : state.lines[i].length);
   positionChanged();
 }
 
@@ -258,10 +268,19 @@ function deleteLine(i) {
     return;
   }
   cancelBot();
+  const wasActive = i === state.lineIdx;
   state.lines.splice(i, 1);
   state.lineNotes.splice(i, 1);
+  state.lineCursors.splice(i, 1);
   if (state.lineIdx > i || state.lineIdx >= state.lines.length) state.lineIdx--;
-  state.cursor = activeLine().length;
+  if (wasActive) {
+    const remembered = state.lineCursors[state.lineIdx];
+    state.cursor = clamp(0, activeLine().length,
+      Number.isInteger(remembered) ? remembered : activeLine().length);
+  } else {
+    // the line on the board did not change — the cursor stays put
+    state.cursor = clamp(0, activeLine().length, state.cursor);
+  }
   positionChanged();
 }
 
@@ -537,6 +556,29 @@ $("undoBtn").addEventListener("click", () => {
 $("stepBack").addEventListener("click", () => stepCursor(-1));
 $("stepFwd").addEventListener("click", () => stepCursor(1));
 
+/* The timeline slider scrubs the cursor through the active line. The board
+ * follows every input; the module refresh rides its usual debounce. */
+$("plySlider").addEventListener("input", function () {
+  const next = clamp(0, activeLine().length, Math.round(+this.value));
+  if (next === state.cursor) return;
+  cancelBot();
+  state.cursor = next;
+  positionChanged();
+});
+
+/* Arrow keys step the cursor wherever the page has focus, except inside a
+ * text control (the slider handles its own arrows through the input event). */
+document.addEventListener("keydown", e => {
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
+            t.tagName === "SELECT" || t.isContentEditable)) return;
+  if (state.mode !== "sequence") return;
+  // "Left"/"Right" are the pre-standard names some engines still send
+  if (e.key === "ArrowLeft" || e.key === "Left") { e.preventDefault(); stepCursor(-1); }
+  else if (e.key === "ArrowRight" || e.key === "Right") { e.preventDefault(); stepCursor(1); }
+});
+
 $("clearBtn").addEventListener("click", () => {
   cancelBot();
   if (state.mode === "sequence") setLine([]);
@@ -559,6 +601,10 @@ function renderLineStrip() {
   $("plyRead").textContent = state.cursor + "/" + activeLine().length;
   $("stepBack").disabled = state.cursor === 0;
   $("stepFwd").disabled = state.cursor >= activeLine().length;
+  const slider = $("plySlider");
+  slider.max = activeLine().length;
+  slider.value = state.cursor;
+  slider.disabled = activeLine().length === 0;
   // The active line's saved solve summary rides under the strip, so a
   // reviewed line explains itself whenever it is on the board.
   const note = state.lineNotes[state.lineIdx] || "";
@@ -586,6 +632,177 @@ function renderLineStrip() {
     chip.append(pick, del);
     chips.appendChild(chip);
   });
+}
+
+// ---- per-line value graph -------------------------------------------------------
+
+/* The analysis page's value chart, retold for the active line: one point per
+ * ply (index 0 is the line's start), blue-POV v̂ from the shared eval cache,
+ * filled progressively. Click or drag the chart to move the cursor. */
+const valChart = (() => {
+  const svg = $("labValChart");
+  const W = 560, H = 96, L = 16, R = 8, T = 8, B = 12;
+  let n = 1;
+  const chX = i => L + (n <= 1 ? 0 : i * (W - L - R) / (n - 1));
+  const chY = v => T + (1 - (v + 1) / 2) * (H - T - B);
+  const ln = (x1, y1, x2, y2, cls) => {
+    const e = document.createElementNS(NS, "line");
+    e.setAttribute("x1", x1); e.setAttribute("y1", y1);
+    e.setAttribute("x2", x2); e.setAttribute("y2", y2);
+    e.setAttribute("class", cls);
+    svg.appendChild(e);
+    return e;
+  };
+  const lab = (x, y, s, cls) => {
+    const e = document.createElementNS(NS, "text");
+    e.setAttribute("x", x); e.setAttribute("y", y);
+    e.setAttribute("class", "ch-lab" + (cls ? " " + cls : ""));
+    e.textContent = s;
+    svg.appendChild(e);
+  };
+  for (const v of [1, 0.5, -0.5, -1]) ln(L, chY(v), W - R, chY(v), "ch-grid");
+  ln(L, chY(0), W - R, chY(0), "ch-zero");
+  lab(2, chY(1) + 2.5, "+1", "p0");
+  lab(5, chY(0) + 2.5, "0");
+  lab(2, chY(-1) + 2.5, "−1", "p1");
+  const rule = ln(chX(0), chY(1), chX(0), chY(-1), "ch-rule");
+  const path = document.createElementNS(NS, "path");
+  path.setAttribute("class", "ch-line");
+  svg.appendChild(path);
+  const ptsG = document.createElementNS(NS, "g");
+  svg.appendChild(ptsG);
+  const dot = document.createElementNS(NS, "circle");
+  dot.setAttribute("r", 2.6);
+  dot.setAttribute("class", "ch-dot");
+  dot.style.display = "none";
+  svg.appendChild(dot);
+  let values = null;
+
+  /* Known values draw as connected runs; a point with no known neighbor gets
+   * its own marker, so a partially filled trace still reads. */
+  function redraw() {
+    ptsG.textContent = "";
+    let d = "";
+    if (values) {
+      const known = j => j >= 0 && j < values.length &&
+        values[j] !== null && values[j] !== undefined;
+      for (let i = 0; i < values.length; i++) {
+        if (!known(i)) continue;
+        d += (known(i - 1) ? " L" : " M") +
+          chX(i).toFixed(1) + "," + chY(values[i]).toFixed(1);
+        if (!known(i - 1) && !known(i + 1)) {
+          const c = document.createElementNS(NS, "circle");
+          c.setAttribute("cx", chX(i).toFixed(1));
+          c.setAttribute("cy", chY(values[i]).toFixed(1));
+          c.setAttribute("r", 1.6);
+          c.setAttribute("class", "ch-pt");
+          ptsG.appendChild(c);
+        }
+      }
+    }
+    path.setAttribute("d", d.trim());
+  }
+  function setData(vals) {
+    values = vals;
+    n = Math.max(1, vals ? vals.length : 1);
+    redraw();
+    setCursor(state.cursor);
+  }
+  function setCursor(c) {
+    const x = chX(clamp(0, n - 1, c));
+    rule.setAttribute("x1", x);
+    rule.setAttribute("x2", x);
+    const v = values ? values[c] : undefined;
+    dot.style.display = v === undefined || v === null ? "none" : "";
+    if (v !== undefined && v !== null) {
+      dot.setAttribute("cx", x);
+      dot.setAttribute("cy", chY(v));
+    }
+  }
+  let dragging = false;
+  const seek = e => {
+    const rc = svg.getBoundingClientRect();
+    const px = (e.clientX - rc.left) / rc.width * W;
+    const next = clamp(0, activeLine().length,
+      Math.round((px - L) / ((W - L - R) / Math.max(1, n - 1))));
+    if (next === state.cursor) return;
+    cancelBot();
+    state.cursor = next;
+    positionChanged();
+  };
+  svg.addEventListener("pointerdown", e => {
+    if (state.mode !== "sequence") return;
+    e.preventDefault();
+    dragging = true;
+    try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+    seek(e);
+  });
+  svg.addEventListener("pointermove", e => { if (dragging) seek(e); });
+  svg.addEventListener("pointerup", () => { dragging = false; });
+  svg.addEventListener("pointercancel", () => { dragging = false; });
+  return { setData, setCursor };
+})();
+
+let traceRun = 0;
+let traceKey = null;
+let traceVals = null;
+
+/* Keep the graph in step with the page. Cursor moves only move the rule; a
+ * line, checkpoint or mode change starts one sequential fetch pass. Autoplay
+ * defers the trace until the loop stops (one eval per ply would ride under
+ * every replay). */
+function syncValueGraph() {
+  const wrap = $("valGraph");
+  if (state.mode !== "sequence" || !state.ckpt) {
+    wrap.hidden = true;
+    traceKey = null;
+    traceRun++;
+    return;
+  }
+  wrap.hidden = false;
+  const line = activeLine();
+  const k = state.ckpt + "|" + state.lineIdx + "|" +
+    line.map(m => m.join(",")).join(";");
+  if (k === traceKey) {
+    valChart.setCursor(state.cursor);
+    return;
+  }
+  if (state.bot.auto || state.bot.busy) {
+    // stale on purpose: the post-loop refresh re-enters with the final line
+    traceKey = null;
+    valChart.setData(new Array(line.length + 1).fill(null));
+    return;
+  }
+  traceKey = k;
+  traceVals = new Array(line.length + 1).fill(null);
+  valChart.setData(traceVals);
+  traceLine(line.slice(), traceVals, ++traceRun);
+}
+
+async function traceLine(line, vals, run) {
+  // A decided line ends at certainty: the last point is the winner's ±1 and
+  // is never fetched (the eval endpoint reads live positions only).
+  let last = line.length;
+  const rep = replaySequence(line);
+  if (rep.winner !== null) {
+    vals[line.length] = rep.winner === 0 ? 1 : -1;
+    last = line.length - 1;
+    valChart.setData(vals);
+  }
+  for (let p = 0; p <= last; p++) {
+    if (run !== traceRun) return;
+    let payload;
+    try {
+      payload = await fetchEvalAt(line.slice(0, p));
+    } catch (e) {
+      if (e.status === 429) return; // the next line/checkpoint change retraces
+      continue;                     // transient: leave the gap, keep going
+    }
+    if (run !== traceRun) return;
+    vals[p] = typeof payload.value === "number"
+      ? (payload.to_move === 0 ? payload.value : -payload.value) : null;
+    valChart.setData(vals);
+  }
 }
 
 // ---- share link ----------------------------------------------------------------------
@@ -635,6 +852,7 @@ function applyHash(hash) {
       if (replaySequence(full).ok) {
         state.lines.push(full);
         state.lineNotes.push("proof line handed off from the analysis solver");
+        state.lineCursors.push(moves.length);
         state.lineIdx = 1;
         state.cursor = moves.length;
       } else {
@@ -789,6 +1007,7 @@ $("presetSel").addEventListener("change", function () {
     // dropdown still lands on the puzzle position itself.
     state.lines.push(moves.concat(JSON.parse(opt.dataset.line)));
     state.lineNotes.push(null);
+    state.lineCursors.push(moves.length);
   }
   positionChanged();
   board.resetView();
@@ -1091,25 +1310,41 @@ function wantsKey(wants) {
          (wants.activations ? "|act" : "") + (wants.features ? "|feat" : "");
 }
 
-function fetchEval(wants = {}) {
+function cachedEval(k, body) {
   if (!state.ckpt) return Promise.reject({ status: 0, message: "no checkpoint catalogue" });
   if (Date.now() < state.rlUntil) {
     return Promise.reject({ status: 429, message: "rate-limited — try again shortly" });
   }
-  const k = state.ckpt + "|" + posKey() + "|" + wantsKey(wants);
   if (state.evalCache.has(k)) return state.evalCache.get(k);
-  const body = { checkpoint_id: state.ckpt, ...positionBody() };
-  if (wants.attention_query || wants.activations || wants.features) body.wants = wants;
   const prom = requestJson("/api/lab/eval", body).catch(e => {
     state.evalCache.delete(k);
     if (e.status === 429) state.rlUntil = Date.now() + 15000;
     throw e;
   });
   state.evalCache.set(k, prom);
-  if (state.evalCache.size > 120) {
+  // Large enough for a long line's whole value trace plus the module reads.
+  if (state.evalCache.size > 240) {
     state.evalCache.delete(state.evalCache.keys().next().value);
   }
   return prom;
+}
+
+function fetchEval(wants = {}) {
+  const k = state.ckpt + "|" + posKey() + "|" + wantsKey(wants);
+  const body = { checkpoint_id: state.ckpt, ...positionBody() };
+  if (wants.attention_query || wants.activations || wants.features) body.wants = wants;
+  return cachedEval(k, body);
+}
+
+/* Eval one prefix of a line — the value graph's fetch. The cache key matches
+ * fetchEval's for the same position, so the graph, the modules and the step
+ * cursor all share one entry per position. */
+function fetchEvalAt(moves) {
+  const k = state.ckpt + "|s:" + moves.map(m => m.join(",")).join(";") + "|";
+  return cachedEval(k, {
+    checkpoint_id: state.ckpt,
+    actions: moves.map(([q, r]) => ({ q, r })),
+  });
 }
 
 /* Everything the board carries beyond the stones: module overlays, the heat
@@ -1148,6 +1383,7 @@ function positionChanged() {
   clearBoardPaint();
   labKlent = null;
   renderPosition();
+  syncValueGraph();
   history.replaceState(null, "", location.pathname + location.search + shareHash());
   // drop an attention query that left the support
   if (state.attnCell) {
@@ -1999,8 +2235,11 @@ function renderSolveResult(res, mover, ply, budgets) {
       if (idx === -1) {
         state.lines.push(forked);
         state.lineNotes.push(null);
+        // the proof line opens at the solve ply — stepping forward walks it
+        state.lineCursors.push(state.cursor);
         idx = state.lines.length - 1;
       }
+      if (idx !== state.lineIdx) state.lineCursors[state.lineIdx] = state.cursor;
       const budgetRead = budgets
         ? ` · budgets ${budgets.node_cap.toLocaleString()} nodes / ${(budgets.budget_ms / 1000)}s / ${budgets.line_cap} ply`
         : "";
@@ -2280,6 +2519,7 @@ function refreshModule() {
   // re-arms this through positionChanged().
   if (state.bot.busy) return;
   renderPosition(); // legal ghost depends on the active module
+  syncValueGraph();
   // Modules paint different layers — the heat for the eval/heads maps, the
   // overlay group for the rest — so each refresh starts from a bare board
   // rather than under the last module's picture.
@@ -2343,6 +2583,7 @@ window.addEventListener("hashchange", () => {
   refreshModule();
   await loadBots(params.get("checkpoint_id"));
   syncPlayUI();   // the bot, search and solver controls need a checkpoint
+  syncValueGraph();   // the graph needs one too
   loadPresets();
   if (!applied && params.has("game")) {
     importFromGame(params.get("game"), parseInt(params.get("ply") ?? "", 10));
