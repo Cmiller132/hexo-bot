@@ -182,8 +182,12 @@ pub struct SolveStats {
     pub tt_admission_rejections: u64,
     /// Attempts halted by `SolveCaps::mem_bytes_cap` (the working-set
     /// ceiling). Nonzero means the Unknown is memory-bound, not node-bound —
-    /// the signal a caller surfaces as "hit the memory ceiling".
+    /// the signal a caller surfaces as "hit the memory ceiling". A halt is
+    /// latched only after eviction stopped reclaiming a useful fraction.
     pub mem_stops: u64,
+    /// Memory-pressure eviction passes (cold unproven branches forgotten and
+    /// re-expanded on demand): how hard the byte ceiling actually worked.
+    pub arena_evict_passes: u64,
     /// Exact-key positive-fragment queries made by the wide solver.
     pub fragment_lookups: u64,
     /// Queries that passed full-key, claimant, horizon, and depth checks.
@@ -216,6 +220,9 @@ impl SolveStats {
             .tt_admission_rejections
             .saturating_add(part.tt_admission_rejections);
         self.mem_stops = self.mem_stops.saturating_add(part.mem_stops);
+        self.arena_evict_passes = self
+            .arena_evict_passes
+            .saturating_add(part.arena_evict_passes);
         self.fragment_lookups = self.fragment_lookups.saturating_add(part.fragment_lookups);
         self.fragment_hits = self.fragment_hits.saturating_add(part.fragment_hits);
         self.fragment_imports = self.fragment_imports.saturating_add(part.fragment_imports);

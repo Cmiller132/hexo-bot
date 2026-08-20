@@ -685,24 +685,27 @@ def test_deep_solve_cancel_drains_promptly():
     assert wall < 15.0, f"cancelled solve took {wall:.1f}s to drain"
 
 
-def test_deep_solve_memory_ceiling_stops_the_search():
-    """The working-set ceiling must end a solve through the same exhaustion
-    exits as the node cap: unknown (never a value), the real node count, the
-    ``mem_stopped`` marker, and a prompt return — a 64 MiB ceiling dies in
-    seconds where the node cap alone would run for minutes and tens of GB."""
+def test_deep_solve_memory_ceiling_bounds_and_sustains_the_search():
+    """The working-set ceiling must BOUND the search, not merely end it:
+    under pressure the solver forgets cold branches (eviction passes) and
+    keeps searching to its node cap inside the same bytes, and the answer
+    stays unknown — never a value. The accounted peak respects the ceiling
+    (one expansion of slack at most)."""
     import time
 
     from hexfield_eq import _rust as hx
 
     probe = hx.TssProbe(_engine_state(_corpus_live_position()))
     started = time.monotonic()
-    out = probe.deep_solve([], 100_000_000, 64 << 20, False)
+    out = probe.deep_solve([], 300_000, 64 << 20, False)
     wall = time.monotonic() - started
     assert str(out["status"]) == "unknown"
-    assert bool(out["mem_stopped"]) is True
-    assert int(out["nodes"]) > 0
-    assert int(out["mem_peak_bytes"]) >= 32 << 20
-    assert wall < 60.0, f"memory-capped solve took {wall:.1f}s"
+    # Without eviction this budget died near 30k nodes; with it the search
+    # sustains until the budget's true capacity (unique-position storage).
+    assert int(out["nodes"]) >= 100_000, "eviction must sustain the search"
+    assert int(out["evict_passes"]) > 0, "the ceiling must have actually bound"
+    assert int(out["mem_peak_bytes"]) <= 96 << 20
+    assert wall < 180.0, f"memory-bounded solve took {wall:.1f}s"
 
 
 def test_deep_solve_rejects_a_starved_memory_budget():

@@ -95,6 +95,9 @@ struct DeepRead {
     mem_stopped: bool,
     /// Peak accounted solver working set across the solve's attempts.
     mem_peak_bytes: u64,
+    /// Memory-pressure eviction passes across the solve's attempts: how
+    /// often the ceiling made the search forget cold branches to continue.
+    evict_passes: u64,
 }
 
 fn status_name(status: ProofStatus) -> &'static str {
@@ -318,6 +321,7 @@ impl TssProbe {
                     verify_failed: counters.deep_verify_failed,
                     mem_stopped: stats.mem_stops > 0,
                     mem_peak_bytes: stats.peak_tt_bytes,
+                    evict_passes: stats.arena_evict_passes,
                 })
             })
             .map_err(PyValueError::new_err)?;
@@ -328,6 +332,7 @@ impl TssProbe {
         dict.set_item("nodes", read.nodes)?;
         dict.set_item("mem_stopped", read.mem_stopped)?;
         dict.set_item("mem_peak_bytes", read.mem_peak_bytes)?;
+        dict.set_item("evict_passes", read.evict_passes)?;
         dict.set_item("verify_failed", read.verify_failed)?;
         Ok(dict)
     }

@@ -932,6 +932,7 @@ impl TssSolver {
             tt_entries: (search.by_position.len() + self.shared_tt.entry_count()) as u64,
             peak_tt_bytes: shared_bytes.saturating_add(search.peak_bytes) as u64,
             mem_stops: u64::from(search.mem_stopped),
+            arena_evict_passes: search.arena_evict_passes,
             horizon_cuts: search.horizon_cuts,
             kb_death_cuts: search.kb_death_cuts,
 
@@ -1560,6 +1561,16 @@ const QUIET_PN_PRIOR: u32 = PN_INFINITY - 1;
 /// placement behind every forcing candidate at the root tier comparison.
 const QUIET_WIDTH_TIER: u8 = u8::MAX;
 
+/// Recency window for memory-pressure eviction: entries visited by `work`
+/// within this many expansions of the pass survive; colder branches are
+/// forgotten (children released, node reset to Unexpanded) and re-expanded
+/// on demand — their child ENTRIES keep their numbers in the arena/index, so
+/// reconstruction re-links rather than re-searches. This is the PN²/df-pn
+/// bounded-memory discipline that converts a byte budget into sustained
+/// search time instead of a hard stop. Deterministic: expansion counts, not
+/// clocks.
+const EVICT_RECENT_EXPANSIONS: u64 = 8192;
+
 fn pn_from_fork_degree(fork_degree: usize) -> u32 {
     let fork_degree = u32::try_from(fork_degree)
         .unwrap_or(u32::MAX)
@@ -1819,6 +1830,9 @@ struct WidePnEntry {
     /// `Refuted` and releases the accounted bytes, which is what lets a
     /// memory-budgeted solve keep only the live frontier.
     genuine_dn0: bool,
+    /// Expansion count at this entry's last `work` visit — the recency
+    /// signal memory-pressure eviction keys on.
+    touched: u64,
     /// Wide-mode visit-order state for an AND node. Once an unresolved
     /// defender obligation is selected, keep driving that same child until it
     /// proves or refutes. This does not participate in PN/DN recomputation or
@@ -2451,9 +2465,12 @@ struct WidePnSearch<'store> {
     /// against `mem_bytes_cap`. Logical arithmetic only — never an allocator
     /// read — so solves stay deterministic.
     arena_bytes: usize,
-    /// True once an exhaustion exit was taken because of `mem_bytes_cap`
+    /// True once the search halted for memory: the ceiling was reached and
+    /// an eviction pass could no longer reclaim a useful fraction of it
     /// (surfaced as `SolveStats::mem_stops`).
     mem_stopped: bool,
+    /// Completed memory-pressure eviction passes (`SolveStats` telemetry).
+    arena_evict_passes: u64,
     /// Expansion ceiling for one `work` invocation. The production driver
     /// leaves it open (`u64::MAX`); the historical single-expansion `step`
     /// wrapper sets it to `expansions + 1` so the focused stepper tests keep
@@ -2675,6 +2692,7 @@ impl<'store> WidePnSearch<'store> {
             mem_bytes_cap,
             arena_bytes: 0,
             mem_stopped: false,
+            arena_evict_passes: 0,
             soft_expansion_cap: u64::MAX,
             cancel: None,
 
@@ -2744,6 +2762,7 @@ impl<'store> WidePnSearch<'store> {
             node: WidePnNode::Unexpanded,
             depth,
             genuine_dn0: false,
+            touched: self.expansions,
             universal_obligation: None,
         });
         self.charge_arena_bytes(std::mem::size_of::<WidePnEntry>());
@@ -2810,15 +2829,57 @@ impl<'store> WidePnSearch<'store> {
     }
 
     /// True when the accounted working set has reached the caller's ceiling.
-    /// Consulted at exactly the node-cap sites, so it can only end a search
-    /// through the exhaustion exits — Unknown, never a verdict. Latches
-    /// `mem_stopped` so the halt is attributable in `SolveStats::mem_stops`.
-    fn memory_exhausted(&mut self) -> bool {
-        if self.arena_bytes.saturating_add(self.current_bytes) >= self.mem_bytes_cap {
-            self.mem_stopped = true;
-            return true;
+    /// Consulted at exactly the node-cap sites, so pressure can only end a
+    /// descent through the exhaustion exits — Unknown, never a verdict. Pure:
+    /// `run_until` owns the response (evict and continue, or latch
+    /// `mem_stopped` and halt when eviction stops paying).
+    fn memory_exhausted(&self) -> bool {
+        self.arena_bytes.saturating_add(self.current_bytes) >= self.mem_bytes_cap
+    }
+
+    /// PN²-style reclamation under memory pressure: forget every cold,
+    /// unproven branch (children released, node reset to Unexpanded, the
+    /// state-derived prior restored by the next recompute) while keeping the
+    /// entries themselves — their numbers stay in the arena and index, so a
+    /// re-expansion re-LINKS its children instead of re-searching them.
+    /// Proven subtrees are never touched (materialization needs them);
+    /// `DepthCutoff` marks keep their stage-reopen semantics; the root
+    /// survives by construction. Returns false when the pass reclaimed less
+    /// than 1/16 of the ceiling — the caller then halts instead of
+    /// thrashing. Deterministic: recency is an expansion count.
+    fn evict_cold_branches(&mut self) -> bool {
+        let watermark = self.expansions.saturating_sub(EVICT_RECENT_EXPANSIONS);
+        let before = self.arena_bytes;
+        // The deferred frontier is pure optimization state: a thunk's prior
+        // also lives on its parent edge, and `insert_position` falls back to
+        // exactly that on a miss. Under pressure it is the cheapest thing to
+        // forget wholesale — re-deferrals rebuild only what the search
+        // actually walks again.
+        let deferred_bytes: usize = self
+            .deferred_by_position
+            .keys()
+            .map(wide_position_index_bytes)
+            .sum();
+        self.arena_bytes = self.arena_bytes.saturating_sub(deferred_bytes);
+        self.deferred_by_position.clear();
+        self.deferred_by_position.shrink_to_fit();
+        for id in 1..self.entries.len() {
+            let entry = &mut self.entries[id];
+            if entry.pn == 0 || entry.touched >= watermark {
+                continue;
+            }
+            let WidePnNode::Branch { children, .. } = &entry.node else {
+                continue;
+            };
+            let released = wide_children_bytes(children);
+            entry.node = WidePnNode::Unexpanded;
+            entry.universal_obligation = None;
+            self.arena_bytes = self.arena_bytes.saturating_sub(released);
         }
-        false
+        self.arena_evict_passes = self.arena_evict_passes.saturating_add(1);
+        self.refresh_all_bottom_up();
+        let reclaimed = before.saturating_sub(self.arena_bytes);
+        reclaimed >= self.mem_bytes_cap / 16
     }
 
     /// Account retained arena growth (entries, installed child vectors and
@@ -2848,7 +2909,7 @@ impl<'store> WidePnSearch<'store> {
             if self.entries[root].pn == 0
                 || self.expansions >= self.node_cap
                 || self.cancelled()
-                || self.memory_exhausted()
+                || self.mem_stopped
                 || is_final
             {
                 break;
@@ -2878,8 +2939,17 @@ impl<'store> WidePnSearch<'store> {
         while self.expansions < self.node_cap
             && self.expansions < expansion_cap
             && !self.cancelled()
-            && !self.memory_exhausted()
         {
+            // Memory pressure is handled HERE, between descents, where no
+            // borrow of the tree is live: evict and continue, or latch the
+            // stop when eviction no longer reclaims a useful fraction.
+            if self.memory_exhausted() {
+                if !self.evict_cold_branches() {
+                    self.mem_stopped = true;
+                    break;
+                }
+                continue;
+            }
             self.recompute(root);
             let Some(entry) = self.entries.get(root) else {
                 break;
@@ -2977,6 +3047,9 @@ impl<'store> WidePnSearch<'store> {
         let mut any_progress = false;
         let mut yielded_universal_children = Vec::new();
         loop {
+            // Recency stamp for memory-pressure eviction: every node on the
+            // active descent counts as hot.
+            self.entries[id].touched = self.expansions;
             if matches!(self.entries[id].node, WidePnNode::DepthCutoff) {
                 return WidePnStepOutcome::DepthCutoff {
                     depth: self.entries[id].depth,
