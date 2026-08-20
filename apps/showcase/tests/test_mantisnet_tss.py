@@ -640,3 +640,64 @@ def test_solve_position_refuses_a_terminal_position():
     ]
     with pytest.raises(ValueError, match="terminal"):
         solve_position(win, TssConfig())
+
+
+# --- cooperative cancel (the zombie-search regression) ------------------------
+
+def _corpus_live_position():
+    """0l4291i_live: 63 stones, a deep forced win no quick solve cracks —
+    exactly the shape whose abandoned solve used to churn for hours."""
+    import json
+    from pathlib import Path
+
+    corpus_path = (
+        Path(__file__).resolve().parents[1]
+        / "web" / "learn" / "data" / "forcing_corpus.json"
+    )
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    entry = next(p for p in corpus["positions"] if p["id"] == "0l4291i_live")
+    return [(int(q), int(r)) for q, r in entry["moves"]]
+
+
+def test_deep_solve_cancel_drains_promptly():
+    """cancel_deep_solve must end an in-flight solve through the solver's
+    budget-exhaustion exits: status unknown (never a value), the real node
+    count, and a prompt return instead of churning to the node cap."""
+    import threading
+    import time
+
+    from hexfield_eq import _rust as hx
+
+    probe = hx.TssProbe(_engine_state(_corpus_live_position()))
+    # 20M nodes is minutes of search on this position; the cancel at 0.5s must
+    # end it in seconds.
+    timer = threading.Timer(0.5, probe.cancel_deep_solve)
+    timer.start()
+    try:
+        started = time.monotonic()
+        out = probe.deep_solve([], 20_000_000)
+        wall = time.monotonic() - started
+    finally:
+        timer.cancel()
+    assert str(out["status"]) == "unknown"
+    assert int(out["nodes"]) > 0
+    assert wall < 15.0, f"cancelled solve took {wall:.1f}s to drain"
+
+
+def test_solve_position_timeout_cancels_and_reports_the_work():
+    """A wall-budget timeout now cancels the Rust solve and harvests it: the
+    payload stays status "timeout" but carries the real node count, and the
+    worker thread is drained rather than left searching."""
+    from showcase.families.mantis_tss import TssConfig, solve_position
+
+    out = solve_position(
+        _corpus_live_position(),
+        TssConfig(root_node_cap=20_000_000, root_wall_budget_ms=1_000),
+    )
+    assert out["status"] == "timeout"
+    assert out["source"] == "deep"
+    assert out["proven"] is None
+    assert out["line"] == []
+    assert out["nodes"] > 0, "a harvested cancel must report its node count"
+    # Wall time = budget + drain, nowhere near a full 20M-node search.
+    assert out["ms"] < 20_000.0

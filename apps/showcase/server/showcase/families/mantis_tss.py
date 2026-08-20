@@ -399,14 +399,24 @@ class TssRunner:
 # -- the solver endpoint --------------------------------------------------
 
 
+# How long a cancelled deep solve gets to drain through the solver's
+# budget-exhaustion exits. Cancel checks sit on every node expansion, so the
+# drain is near-immediate; the margin covers a heavily loaded host.
+_CANCEL_GRACE_S = 15.0
+
+
 def _timed_deep_solve(
     probe: Any, path: list[tuple[int, int]], node_cap: int, remaining_s: float
 ) -> dict[str, Any] | None:
-    """One verified deep solve on its own thread, or None past the clock.
+    """One verified deep solve on its own thread, cancelled past the clock.
 
-    ``deep_solve`` is a blocking Rust call; a timed-out solve is abandoned the
-    same way ``TssRunner`` abandons one — its result was never going to be
-    waited on."""
+    ``deep_solve`` is a blocking Rust call. Past ``remaining_s`` the probe's
+    cooperative cancel drains it through the solver's budget-exhaustion exits:
+    the harvested result is ``"unknown"`` by construction, carries the real
+    node count, and is marked ``timed_out``. Merely abandoning the future
+    (the pre-cancel behavior) left the call churning to its node cap on the
+    worker thread — hours of CPU and an unbounded PN tree at lab-scale caps,
+    and the interpreter cannot even exit while that thread runs."""
     if remaining_s <= 0.0:
         return None
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tss-solve")
@@ -415,8 +425,14 @@ def _timed_deep_solve(
         try:
             return future.result(timeout=remaining_s)
         except _FutureTimeout:
-            future.cancel()
-            return None
+            probe.cancel_deep_solve()
+            try:
+                out = future.result(timeout=_CANCEL_GRACE_S)
+            except _FutureTimeout:  # pragma: no cover - cancel not honored
+                future.cancel()
+                return None
+            out["timed_out"] = True
+            return out
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
@@ -575,8 +591,12 @@ def solve_position(
             probe, [], config.root_node_cap, deadline - time.monotonic()
         )
         source = "deep"
-        if out is None:
+        if out is None or out.get("timed_out"):
+            # The clock, not the node cap, ended the solve; a harvested
+            # cancel still reports the work it did.
             status = "timeout"
+            if out is not None:
+                nodes += int(out["nodes"])
         else:
             status = str(out["status"])
             nodes += int(out["nodes"])

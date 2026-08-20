@@ -28,6 +28,9 @@
 //! Both queries release the GIL for the whole computation, so a caller's
 //! thread pool overlaps solves with its own model forward.
 
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::Arc;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -101,6 +104,11 @@ fn status_name(status: ProofStatus) -> &'static str {
 #[pyclass]
 pub(crate) struct TssProbe {
     root: RustHexoState,
+    /// Cooperative cancel for the in-flight `deep_solve`. Solves on one probe
+    /// are serialized by the caller; `deep_solve` clears the flag at entry and
+    /// `cancel_deep_solve` sets it from any other thread. A set flag drains
+    /// the solve to "unknown" — it can never mint a win/loss.
+    cancel: Arc<AtomicBool>,
 }
 
 #[pymethods]
@@ -112,7 +120,19 @@ impl TssProbe {
     fn new(py: Python<'_>, state: &Bound<'_, PyAny>) -> PyResult<Self> {
         Ok(Self {
             root: state_from_py_state(py, state)?,
+            cancel: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Cooperatively cancel the in-flight `deep_solve` on this probe. The
+    /// cancelled solve returns promptly with status `"unknown"` and its real
+    /// node count — never a value — through the solver's own budget-exhaustion
+    /// exits. Without this, an abandoned solve churns to its node cap on a
+    /// worker thread (a 100M-node cap is hours of CPU and tens of GB of PN
+    /// tree). Callable from any thread while `deep_solve` holds the GIL
+    /// released.
+    fn cancel_deep_solve(&self) {
+        self.cancel.store(true, AtomicOrdering::Relaxed);
     }
 
     /// λ¹ analysis of `root + path`, plus per-move guard classes for `moves`.
@@ -205,10 +225,15 @@ impl TssProbe {
             return Err(PyValueError::new_err("TSS node_cap must be at least 1"));
         }
         let root = self.root.clone();
+        // Fresh solve, fresh flag: a cancel always belongs to the solve that
+        // was in flight when it was issued (calls on one probe are serialized).
+        self.cancel.store(false, AtomicOrdering::Relaxed);
+        let cancel = Arc::clone(&self.cancel);
         let read = py
             .detach(move || -> Result<DeepRead, String> {
                 let state = replay_path(&root, &path)?;
                 let mut solver = TssSolver::default();
+                solver.set_cancel_flag(Some(cancel));
                 solver.configure_leaf_profile();
                 solver.set_leaf_j2near(SERVE_J2NEAR);
                 solver.set_dual_pass(SERVE_DUAL_PASS);

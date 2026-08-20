@@ -17,6 +17,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::mem::size_of;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use std::time::Instant;
@@ -368,6 +369,12 @@ pub(crate) struct TssSolver {
     /// behavior for the offline corpus/hunt harnesses.
     force_lazy_frontier: Option<bool>,
     force_interior_census_gate: Option<bool>,
+    /// Cooperative cancellation, observed by every search loop through the
+    /// SAME early-exit paths as node-cap exhaustion, so a cancelled solve is
+    /// UNKNOWN by construction (tss_core §2.6: no external signal can mint a
+    /// hard value). `None` — the default and every non-interactive caller —
+    /// is byte-for-byte the historical behavior.
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Default for TssSolver {
@@ -389,11 +396,26 @@ impl Default for TssSolver {
             group2: false,
             force_lazy_frontier: None,
             force_interior_census_gate: None,
+            cancel: None,
         }
     }
 }
 
 impl TssSolver {
+    /// Install (or clear) the cooperative cancel flag consulted by subsequent
+    /// solves. A set flag drains every attempt to UNKNOWN through the same
+    /// exits as node-cap exhaustion — it can never mint a value — so solves
+    /// that run to completion keep their deterministic results.
+    pub(crate) fn set_cancel_flag(&mut self, cancel: Option<Arc<AtomicBool>>) {
+        self.cancel = cancel;
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(AtomicOrdering::Relaxed))
+    }
+
     /// Set the zone/commutation options for subsequent solves. Changing the
     /// options DROPS the persistent positive-fragment cache: cached fragments
     /// are verified proofs either way, but their node-cost provenance belongs
@@ -643,6 +665,7 @@ impl TssSolver {
         if caps.node_cap == 0
             || caps.semantic_horizon < state.placements_made()
             || state.board().len() > MAX_CERT_ROOT_STONES
+            || self.cancelled()
         {
             return unknown(initial_stats);
         }
@@ -804,6 +827,7 @@ impl TssSolver {
                 k_reply_consume,
                 interior_census_gate,
                 group2,
+                self.cancel.clone(),
             );
         }
         let depth_cap = wide_search_final_depth(state.placements_made(), semantic_horizon);
@@ -856,6 +880,7 @@ impl TssSolver {
         search.interior_census_gate = interior_census_gate;
         search.lazy_frontier = lazy_frontier;
         search.ordering_hints = ordering_hints.cloned();
+        search.cancel = self.cancel.clone();
         let root = search.insert_root(state);
 
         search.run(state, root);
@@ -2315,6 +2340,9 @@ struct WidePnSearch<'store> {
     /// wrapper sets it to `expansions + 1` so the focused stepper tests keep
     /// their one-expansion-per-call contract.
     soft_expansion_cap: u64,
+    /// Cooperative cancel, checked wherever the node cap is: a set flag ends
+    /// the search through the exhaustion exits, so it can only yield Unknown.
+    cancel: Option<Arc<AtomicBool>>,
 
     entries: Vec<WidePnEntry>,
     by_position: HashMap<WidePositionKey, usize>,
@@ -2354,6 +2382,7 @@ impl<'store> WidePnSearch<'store> {
 
         interior_census_gate: bool,
         group2: bool,
+        cancel: Option<Arc<AtomicBool>>,
     ) -> AttemptResult {
         debug_assert!(
             !width.vcf_pair_complete
@@ -2377,6 +2406,7 @@ impl<'store> WidePnSearch<'store> {
             interior_census_gate,
             group2,
         );
+        search.cancel = cancel.clone();
         let proof = search.prove(&mut work, claimant, root_ply, None);
 
         debug_assert_eq!(entry_key, PositionKey::from_state(&work));
@@ -2451,6 +2481,7 @@ impl<'store> WidePnSearch<'store> {
                 k_reply_consume,
                 interior_census_gate,
                 false,
+                cancel,
             );
             let mut merged = stats;
             merged.merge(rerun.stats);
@@ -2519,6 +2550,7 @@ impl<'store> WidePnSearch<'store> {
             current_bytes: 0,
             peak_bytes: 0,
             soft_expansion_cap: u64::MAX,
+            cancel: None,
 
             entries: Vec::new(),
             by_position: HashMap::new(),
@@ -2633,6 +2665,12 @@ impl<'store> WidePnSearch<'store> {
         }
     }
 
+    fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(AtomicOrdering::Relaxed))
+    }
+
     fn run(&mut self, root_state: &RustHexoState, root: usize) {
         let final_depth = self.depth_cap;
         let mut stage_depth = 0usize;
@@ -2648,7 +2686,11 @@ impl<'store> WidePnSearch<'store> {
             // the selected cutoff (or proof) before the stage decision.
             self.refresh_all_bottom_up();
 
-            if self.entries[root].pn == 0 || self.expansions >= self.node_cap || is_final {
+            if self.entries[root].pn == 0
+                || self.expansions >= self.node_cap
+                || self.cancelled()
+                || is_final
+            {
                 break;
             }
             let Some(encountered_depth) = selected_cutoff else {
@@ -2673,7 +2715,10 @@ impl<'store> WidePnSearch<'store> {
         deepen_after_selected_cutoff: bool,
     ) -> Option<usize> {
         let mut work = root_state.clone();
-        while self.expansions < self.node_cap && self.expansions < expansion_cap {
+        while self.expansions < self.node_cap
+            && self.expansions < expansion_cap
+            && !self.cancelled()
+        {
             self.recompute(root);
             let Some(entry) = self.entries.get(root) else {
                 break;
@@ -2807,7 +2852,10 @@ impl<'store> WidePnSearch<'store> {
 
                 return WidePnStepOutcome::Progress;
             }
-            if self.expansions >= self.node_cap || self.expansions >= self.soft_expansion_cap {
+            if self.expansions >= self.node_cap
+                || self.expansions >= self.soft_expansion_cap
+                || self.cancelled()
+            {
                 return if any_progress {
                     WidePnStepOutcome::Progress
                 } else {
@@ -3550,7 +3598,7 @@ impl<'store> WidePnSearch<'store> {
     }
 
     fn expand(&mut self, state: &mut RustHexoState, id: usize) -> WidePnStepOutcome {
-        if self.expansions >= self.node_cap {
+        if self.expansions >= self.node_cap || self.cancelled() {
             return WidePnStepOutcome::Stalled;
         }
         self.expansions += 1;
@@ -4716,6 +4764,9 @@ struct NarrowCompatSearch<'a> {
     /// are skipped: the assembled certificate could no longer validate as v1
     /// (class rules 2/3), so trying would only waste budget.
     emitted_dirty: bool,
+    /// Cooperative cancel, checked at the same per-node site as the node cap:
+    /// a set flag ends the recursion through the exhaustion exit (Unknown).
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone, Debug)]
@@ -4818,6 +4869,7 @@ impl NarrowCompatSearch<'static> {
             kb_death_cuts: 0,
             group2: false,
             emitted_dirty: false,
+            cancel: None,
         }
     }
 }
@@ -4867,7 +4919,14 @@ impl<'a> NarrowCompatSearch<'a> {
             kb_death_cuts: 0,
             group2,
             emitted_dirty: false,
+            cancel: None,
         }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(AtomicOrdering::Relaxed))
     }
 
     fn tt_entry_count(&self) -> usize {
@@ -4907,7 +4966,7 @@ impl<'a> NarrowCompatSearch<'a> {
             }
             return None;
         }
-        if self.nodes >= self.node_cap {
+        if self.nodes >= self.node_cap || self.cancelled() {
             self.hit_limit = true;
             return None;
         }
