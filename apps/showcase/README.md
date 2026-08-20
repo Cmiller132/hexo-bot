@@ -131,8 +131,10 @@ the ceiling is effectively "no cap"), `budget_ms` (250–600000, default
 3000 — the wall clock for the whole call) and `line_cap` (2–100, default 24);
 out-of-range budgets are a 422, never clamped. It answers
 `{status: win|loss|unknown|timeout, source: lambda1|deep, proven: {q,r}|null,
-line: [{q,r}, …], forced_through, guard: [{q,r,cls}]|null, nodes, ms}` — the
-engine-level Threat-Space solver at the request's budgets: λ¹
+line: [{q,r}, …], forced_through, guard: [{q,r,cls}]|null, nodes,
+mem_stopped, mem_peak_mb, ms}` — `mem_stopped` marks an unknown that hit the
+server-side solver memory ceiling (`solver_mem_bytes`) rather than a budget —
+the engine-level Threat-Space solver at the request's budgets: λ¹
 first, then the verified deep root solve, then a line walked from the proven
 move to the end of the game — every winner ply certified, the defense playing
 its first λ¹-surviving reply once it has choices; `forced_through` counts the
@@ -394,7 +396,20 @@ leaf_gate = "threats"      # "threats": solve leaves with a live >=4 window
 workers = 3                # threads for leaf solves; the root solve has its own
 wall_budget_ms = 1500      # per-move ceiling on waiting for LEAF solves
 root_wall_budget_ms = 3000 # per-move ceiling on waiting for the ROOT solve
+solver_mem_bytes = 1610612736  # HARD ceiling (1.5 GiB) on one solve's
+                           # accounted Rust working set (PN arena +
+                           # transposition index). Reaching it returns
+                           # "unknown" with mem_stopped set — never a
+                           # verdict, never an unbounded PN tree on the host
+unforcing = false          # wider quiet-turn engine; see below
 ```
+
+`unforcing = true` selects the wider `round3_consume` engine: the attacker may
+spend quiet (non-threat-creating) turns and unforced defender nodes take the
+ranked zone instead of refusing, so it proves wins the forcing-only engine
+structurally cannot — at orders of magnitude more branching. It is an offline
+study toggle: off is the serving configuration, no request can set it, and the
+production catalogue does not enable it.
 
 Those values are the defaults, so a catalogue entry with no profile serves
 exactly them.

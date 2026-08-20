@@ -236,6 +236,14 @@ pub(crate) struct WidthOptions {
     free_tempo_j2near: bool,
     quiet_turn_or_edges: Round3Flag,
     ranked_unforced_defender_zone: Round3Flag,
+    /// The UNFORCING wide profile: full width on the proof-number engine.
+    /// Attacker nodes gain quiet (non-threat-creating) single placements at
+    /// a deprioritizing proof-number prior, and unforced defender nodes take
+    /// the complete legal set as a dispatch-free Universal instead of
+    /// refusing. Both shapes verify under the frozen grammar: quiet Choices
+    /// pass `attacker_placement_wf`, and a dispatch-free zone-free Universal
+    /// must enumerate the full legal set, which the verifier replays.
+    quiet_wide: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +274,18 @@ impl WidthOptions {
             free_tempo_j2near: false,
             quiet_turn_or_edges: Round3Flag::Off,
             ranked_unforced_defender_zone: Round3Flag::Off,
+            quiet_wide: false,
+        }
+    }
+
+    /// The unforcing engine: `vcf_pair_complete` forcing structure plus full
+    /// width (see the `quiet_wide` field). Best-first proof numbers make the
+    /// width tractable where the depth-first quiet profile is not: quiet
+    /// options wait at high pn priors until the forcing space is exhausted.
+    pub(crate) fn unforcing_wide() -> Self {
+        Self {
+            quiet_wide: true,
+            ..Self::vcf_pair_complete()
         }
     }
 
@@ -282,6 +302,7 @@ impl WidthOptions {
             free_tempo_j2near: false,
             quiet_turn_or_edges: Round3Flag::Consume,
             ranked_unforced_defender_zone: Round3Flag::Consume,
+            quiet_wide: false,
         }
     }
 
@@ -522,6 +543,19 @@ impl TssSolver {
         self.set_width_options(WidthOptions::vcf_pair_complete());
         self.force_lazy_frontier = Some(true);
         self.force_interior_census_gate = Some(true);
+    }
+
+    /// Configure this solver to the UNFORCING wide profile: full-width
+    /// attacker/defender generation (`WidthOptions::unforcing_wide`), the
+    /// lazy defender frontier ON (the full-width frontiers are exactly where
+    /// eager admission would drown the arena), and the interior census gate
+    /// OFF — the gate's dismissal bound reasons about forcing completions
+    /// and must not prune quiet-win nodes. Deterministic and independent of
+    /// process environment, like the leaf profile.
+    pub(crate) fn configure_unforcing_profile(&mut self) {
+        self.set_width_options(WidthOptions::unforcing_wide());
+        self.force_lazy_frontier = Some(true);
+        self.force_interior_census_gate = Some(false);
     }
 
     /// Sample process-global runtime switches once. The returned value is an
@@ -1510,6 +1544,21 @@ const MIN_COMMITTED_UNIVERSAL_OBLIGATIONS: usize = 4;
 /// distinct threats.  This geometry bound turns fork degree into a compact,
 /// strictly monotone proof prior without a tuned scale.
 const MAX_TURN_FORK_DEGREE: u32 = 36;
+
+/// A quiet child's proof-number prior under the unforcing profile: one below
+/// infinity, i.e. STRICT FALLBACK. Live forcing lines carry finite pn (sums
+/// grow into the thousands along hard lines, far past any flat offset), so
+/// anything short of near-infinity gets quiet lines selected while forcing
+/// options are merely difficult. At INFINITY − 1 a quiet child is chosen
+/// exactly when every alternative at its node is refuted outright — and its
+/// presence still pins the node's pn below infinity, so no node with an
+/// unexplored quiet option can ever read as refuted.
+const QUIET_PN_PRIOR: u32 = PN_INFINITY - 1;
+
+/// Width tier assigned to quiet children. Tiers order root candidates
+/// ascending (0 = strongest forcing class), so the maximum keeps every quiet
+/// placement behind every forcing candidate at the root tier comparison.
+const QUIET_WIDTH_TIER: u8 = u8::MAX;
 
 fn pn_from_fork_degree(fork_degree: usize) -> u32 {
     let fork_degree = u32::try_from(fork_degree)
@@ -3874,20 +3923,39 @@ impl<'store> WidePnSearch<'store> {
         }
 
         let (kind, mut children) = if state.current_player() == self.claimant {
-            (WidePnKind::Choice, self.attack_children(state, depth))
+            let mut children = self.attack_children(state, depth);
+            if self.width.quiet_wide {
+                self.append_quiet_attack_children(state, &mut children);
+            }
+            (WidePnKind::Choice, children)
         } else {
             let analysis = threats::analyze(state);
             let implicit_dispatch = !matches!(state.phase(), TurnPhase::Opening)
                 && analysis.opp_threat_count > 0
                 && !analysis.own_win_now
                 && analysis.min_hitting_set == Some(analysis.b);
-            if !implicit_dispatch {
+            if implicit_dispatch {
+                let children = self.defender_boundary_children(state, analysis.b);
+                (WidePnKind::Universal { implicit_dispatch }, children)
+            } else if self.width.quiet_wide && !analysis.own_win_now {
+                // Unforcing profile: an unforced defender is a dispatch-free
+                // Universal over the COMPLETE legal set — the certificate
+                // form the verifier checks against the replayed legal moves.
+                let children = self.defender_full_children(state);
+                (
+                    WidePnKind::Universal {
+                        implicit_dispatch: false,
+                    },
+                    children,
+                )
+            } else {
+                // Forcing profiles refuse unforced defenders structurally; a
+                // defender with a win-now refutes the attack in any profile
+                // (the verifier refuses such Universals outright).
                 self.entries[id].node = WidePnNode::Refuted;
                 self.refresh(id);
                 return WidePnStepOutcome::Progress;
             }
-            let children = self.defender_boundary_children(state, analysis.b);
-            (WidePnKind::Universal { implicit_dispatch }, children)
         };
 
         self.order_children_by_hints(&mut children);
@@ -4151,6 +4219,76 @@ impl<'store> WidePnSearch<'store> {
         children
     }
 
+    /// Unforcing profile: append every legal placement the forcing generator
+    /// did not propose, at a deprioritizing proof-number prior. Generation is
+    /// bounded to cells within 8 of one of the CLAIMANT's stones — the
+    /// certificate's `attacker_placement_wf` obligation, stricter than board
+    /// legality — so every quiet Choice this search can prove also verifies.
+    ///
+    /// ENGINE-FREE by construction: `expand` reaches generation only after
+    /// `winner_from_analysis` ruled out a win-now for the side to move, so no
+    /// single placement can complete six — every quiet child is Pending. No
+    /// applies, no per-child analysis, no retained keys: a quiet child is a
+    /// bare `(move, flat prior)` record until selection links it, which is
+    /// what keeps full width affordable in both time and accounted memory.
+    fn append_quiet_attack_children(
+        &self,
+        state: &mut RustHexoState,
+        children: &mut Vec<WidePnChild>,
+    ) {
+        // At single-placement phases the forcing children are `One` moves and
+        // real duplicates must be skipped. Pair edges are atomic whole turns;
+        // a quiet single sharing a pair's first stone is a different edge
+        // (it leads to the mid-turn state), not a duplicate.
+        let seen: HashSet<HexCoord> = children
+            .iter()
+            .filter_map(|child| match child.mv {
+                WidePnMove::One(coord) => Some(coord),
+                WidePnMove::Pair(_, _) | WidePnMove::DefenderPair(_, _) => None,
+            })
+            .collect();
+        let anchors: Vec<HexCoord> = state
+            .board()
+            .occupied_cells()
+            .iter()
+            .copied()
+            .filter(|stone| state.board().get(*stone) == Some(self.claimant))
+            .collect();
+        if anchors.is_empty() {
+            return;
+        }
+        let mut legal = Vec::new();
+        state.write_legal_moves(&mut legal);
+        let frame = canonical_frame(state);
+        legal.sort_by_key(|coord| canonical_coord_key(frame, *coord));
+        for coord in legal {
+            if seen.contains(&coord) {
+                continue;
+            }
+            let wf = anchors.iter().any(|anchor| {
+                let dq = i32::from(anchor.q) - i32::from(coord.q);
+                let dr = i32::from(anchor.r) - i32::from(coord.r);
+                (dq.abs() + dr.abs() + (dq + dr).abs()) / 2 <= 8
+            });
+            if !wf {
+                continue;
+            }
+            children.push(WidePnChild {
+                mv: WidePnMove::One(coord),
+                result: WidePnChildResult::Pending,
+                entry: None,
+                future_key: None,
+                prior: WidePnPrior {
+                    pn: QUIET_PN_PRIOR,
+                    dn: 1,
+                },
+                urgent_block: false,
+                first_width_tier: QUIET_WIDTH_TIER,
+                zone_order_key: 0,
+            });
+        }
+    }
+
     fn attack_single_children(
         &self,
         state: &mut RustHexoState,
@@ -4260,12 +4398,53 @@ impl<'store> WidePnSearch<'store> {
         state: &mut RustHexoState,
         defender_budget: u8,
     ) -> Vec<WidePnChild> {
-        let mut explicit = forced_defender_replies(
+        let explicit = forced_defender_replies(
             state,
             self.claimant,
             defender_budget,
             WidthOptions::vcf_pair_complete(),
         );
+        self.defender_children_from(state, explicit)
+    }
+
+    /// Unforcing profile: the complete legal set as one dispatch-free
+    /// Universal frontier. Both placements of a defender turn route through
+    /// here — the intermediate second-stone node is defender-to-move again.
+    ///
+    /// ENGINE-FREE like the quiet attacker generator: this arm is reached
+    /// only after the defender's win-now was ruled out, so no legal reply
+    /// completes six — every child is Pending at a flat prior, with no
+    /// applies, keys, or deferred-frontier entries. Selection links a child
+    /// the moment it matters; the AND aggregate over flat priors is simply
+    /// the count of unproven replies, which is the honest first estimate.
+    fn defender_full_children(&mut self, state: &mut RustHexoState) -> Vec<WidePnChild> {
+        let mut legal = Vec::new();
+        state.write_legal_moves(&mut legal);
+        let frame = canonical_frame(state);
+        legal.sort_by_key(|coord| canonical_coord_key(frame, *coord));
+        legal
+            .into_iter()
+            .map(|coord| WidePnChild {
+                mv: WidePnMove::One(coord),
+                result: WidePnChildResult::Pending,
+                entry: None,
+                future_key: None,
+                prior: WidePnPrior::UNIFORM,
+                urgent_block: false,
+                first_width_tier: 0,
+                zone_order_key: 0,
+            })
+            .collect()
+    }
+
+    /// One defender frontier from an explicit move list: apply, classify
+    /// (a defender completion refutes; a claimant completion cannot occur on
+    /// a defender placement), lazily defer or eagerly admit the child.
+    fn defender_children_from(
+        &mut self,
+        state: &mut RustHexoState,
+        mut explicit: Vec<HexCoord>,
+    ) -> Vec<WidePnChild> {
         let frame = canonical_frame(state);
         explicit.sort_by_key(|coord| canonical_coord_key(frame, *coord));
         let mut children = Vec::with_capacity(explicit.len());
@@ -8814,4 +8993,84 @@ fn compact_certificate_limited(
         max_edges,
     )?;
     Some((nodes, root_node))
+}
+
+#[cfg(test)]
+mod unforcing_tests {
+    use super::*;
+    use hexo_engine::apply_placement;
+
+    fn replay(coords: &[(i16, i16)]) -> RustHexoState {
+        let mut state = RustHexoState::new();
+        for &(q, r) in coords {
+            apply_placement(
+                &mut state,
+                Placement {
+                    coord: HexCoord { q, r },
+                },
+            )
+            .unwrap();
+        }
+        state
+    }
+
+    /// Game 34e4cb07 ply 25 ("idx25"): λ¹-undecided root whose forced win the
+    /// forcing engine proves in ~1600 nodes.
+    fn idx25() -> RustHexoState {
+        replay(&[
+            (0, 0),
+            (1, 2),
+            (0, 1),
+            (3, -1),
+            (2, 2),
+            (2, 0),
+            (2, 6),
+            (1, 6),
+            (4, 1),
+            (7, -2),
+            (5, -1),
+            (7, -1),
+            (-2, 8),
+            (-2, 4),
+            (0, 7),
+            (-3, 9),
+            (-4, 10),
+            (0, 6),
+            (1, 1),
+            (1, 3),
+            (0, 4),
+            (0, 8),
+            (-1, 5),
+            (-1, 3),
+            (0, 10),
+        ])
+    }
+
+    /// The unforcing profile widens the move space; it must never LOSE a
+    /// proof the forcing profile finds. Quiet children wait behind every
+    /// forcing option at the prior level, so the forcing proof stays
+    /// reachable at a comparable budget.
+    #[test]
+    fn unforcing_profile_still_proves_the_forcing_win() {
+        let state = idx25();
+        let mut solver = TssSolver::default();
+        solver.configure_unforcing_profile();
+        solver.set_dual_pass(true);
+        let caps = SolveCaps {
+            node_cap: 200_000,
+            tt_bytes_cap: 64 << 20,
+            mem_bytes_cap: 512 << 20,
+            semantic_horizon: u32::MAX,
+        };
+        let result = solver.solve_goal(&state, &caps, SolveGoal::Both);
+        assert_eq!(
+            result.status,
+            ProofStatus::Win,
+            "unforcing must keep the forcing win; stats: nodes={} mem_stops={} tt_hits={}",
+            result.stats.nodes,
+            result.stats.mem_stops,
+            result.stats.tt_hits,
+        );
+        assert!(result.cert.is_some());
+    }
 }

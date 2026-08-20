@@ -230,14 +230,16 @@ impl TssProbe {
     ///   * `verify_failed` — FATAL if nonzero: a Win/Loss claim whose
     ///     certificate the verifier rejected. Degraded to `"unknown"` here.
     ///
-    /// `unforcing` selects the wider `round3_consume` engine: the attacker may
-    /// spend QUIET (non-threat-creating) turns and unforced defender nodes
-    /// take the ranked zone instead of refusing, so it can prove wins the
-    /// forcing-only VCF engine structurally cannot. The price is enormous
-    /// branching — orders of magnitude slower — which is why it is a
-    /// per-call toggle and not the serving configuration. Its search is the
-    /// depth-first narrow engine whose arena is structurally bounded; every
-    /// verdict still passes the same independent certificate verifier.
+    /// `unforcing` selects the full-width wide profile
+    /// (`WidthOptions::unforcing_wide`): the attacker may spend QUIET
+    /// (non-threat-creating) placements and unforced defender nodes take the
+    /// complete legal set instead of refusing, so it can prove wins the
+    /// forcing-only VCF engine structurally cannot. Best-first proof numbers
+    /// keep quiet options waiting behind every forcing option, but the
+    /// branching is still enormous — which is why it is a per-call toggle
+    /// and not the serving configuration. Every verdict passes the same
+    /// independent certificate verifier (quiet Choices and dispatch-free
+    /// full-legal Universals are first-class certificate forms).
     #[pyo3(signature = (path, node_cap, mem_bytes, unforcing))]
     fn deep_solve<'py>(
         &self,
@@ -269,10 +271,7 @@ impl TssProbe {
                 let mut solver = TssSolver::default();
                 solver.set_cancel_flag(Some(cancel));
                 if unforcing {
-                    // The wider narrow-engine profile: quiet attacker turns
-                    // and ranked unforced-defender zones. The leaf-profile
-                    // forces are wide-engine knobs and stay off it.
-                    solver.set_width_options(crate::tss_solver::WidthOptions::round3_consume());
+                    solver.configure_unforcing_profile();
                 } else {
                     solver.configure_leaf_profile();
                     solver.set_leaf_j2near(SERVE_J2NEAR);
