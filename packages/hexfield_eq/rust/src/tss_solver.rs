@@ -935,6 +935,17 @@ impl TssSolver {
             arena_evict_passes: search.arena_evict_passes,
             horizon_cuts: search.horizon_cuts,
             kb_death_cuts: search.kb_death_cuts,
+            wide_index_refusals: search.index_refusals,
+            wide_re_expansions: search.re_expansions,
+            wide_expand_nanos: search.expand_nanos,
+            wide_refresh_nanos: search.refresh_nanos,
+            wide_evict_nanos: search.evict_nanos,
+            wide_entries: search.entries.len() as u64,
+            wide_index_entries: search.by_position.len() as u64,
+            wide_arena_peak_bytes: search
+                .peak_bytes
+                .saturating_sub(search.current_bytes) as u64,
+            wide_index_bytes: search.current_bytes as u64,
 
             fragment_lookups: search.fragment_lookups,
             fragment_hits: search.fragment_hits,
@@ -1708,9 +1719,9 @@ struct WidePnChild {
     mv: WidePnMove,
     result: WidePnChildResult,
     entry: Option<usize>,
-    /// Exact key retained in lazy mode until the edge links an arena entry.
-    /// Defender keys virtually represent the eager entry before selection;
-    /// historical attacker-lazy keys remain selection-only.
+    /// Fingerprint key retained in lazy mode until the edge links an arena
+    /// entry. Defender keys virtually represent the eager entry before
+    /// selection; historical attacker-lazy keys remain selection-only.
     future_key: Option<WideFutureKey>,
     /// Static estimates used until the child position is linked. Completed
     /// attacker turns carry both their fork-derived PN and tau-derived DN so
@@ -1727,14 +1738,14 @@ struct WidePnChild {
     zone_order_key: u16,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 enum WideFutureKey {
     /// Historical attacker lazy edge: the key participates only when selected.
     OnSelection(WidePositionKey),
-    /// Attacker-pair selection-only key. The unchanged dense parent body is
-    /// shared across siblings and the full key is built only on selection.
+    /// Attacker-pair selection-only key. The parent fingerprint template is
+    /// inline; the completed key is two stone XORs on selection.
     OnSelectionPair {
-        template: Arc<WideAttackerPairKeyTemplate>,
+        template: WideAttackerPairKeyTemplate,
         first: HexCoord,
         second: HexCoord,
     },
@@ -1746,7 +1757,7 @@ enum WideFutureKey {
 impl WideFutureKey {
     fn materialize(&self) -> WidePositionKey {
         match self {
-            Self::OnSelection(key) | Self::Virtual(key) => key.clone(),
+            Self::OnSelection(key) | Self::Virtual(key) => *key,
             Self::OnSelectionPair {
                 template,
                 first,
@@ -1833,6 +1844,10 @@ struct WidePnEntry {
     /// Expansion count at this entry's last `work` visit — the recency
     /// signal memory-pressure eviction keys on.
     touched: u64,
+    /// Set when memory-pressure eviction released this entry's children.
+    /// Read (and cleared) at the next expansion purely to count rework
+    /// (`SolveStats::wide_re_expansions`); never a decision input.
+    evicted: bool,
     /// Wide-mode visit-order state for an AND node. Once an unresolved
     /// defender obligation is selected, keep driving that same child until it
     /// proves or refutes. This does not participate in PN/DN recomputation or
@@ -1846,59 +1861,101 @@ struct WideProvenCandidate {
     state: RustHexoState,
 }
 
-/// Exact, compact key used only by the wide proof-number frontier. Coordinates
-/// are zig-zag/varint encoded after sorting `(q,r,owner)` tuples, so equality is
-/// collision-free while dense late-game boards do not duplicate a padded
-/// `StoneKey` vector in every transposition entry.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// 128-bit position fingerprint used by the wide proof-number frontier's
+/// transposition index and deferred frontier. The board contribution is an
+/// order-independent XOR of per-stone mixes, XORed with one mix of the
+/// non-board discriminators (mover, placement count, phase + mid-turn first
+/// stone, terminal outcome) — order independence is what makes a child key
+/// O(1) from its parent's. Fingerprint equality is exact in practice, not by
+/// construction: a collision needs ~2^128 luck, and soundness never rests on
+/// the index anyway — the independent certificate verifier rejects any proof
+/// a collision could miswire, so a collision costs search effort, never a
+/// false verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct WidePositionKey {
-    bytes: Box<[u8]>,
+    fp: u128,
 }
 
-/// One position's coordinate-sorted occupancy, shared by all prospective
-/// pair keys generated from that position. Pair generation can retain many
-/// children; sorting the unchanged parent board for every child made dense
-/// late-game solves spend substantial time rebuilding identical prefixes.
-#[derive(Debug)]
-struct WideSortedStones {
-    stones: Vec<(i16, i16, u8)>,
-    encoded: Vec<u8>,
-    offsets: Vec<usize>,
+/// SplitMix64 finalizer: the per-lane bijection behind the stone and meta
+/// mixes. Fixed constants keep every solve deterministic.
+fn wide_mix64(mut x: u64) -> u64 {
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^= x >> 31;
+    x
 }
 
-/// Shared immutable parent data for selection-only attacker keys. Retained
-/// pair edges need only an `Arc` and two coordinates; the exact full key is
-/// materialized if and when that edge is selected.
-#[derive(Debug)]
+/// Murmur3 finalizer: the second, independently-constanted lane.
+fn wide_mix64b(mut x: u64) -> u64 {
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    x ^= x >> 33;
+    x
+}
+
+/// One stone's fingerprint contribution. XOR-composable: the whole board is
+/// the XOR of its stones, so adding a placement is one XOR.
+fn wide_stone_fp(q: i16, r: i16, owner: u8) -> u128 {
+    let payload =
+        (u64::from(q as u16) << 32) | (u64::from(r as u16) << 16) | u64::from(owner);
+    let lo = wide_mix64(payload ^ 0xa076_1d64_78bd_642f);
+    let hi = wide_mix64b(payload ^ 0xe703_7ed1_a0b4_28db);
+    (u128::from(hi) << 64) | u128::from(lo)
+}
+
+/// Mix of the non-board discriminators. Chained so both output lanes depend
+/// on both input words.
+fn wide_meta_fp(w1: u64, w2: u64) -> u128 {
+    let a = wide_mix64(w1 ^ 0x243f_6a88_85a3_08d3);
+    let b = wide_mix64b(w2 ^ a);
+    let lo = wide_mix64(b ^ w1);
+    let hi = wide_mix64b(a ^ b);
+    (u128::from(hi) << 64) | u128::from(lo)
+}
+
+/// Meta word for a NONTERMINAL claimant-to-move FirstStone position with
+/// `placements` stones down — the shape every stateless child-key builder
+/// produces. `WidePositionKey::from_state` uses the general form below;
+/// the two must stay bit-identical for this shape (debug asserts compare
+/// stateless keys against `from_state` of the applied position).
+fn wide_meta_first_stone(player: u8, placements: u32) -> u128 {
+    wide_meta_fp(
+        u64::from(player) | (u64::from(placements) << 8) | (1u64 << 40),
+        0,
+    )
+}
+
+/// XOR of every stone on the board — the shared base for stateless child
+/// keys. One pass, no sort, no allocation.
+fn wide_stones_fp(state: &RustHexoState) -> u128 {
+    let mut stones = 0u128;
+    for &coord in state.board().occupied_cells().iter() {
+        let owner = player_code(state.board().get(coord).expect("occupied cell has owner"));
+        stones ^= wide_stone_fp(coord.q, coord.r, owner);
+    }
+    stones
+}
+
+/// Immutable parent data for selection-only attacker pair keys: the parent
+/// board's XOR plus the completed-turn meta. `Copy` — each retained pair edge
+/// carries it inline, and the completed key is two XORs.
+#[derive(Clone, Copy, Debug)]
 struct WideAttackerPairKeyTemplate {
-    sorted: WideSortedStones,
+    stones_fp: u128,
     owner: u8,
     next_player: u8,
     placements_after: u32,
 }
 
 impl WideAttackerPairKeyTemplate {
-    /// Accounted heap footprint of one shared template (counted once per
-    /// expansion that retains pair edges). Logical sizes, not allocator reads.
-    fn heap_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self
-                .sorted
-                .stones
-                .len()
-                .saturating_mul(std::mem::size_of::<(i16, i16, u8)>())
-            + self.sorted.encoded.len()
-            + self
-                .sorted
-                .offsets
-                .len()
-                .saturating_mul(std::mem::size_of::<usize>())
-    }
-
     fn from_state(state: &RustHexoState) -> Self {
         debug_assert!(matches!(state.phase(), TurnPhase::FirstStone));
         Self {
-            sorted: WideSortedStones::from_state(state),
+            stones_fp: wide_stones_fp(state),
             owner: player_code(state.current_player()),
             next_player: player_code(state.current_player().other()),
             placements_after: state.placements_made().saturating_add(2),
@@ -1906,165 +1963,63 @@ impl WideAttackerPairKeyTemplate {
     }
 
     fn completed_pair_key(&self, first: HexCoord, second: HexCoord) -> WidePositionKey {
-        let mut added = [
-            (first.q, first.r, self.owner),
-            (second.q, second.r, self.owner),
-        ];
-        added.sort_unstable();
-        let mut encoded = Vec::with_capacity(
-            self.sorted
-                .stones
-                .len()
-                .saturating_add(2)
-                .saturating_mul(3)
-                .saturating_add(12),
-        );
-        encoded.push(self.next_player);
-        push_wide_varint(&mut encoded, self.placements_after);
-        encoded.push(1); // TurnPhase::FirstStone after a completed turn.
-        encoded.push(0); // Retained Pending pairs are nonterminal.
-        self.sorted.append_with_added(&mut encoded, &added);
+        // Retained Pending pairs are nonterminal FirstStone positions.
         WidePositionKey {
-            bytes: encoded.into_boxed_slice(),
+            fp: self.stones_fp
+                ^ wide_stone_fp(first.q, first.r, self.owner)
+                ^ wide_stone_fp(second.q, second.r, self.owner)
+                ^ wide_meta_first_stone(self.next_player, self.placements_after),
         }
-    }
-}
-
-impl WideSortedStones {
-    fn from_state(state: &RustHexoState) -> Self {
-        let mut stones = state
-            .board()
-            .occupied_cells()
-            .iter()
-            .map(|&coord| {
-                (
-                    coord.q,
-                    coord.r,
-                    player_code(state.board().get(coord).expect("occupied cell has owner")),
-                )
-            })
-            .collect::<Vec<_>>();
-        stones.sort_unstable();
-        let mut encoded = Vec::with_capacity(stones.len().saturating_mul(3));
-        let mut offsets = Vec::with_capacity(stones.len().saturating_add(1));
-        for &(q, r, owner) in &stones {
-            offsets.push(encoded.len());
-            push_wide_varint(
-                &mut encoded,
-                zigzag_i16(q).saturating_mul(2) | u32::from(owner),
-            );
-            push_wide_varint(&mut encoded, zigzag_i16(r));
-        }
-        offsets.push(encoded.len());
-        Self {
-            stones,
-            encoded,
-            offsets,
-        }
-    }
-
-    /// Append the already-encoded parent occupancy with `added` merged into
-    /// the same tuple order used by `WidePositionKey::from_state`.
-    fn append_with_added(&self, out: &mut Vec<u8>, added: &[(i16, i16, u8)]) {
-        let mut base_start = 0usize;
-        for &(q, r, owner) in added {
-            // Occupied and newly placed coordinates are disjoint. `<=` also
-            // preserves the historical merge's base-before-added tie order.
-            let base_end = self.stones.partition_point(|stone| *stone <= (q, r, owner));
-            debug_assert!(base_end >= base_start, "added stones must be sorted");
-            out.extend_from_slice(&self.encoded[self.offsets[base_start]..self.offsets[base_end]]);
-            push_wide_varint(out, zigzag_i16(q).saturating_mul(2) | u32::from(owner));
-            push_wide_varint(out, zigzag_i16(r));
-            base_start = base_end;
-        }
-        out.extend_from_slice(&self.encoded[self.offsets[base_start]..]);
     }
 }
 
 impl WidePositionKey {
     fn from_state(state: &RustHexoState) -> Self {
-        let mut stones = state
-            .board()
-            .occupied_cells()
-            .iter()
-            .map(|&coord| {
-                (
-                    coord.q,
-                    coord.r,
-                    player_code(state.board().get(coord).expect("occupied cell has owner")),
-                )
+        let (phase_tag, phase_first) = match state.phase() {
+            TurnPhase::Opening => (0u64, None),
+            TurnPhase::FirstStone => (1, None),
+            TurnPhase::SecondStone { first } => (2, Some(first)),
+        };
+        let (terminal_tag, outcome_placements) = match state.terminal() {
+            None => (0u64, 0u32),
+            Some(outcome) => (1 + u64::from(player_code(outcome.winner)), outcome.placements),
+        };
+        let w1 = u64::from(player_code(state.current_player()))
+            | (u64::from(state.placements_made()) << 8)
+            | (phase_tag << 40)
+            | (terminal_tag << 44);
+        let w2 = phase_first
+            .map(|first| {
+                (u64::from(first.q as u16) << 48) | (u64::from(first.r as u16) << 32)
             })
-            .collect::<Vec<_>>();
-        stones.sort_unstable();
-        let mut encoded = Vec::with_capacity(stones.len().saturating_mul(3).saturating_add(12));
-        encoded.push(player_code(state.current_player()));
-        push_wide_varint(&mut encoded, state.placements_made());
-        match state.phase() {
-            TurnPhase::Opening => encoded.push(0),
-            TurnPhase::FirstStone => encoded.push(1),
-            TurnPhase::SecondStone { first } => {
-                encoded.push(2);
-                push_wide_varint(&mut encoded, zigzag_i16(first.q));
-                push_wide_varint(&mut encoded, zigzag_i16(first.r));
-            }
-        }
-        match state.terminal() {
-            None => encoded.push(0),
-            Some(outcome) => {
-                encoded.push(1 + player_code(outcome.winner));
-                push_wide_varint(&mut encoded, outcome.placements);
-            }
-        }
-        for (q, r, owner) in stones {
-            push_wide_varint(
-                &mut encoded,
-                zigzag_i16(q).saturating_mul(2) | u32::from(owner),
-            );
-            push_wide_varint(&mut encoded, zigzag_i16(r));
-        }
+            .unwrap_or(0)
+            | u64::from(outcome_placements);
         Self {
-            bytes: encoded.into_boxed_slice(),
+            fp: wide_stones_fp(state) ^ wide_meta_fp(w1, w2),
         }
-    }
-
-    fn heap_bytes(&self) -> usize {
-        self.bytes.len()
     }
 
     /// The key of the NONTERMINAL claimant FirstStone position reached after
-    /// two extra defender placements on `state`, built without touching the
-    /// engine. Caller contract (asserted by the defender pair plan before
-    /// use): `state` is a forced defender FirstStone node with no live
-    /// defender >=4 window, so the pair cannot complete six and the child is
-    /// exactly (claimant to move, FirstStone, non-terminal).
-    fn for_defender_pair(sorted: &WideSortedStones, claimant: Player, extra: &[HexCoord]) -> Self {
-        let defender = claimant.other();
-        let owner = player_code(defender);
-        let mut added = extra
-            .iter()
-            .map(|coord| (coord.q, coord.r, owner))
-            .collect::<Vec<_>>();
-        added.sort_unstable();
-        let mut encoded = Vec::with_capacity(
-            sorted
-                .stones
-                .len()
-                .saturating_add(added.len())
-                .saturating_mul(3)
-                .saturating_add(12),
-        );
-        encoded.push(player_code(claimant));
-        push_wide_varint(
-            &mut encoded,
-            u32::try_from(sorted.stones.len())
-                .unwrap_or(u32::MAX)
-                .saturating_add(u32::try_from(extra.len()).unwrap_or(0)),
-        );
-        encoded.push(1); // TurnPhase::FirstStone
-        encoded.push(0); // non-terminal
-        sorted.append_with_added(&mut encoded, &added);
+    /// two extra defender placements on the board `stones_fp`/`stones_len`
+    /// describe, built without touching the engine. Caller contract (asserted
+    /// by the defender pair plan before use): the parent is a forced defender
+    /// FirstStone node with no live defender >=4 window, so the pair cannot
+    /// complete six and the child is exactly (claimant to move, FirstStone,
+    /// non-terminal).
+    fn for_defender_pair(
+        stones_fp: u128,
+        stones_len: u32,
+        claimant: Player,
+        extra: &[HexCoord],
+    ) -> Self {
+        let owner = player_code(claimant.other());
+        let mut fp = stones_fp;
+        for coord in extra {
+            fp ^= wide_stone_fp(coord.q, coord.r, owner);
+        }
+        let placements = stones_len.saturating_add(u32::try_from(extra.len()).unwrap_or(0));
         Self {
-            bytes: encoded.into_boxed_slice(),
+            fp: fp ^ wide_meta_first_stone(player_code(claimant), placements),
         }
     }
 }
@@ -2130,7 +2085,8 @@ fn forced_defender_pair_plan_dynamic(
     if kernel.is_empty() {
         return None;
     }
-    let sorted_stones = WideSortedStones::from_state(state);
+    let stones_fp = wide_stones_fp(state);
+    let stones_len = u32::try_from(state.board().len()).unwrap_or(u32::MAX);
     let kernel_set = kernel.iter().copied().collect::<HashSet<_>>();
 
     // One fork scan per plan: a defender pair perturbs the claimant window
@@ -2191,8 +2147,12 @@ fn forced_defender_pair_plan_dynamic(
             // child is exactly (claimant, FirstStone, non-terminal) and its
             // key is constructible without touching the engine. `second` is a
             // kernel threat-window empty, hence always a legal placement.
-            let final_key =
-                WidePositionKey::for_defender_pair(&sorted_stones, claimant, &[first, second]);
+            let final_key = WidePositionKey::for_defender_pair(
+                stones_fp,
+                stones_len,
+                claimant,
+                &[first, second],
+            );
             let retained_prior =
                 (raw_coord_key(first) < raw_coord_key(second)).then(|| WidePnPrior {
                     pn: shared_fork_pn,
@@ -2305,7 +2265,8 @@ fn forced_defender_pair_plan_direct(
         pn: pn_from_fork_degree(attacker_fork_degree(state, claimant)),
         dn: 1,
     };
-    let sorted_stones = WideSortedStones::from_state(state);
+    let stones_fp = wide_stones_fp(state);
+    let stones_len = u32::try_from(state.board().len()).unwrap_or(u32::MAX);
     let mut pairs = Vec::new();
     for left in 0..kernel.len() {
         for right in (left + 1)..kernel.len() {
@@ -2326,7 +2287,8 @@ fn forced_defender_pair_plan_direct(
                 first,
                 second,
                 final_key: WidePositionKey::for_defender_pair(
-                    &sorted_stones,
+                    stones_fp,
+                    stones_len,
                     claimant,
                     &[first, second],
                 ),
@@ -2370,51 +2332,21 @@ fn forced_defender_pair_plan(
     forced_defender_pair_plan_dynamic(state, claimant)
 }
 
-/// Conservative retained-byte charge for one exact-key TT index entry.  PN
-/// nodes and their child vectors live in the node-capped search arena and are
-/// deliberately excluded from the caller's TT/cache byte ceiling.
-/// Accounted heap footprint of one installed child vector: the vector body,
-/// each retained future key's bytes, and (once) the shared attacker-pair
-/// template all siblings hold through an `Arc`. Deterministic logical sizes.
+/// Accounted heap footprint of one installed child vector. Fingerprint keys
+/// and pair templates are inline in `WidePnChild`, so the vector body is the
+/// whole charge. Deterministic logical sizes.
 fn wide_children_bytes(children: &[WidePnChild]) -> usize {
-    let mut total = children
+    children
         .len()
-        .saturating_mul(std::mem::size_of::<WidePnChild>());
-    let mut counted_template = false;
-    for child in children {
-        match &child.future_key {
-            Some(WideFutureKey::OnSelection(key)) | Some(WideFutureKey::Virtual(key)) => {
-                total = total.saturating_add(key.bytes.len());
-            }
-            Some(WideFutureKey::OnSelectionPair { template, .. }) => {
-                if !counted_template {
-                    total = total.saturating_add(template.heap_bytes());
-                    counted_template = true;
-                }
-            }
-            None => {}
-        }
-    }
-    total
+        .saturating_mul(std::mem::size_of::<WidePnChild>())
 }
 
-fn wide_position_index_bytes(key: &WidePositionKey) -> usize {
-    key.heap_bytes()
-        .saturating_add(size_of::<(WidePositionKey, usize)>())
-        .saturating_add(ALLOC_OVERHEAD)
-}
-
-fn zigzag_i16(value: i16) -> u32 {
-    let value = i32::from(value);
-    u32::try_from((value << 1) ^ (value >> 31)).expect("i16 zig-zag is nonnegative")
-}
-
-fn push_wide_varint(out: &mut Vec<u8>, mut value: u32) {
-    while value >= 0x80 {
-        out.push((value as u8 & 0x7f) | 0x80);
-        value >>= 7;
-    }
-    out.push(value as u8);
+/// Retained-byte charge for one index or deferred-frontier map slot: the
+/// widest slot shape plus hashbrown control/load overhead. PN nodes and their
+/// child vectors live in the node-capped search arena and are deliberately
+/// excluded from the caller's TT/cache byte ceiling.
+fn wide_position_index_bytes(_key: &WidePositionKey) -> usize {
+    size_of::<(WidePositionKey, WideDeferredPosition)>().saturating_add(8)
 }
 
 /// Wide VCF search keeps a persistent proof-number frontier.  Unlike the
@@ -2471,6 +2403,14 @@ struct WidePnSearch<'store> {
     mem_stopped: bool,
     /// Completed memory-pressure eviction passes (`SolveStats` telemetry).
     arena_evict_passes: u64,
+    /// Index insertions refused by the byte cap (silent dedup loss).
+    index_refusals: u64,
+    /// Expansions redoing work an eviction pass had released.
+    re_expansions: u64,
+    /// Phase wall telemetry (§2.6: never consulted by any decision).
+    expand_nanos: u64,
+    refresh_nanos: u64,
+    evict_nanos: u64,
     /// Expansion ceiling for one `work` invocation. The production driver
     /// leaves it open (`u64::MAX`); the historical single-expansion `step`
     /// wrapper sets it to `expansions + 1` so the focused stepper tests keep
@@ -2482,9 +2422,10 @@ struct WidePnSearch<'store> {
 
     entries: Vec<WidePnEntry>,
     by_position: HashMap<WidePositionKey, usize>,
-    /// Exact prospective identity for lazy defender thunks. This preserves the
-    /// first eager admission's prior/depth and lets a selected attacker thunk
-    /// recover that transposed state without pre-linking an arena/TT entry.
+    /// Prospective fingerprint identity for lazy defender thunks. This
+    /// preserves the first eager admission's prior/depth and lets a selected
+    /// attacker thunk recover that transposed state without pre-linking an
+    /// arena/TT entry.
     deferred_by_position: HashMap<WidePositionKey, WideDeferredPosition>,
     /// Exact window-substructure cache shared by attacker OR generations in
     /// this search. Keys include both occupancy masks, so a position delta
@@ -2693,6 +2634,11 @@ impl<'store> WidePnSearch<'store> {
             arena_bytes: 0,
             mem_stopped: false,
             arena_evict_passes: 0,
+            index_refusals: 0,
+            re_expansions: 0,
+            expand_nanos: 0,
+            refresh_nanos: 0,
+            evict_nanos: 0,
             soft_expansion_cap: u64::MAX,
             cancel: None,
 
@@ -2764,6 +2710,7 @@ impl<'store> WidePnSearch<'store> {
             genuine_dn0: false,
             touched: self.expansions,
             universal_obligation: None,
+            evicted: false,
         });
         self.charge_arena_bytes(std::mem::size_of::<WidePnEntry>());
 
@@ -2775,6 +2722,7 @@ impl<'store> WidePnSearch<'store> {
                 .peak_bytes
                 .max(self.arena_bytes.saturating_add(self.current_bytes));
         } else {
+            self.index_refusals = self.index_refusals.saturating_add(1);
         }
         id
     }
@@ -2848,6 +2796,7 @@ impl<'store> WidePnSearch<'store> {
     /// than 1/16 of the ceiling — the caller then halts instead of
     /// thrashing. Deterministic: recency is an expansion count.
     fn evict_cold_branches(&mut self) -> bool {
+        let sweep_started = Instant::now();
         let watermark = self.expansions.saturating_sub(EVICT_RECENT_EXPANSIONS);
         let before = self.arena_bytes;
         // The deferred frontier is pure optimization state: a thunk's prior
@@ -2874,9 +2823,13 @@ impl<'store> WidePnSearch<'store> {
             let released = wide_children_bytes(children);
             entry.node = WidePnNode::Unexpanded;
             entry.universal_obligation = None;
+            entry.evicted = true;
             self.arena_bytes = self.arena_bytes.saturating_sub(released);
         }
         self.arena_evict_passes = self.arena_evict_passes.saturating_add(1);
+        self.evict_nanos = self
+            .evict_nanos
+            .saturating_add(sweep_started.elapsed().as_nanos() as u64);
         self.refresh_all_bottom_up();
         let reclaimed = before.saturating_sub(self.arena_bytes);
         reclaimed >= self.mem_bytes_cap / 16
@@ -3007,11 +2960,15 @@ impl<'store> WidePnSearch<'store> {
     }
 
     fn refresh_all_bottom_up(&mut self) {
+        let started = Instant::now();
         let mut ids = (0..self.entries.len()).collect::<Vec<_>>();
         ids.sort_unstable_by_key(|&id| std::cmp::Reverse(self.entries[id].depth));
         for id in ids {
             self.recompute(id);
         }
+        self.refresh_nanos = self
+            .refresh_nanos
+            .saturating_add(started.elapsed().as_nanos() as u64);
     }
 
     fn step(&mut self, state: &mut RustHexoState, id: usize) -> WidePnStepOutcome {
@@ -3407,9 +3364,10 @@ impl<'store> WidePnSearch<'store> {
         }
     }
 
-    /// A thunk remains edge-local, but its exact key is also a virtual link to
-    /// a transposition admitted through another parent. Every pre-selection
-    /// read must observe that live entry just as an eagerly linked edge would.
+    /// A thunk remains edge-local, but its fingerprint key is also a virtual
+    /// link to a transposition admitted through another parent. Every
+    /// pre-selection read must observe that live entry just as an eagerly
+    /// linked edge would.
     fn resolved_child_entry(&self, child: &WidePnChild) -> Option<usize> {
         child.entry.or_else(|| {
             child
@@ -3877,7 +3835,22 @@ impl<'store> WidePnSearch<'store> {
         self.recompute(id);
     }
 
+    /// Timing/rework-counting shell around the real expansion. Telemetry
+    /// only: the outcome and every search decision are `expand_inner`'s.
     fn expand(&mut self, state: &mut RustHexoState, id: usize) -> WidePnStepOutcome {
+        let started = Instant::now();
+        if self.entries[id].evicted {
+            self.entries[id].evicted = false;
+            self.re_expansions = self.re_expansions.saturating_add(1);
+        }
+        let outcome = self.expand_inner(state, id);
+        self.expand_nanos = self
+            .expand_nanos
+            .saturating_add(started.elapsed().as_nanos() as u64);
+        outcome
+    }
+
+    fn expand_inner(&mut self, state: &mut RustHexoState, id: usize) -> WidePnStepOutcome {
         if self.expansions >= self.node_cap || self.cancelled() || self.memory_exhausted() {
             return WidePnStepOutcome::Stalled;
         }
@@ -4107,7 +4080,7 @@ impl<'store> WidePnSearch<'store> {
 
         let eager_pair_keys = false;
         let pair_key_template = (self.lazy_frontier && !eager_pair_keys)
-            .then(|| Arc::new(WideAttackerPairKeyTemplate::from_state(state)));
+            .then(|| WideAttackerPairKeyTemplate::from_state(state));
 
         let observe_ordering_study = false;
         let observe_reveal_prefix = false;
@@ -4272,10 +4245,9 @@ impl<'store> WidePnSearch<'store> {
                         future_key: (self.lazy_frontier && result == WidePnChildResult::Pending)
                             .then(|| {
                                 let template = pair_key_template
-                                    .as_ref()
                                     .expect("lazy pair generation builds a key template");
                                 WideFutureKey::OnSelectionPair {
-                                    template: Arc::clone(template),
+                                    template,
                                     first,
                                     second,
                                 }
