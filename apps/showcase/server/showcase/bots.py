@@ -803,23 +803,27 @@ class _WorkerRuntime:
             want_frames=bool(want_frames),
         )
 
-    def solve(self, *, bot_slug: str, actions: list[tuple[int, int]]) -> dict:
+    def solve(
+        self, *, bot_slug: str, actions: list[tuple[int, int]],
+        node_cap: int, budget_ms: int, line_cap: int,
+    ) -> dict:
         """One forced-win solver verdict for a validated placement sequence.
 
         The solver is engine-level (hexfield_eq's ``TssProbe``) and never
-        touches the model — the bot only contributes its profile's TSS budgets
-        so the verdict runs at the same depth the checkpoint plays with.
-        Profiles without a mantis ``TssConfig`` solve at the defaults. An
-        explicit solve request ignores the config's ``enabled`` flag: asking
-        the solver a question answers it."""
+        touches the model; the request sets its budgets (the endpoint
+        validates their ranges). ``bot_slug`` only proves the checkpoint
+        exists — any catalogue checkpoint answers identically."""
         from .families.mantis_tss import TssConfig, solve_position
 
-        bot = self.bots[bot_slug]
-        config = getattr(bot.profile, "tss", None)
-        if not isinstance(config, TssConfig):
-            config = TssConfig()
+        self.bots[bot_slug]  # unknown slug is a KeyError, surfaced as a job error
+        config = TssConfig(
+            root_node_cap=int(node_cap), root_wall_budget_ms=int(budget_ms)
+        )
         try:
-            return solve_position([(int(q), int(r)) for q, r in actions], config)
+            return solve_position(
+                [(int(q), int(r)) for q, r in actions], config,
+                line_cap=int(line_cap),
+            )
         except ValueError as exc:
             # The one user-reachable error (a terminal position) comes back as
             # a reject payload so the endpoint can 422 it, mirroring lab_eval.
@@ -1796,13 +1800,20 @@ class BotPool:
 
     async def solve(
         self, *, route_key: int, bot_slug: str, actions: list[tuple[int, int]],
+        node_cap: int, budget_ms: int, line_cap: int,
     ) -> dict:
         """Forced-win solver verdict; engine-level, so route_key only spreads
-        load across workers."""
+        load across workers. The job timeout stretches with the requested
+        budget — a legitimately long solve must not read as a hung worker
+        (which would recycle it)."""
         return await self._submit(
             self._route(route_key), "solve",
-            {"bot_slug": bot_slug, "actions": actions},
-            self._settings.bot_timeout_s,
+            {
+                "bot_slug": bot_slug, "actions": actions,
+                "node_cap": node_cap, "budget_ms": budget_ms,
+                "line_cap": line_cap,
+            },
+            max(self._settings.bot_timeout_s, budget_ms / 1000.0 + 30.0),
             recycle_on_hang=True,
             retries=_JOB_RETRIES,
         )

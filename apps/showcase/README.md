@@ -110,6 +110,9 @@ POST /api/lab/search            lab: real search on a legal-sequence position,
                                 `"frames": true` adds a replayable frame list
 POST /api/lab/solve             forced-win solver verdict on a legal-sequence
                                 position (λ¹ + verified deep solve + forced line)
+GET  /api/lab/import/didscience host-locked proxy for hexo.did.science sandbox
+                                and finished-game links (no CORS on their API);
+                                normalizes to {moves} or free-edit {stones}
 GET  /healthz                   liveness
 ```
 
@@ -122,15 +125,16 @@ searched or solved. app.py documents the request/response schemas.
 telemetry events in the public live-search schema (`bare_policy`,
 `candidate_set`, `search_round`, `search_complete`) so a client can replay the
 search in the live viewer; only families with live telemetry return them.
-`/api/lab/solve` takes `{checkpoint_id, actions}` and answers
+`/api/lab/solve` takes `{checkpoint_id, actions}` plus optional budgets
+`node_cap` (1000–2000000, default 20000), `budget_ms` (250–120000, default
+3000 — the wall clock for the whole call) and `line_cap` (2–100, default 24);
+out-of-range budgets are a 422, never clamped. It answers
 `{status: win|loss|unknown|timeout, source: lambda1|deep, proven: {q,r}|null,
 line: [{q,r}, …], line_forced, guard: [{q,r,cls}]|null, nodes, ms}` — the
-engine-level Threat-Space solver at the checkpoint's own TSS budgets: λ¹
+engine-level Threat-Space solver at the request's budgets: λ¹
 first, then the verified deep root solve, then a forced line walked from the
 proven move while the defense has exactly one λ¹-surviving reply (`cls`: 1
-win-now, -1 refuted, else neutral). A terminal position is a 422. An explicit
-solve ignores the profile's `enabled` flag: asking the solver a question
-answers it.
+win-now, -1 refuted, else neutral). A terminal position is a 422.
 
 Access model: mutating routes always require the session cookie; reading an
 ACTIVE game requires it too (403 otherwise). FINISHED games are public by

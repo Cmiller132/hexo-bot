@@ -6,7 +6,7 @@
 <title>Hexo &mdash; model lab</title>
 <meta name="description" content="Live sandbox: build a Hexo position, play the bot, and inspect the selected model family's inputs, evaluation, available internals, search, and forced-win solver.">
 <link rel="stylesheet" href="learn.css">
-<link rel="stylesheet" href="lab.css?v=4">
+<link rel="stylesheet" href="lab.css?v=5">
 </head>
 <body>
 
@@ -118,7 +118,9 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
     </div>
 
     <div class="io-panel" id="pastePanel" hidden>
-      <label class="io-l" for="pasteBox">move list &mdash; one cell per pair, q,r;q,r</label>
+      <label class="io-l" for="pasteBox">move list &mdash; q,r;q,r pairs, a lab link,
+        httx (<code>version[1]; 1. [0,-1][2,-2]; &hellip;</code>), or a
+        hexo.did.science sandbox / game link</label>
       <textarea id="pasteBox" rows="2" spellcheck="false"
                 placeholder="0,0;1,0;0,1"></textarea>
       <button class="k-btn" id="pasteApply">apply</button>
@@ -307,6 +309,17 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
           <button class="line-btn" id="searchBtn">run search</button>
           <button class="line-btn" id="solveBtn">forced win solver</button>
         </div>
+        <div class="slv-row" aria-label="Solver budgets">
+          <label class="slv-l">nodes
+            <input type="number" id="slvNodes" min="1000" max="2000000" step="1000" value="20000">
+          </label>
+          <label class="slv-l">time&nbsp;s
+            <input type="number" id="slvSecs" min="0.25" max="120" step="0.25" value="3">
+          </label>
+          <label class="slv-l">line
+            <input type="number" id="slvLine" min="2" max="100" step="1" value="24">
+          </label>
+        </div>
         <div class="value-read">
           <span class="value-big" id="searchVal">&mdash;</span>
           <span class="value-cap" id="searchCap"></span>
@@ -319,8 +332,10 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
         <p class="mod-note">
           the solver is the engine&rsquo;s own threat-space proof search, not
           the network. it answers for the side to move. a proven win draws its
-          line on the board as pale stones, with the proven move marked. cells
-          the guard refutes take a dark veil.
+          line on the board as pale stones and adds it to the line strip, so
+          the step controls walk it. cells the guard refutes take a dark veil.
+          the budget fields set the solver&rsquo;s node cap, its wall clock,
+          and the longest line it reports.
         </p>
       </div>
     </div>
@@ -332,6 +347,6 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./lab.js?v=10"></script>
+<script type="module" src="./lab.js?v=11"></script>
 </body>
 </html>

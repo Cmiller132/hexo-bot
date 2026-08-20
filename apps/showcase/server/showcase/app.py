@@ -70,6 +70,7 @@ from .lab_rules import (
     validate_actions,
     validate_free_stones,
 )
+from .lab_import import LabImportError, import_position
 from .db import ShowcaseDB, decode_payload, encode_payload
 from .matchapi import MatchDeps, build_match_router
 from .elo import compute_ratings
@@ -195,6 +196,13 @@ class LabSearchRequest(BaseModel):
 class LabSolveRequest(BaseModel):
     checkpoint_id: str = Field(max_length=128)
     actions: list[LabCell] = Field(max_length=MAX_ACTIONS)
+    # Solver budgets. The request is the one budget authority for this
+    # endpoint (defaults mirror TssConfig); out-of-range values are a 422,
+    # never clamped. `budget_ms` is the wall clock for the WHOLE call — the
+    # root solve takes what it needs and the line walk gets the remainder.
+    node_cap: int = Field(default=20_000, ge=1_000, le=2_000_000)
+    budget_ms: int = Field(default=3_000, ge=250, le=120_000)
+    line_cap: int = Field(default=24, ge=2, le=100)
 
 
 def sanitize_nickname(raw: str) -> str | None:
@@ -906,6 +914,22 @@ def create_app(settings: Settings) -> FastAPI:
         # worker's game moves.
         return int.from_bytes(os.urandom(4), "big")
 
+    @app.get("/api/lab/import/didscience")
+    async def lab_import_didscience(
+        request: Request,
+        kind: Literal["sandbox", "game"] = Query(),
+        source_id: str = Query(alias="id", max_length=64),
+    ):
+        """Proxy + normalize a hexo.did.science position (their API sends no
+        CORS headers, so the lab cannot fetch it directly). Host-locked to
+        their two read endpoints; see lab_import.py for the contract."""
+        _lab_gate(request, app.state.lab_eval_bucket)
+        try:
+            payload = await asyncio.to_thread(import_position, kind, source_id)
+        except LabImportError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        return payload
+
     @app.post("/api/lab/eval")
     async def lab_eval(body: LabEvalRequest, request: Request):
         """Net readout + requested internals for a visitor-built position.
@@ -1004,8 +1028,8 @@ def create_app(settings: Settings) -> FastAPI:
     async def lab_solve(body: LabSolveRequest, request: Request):
         """Forced-win solver verdict for a legal-sequence position: λ¹ plus
         the verified deep solve, with a forced line while the defense stays
-        forced. The solver is engine-level; the checkpoint only sets its
-        budgets, so any catalogue checkpoint answers."""
+        forced. The solver is engine-level and the request sets its budgets,
+        so any catalogue checkpoint answers."""
         _lab_gate(request, app.state.lab_search_bucket)
         spec = _lab_checkpoint(body.checkpoint_id)
         try:
@@ -1016,6 +1040,8 @@ def create_app(settings: Settings) -> FastAPI:
             async with _background_job_slot():
                 payload = await app.state.pool.solve(
                     route_key=_lab_route_key(), bot_slug=spec.slug, actions=actions,
+                    node_cap=body.node_cap, budget_ms=body.budget_ms,
+                    line_cap=body.line_cap,
                 )
         except (BotPoolError, BotPoolTimeout) as exc:
             raise HTTPException(503, "solver backend unavailable") from exc

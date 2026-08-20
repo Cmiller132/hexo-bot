@@ -428,7 +428,21 @@ def test_mantisnet_serves_the_critic_read(tiny_mantis_checkpoint, tmp_path):
     assert all("policy" in e for e in events if e["kind"] == "bare_policy")
 
     # -- solve: the worker seam answers, and rejects a terminal position ----
-    solved = runtime.solve(bot_slug="tiny-mantis", actions=list(moves))
+    solved = runtime.solve(
+        bot_slug="tiny-mantis", actions=list(moves),
+        node_cap=20_000, budget_ms=3_000, line_cap=24,
+    )
     assert solved["status"] in ("win", "loss", "unknown", "timeout")
-    rejected = runtime.solve(bot_slug="tiny-mantis", actions=list(win))
+    # The request budgets reach the solver: line_cap is exact (the walk stops
+    # at it), so a floor-level request cannot report a longer line.
+    capped = runtime.solve(
+        bot_slug="tiny-mantis", actions=list(moves),
+        node_cap=1_000, budget_ms=250, line_cap=2,
+    )
+    assert capped["status"] in ("win", "loss", "unknown", "timeout")
+    assert len(capped["line"] or []) <= 2
+    rejected = runtime.solve(
+        bot_slug="tiny-mantis", actions=list(win),
+        node_cap=20_000, budget_ms=3_000, line_cap=24,
+    )
     assert "reject" in rejected

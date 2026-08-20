@@ -601,7 +601,10 @@ function parseCells(text) {
   return out;
 }
 
-/* #m=... (sequence) / #f0=...&f1=...&tm=... (free). Returns true if applied. */
+/* #m=... (sequence) / #f0=...&f1=...&tm=... (free). Returns true if applied.
+ * An optional &pv=... rides #m=: a proven continuation (the analysis screen's
+ * solver hands positions off this way) that loads as a second line, active
+ * and forked at the position, so stepping forward walks the proof. */
 function applyHash(hash) {
   if (!hash || hash.length < 2) return false;
   const params = new URLSearchParams(hash.slice(1));
@@ -615,6 +618,17 @@ function applyHash(hash) {
     }
     state.mode = "sequence";
     setLine(moves);
+    const pv = params.has("pv") ? parseCells(params.get("pv")) : null;
+    if (pv && pv.length) {
+      const full = moves.concat(pv);
+      if (replaySequence(full).ok) {
+        state.lines.push(full);
+        state.lineIdx = 1;
+        state.cursor = moves.length;
+      } else {
+        toast("lab link proof line was not legal — loaded the position only", true);
+      }
+    }
     return true;
   }
   if (params.has("f0") || params.has("f1")) {
@@ -694,14 +708,75 @@ async function loadPresets() {
     opt.dataset.moves = JSON.stringify(moves);
     sel.appendChild(opt);
   }
+
+  // The community forcing corpus rides the same dropdown under its own group.
+  // Its entries extend the contract: a sequence may carry `line` (the
+  // submitter's recorded solve continuation, pre-loaded as a second line in
+  // the strip) and an out-of-parity puzzle carries `free` instead of moves.
+  let corpus = null;
+  try { corpus = await requestJson("data/forcing_corpus.json"); } catch (_) { /* page stands alone */ }
+  const entries = corpus && Array.isArray(corpus.positions) ? corpus.positions : [];
+  const group = document.createElement("optgroup");
+  group.label = "Forcing corpus";
+  for (const pos of entries) {
+    if (!pos || typeof pos.id !== "string" || seen.has(pos.id)) continue;
+    seen.add(pos.id);
+    const opt = document.createElement("option");
+    opt.value = "corpus:" + pos.id;
+    opt.textContent = typeof pos.title === "string" ? pos.title : pos.id;
+    if (Array.isArray(pos.moves)) {
+      const moves = pos.moves.map(m => (Array.isArray(m) && m.length === 2 ? [+m[0], +m[1]] : null));
+      if (moves.some(m => m === null) || !validSequence(moves)) continue;
+      opt.dataset.moves = JSON.stringify(moves);
+      if (Array.isArray(pos.line) && pos.line.length) {
+        const line = pos.line.map(m => (Array.isArray(m) && m.length === 2 ? [+m[0], +m[1]] : null));
+        if (!line.some(m => m === null) && replaySequence(moves.concat(line)).ok) {
+          opt.dataset.line = JSON.stringify(line);
+        }
+      }
+    } else if (pos.free && Array.isArray(pos.free.p0) && Array.isArray(pos.free.p1)) {
+      opt.dataset.free = JSON.stringify({
+        p0: pos.free.p0.map(m => [+m[0], +m[1]]),
+        p1: pos.free.p1.map(m => [+m[0], +m[1]]),
+        toMove: pos.free.to_move === 1 ? 1 : 0,
+      });
+    } else {
+      continue;
+    }
+    group.appendChild(opt);
+  }
+  if (group.children.length) sel.appendChild(group);
+}
+
+/* Land a free-edit stone set (an out-of-parity import: only free mode can
+ * hold it). Shared by the corpus dropdown and the community-site import. */
+function loadFreePosition(p0, p1, toMove) {
+  cancelBot();
+  state.mode = "free";
+  state.free = { p0, p1, toMove: toMove === 1 ? 1 : 0 };
+  state.freeDirty = false;
+  state.undo = [];
+  syncModeUI();
+  positionChanged();
+  board.resetView();
 }
 
 $("presetSel").addEventListener("change", function () {
   const opt = this.selectedOptions[0];
-  const moves = opt && opt.dataset.moves ? JSON.parse(opt.dataset.moves) : [];
   cancelBot();
+  if (opt && opt.dataset.free) {
+    const f = JSON.parse(opt.dataset.free);
+    loadFreePosition(f.p0, f.p1, f.toMove);
+    return;
+  }
+  const moves = opt && opt.dataset.moves ? JSON.parse(opt.dataset.moves) : [];
   if (state.mode !== "sequence") setMode("sequence");
   setLine(moves);
+  if (opt && opt.dataset.line) {
+    // The recorded solve continuation as a second, deletable line; the
+    // dropdown still lands on the puzzle position itself.
+    state.lines.push(moves.concat(JSON.parse(opt.dataset.line)));
+  }
   positionChanged();
   board.resetView();
 });
@@ -728,20 +803,112 @@ $("pasteToggle").addEventListener("click", () => {
   if (togglePanel(pastePanel, $("pasteToggle"))) $("pasteBox").focus();
 });
 
-$("pasteApply").addEventListener("click", () => {
-  // Takes a bare move list and also a copied lab link, which is the same list
-  // behind a "#m=" prefix.
-  const raw = $("pasteBox").value;
-  const linked = /#m=([^&\s]*)/.exec(raw);
-  const text = (linked ? linked[1] : raw).replace(/\s+/g, "");
-  if (!text) {
-    toast("paste a move list first", true);
+/* HTTX, the community hexo notation: a `version[1];` header, then numbered
+ * two-stone turns `n. [q,r][q,r];`. The first player's opening stone at the
+ * origin is implicit, so the flattened record is the origin plus the turns in
+ * order. The final turn may carry one cell (a mid-turn export). Returns null
+ * when the text is not HTTX, {err} on a malformed document, {moves} on
+ * success — the engine replay stays the legality authority. */
+function parseHttx(raw) {
+  const vm = /version\s*\[\s*(\d+)\s*\]/i.exec(raw);
+  if (!vm) return null;
+  if (vm[1] !== "1") return { err: `unsupported httx version ${vm[1]}` };
+  const turnRe = /(\d+)\s*\.((?:\s*\[\s*-?\d+\s*,\s*-?\d+\s*\])+)\s*;/g;
+  const turns = [];
+  let m;
+  while ((m = turnRe.exec(raw)) !== null) {
+    if (+m[1] !== turns.length + 1) {
+      return { err: `httx turns must run 1..n — turn ${turns.length + 1} is numbered ${m[1]}` };
+    }
+    const cells = [];
+    const cellRe = /\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]/g;
+    let c;
+    while ((c = cellRe.exec(m[2])) !== null) cells.push([+c[1], +c[2]]);
+    turns.push(cells);
+  }
+  if (!turns.length) return { err: "httx header but no numbered turns" };
+  for (let i = 0; i < turns.length; i++) {
+    if (turns[i].length !== 2 && !(i === turns.length - 1 && turns[i].length === 1)) {
+      return { err: `httx turn ${i + 1} must place two stones (the final turn may place one)` };
+    }
+  }
+  // Every bracketed cell in the text must have landed in a turn — a turn the
+  // regex skipped (say, a missing semicolon) must not silently vanish.
+  const cellCount = (raw.match(/\[\s*-?\d+\s*,\s*-?\d+\s*\]/g) || []).length;
+  const parsed = turns.reduce((n, t) => n + t.length, 0);
+  if (parsed !== cellCount) {
+    return { err: `httx has ${cellCount} cells but only ${parsed} parsed — check the turn separators` };
+  }
+  return { moves: [[0, 0]].concat(turns.flat()) };
+}
+
+/* A hexo.did.science link: their sandbox and finished-game pages. The site
+ * sends no CORS headers, so the position comes through this server's
+ * normalizing proxy (see lab_import.py). */
+const DID_SCIENCE_RE = /hexo\.did\.science\/(sandbox|games)\/([A-Za-z0-9-]{1,64})/;
+
+async function importFromDidScience(match) {
+  const kind = match[1] === "sandbox" ? "sandbox" : "game";
+  const btn = $("pasteApply");
+  btn.disabled = true;
+  toast("importing from hexo.did.science…");
+  let payload;
+  try {
+    payload = await requestJson(
+      `/api/lab/import/didscience?kind=${kind}&id=${encodeURIComponent(match[2])}`);
+  } catch (e) {
+    toast(e.message || "hexo.did.science import failed", true);
+    return;
+  } finally {
+    btn.disabled = false;
+  }
+  if (payload.stones) {
+    loadFreePosition(payload.stones.p0, payload.stones.p1, payload.to_move);
+    toast(`loaded ${payload.name} (free edit — the position is out of turn parity)`);
     return;
   }
-  const moves = parseCells(text);
-  if (moves === null) {
-    toast("moves must read q,r;q,r — one cell per pair", true);
+  const moves = payload.moves.map(m => [+m[0], +m[1]]);
+  if (!replaySequence(moves).ok) {
+    toast("the imported record did not replay as a legal sequence", true);
     return;
+  }
+  cancelBot();
+  if (state.mode !== "sequence") setMode("sequence");
+  setLine(moves);
+  positionChanged();
+  board.resetView();
+  toast(`loaded ${payload.name} · ${moves.length} plies`);
+}
+
+$("pasteApply").addEventListener("click", () => {
+  // Takes a bare move list, a copied lab link (the same list behind a "#m="
+  // prefix), an HTTX document, or a hexo.did.science sandbox/game link.
+  const raw = $("pasteBox").value;
+  const did = DID_SCIENCE_RE.exec(raw);
+  if (did) {
+    importFromDidScience(did);
+    return;
+  }
+  let moves;
+  const httx = parseHttx(raw);
+  if (httx) {
+    if (httx.err) {
+      toast(httx.err, true);
+      return;
+    }
+    moves = httx.moves;
+  } else {
+    const linked = /#m=([^&\s]*)/.exec(raw);
+    const text = (linked ? linked[1] : raw).replace(/\s+/g, "");
+    if (!text) {
+      toast("paste a move list first", true);
+      return;
+    }
+    moves = parseCells(text);
+    if (moves === null) {
+      toast("moves must read q,r;q,r — one cell per pair — or httx", true);
+      return;
+    }
   }
   if (!replaySequence(moves).ok) {
     toast("that move list is not a legal sequence", true);
@@ -1806,6 +1973,22 @@ function renderSolveResult(res, mover, ply) {
     setStatus("searchStatus", "");
     setReadout("solver · forced win",
       `${side} wins by force — proven${lineRead}${nodes}${ms}`);
+    // The proof becomes a line in the strip, forked at the solve ply, so the
+    // step controls walk it. The board keeps the verdict paint until the
+    // user navigates. A line the strip already holds is selected, not
+    // duplicated.
+    if (line.length) {
+      const forked = curMoves().concat(line.map(c => [c.q, c.r]));
+      let idx = state.lines.findIndex(L => L.length === forked.length
+        && L.every((m, i) => m[0] === forked[i][0] && m[1] === forked[i][1]));
+      if (idx === -1) {
+        state.lines.push(forked);
+        idx = state.lines.length - 1;
+      }
+      state.lineIdx = idx;
+      renderLineStrip();
+      toast(`proof line is line ${idx + 1} — step forward to walk it`);
+    }
   } else if (res.status === "loss") {
     setStatus("searchStatus", "");
     setReadout("solver · lost",
@@ -1821,11 +2004,28 @@ function renderSolveResult(res, mover, ply) {
   }
 }
 
+/* The solver budgets, straight from the inputs. Out-of-range values are an
+ * error here — the server would 422 them anyway, never clamp. */
+function solverBudgets() {
+  const nodes = Math.round(+$("slvNodes").value);
+  const secs = +$("slvSecs").value;
+  const line = Math.round(+$("slvLine").value);
+  if (!(nodes >= 1000 && nodes <= 2000000)) return { err: "solver nodes must be 1000 to 2000000" };
+  if (!(secs >= 0.25 && secs <= 120)) return { err: "solver time must be 0.25 to 120 seconds" };
+  if (!(line >= 2 && line <= 100)) return { err: "proof line length must be 2 to 100" };
+  return { node_cap: nodes, budget_ms: Math.round(secs * 1000), line_cap: line };
+}
+
 async function runSolve() {
   if (state.mode !== "sequence" || termWinner !== null || state.bot.busy) return;
   if (!state.ckpt) { setStatus("searchStatus", "no checkpoint catalogue", true); return; }
   if (Date.now() < state.rlUntil) {
     setStatus("searchStatus", "rate-limited — try again shortly", true);
+    return;
+  }
+  const budgets = solverBudgets();
+  if (budgets.err) {
+    setStatus("searchStatus", budgets.err, true);
     return;
   }
   flushRefresh();
@@ -1840,6 +2040,7 @@ async function runSolve() {
     const res = await requestJson("/api/lab/solve", {
       checkpoint_id: state.ckpt,
       actions: moves.map(([q, r]) => ({ q, r })),
+      ...budgets,
     });
     if (state.bot.run !== run) return;
     renderSolveResult(res, mover, moves.length);

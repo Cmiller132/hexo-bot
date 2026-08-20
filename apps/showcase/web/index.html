@@ -6,7 +6,7 @@
 <title>shrimp &mdash; instrument</title>
 <!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
      in app.js whenever the bundle changes incompatibly -->
-<link rel="stylesheet" href="./style.css?v=24">
+<link rel="stylesheet" href="./style.css?v=25">
 </head>
 <body>
 
@@ -218,6 +218,8 @@
         <button class="line-btn deep-btn" id="solveBtn" disabled>Run forced win solver</button>
         <div class="search-phase" id="deepPhase" role="status" aria-live="polite" hidden></div>
         <div class="deep-note" id="deepNote" hidden></div>
+        <!-- after a solve: this position — and a proven line, pre-forked — in the lab -->
+        <a class="line-btn deep-btn" id="solveLabLink" target="_blank" rel="noopener" hidden>Explore the proof in the lab</a>
       </div>
 
       <div class="sec">
@@ -424,6 +426,6 @@ print(result["result"])        # {"winner": ..., "termination": ...}</code></pre
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=30"></script>
+<script type="module" src="./app.js?v=31"></script>
 </body>
 </html>

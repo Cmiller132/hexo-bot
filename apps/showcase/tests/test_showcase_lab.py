@@ -488,3 +488,37 @@ def test_lab_eval_payload_scrubs_non_finite(monkeypatch):
     assert all(v is None for v in payload["stv"].values())
     assert payload["moves_left"] is not None  # untouched head still decodes
     json.dumps(payload, allow_nan=False)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# solve: request budgets
+# ---------------------------------------------------------------------------
+
+
+def lab_solve(client, body: dict, expect: int = 200) -> dict:
+    resp = client.post("/api/lab/solve", json=body, headers=fresh_ip())
+    assert resp.status_code == expect, resp.text
+    return resp.json()
+
+
+def test_lab_solve_accepts_request_budgets(client):
+    """The knobs ride the request; line_cap is exact so a floor-level request
+    cannot report a longer line, and the verdict stays one of the four."""
+    payload = lab_solve(client, {
+        "checkpoint_id": "tiny", "actions": cells(SEQ3),
+        "node_cap": 1_000, "budget_ms": 250, "line_cap": 2,
+    })
+    assert payload["checkpoint_id"] == "tiny"
+    assert payload["status"] in ("win", "loss", "unknown", "timeout")
+    assert len(payload["line"] or []) <= 2
+
+
+def test_lab_solve_rejects_out_of_range_budgets(client):
+    """Out-of-range budgets are a 422, never clamped."""
+    base = {"checkpoint_id": "tiny", "actions": cells(SEQ3)}
+    lab_solve(client, {**base, "node_cap": 999}, expect=422)
+    lab_solve(client, {**base, "node_cap": 2_000_001}, expect=422)
+    lab_solve(client, {**base, "budget_ms": 100}, expect=422)
+    lab_solve(client, {**base, "budget_ms": 200_000}, expect=422)
+    lab_solve(client, {**base, "line_cap": 1}, expect=422)
+    lab_solve(client, {**base, "line_cap": 101}, expect=422)

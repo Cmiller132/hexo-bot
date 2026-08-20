@@ -413,6 +413,9 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 }
 .line-btn:hover:not(:disabled){color:var(--accent);border-color:var(--accent-dim)}
 .line-btn:disabled{opacity:.4;cursor:default}
+/* the same face on an anchor (the solver's explore-in-lab handoff) */
+a.line-btn{display:block;box-sizing:border-box;text-align:center;text-decoration:none;cursor:pointer}
+a.line-btn[hidden]{display:none}
 
 /* nickname prompt: appears inline in the game-over panel only */
 .nick-form{margin-top:14px;padding-top:12px;border-top:1px solid var(--line-soft)}

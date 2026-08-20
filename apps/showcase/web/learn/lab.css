@@ -383,6 +383,24 @@
 .btn-row{display:flex;gap:8px}
 .btn-row .line-btn{flex:1}
 
+/* solver budgets: three compact labeled numbers under the run buttons */
+.slv-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+.slv-l{
+  display:flex;align-items:center;gap:5px;
+  font-family:var(--mono);font-size:9.5px;color:var(--dim);
+  text-transform:uppercase;letter-spacing:0.06em;
+}
+.slv-l input{
+  width:72px;
+  font-family:var(--mono);font-size:11px;
+  color:var(--text);
+  background:var(--seam);
+  border:1px solid var(--line);
+  padding:4px 6px;
+  outline:none;
+}
+.slv-l input:focus{border-color:var(--accent-dim)}
+
 /* checkpoint model-grouped picker (same idiom as ../style.css #ckptList) */
 #ckptList{max-height:220px;overflow-y:auto}
 #ckptList::-webkit-scrollbar{width:6px}

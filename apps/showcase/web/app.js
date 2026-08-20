@@ -1804,6 +1804,8 @@ function clearDeepLook() {
   anaBoard.clearPreviewStones();
   setDeepPhase("");
   setDeepNote("");
+  const labLink = $("solveLabLink");
+  if (labLink) labLink.hidden = true;
   updateDeepButtons();
 }
 
@@ -1919,6 +1921,21 @@ function renderSolve(res, mover, p) {
     setDeepNote(`solver hit its clock before an answer${nodes}${ms}`);
   } else {
     setDeepNote(`no forced win found for ${side}${nodes}${ms}`);
+  }
+  // Hand the verdict to the lab: the position via #m=, and on a win the
+  // proof line via &pv= — the lab opens with the line pre-forked in its
+  // strip so the step controls walk it.
+  const labLink = $("solveLabLink");
+  if (labLink) {
+    const base = ana.moves.slice(0, p).map(m => m.q + "," + m.r).join(";");
+    let hash = "#m=" + base;
+    if (res.status === "win" && Array.isArray(res.line) && res.line.length) {
+      hash += "&pv=" + res.line.map(c => c.q + "," + c.r).join(";");
+    }
+    const url = new URL("learn/lab.html", location.href);
+    if (ana.ckpt) url.search = "?checkpoint_id=" + encodeURIComponent(ana.ckpt);
+    labLink.href = url.pathname + url.search + hash;
+    labLink.hidden = false;
   }
 }
 
