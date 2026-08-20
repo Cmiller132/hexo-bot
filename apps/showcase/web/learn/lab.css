@@ -401,6 +401,16 @@
 }
 .slv-l input:focus{border-color:var(--accent-dim)}
 
+/* saved solve summary for the active line, under the strip */
+.line-note{
+  font-family:var(--mono);font-size:9.5px;line-height:1.5;
+  color:var(--dim);
+  border-left:2px solid var(--accent-dim);
+  padding:3px 0 3px 8px;
+  margin-top:6px;
+}
+.ls-solved .ls-pick{color:var(--accent)}
+
 /* checkpoint model-grouped picker (same idiom as ../style.css #ckptList) */
 #ckptList{max-height:220px;overflow-y:auto}
 #ckptList::-webkit-scrollbar{width:6px}

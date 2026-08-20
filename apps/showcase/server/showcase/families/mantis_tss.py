@@ -422,35 +422,67 @@ def _timed_deep_solve(
 
 
 def _win_now_move(
-    legal: list[tuple[int, int]], classes: list[int] | None
+    legal: list[tuple[int, int]], classes: list[int] | None,
+    replay: Any = None, path: list[tuple[int, int]] | None = None,
 ) -> tuple[int, int] | None:
-    """The first class-1 (win-now) cell of a λ¹ read, or None."""
+    """Pick a class-1 (win-now) cell of a λ¹ read, or None.
+
+    With two placements per turn, λ¹ can class EVERY cell win-now once the
+    win is unstoppable (waste a stone, complete with the next) — and the
+    first cell in legal order is then an arbitrary far corner. Given a
+    ``replay`` callable the pick prefers a completion that ends the game on
+    this very stone; otherwise it falls back to the first win-now cell,
+    which is a genuine threat when the set is selective.
+    """
     if classes is None:
         return None
-    for (q, r), cls in zip(legal, classes):
-        if cls == 1:
-            return (int(q), int(r))
-    return None
+    wins = [(int(q), int(r)) for (q, r), cls in zip(legal, classes) if cls == 1]
+    if not wins:
+        return None
+    if replay is not None and path is not None:
+        for cell in wins:
+            if replay(path + [cell]).is_terminal:
+                return cell
+    return wins[0]
+
+
+def _hex_distance(a: tuple[int, int], b: tuple[int, int]) -> int:
+    dq, dr = a[0] - b[0], a[1] - b[1]
+    return (abs(dq) + abs(dr) + abs(dq + dr)) // 2
 
 
 def _walk_line(
     probe: Any, replay: Any, winner: int, first: tuple[int, int],
     config: TssConfig, deadline: float, line_cap: int,
-) -> tuple[list[tuple[int, int]], bool, int]:
-    """Extend a proven root move while the proof stays a single line.
+) -> tuple[list[tuple[int, int]], int, int]:
+    """Walk a proven root move down to the end of the game.
 
     Hexo turns place two stones, so the walk keys every ply on whose placement
     it is, not on alternation. On the winner's plies the next move must be
-    certified (λ¹ win-now, else a verified deep solve); on the defender's
-    plies the walk continues only while exactly one reply survives the λ¹
-    guard. Anything else — a branchy defense, an inert guard, the clock, the
-    depth cap — ends the line. A partial line is a prefix of a proof, never a
-    guess.
+    certified (λ¹ win-now, else a verified deep solve) — an uncertified ply,
+    the clock, or the depth cap ends the line early. On the defender's plies
+    the walk plays the first reply that survives the λ¹ guard (the first
+    legal reply when the guard is inert or refutes everything) and keeps
+    going until the winning six lands.
+
+    Returns ``(line, forced_through, nodes)``. ``forced_through`` counts the
+    line's leading plies while every defender reply was uniquely forced —
+    beyond it the defense had choices and the line is a certified
+    demonstration against one of them, not the only proof path.
+
+    The walk extends only while the winner's threats are LIVE: a defender ply
+    whose guard refutes nothing means the previous winner move made no
+    threat, and continuing from there just waltzes (the win survives any pair
+    of quiet moves, so neither the certified solver move nor a picked defense
+    makes progress — observed as stones marching to infinity). Quiet
+    positions end the line; so do an uncertifiable winner ply, a λ¹ win-now
+    FOR THE DEFENDER (it would contradict the certified win above it), the
+    clock, and the depth cap.
     """
     nodes = 0
     line = [first]
     path = [first]
-    forced = True
+    forced_through: int | None = None  # None while the defense stays forced
     while len(line) < line_cap and time.monotonic() < deadline:
         position = replay(path)
         if position.is_terminal:
@@ -461,7 +493,7 @@ def _walk_line(
         if int(position.current_player) == winner:
             nxt = None
             if read["verdict"] is not None and float(read["verdict"]) > 0.0:
-                nxt = _win_now_move(legal, classes)
+                nxt = _win_now_move(legal, classes, replay, path)
             if nxt is None:
                 out = _timed_deep_solve(
                     probe, path, config.root_node_cap,
@@ -477,22 +509,30 @@ def _walk_line(
             line.append(nxt)
             path.append(nxt)
         else:
-            if classes is None or any(cls == 1 for cls in classes):
-                # An inert guard leaves the defense unconstrained; a defender
-                # win-now means this position was never part of the proof.
-                forced = False
+            if classes is None:
+                break
+            if any(cls == 1 for cls in classes):
                 break
             keep = [
                 (int(q), int(r))
                 for (q, r), cls in zip(legal, classes)
                 if cls != -1
             ]
-            if len(keep) != 1:
-                forced = False
-                break
-            line.append(keep[0])
-            path.append(keep[0])
-    return line, forced, nodes
+            if len(keep) == len(legal):
+                break  # nothing refuted: the threats went quiet
+            if len(keep) != 1 and forced_through is None:
+                forced_through = len(line)
+            if keep:
+                nxt = keep[0]
+            else:
+                # Every reply is refuted: any reply demonstrates, so the
+                # defense at least fights near the action rather than
+                # conceding from a far corner.
+                cells = [(int(q), int(r)) for q, r in legal]
+                nxt = min(cells, key=lambda c: _hex_distance(c, line[-1]))
+            line.append(nxt)
+            path.append(nxt)
+    return line, (len(line) if forced_through is None else forced_through), nodes
 
 
 def solve_position(
@@ -501,10 +541,11 @@ def solve_position(
     """One root verdict for the solver view: λ¹, then the verified deep solve.
 
     Returns the verdict for the side to move, the proven move where one
-    exists, the λ¹ guard classes over every legal move, and a forced line
-    walked from the proven move (see ``_walk_line``). The whole call shares
-    one wall clock (``root_wall_budget_ms``): the root solve takes what it
-    needs and the line walk gets the remainder.
+    exists, the λ¹ guard classes over every legal move, and a line walked
+    from the proven move to the end of the game (see ``_walk_line``;
+    ``forced_through`` counts its uniquely-forced prefix). The whole call
+    shares one wall clock (``root_wall_budget_ms``): the root solve takes
+    what it needs and the line walk gets the remainder.
     """
     from hexfield_eq import _rust
     from mantisnet import _rust as mantis
@@ -528,7 +569,7 @@ def solve_position(
         status = "win" if float(read["verdict"]) > 0.0 else "loss"
         source = "lambda1"
         if status == "win":
-            proven = _win_now_move(legal, classes)
+            proven = _win_now_move(legal, classes, replay, [])
     else:
         out = _timed_deep_solve(
             probe, [], config.root_node_cap, deadline - time.monotonic()
@@ -544,9 +585,9 @@ def solve_position(
                 proven = (int(q), int(r))
 
     line: list[tuple[int, int]] = []
-    line_forced = True
+    forced_through = 0
     if proven is not None:
-        line, line_forced, walk_nodes = _walk_line(
+        line, forced_through, walk_nodes = _walk_line(
             probe, replay, int(root.current_player), proven,
             config, deadline, line_cap,
         )
@@ -557,7 +598,7 @@ def solve_position(
         "source": source,
         "proven": {"q": proven[0], "r": proven[1]} if proven else None,
         "line": [{"q": q, "r": r} for q, r in line],
-        "line_forced": line_forced,
+        "forced_through": forced_through,
         "guard": (
             None
             if classes is None

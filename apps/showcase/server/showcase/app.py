@@ -200,8 +200,9 @@ class LabSolveRequest(BaseModel):
     # endpoint (defaults mirror TssConfig); out-of-range values are a 422,
     # never clamped. `budget_ms` is the wall clock for the WHOLE call — the
     # root solve takes what it needs and the line walk gets the remainder.
-    node_cap: int = Field(default=20_000, ge=1_000, le=2_000_000)
-    budget_ms: int = Field(default=3_000, ge=250, le=120_000)
+    # The node ceiling is effectively "no cap": the wall clock binds first.
+    node_cap: int = Field(default=20_000, ge=1_000, le=100_000_000)
+    budget_ms: int = Field(default=3_000, ge=250, le=600_000)
     line_cap: int = Field(default=24, ge=2, le=100)
 
 

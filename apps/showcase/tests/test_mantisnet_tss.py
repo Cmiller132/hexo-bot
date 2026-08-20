@@ -586,16 +586,24 @@ def test_solve_position_proves_the_missed_wins(prefix, proven):
     from mantisnet import _rust
     from showcase.families.mantis_tss import TssConfig, solve_position
 
-    out = solve_position(prefix, TssConfig())
+    out = solve_position(prefix, TssConfig(), line_cap=100)
     assert out["status"] == "win"
     assert out["source"] == "deep"
     assert (out["proven"]["q"], out["proven"]["r"]) == proven
     assert out["line"] and (out["line"][0]["q"], out["line"][0]["r"]) == proven
     assert out["nodes"] > 0
     assert out["ms"] > 0
-    # A reported line is a prefix of a proof, never a guess: it must replay
-    # as legal plies from the solved position.
-    _rust.Position.replay(list(prefix) + [(c["q"], c["r"]) for c in out["line"]])
+    # The line must replay as legal plies from the solved position, and the
+    # walk runs the win down to the board: it ends on the winning six. (The
+    # terminal assertion is also the anti-waltz pin — the old walk once
+    # marched quiet positions toward infinity and never finished.)
+    end = _rust.Position.replay(
+        list(prefix) + [(c["q"], c["r"]) for c in out["line"]]
+    )
+    assert end.is_terminal, "the demonstration line must land the win"
+    # The defense is uniquely forced for a leading stretch and never longer
+    # than the line itself.
+    assert 1 <= out["forced_through"] <= len(out["line"])
 
 
 def test_solve_position_answers_a_win_now_from_lambda1():

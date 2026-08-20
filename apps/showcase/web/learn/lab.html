@@ -6,7 +6,7 @@
 <title>Hexo &mdash; model lab</title>
 <meta name="description" content="Live sandbox: build a Hexo position, play the bot, and inspect the selected model family's inputs, evaluation, available internals, search, and forced-win solver.">
 <link rel="stylesheet" href="learn.css">
-<link rel="stylesheet" href="lab.css?v=5">
+<link rel="stylesheet" href="lab.css?v=6">
 </head>
 <body>
 
@@ -96,6 +96,7 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
       <div class="ls-chips" id="lineChips"></div>
       <span class="strip-hint">step back, then play another move to make a new line</span>
     </div>
+    <div class="line-note" id="lineNote" hidden></div>
 
     <div class="ed-note" id="freeNote" hidden>
       free edit lets you place, recolor, or <b>erase</b> stones, and keeps the
@@ -311,10 +312,10 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
         </div>
         <div class="slv-row" aria-label="Solver budgets">
           <label class="slv-l">nodes
-            <input type="number" id="slvNodes" min="1000" max="2000000" step="1000" value="20000">
+            <input type="number" id="slvNodes" min="1000" max="100000000" step="1000" value="20000">
           </label>
           <label class="slv-l">time&nbsp;s
-            <input type="number" id="slvSecs" min="0.25" max="120" step="0.25" value="3">
+            <input type="number" id="slvSecs" min="0.25" max="600" step="0.25" value="3">
           </label>
           <label class="slv-l">line
             <input type="number" id="slvLine" min="2" max="100" step="1" value="24">
@@ -332,10 +333,14 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
         <p class="mod-note">
           the solver is the engine&rsquo;s own threat-space proof search, not
           the network. it answers for the side to move. a proven win draws its
-          line on the board as pale stones and adds it to the line strip, so
-          the step controls walk it. cells the guard refutes take a dark veil.
-          the budget fields set the solver&rsquo;s node cap, its wall clock,
-          and the longest line it reports.
+          line on the board as pale stones and adds it to the line strip with
+          the solve summary saved on it, so the step controls walk it and the
+          summary shows whenever that line is on the board. the line runs to
+          the winning six when the clock allows; the readout says how long the
+          defense stays forced &mdash; past that point the defense had
+          choices, and the line answers one of them. cells the guard refutes
+          take a dark veil. the budget fields set the solver&rsquo;s node cap,
+          its wall clock, and the longest line it reports.
         </p>
       </div>
     </div>
@@ -347,6 +352,6 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./lab.js?v=11"></script>
+<script type="module" src="./lab.js?v=12"></script>
 </body>
 </html>

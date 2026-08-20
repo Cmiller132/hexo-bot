@@ -1911,8 +1911,10 @@ function renderSolve(res, mover, p) {
     anaBoard.setPreviewStones(line.map((c, i) => ({
       q: c.q, r: c.r, color: plyColor(p + 1 + i), tss: i === 0,
     })));
+    const ft = Number.isFinite(res.forced_through) ? res.forced_through : 0;
     const lineRead = line.length > 1
-      ? ` · ${line.length}-ply ${res.line_forced ? "forced line" : "line (defense branches)"}`
+      ? ` · ${line.length}-ply line (${ft >= line.length
+          ? "forced to the end" : `defense forced through ${ft}`})`
       : "";
     setDeepNote(`forced win for ${side} — proven${lineRead}${nodes}${ms}`);
   } else if (res.status === "loss") {

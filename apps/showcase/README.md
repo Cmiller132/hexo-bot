@@ -126,15 +126,18 @@ telemetry events in the public live-search schema (`bare_policy`,
 `candidate_set`, `search_round`, `search_complete`) so a client can replay the
 search in the live viewer; only families with live telemetry return them.
 `/api/lab/solve` takes `{checkpoint_id, actions}` plus optional budgets
-`node_cap` (1000–2000000, default 20000), `budget_ms` (250–120000, default
+`node_cap` (1000–100000000, default 20000 — the wall clock binds first, so
+the ceiling is effectively "no cap"), `budget_ms` (250–600000, default
 3000 — the wall clock for the whole call) and `line_cap` (2–100, default 24);
 out-of-range budgets are a 422, never clamped. It answers
 `{status: win|loss|unknown|timeout, source: lambda1|deep, proven: {q,r}|null,
-line: [{q,r}, …], line_forced, guard: [{q,r,cls}]|null, nodes, ms}` — the
+line: [{q,r}, …], forced_through, guard: [{q,r,cls}]|null, nodes, ms}` — the
 engine-level Threat-Space solver at the request's budgets: λ¹
-first, then the verified deep root solve, then a forced line walked from the
-proven move while the defense has exactly one λ¹-surviving reply (`cls`: 1
-win-now, -1 refuted, else neutral). A terminal position is a 422.
+first, then the verified deep root solve, then a line walked from the proven
+move to the end of the game — every winner ply certified, the defense playing
+its first λ¹-surviving reply once it has choices; `forced_through` counts the
+leading plies while the defense was uniquely forced (`cls`: 1 win-now, -1
+refuted, else neutral). A terminal position is a 422.
 
 Access model: mutating routes always require the session cookie; reading an
 ACTIVE game requires it too (403 otherwise). FINISHED games are public by

@@ -517,8 +517,8 @@ def test_lab_solve_rejects_out_of_range_budgets(client):
     """Out-of-range budgets are a 422, never clamped."""
     base = {"checkpoint_id": "tiny", "actions": cells(SEQ3)}
     lab_solve(client, {**base, "node_cap": 999}, expect=422)
-    lab_solve(client, {**base, "node_cap": 2_000_001}, expect=422)
+    lab_solve(client, {**base, "node_cap": 100_000_001}, expect=422)
     lab_solve(client, {**base, "budget_ms": 100}, expect=422)
-    lab_solve(client, {**base, "budget_ms": 200_000}, expect=422)
+    lab_solve(client, {**base, "budget_ms": 600_001}, expect=422)
     lab_solve(client, {**base, "line_cap": 1}, expect=422)
     lab_solve(client, {**base, "line_cap": 101}, expect=422)

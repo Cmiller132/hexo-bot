@@ -96,6 +96,7 @@ async function requestJson(path, body) {
 const state = {
   mode: "sequence",              // "sequence" | "free"
   lines: [[]],                   // sequence variations, each [[q, r], ...]
+  lineNotes: [null],             // per-line saved solve summary (parallel to lines)
   lineIdx: 0,                    // the line the board shows
   cursor: 0,                     // ply cursor into that line
   free: { p0: [], p1: [], toMove: 0 },
@@ -209,6 +210,7 @@ const curMoves = () => activeLine().slice(0, state.cursor);
  * Presets, shared links, pasted move lists and game imports all land here. */
 function setLine(moves) {
   state.lines = [moves.slice()];
+  state.lineNotes = [null];
   state.lineIdx = 0;
   state.cursor = moves.length;
 }
@@ -223,6 +225,7 @@ function playMove(q, r) {
     state.cursor++;
   } else if (state.cursor < line.length) {
     state.lines.push(line.slice(0, state.cursor).concat([[q, r]]));
+    state.lineNotes.push(null);
     state.lineIdx = state.lines.length - 1;
     state.cursor = activeLine().length;
     toast(`forked line ${state.lineIdx + 1}`);
@@ -256,6 +259,7 @@ function deleteLine(i) {
   }
   cancelBot();
   state.lines.splice(i, 1);
+  state.lineNotes.splice(i, 1);
   if (state.lineIdx > i || state.lineIdx >= state.lines.length) state.lineIdx--;
   state.cursor = activeLine().length;
   positionChanged();
@@ -555,16 +559,23 @@ function renderLineStrip() {
   $("plyRead").textContent = state.cursor + "/" + activeLine().length;
   $("stepBack").disabled = state.cursor === 0;
   $("stepFwd").disabled = state.cursor >= activeLine().length;
+  // The active line's saved solve summary rides under the strip, so a
+  // reviewed line explains itself whenever it is on the board.
+  const note = state.lineNotes[state.lineIdx] || "";
+  const noteEl = $("lineNote");
+  noteEl.textContent = note;
+  noteEl.hidden = !note;
   const chips = $("lineChips");
   chips.textContent = "";
   state.lines.forEach((line, i) => {
     const chip = document.createElement("span");
-    chip.className = "ls-chip" + (i === state.lineIdx ? " sel" : "");
+    chip.className = "ls-chip" + (i === state.lineIdx ? " sel" : "")
+      + (state.lineNotes[i] ? " ls-solved" : "");
     const pick = document.createElement("button");
     pick.className = "ls-pick";
     pick.dataset.i = i;
     pick.textContent = `line ${i + 1} · ${line.length}`;
-    pick.title = `Show line ${i + 1}`;
+    pick.title = state.lineNotes[i] || `Show line ${i + 1}`;
     const del = document.createElement("button");
     del.className = "ls-del";
     del.dataset.i = i;
@@ -623,6 +634,7 @@ function applyHash(hash) {
       const full = moves.concat(pv);
       if (replaySequence(full).ok) {
         state.lines.push(full);
+        state.lineNotes.push("proof line handed off from the analysis solver");
         state.lineIdx = 1;
         state.cursor = moves.length;
       } else {
@@ -776,6 +788,7 @@ $("presetSel").addEventListener("change", function () {
     // The recorded solve continuation as a second, deletable line; the
     // dropdown still lands on the puzzle position itself.
     state.lines.push(moves.concat(JSON.parse(opt.dataset.line)));
+    state.lineNotes.push(null);
   }
   positionChanged();
   board.resetView();
@@ -1953,7 +1966,7 @@ function paintGuard(guard) {
  * Line colors follow the engine's two-stone turn structure from this ply:
  * the line's i-th move is placement record `ply + i`, and the proven first
  * move pulses. */
-function renderSolveResult(res, mover, ply) {
+function renderSolveResult(res, mover, ply, budgets) {
   const side = mover === 0 ? "blue" : "red";
   const nodes = Number.isFinite(res.nodes) && res.nodes > 0
     ? ` · ${res.nodes.toLocaleString()} nodes` : "";
@@ -1967,24 +1980,34 @@ function renderSolveResult(res, mover, ply) {
     board.setPreviewStones(line.map((c, i) => ({
       q: c.q, r: c.r, color: LF.recordPlayer(ply + i), tss: i === 0,
     })));
+    const ft = Number.isFinite(res.forced_through) ? res.forced_through : 0;
     const lineRead = line.length > 1
-      ? ` · ${line.length}-ply ${res.line_forced ? "forced line" : "line (defense branches)"}`
+      ? ` · ${line.length}-ply line (${ft >= line.length
+          ? "forced to the end" : `defense forced through ${ft}`})`
       : "";
     setStatus("searchStatus", "");
     setReadout("solver · forced win",
       `${side} wins by force — proven${lineRead}${nodes}${ms}`);
     // The proof becomes a line in the strip, forked at the solve ply, so the
-    // step controls walk it. The board keeps the verdict paint until the
-    // user navigates. A line the strip already holds is selected, not
-    // duplicated.
+    // step controls walk it, and it carries the solve summary for review.
+    // The board keeps the verdict paint until the user navigates. A line the
+    // strip already holds is selected, not duplicated.
     if (line.length) {
       const forked = curMoves().concat(line.map(c => [c.q, c.r]));
       let idx = state.lines.findIndex(L => L.length === forked.length
         && L.every((m, i) => m[0] === forked[i][0] && m[1] === forked[i][1]));
       if (idx === -1) {
         state.lines.push(forked);
+        state.lineNotes.push(null);
         idx = state.lines.length - 1;
       }
+      const budgetRead = budgets
+        ? ` · budgets ${budgets.node_cap.toLocaleString()} nodes / ${(budgets.budget_ms / 1000)}s / ${budgets.line_cap} ply`
+        : "";
+      state.lineNotes[idx] =
+        `solved at ply ${ply}: ${side} wins by force — ${line.length}-ply line, `
+        + `${ft >= line.length ? "forced to the end" : `defense forced through ${ft}`}`
+        + `${nodes}${ms}${budgetRead}`;
       state.lineIdx = idx;
       renderLineStrip();
       toast(`proof line is line ${idx + 1} — step forward to walk it`);
@@ -2010,8 +2033,8 @@ function solverBudgets() {
   const nodes = Math.round(+$("slvNodes").value);
   const secs = +$("slvSecs").value;
   const line = Math.round(+$("slvLine").value);
-  if (!(nodes >= 1000 && nodes <= 2000000)) return { err: "solver nodes must be 1000 to 2000000" };
-  if (!(secs >= 0.25 && secs <= 120)) return { err: "solver time must be 0.25 to 120 seconds" };
+  if (!(nodes >= 1000 && nodes <= 100000000)) return { err: "solver nodes must be 1000 to 100000000" };
+  if (!(secs >= 0.25 && secs <= 600)) return { err: "solver time must be 0.25 to 600 seconds" };
   if (!(line >= 2 && line <= 100)) return { err: "proof line length must be 2 to 100" };
   return { node_cap: nodes, budget_ms: Math.round(secs * 1000), line_cap: line };
 }
@@ -2043,7 +2066,7 @@ async function runSolve() {
       ...budgets,
     });
     if (state.bot.run !== run) return;
-    renderSolveResult(res, mover, moves.length);
+    renderSolveResult(res, mover, moves.length, budgets);
   } catch (e) {
     if (e.status === 429) state.rlUntil = Date.now() + 15000;
     if (state.bot.run !== run) return;
