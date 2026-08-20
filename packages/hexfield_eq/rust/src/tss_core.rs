@@ -100,6 +100,16 @@ pub struct SolveCaps {
     /// Hard ceiling on transposition-table + cache bytes (the WSL host kills
     /// unbounded growth; §11). The solver must account and stay under it.
     pub tt_bytes_cap: usize,
+    /// Hard ceiling on ONE attempt's accounted working set: the wide PN
+    /// arena, its child edges and retained keys, the deferred frontier, and
+    /// the position index together. The index cap above only stops indexing
+    /// new keys; without this ceiling the arena itself grows without bound
+    /// (a 100M-node solve is tens of GB). Exhaustion exits through the same
+    /// paths as `node_cap` — UNKNOWN, never a verdict — and the accounting
+    /// is logical byte arithmetic, never an allocator or RSS read, so solves
+    /// stay deterministic (§2.6). Attempts run sequentially and each drops
+    /// its search before the next, so this also bounds the solve's peak.
+    pub mem_bytes_cap: usize,
     /// Absolute placement index of the semantic proof deadline.  This is
     /// deliberately distinct from `node_cap` and the structural depth guard:
     /// zone obligations and typed leaf resolutions are statements about game
@@ -170,6 +180,10 @@ pub struct SolveStats {
     pub tt_evictions: u64,
     /// TT/index insertions refused because the caller's byte cap was full.
     pub tt_admission_rejections: u64,
+    /// Attempts halted by `SolveCaps::mem_bytes_cap` (the working-set
+    /// ceiling). Nonzero means the Unknown is memory-bound, not node-bound —
+    /// the signal a caller surfaces as "hit the memory ceiling".
+    pub mem_stops: u64,
     /// Exact-key positive-fragment queries made by the wide solver.
     pub fragment_lookups: u64,
     /// Queries that passed full-key, claimant, horizon, and depth checks.
@@ -201,6 +215,7 @@ impl SolveStats {
         self.tt_admission_rejections = self
             .tt_admission_rejections
             .saturating_add(part.tt_admission_rejections);
+        self.mem_stops = self.mem_stops.saturating_add(part.mem_stops);
         self.fragment_lookups = self.fragment_lookups.saturating_add(part.fragment_lookups);
         self.fragment_hits = self.fragment_hits.saturating_add(part.fragment_hits);
         self.fragment_imports = self.fragment_imports.saturating_add(part.fragment_imports);

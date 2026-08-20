@@ -76,6 +76,19 @@ class TssConfig:
                          own clock: the root solve is worth waiting for after
                          the search has decided, and must never stall a move
                          past this.
+    solver_mem_bytes     HARD ceiling on one solve's accounted Rust working
+                         set (PN arena + transposition index). A solve that
+                         reaches it returns "unknown" with ``mem_stopped``
+                         set — never a verdict, and never tens of GB of PN
+                         tree on the host. Applies to every solve this config
+                         reaches: leaf, root, and the solver endpoint.
+    unforcing            select the wider ``round3_consume`` engine: the
+                         attacker may spend quiet (non-threat-creating)
+                         turns, so it proves wins the forcing-only engine
+                         structurally cannot — at orders of magnitude more
+                         branching. OFF is the serving configuration; this
+                         toggle exists for offline/lab study and never rides
+                         a request.
     """
 
     enabled: bool = True
@@ -85,6 +98,8 @@ class TssConfig:
     workers: int = 3
     wall_budget_ms: int = 1500
     root_wall_budget_ms: int = 3000
+    solver_mem_bytes: int = 1_610_612_736  # 1.5 GiB
+    unforcing: bool = False
 
     def __post_init__(self) -> None:
         if self.node_cap < 1:
@@ -106,6 +121,10 @@ class TssConfig:
         if self.root_wall_budget_ms < 1:
             raise ValueError(
                 f"tss root_wall_budget_ms must be >= 1, got {self.root_wall_budget_ms}"
+            )
+        if self.solver_mem_bytes < (1 << 20):
+            raise ValueError(
+                f"tss solver_mem_bytes must be >= 1 MiB, got {self.solver_mem_bytes}"
             )
 
     @classmethod
@@ -131,6 +150,10 @@ class TssConfig:
             root_wall_budget_ms=int(
                 raw.get("root_wall_budget_ms", defaults.root_wall_budget_ms)
             ),
+            solver_mem_bytes=int(
+                raw.get("solver_mem_bytes", defaults.solver_mem_bytes)
+            ),
+            unforcing=bool(raw.get("unforcing", defaults.unforcing)),
         )
 
     def with_enabled(self, enabled: bool) -> "TssConfig":
@@ -329,7 +352,11 @@ class TssRunner:
                 and self._remaining() > 0.0
             ):
                 future = self._leaf_pool.submit(
-                    self._probe.deep_solve, list(path), self._config.node_cap
+                    self._probe.deep_solve,
+                    list(path),
+                    self._config.node_cap,
+                    self._config.solver_mem_bytes,
+                    self._config.unforcing,
                 )
                 self._counters["deep_attempted"] += 1
             plans.append(LeafPlan(classes, verdict, future))
@@ -383,7 +410,10 @@ class TssRunner:
         self, path: list[tuple[int, int]], node_cap: int
     ) -> tuple[dict[str, Any], float]:
         started = time.monotonic()
-        out = self._probe.deep_solve(list(path), node_cap)
+        out = self._probe.deep_solve(
+            list(path), node_cap, self._config.solver_mem_bytes,
+            self._config.unforcing,
+        )
         return out, (time.monotonic() - started) * 1000.0
 
     def _remaining(self) -> float:
@@ -406,7 +436,8 @@ _CANCEL_GRACE_S = 15.0
 
 
 def _timed_deep_solve(
-    probe: Any, path: list[tuple[int, int]], node_cap: int, remaining_s: float
+    probe: Any, path: list[tuple[int, int]], node_cap: int, mem_bytes: int,
+    unforcing: bool, remaining_s: float,
 ) -> dict[str, Any] | None:
     """One verified deep solve on its own thread, cancelled past the clock.
 
@@ -421,7 +452,9 @@ def _timed_deep_solve(
         return None
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tss-solve")
     try:
-        future = pool.submit(probe.deep_solve, list(path), node_cap)
+        future = pool.submit(
+            probe.deep_solve, list(path), node_cap, mem_bytes, unforcing
+        )
         try:
             return future.result(timeout=remaining_s)
         except _FutureTimeout:
@@ -512,8 +545,8 @@ def _walk_line(
                 nxt = _win_now_move(legal, classes, replay, path)
             if nxt is None:
                 out = _timed_deep_solve(
-                    probe, path, config.root_node_cap,
-                    deadline - time.monotonic(),
+                    probe, path, config.root_node_cap, config.solver_mem_bytes,
+                    config.unforcing, deadline - time.monotonic(),
                 )
                 if out is not None:
                     nodes += int(out["nodes"])
@@ -581,6 +614,8 @@ def solve_position(
     nodes = 0
     proven: tuple[int, int] | None = None
 
+    mem_stopped = False
+    mem_peak_mb = 0.0
     if read["verdict"] is not None:
         status = "win" if float(read["verdict"]) > 0.0 else "loss"
         source = "lambda1"
@@ -588,9 +623,13 @@ def solve_position(
             proven = _win_now_move(legal, classes, replay, [])
     else:
         out = _timed_deep_solve(
-            probe, [], config.root_node_cap, deadline - time.monotonic()
+            probe, [], config.root_node_cap, config.solver_mem_bytes,
+            config.unforcing, deadline - time.monotonic(),
         )
         source = "deep"
+        if out is not None:
+            mem_stopped = bool(out.get("mem_stopped", False))
+            mem_peak_mb = round(int(out.get("mem_peak_bytes", 0)) / 1048576, 1)
         if out is None or out.get("timed_out"):
             # The clock, not the node cap, ended the solve; a harvested
             # cancel still reports the work it did.
@@ -628,5 +667,7 @@ def solve_position(
             ]
         ),
         "nodes": nodes,
+        "mem_stopped": mem_stopped,
+        "mem_peak_mb": mem_peak_mb,
         "ms": round((time.monotonic() - started) * 1000.0, 3),
     }

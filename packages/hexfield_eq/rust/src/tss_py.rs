@@ -21,9 +21,9 @@
 //! Solver configuration is the live main_5 serve configuration
 //! (`configs/hexfield_eq_main_5.toml`): goal Both, dual pass ON, leaf j2near
 //! OFF, Group-2 OFF, zero loss reserve, zones OFF, unbounded semantic horizon
-//! (the node cap is the only budget). Only the node cap is a caller knob;
-//! exposing the rest would be a second solver configuration to keep in step
-//! with the first.
+//! (the node cap is the only clock-free budget). The node cap and the memory
+//! budget are the only caller knobs; exposing the rest would be a second
+//! solver configuration to keep in step with the first.
 //!
 //! Both queries release the GIL for the whole computation, so a caller's
 //! thread pool overlaps solves with its own model forward.
@@ -41,7 +41,7 @@ use hexo_engine::{apply_placement, HexCoord, HexoState as RustHexoState, Placeme
 use crate::search::classify_root_move;
 use crate::state::state_from_py_state;
 use crate::threats_shared as threats;
-use crate::tree::{tss_solve_verified, SolverHorizon, TssCounters};
+use crate::tree::{tss_solve_verified_with_stats, SolverHorizon, TssCounters};
 use crate::tss_core::{ProofStatus, SolveGoal, ZoneSearchCaps};
 use crate::tss_solver::TssSolver;
 use crate::tss_verify::CertNode;
@@ -90,6 +90,11 @@ struct DeepRead {
     proven_move: Option<(i16, i16)>,
     nodes: u64,
     verify_failed: u32,
+    /// At least one attempt halted on the caller's memory ceiling: the
+    /// Unknown is memory-bound, not node-bound.
+    mem_stopped: bool,
+    /// Peak accounted solver working set across the solve's attempts.
+    mem_peak_bytes: u64,
 }
 
 fn status_name(status: ProofStatus) -> &'static str {
@@ -197,7 +202,14 @@ impl TssProbe {
         Ok(dict)
     }
 
-    /// A verified deep solve of `root + path` under `node_cap` solver nodes.
+    /// A verified deep solve of `root + path` under `node_cap` solver nodes
+    /// and `mem_bytes` of accounted solver memory.
+    ///
+    /// `mem_bytes` is a HARD working-set ceiling (`SolveCaps::mem_bytes_cap`):
+    /// a solve that reaches it drains through the solver's budget-exhaustion
+    /// exits — `"unknown"` with `mem_stopped` true, never a value. A quarter
+    /// of the budget sizes the transposition index, which is what dedups the
+    /// massively transposing double-placement game; the rest is PN arena.
     ///
     /// Keys:
     ///   * `status` — `"win"` / `"loss"` / `"unknown"`. A Win/Loss is reported
@@ -212,18 +224,40 @@ impl TssProbe {
     ///     solve on an undecided λ¹, and an undecided λ¹ has no own win-now,
     ///     so an immediate-completion certificate root cannot occur there.)
     ///   * `nodes` — solver node expansions across every attempt of this solve.
+    ///   * `mem_stopped` — an attempt halted on the memory ceiling: the
+    ///     Unknown is memory-bound, not node-bound.
+    ///   * `mem_peak_bytes` — peak accounted solver working set.
     ///   * `verify_failed` — FATAL if nonzero: a Win/Loss claim whose
     ///     certificate the verifier rejected. Degraded to `"unknown"` here.
-    #[pyo3(signature = (path, node_cap))]
+    ///
+    /// `unforcing` selects the wider `round3_consume` engine: the attacker may
+    /// spend QUIET (non-threat-creating) turns and unforced defender nodes
+    /// take the ranked zone instead of refusing, so it can prove wins the
+    /// forcing-only VCF engine structurally cannot. The price is enormous
+    /// branching — orders of magnitude slower — which is why it is a
+    /// per-call toggle and not the serving configuration. Its search is the
+    /// depth-first narrow engine whose arena is structurally bounded; every
+    /// verdict still passes the same independent certificate verifier.
+    #[pyo3(signature = (path, node_cap, mem_bytes, unforcing))]
     fn deep_solve<'py>(
         &self,
         py: Python<'py>,
         path: Vec<(i16, i16)>,
         node_cap: u64,
+        mem_bytes: u64,
+        unforcing: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         if node_cap == 0 {
             return Err(PyValueError::new_err("TSS node_cap must be at least 1"));
         }
+        if mem_bytes < (1 << 20) {
+            return Err(PyValueError::new_err(
+                "TSS mem_bytes must be at least 1 MiB",
+            ));
+        }
+        let mem_bytes_cap = usize::try_from(mem_bytes)
+            .map_err(|_| PyValueError::new_err("TSS mem_bytes does not fit this platform"))?;
+        let tt_bytes_cap = mem_bytes_cap / 4;
         let root = self.root.clone();
         // Fresh solve, fresh flag: a cancel always belongs to the solve that
         // was in flight when it was issued (calls on one probe are serialized).
@@ -234,21 +268,32 @@ impl TssProbe {
                 let state = replay_path(&root, &path)?;
                 let mut solver = TssSolver::default();
                 solver.set_cancel_flag(Some(cancel));
-                solver.configure_leaf_profile();
-                solver.set_leaf_j2near(SERVE_J2NEAR);
+                if unforcing {
+                    // The wider narrow-engine profile: quiet attacker turns
+                    // and ranked unforced-defender zones. The leaf-profile
+                    // forces are wide-engine knobs and stay off it.
+                    solver.set_width_options(crate::tss_solver::WidthOptions::round3_consume());
+                } else {
+                    solver.configure_leaf_profile();
+                    solver.set_leaf_j2near(SERVE_J2NEAR);
+                }
                 solver.set_dual_pass(SERVE_DUAL_PASS);
                 solver.set_loss_reserve_nodes(SERVE_LOSS_RESERVE_NODES);
                 solver.set_group2(SERVE_GROUP2);
                 let mut counters = TssCounters::default();
-                let solved = tss_solve_verified(
+                let solved_with_stats = tss_solve_verified_with_stats(
                     &state,
                     node_cap,
+                    mem_bytes_cap,
+                    tt_bytes_cap,
                     SolveGoal::Both,
                     ZoneSearchCaps::default(),
                     SERVE_HORIZON,
                     &mut solver,
                     &mut counters,
                 );
+                let stats = solved_with_stats.stats;
+                let solved = solved_with_stats.solve;
                 // `hard` is Some only after the independent verifier accepted
                 // the certificate; that — not the solver's own claim — is what
                 // makes a status consumable.
@@ -272,6 +317,8 @@ impl TssProbe {
                     proven_move,
                     nodes: counters.deep_nodes,
                     verify_failed: counters.deep_verify_failed,
+                    mem_stopped: stats.mem_stops > 0,
+                    mem_peak_bytes: stats.peak_tt_bytes,
                 })
             })
             .map_err(PyValueError::new_err)?;
@@ -280,6 +327,8 @@ impl TssProbe {
         dict.set_item("value", read.status.value())?;
         dict.set_item("move", read.proven_move)?;
         dict.set_item("nodes", read.nodes)?;
+        dict.set_item("mem_stopped", read.mem_stopped)?;
+        dict.set_item("mem_peak_bytes", read.mem_peak_bytes)?;
         dict.set_item("verify_failed", read.verify_failed)?;
         Ok(dict)
     }

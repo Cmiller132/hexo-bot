@@ -2259,6 +2259,12 @@ function renderSolveResult(res, mover, ply, budgets) {
     setStatus("searchStatus", "");
     setReadout("solver · no answer",
       `the solver hit its clock before an answer${nodes}${ms}`);
+  } else if (res.mem_stopped) {
+    const peak = Number.isFinite(res.mem_peak_mb) && res.mem_peak_mb > 0
+      ? ` at ${Math.round(res.mem_peak_mb)}MB` : "";
+    setStatus("searchStatus", "");
+    setReadout("solver · no answer",
+      `the solver hit its memory ceiling${peak} before an answer${nodes}${ms}`);
   } else {
     setStatus("searchStatus", "");
     setReadout("solver · no forced win",

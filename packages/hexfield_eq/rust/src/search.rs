@@ -4402,6 +4402,8 @@ fn build_search_result_payload_native(
             let solved = tss_solve_verified(
                 &search.root_state,
                 div.tss_solver_node_cap as u64,
+                crate::tree::RustSearch::TSS_SOLVER_MEM_BYTES,
+                crate::tree::RustSearch::TSS_SOLVER_TT_BYTES,
                 tss_core::SolveGoal::Both,
                 tss_core::ZoneSearchCaps {
                     enabled: div.tss_zone,

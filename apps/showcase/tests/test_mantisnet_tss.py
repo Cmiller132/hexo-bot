@@ -670,18 +670,50 @@ def test_deep_solve_cancel_drains_promptly():
 
     probe = hx.TssProbe(_engine_state(_corpus_live_position()))
     # 20M nodes is minutes of search on this position; the cancel at 0.5s must
-    # end it in seconds.
+    # end it in seconds. The memory budget is deliberately roomy so the cancel,
+    # not the ceiling, is what ends this solve.
     timer = threading.Timer(0.5, probe.cancel_deep_solve)
     timer.start()
     try:
         started = time.monotonic()
-        out = probe.deep_solve([], 20_000_000)
+        out = probe.deep_solve([], 20_000_000, 2 << 30, False)
         wall = time.monotonic() - started
     finally:
         timer.cancel()
     assert str(out["status"]) == "unknown"
     assert int(out["nodes"]) > 0
     assert wall < 15.0, f"cancelled solve took {wall:.1f}s to drain"
+
+
+def test_deep_solve_memory_ceiling_stops_the_search():
+    """The working-set ceiling must end a solve through the same exhaustion
+    exits as the node cap: unknown (never a value), the real node count, the
+    ``mem_stopped`` marker, and a prompt return — a 64 MiB ceiling dies in
+    seconds where the node cap alone would run for minutes and tens of GB."""
+    import time
+
+    from hexfield_eq import _rust as hx
+
+    probe = hx.TssProbe(_engine_state(_corpus_live_position()))
+    started = time.monotonic()
+    out = probe.deep_solve([], 100_000_000, 64 << 20, False)
+    wall = time.monotonic() - started
+    assert str(out["status"]) == "unknown"
+    assert bool(out["mem_stopped"]) is True
+    assert int(out["nodes"]) > 0
+    assert int(out["mem_peak_bytes"]) >= 32 << 20
+    assert wall < 60.0, f"memory-capped solve took {wall:.1f}s"
+
+
+def test_deep_solve_rejects_a_starved_memory_budget():
+    """Below 1 MiB the budget is a configuration error, not a solve."""
+    import pytest as _pytest
+
+    from hexfield_eq import _rust as hx
+
+    probe = hx.TssProbe(_engine_state([(0, 0)]))
+    with _pytest.raises(ValueError, match="mem_bytes"):
+        probe.deep_solve([], 1000, 1024, False)
 
 
 def test_solve_position_timeout_cancels_and_reports_the_work():

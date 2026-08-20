@@ -580,6 +580,8 @@ fn worker_loop(
             let solved = tss_solve_verified(
                 &request.state,
                 request.node_cap,
+                crate::tree::RustSearch::TSS_SOLVER_MEM_BYTES,
+                crate::tree::RustSearch::TSS_SOLVER_TT_BYTES,
                 request.goal,
                 request.zone,
                 request.horizon,

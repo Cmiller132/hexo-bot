@@ -722,6 +722,7 @@ impl TssSolver {
                 root_player,
                 primal_cap,
                 effective.local_tt_cap,
+                caps.mem_bytes_cap,
                 caps.semantic_horizon,
                 self.zone,
                 width,
@@ -751,6 +752,7 @@ impl TssSolver {
                 root_player.other(),
                 dual_cap,
                 effective.local_tt_cap,
+                caps.mem_bytes_cap,
                 caps.semantic_horizon,
                 self.zone,
                 width,
@@ -791,6 +793,7 @@ impl TssSolver {
         claimant: Player,
         node_cap: u64,
         local_tt_cap: usize,
+        mem_bytes_cap: usize,
         semantic_horizon: u32,
         zone: ZoneSearchCaps,
         width: WidthOptions,
@@ -837,6 +840,7 @@ impl TssSolver {
             claimant,
             node_cap,
             local_tt_cap,
+            mem_bytes_cap,
             semantic_horizon,
             depth_cap,
             width,
@@ -853,6 +857,7 @@ impl TssSolver {
         claimant: Player,
         node_cap: u64,
         local_tt_cap: usize,
+        mem_bytes_cap: usize,
         semantic_horizon: u32,
         depth_cap: usize,
         width: WidthOptions,
@@ -872,6 +877,7 @@ impl TssSolver {
             state.placements_made(),
             node_cap,
             local_tt_cap,
+            mem_bytes_cap,
             semantic_horizon,
             depth_cap,
             width,
@@ -891,6 +897,7 @@ impl TssSolver {
             tt_hits: search.tt_hits,
             tt_entries: (search.by_position.len() + self.shared_tt.entry_count()) as u64,
             peak_tt_bytes: shared_bytes.saturating_add(search.peak_bytes) as u64,
+            mem_stops: u64::from(search.mem_stopped),
             horizon_cuts: search.horizon_cuts,
             kb_death_cuts: search.kb_death_cuts,
 
@@ -1755,6 +1762,14 @@ struct WidePnEntry {
     prior: WidePnPrior,
     node: WidePnNode,
     depth: usize,
+    /// True when this entry's `dn == 0` is GENUINE: derived from real
+    /// refutations only, with no `DepthCutoff` anywhere in its support (a
+    /// cutoff also reports `dn == 0`, but a deeper stage reopens it). A
+    /// genuine refutation is permanent for the attempt, so its subtree's
+    /// children are dead weight — `recompute` collapses the branch to
+    /// `Refuted` and releases the accounted bytes, which is what lets a
+    /// memory-budgeted solve keep only the live frontier.
+    genuine_dn0: bool,
     /// Wide-mode visit-order state for an AND node. Once an unresolved
     /// defender obligation is selected, keep driving that same child until it
     /// proves or refutes. This does not participate in PN/DN recomputation or
@@ -1800,6 +1815,23 @@ struct WideAttackerPairKeyTemplate {
 }
 
 impl WideAttackerPairKeyTemplate {
+    /// Accounted heap footprint of one shared template (counted once per
+    /// expansion that retains pair edges). Logical sizes, not allocator reads.
+    fn heap_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self
+                .sorted
+                .stones
+                .len()
+                .saturating_mul(std::mem::size_of::<(i16, i16, u8)>())
+            + self.sorted.encoded.len()
+            + self
+                .sorted
+                .offsets
+                .len()
+                .saturating_mul(std::mem::size_of::<usize>())
+    }
+
     fn from_state(state: &RustHexoState) -> Self {
         debug_assert!(matches!(state.phase(), TurnPhase::FirstStone));
         Self {
@@ -2278,6 +2310,31 @@ fn forced_defender_pair_plan(
 /// Conservative retained-byte charge for one exact-key TT index entry.  PN
 /// nodes and their child vectors live in the node-capped search arena and are
 /// deliberately excluded from the caller's TT/cache byte ceiling.
+/// Accounted heap footprint of one installed child vector: the vector body,
+/// each retained future key's bytes, and (once) the shared attacker-pair
+/// template all siblings hold through an `Arc`. Deterministic logical sizes.
+fn wide_children_bytes(children: &[WidePnChild]) -> usize {
+    let mut total = children
+        .len()
+        .saturating_mul(std::mem::size_of::<WidePnChild>());
+    let mut counted_template = false;
+    for child in children {
+        match &child.future_key {
+            Some(WideFutureKey::OnSelection(key)) | Some(WideFutureKey::Virtual(key)) => {
+                total = total.saturating_add(key.bytes.len());
+            }
+            Some(WideFutureKey::OnSelectionPair { template, .. }) => {
+                if !counted_template {
+                    total = total.saturating_add(template.heap_bytes());
+                    counted_template = true;
+                }
+            }
+            None => {}
+        }
+    }
+    total
+}
+
 fn wide_position_index_bytes(key: &WidePositionKey) -> usize {
     key.heap_bytes()
         .saturating_add(size_of::<(WidePositionKey, usize)>())
@@ -2335,6 +2392,19 @@ struct WidePnSearch<'store> {
     tt_hits: u64,
     current_bytes: usize,
     peak_bytes: usize,
+    /// Working-set ceiling (`SolveCaps::mem_bytes_cap`): accounted arena +
+    /// index + deferred-frontier bytes must stay under it. Checked wherever
+    /// the node cap is, so exhaustion can only yield Unknown.
+    mem_bytes_cap: usize,
+    /// Accounted bytes of the retained arena: entries, installed child
+    /// vectors, their retained future keys, and the deferred frontier. The
+    /// position index is accounted separately in `current_bytes`; the two sum
+    /// against `mem_bytes_cap`. Logical arithmetic only — never an allocator
+    /// read — so solves stay deterministic.
+    arena_bytes: usize,
+    /// True once an exhaustion exit was taken because of `mem_bytes_cap`
+    /// (surfaced as `SolveStats::mem_stops`).
+    mem_stopped: bool,
     /// Expansion ceiling for one `work` invocation. The production driver
     /// leaves it open (`u64::MAX`); the historical single-expansion `step`
     /// wrapper sets it to `expansions + 1` so the focused stepper tests keep
@@ -2498,6 +2568,7 @@ impl<'store> WidePnSearch<'store> {
         root_ply: u32,
         node_cap: u64,
         tt_bytes_cap: usize,
+        mem_bytes_cap: usize,
         semantic_horizon: u32,
         depth_cap: usize,
     ) -> Self {
@@ -2506,6 +2577,7 @@ impl<'store> WidePnSearch<'store> {
             root_ply,
             node_cap,
             tt_bytes_cap,
+            mem_bytes_cap,
             semantic_horizon,
             depth_cap,
             WidthOptions::vcf_pair_complete(),
@@ -2513,11 +2585,13 @@ impl<'store> WidePnSearch<'store> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_width(
         claimant: Player,
         root_ply: u32,
         node_cap: u64,
         tt_bytes_cap: usize,
+        mem_bytes_cap: usize,
         semantic_horizon: u32,
         depth_cap: usize,
         width: WidthOptions,
@@ -2549,6 +2623,9 @@ impl<'store> WidePnSearch<'store> {
             tt_hits: 0,
             current_bytes: 0,
             peak_bytes: 0,
+            mem_bytes_cap,
+            arena_bytes: 0,
+            mem_stopped: false,
             soft_expansion_cap: u64::MAX,
             cancel: None,
 
@@ -2593,6 +2670,12 @@ impl<'store> WidePnSearch<'store> {
             .lazy_frontier
             .then(|| self.deferred_by_position.remove(&key))
             .flatten();
+        if deferred.is_some() {
+            // The deferred-frontier charge moves into the arena entry below.
+            self.arena_bytes = self
+                .arena_bytes
+                .saturating_sub(wide_position_index_bytes(&key));
+        }
         let (depth, prior) = deferred
             .map(|deferred| (deferred.depth, deferred.prior))
             .unwrap_or((depth, prior));
@@ -2600,7 +2683,9 @@ impl<'store> WidePnSearch<'store> {
         // The retained PN frontier is the search arena, not the transposition
         // index.  A full (or disabled) TT must only stop indexing new keys;
         // refusing the arena entry would strand the selected Pending edge and
-        // make a memory-profile choice alter frontier progress.
+        // make a memory-profile choice alter frontier progress. The entry is
+        // still charged against `mem_bytes_cap`, whose exhaustion halts the
+        // search at the node-cap sites instead of refusing single entries.
         let id = self.entries.len();
 
         self.entries.push(WidePnEntry {
@@ -2609,26 +2694,30 @@ impl<'store> WidePnSearch<'store> {
             prior,
             node: WidePnNode::Unexpanded,
             depth,
+            genuine_dn0: false,
             universal_obligation: None,
         });
+        self.charge_arena_bytes(std::mem::size_of::<WidePnEntry>());
 
         let added = wide_position_index_bytes(&key);
         if self.tt_bytes_cap > 0 && self.current_bytes.saturating_add(added) <= self.tt_bytes_cap {
             self.by_position.insert(key, id);
             self.current_bytes = self.current_bytes.saturating_add(added);
-            self.peak_bytes = self.peak_bytes.max(self.current_bytes);
+            self.peak_bytes = self
+                .peak_bytes
+                .max(self.arena_bytes.saturating_add(self.current_bytes));
         } else {
         }
         id
     }
 
     fn defer_position(&mut self, key: &WidePositionKey, depth: usize, prior: WidePnPrior) {
-        if self.by_position.contains_key(key) {
+        if self.by_position.contains_key(key) || self.deferred_by_position.contains_key(key) {
             return;
         }
+        self.charge_arena_bytes(wide_position_index_bytes(key));
         self.deferred_by_position
-            .entry(key.clone())
-            .or_insert(WideDeferredPosition { depth, prior });
+            .insert(key.clone(), WideDeferredPosition { depth, prior });
     }
 
     fn position_prior(&self, state: &RustHexoState) -> WidePnPrior {
@@ -2671,6 +2760,27 @@ impl<'store> WidePnSearch<'store> {
             .is_some_and(|flag| flag.load(AtomicOrdering::Relaxed))
     }
 
+    /// True when the accounted working set has reached the caller's ceiling.
+    /// Consulted at exactly the node-cap sites, so it can only end a search
+    /// through the exhaustion exits — Unknown, never a verdict. Latches
+    /// `mem_stopped` so the halt is attributable in `SolveStats::mem_stops`.
+    fn memory_exhausted(&mut self) -> bool {
+        if self.arena_bytes.saturating_add(self.current_bytes) >= self.mem_bytes_cap {
+            self.mem_stopped = true;
+            return true;
+        }
+        false
+    }
+
+    /// Account retained arena growth (entries, installed child vectors and
+    /// their keys, the deferred frontier). Logical sizes only.
+    fn charge_arena_bytes(&mut self, bytes: usize) {
+        self.arena_bytes = self.arena_bytes.saturating_add(bytes);
+        self.peak_bytes = self
+            .peak_bytes
+            .max(self.arena_bytes.saturating_add(self.current_bytes));
+    }
+
     fn run(&mut self, root_state: &RustHexoState, root: usize) {
         let final_depth = self.depth_cap;
         let mut stage_depth = 0usize;
@@ -2689,6 +2799,7 @@ impl<'store> WidePnSearch<'store> {
             if self.entries[root].pn == 0
                 || self.expansions >= self.node_cap
                 || self.cancelled()
+                || self.memory_exhausted()
                 || is_final
             {
                 break;
@@ -2718,6 +2829,7 @@ impl<'store> WidePnSearch<'store> {
         while self.expansions < self.node_cap
             && self.expansions < expansion_cap
             && !self.cancelled()
+            && !self.memory_exhausted()
         {
             self.recompute(root);
             let Some(entry) = self.entries.get(root) else {
@@ -2855,6 +2967,7 @@ impl<'store> WidePnSearch<'store> {
             if self.expansions >= self.node_cap
                 || self.expansions >= self.soft_expansion_cap
                 || self.cancelled()
+                || self.memory_exhausted()
             {
                 return if any_progress {
                     WidePnStepOutcome::Progress
@@ -3550,15 +3663,35 @@ impl<'store> WidePnSearch<'store> {
         }
     }
 
+    /// A child's `dn == 0` support is GENUINE when it rests on real
+    /// refutations only — no `DepthCutoff` (which also reports `dn == 0` but
+    /// is reopened by deeper stages) anywhere beneath it. Inline `Refuted`
+    /// results and horizon/structural `Refuted` nodes are permanent for the
+    /// attempt; entries carry their own aggregate in `genuine_dn0`.
+    fn child_dn0_genuine(&self, child: &WidePnChild) -> bool {
+        match child.result {
+            WidePnChildResult::Refuted => true,
+            WidePnChildResult::ClaimantCompletion | WidePnChildResult::ClaimantTactical => false,
+            WidePnChildResult::Pending => self
+                .resolved_child_entry(child)
+                .and_then(|id| self.entries.get(id))
+                .is_some_and(|entry| entry.dn == 0 && entry.genuine_dn0),
+        }
+    }
+
     fn recompute(&mut self, id: usize) -> bool {
         let previous = (self.entries[id].pn, self.entries[id].dn);
-        let numbers = match &self.entries[id].node {
+        let (numbers, genuine_dn0) = match &self.entries[id].node {
             WidePnNode::Unexpanded => {
                 let prior = self.entries[id].prior;
-                (prior.pn, prior.dn)
+                ((prior.pn, prior.dn), false)
             }
-            WidePnNode::ProvenLeaf(_) | WidePnNode::ProvenFragment(_) => (0, PN_INFINITY),
-            WidePnNode::DepthCutoff | WidePnNode::Refuted => (PN_INFINITY, 0),
+            WidePnNode::ProvenLeaf(_) | WidePnNode::ProvenFragment(_) => ((0, PN_INFINITY), false),
+            // `Refuted` marks are permanent for the attempt (structural
+            // refutations and semantic-horizon refusals alike); `DepthCutoff`
+            // is the one dn==0 a deeper stage takes back.
+            WidePnNode::Refuted => ((PN_INFINITY, 0), true),
+            WidePnNode::DepthCutoff => ((PN_INFINITY, 0), false),
             WidePnNode::Branch { kind, children } => match kind {
                 WidePnKind::Choice => {
                     let pn = children
@@ -3570,7 +3703,11 @@ impl<'store> WidePnSearch<'store> {
                         sum.saturating_add(self.child_numbers(child).1)
                             .min(PN_INFINITY)
                     });
-                    (pn, dn)
+                    // Disproving a Choice needs EVERY child refuted, so the
+                    // aggregate is genuine only when every support is.
+                    let genuine =
+                        dn == 0 && children.iter().all(|child| self.child_dn0_genuine(child));
+                    ((pn, dn), genuine)
                 }
                 WidePnKind::Universal { .. } => {
                     let pn = children.iter().fold(0u32, |sum, child| {
@@ -3582,13 +3719,34 @@ impl<'store> WidePnSearch<'store> {
                         .map(|child| self.child_numbers(child).1)
                         .min()
                         .unwrap_or(0);
-                    (pn, dn)
+                    // Disproving a Universal needs ONE refuted child; genuine
+                    // when at least one refuted support is genuine.
+                    let genuine =
+                        dn == 0 && children.iter().any(|child| self.child_dn0_genuine(child));
+                    ((pn, dn), genuine)
                 }
             },
         };
 
         self.entries[id].pn = numbers.0;
         self.entries[id].dn = numbers.1;
+        self.entries[id].genuine_dn0 = genuine_dn0;
+
+        // A genuinely refuted branch is dead for the whole attempt: selection
+        // never re-enters it, certificates materialize only proven paths, and
+        // no stage reopens a genuine refutation. Collapse it to `Refuted` —
+        // observably identical numbers — and release its accounted children so
+        // a memory-budgeted solve retains only the live frontier. (Any
+        // DepthCutoff descendants inside other children of a collapsed
+        // Universal become unreachable orphans; stage reopening resets them to
+        // Unexpanded where they sit inert, never selected from the root.)
+        if genuine_dn0 {
+            if let WidePnNode::Branch { children, .. } = &self.entries[id].node {
+                let released = wide_children_bytes(children);
+                self.arena_bytes = self.arena_bytes.saturating_sub(released);
+                self.entries[id].node = WidePnNode::Refuted;
+            }
+        }
 
         previous != numbers
     }
@@ -3598,7 +3756,7 @@ impl<'store> WidePnSearch<'store> {
     }
 
     fn expand(&mut self, state: &mut RustHexoState, id: usize) -> WidePnStepOutcome {
-        if self.expansions >= self.node_cap || self.cancelled() {
+        if self.expansions >= self.node_cap || self.cancelled() || self.memory_exhausted() {
             return WidePnStepOutcome::Stalled;
         }
         self.expansions += 1;
@@ -3734,11 +3892,13 @@ impl<'store> WidePnSearch<'store> {
 
         self.order_children_by_hints(&mut children);
         children.shrink_to_fit();
-        self.entries[id].node = if children.is_empty() {
+        let node = if children.is_empty() {
             WidePnNode::Refuted
         } else {
+            self.charge_arena_bytes(wide_children_bytes(&children));
             WidePnNode::Branch { kind, children }
         };
+        self.entries[id].node = node;
 
         self.refresh(id);
         WidePnStepOutcome::Progress

@@ -693,11 +693,14 @@ impl Default for SolverHorizon {
 pub(crate) fn tss_verified_solve_caps(
     placements: u32,
     node_cap: u64,
+    mem_bytes_cap: usize,
+    tt_bytes_cap: usize,
     horizon: SolverHorizon,
 ) -> SolveCaps {
     SolveCaps {
         node_cap,
-        tt_bytes_cap: RustSearch::TSS_SOLVER_TT_BYTES,
+        tt_bytes_cap,
+        mem_bytes_cap,
         semantic_horizon: if horizon.horizon == 0 {
             u32::MAX
         } else {
@@ -716,26 +719,46 @@ pub struct VerifiedSolveWithStats {
 /// One verified deep solve (the ONLY production path from solver claims to
 /// consumable results): solver → independent certificate verifier via the
 /// sole deep mint `tss_core::hard_value_from_verified`. Deterministic given
-/// (state, caps, goal, horizon, solver-cache state): node cap only, no wall
-/// clock. Shared by the per-search leaf hook (persistent solver) and the
-/// payload-build root guard (per-move solver).
+/// (state, caps, goal, horizon, solver-cache state): node and byte caps
+/// only, no wall clock. Shared by the per-search leaf hook (persistent
+/// solver) and the payload-build root guard (per-move solver). The two byte
+/// budgets ride the call because callers differ by orders of magnitude: the
+/// trainer's leaf/root solves pass the small `RustSearch` constants, while
+/// interactive drivers (`tss_py`) budget GBs for one solve.
+#[allow(clippy::too_many_arguments)]
 pub fn tss_solve_verified(
     state: &RustHexoState,
     node_cap: u64,
+    mem_bytes_cap: usize,
+    tt_bytes_cap: usize,
     goal: SolveGoal,
     zone: crate::tss_core::ZoneSearchCaps,
     horizon: SolverHorizon,
     solver: &mut TssSolver,
     counters: &mut TssCounters,
 ) -> VerifiedSolve {
-    tss_solve_verified_impl(state, node_cap, goal, zone, horizon, solver, counters, None)
+    tss_solve_verified_impl(
+        state,
+        node_cap,
+        mem_bytes_cap,
+        tt_bytes_cap,
+        goal,
+        zone,
+        horizon,
+        solver,
+        counters,
+        None,
+    )
 }
 
 /// Stats-bearing additive variant of `tss_solve_verified`. The verdict and
 /// certificate path are identical; only attempt telemetry is accumulated.
+#[allow(clippy::too_many_arguments)]
 pub fn tss_solve_verified_with_stats(
     state: &RustHexoState,
     node_cap: u64,
+    mem_bytes_cap: usize,
+    tt_bytes_cap: usize,
     goal: SolveGoal,
     zone: crate::tss_core::ZoneSearchCaps,
     horizon: SolverHorizon,
@@ -746,6 +769,8 @@ pub fn tss_solve_verified_with_stats(
     let solve = tss_solve_verified_impl(
         state,
         node_cap,
+        mem_bytes_cap,
+        tt_bytes_cap,
         goal,
         zone,
         horizon,
@@ -760,6 +785,8 @@ pub fn tss_solve_verified_with_stats(
 fn tss_solve_verified_impl(
     state: &RustHexoState,
     node_cap: u64,
+    mem_bytes_cap: usize,
+    tt_bytes_cap: usize,
     goal: SolveGoal,
     zone: crate::tss_core::ZoneSearchCaps,
     horizon: SolverHorizon,
@@ -772,7 +799,13 @@ fn tss_solve_verified_impl(
     // (horizon == 0 => u32::MAX) with the node cap as the only budget. The
     // Rust seam has already rejected the 1..=15 band; P2's preflight may
     // diagnose the guess and P3's cache stamps bind it.
-    let mut caps = tss_verified_solve_caps(state.placements_made(), node_cap, horizon);
+    let mut caps = tss_verified_solve_caps(
+        state.placements_made(),
+        node_cap,
+        mem_bytes_cap,
+        tt_bytes_cap,
+        horizon,
+    );
     solver.set_zone_options(zone);
     // Zone tight-ladder (Codex review, wide-deadline neutralization): at a
     // slack defender budget the zone generator must take the FULL legal set,
@@ -791,6 +824,7 @@ fn tss_solve_verified_impl(
         let tight = SolveCaps {
             node_cap: (node_cap / 2).max(1),
             tt_bytes_cap: caps.tt_bytes_cap,
+            mem_bytes_cap: caps.mem_bytes_cap,
             semantic_horizon: state.placements_made().saturating_add(8),
         };
         let tight_result = solver.solve_goal(state, &tight, goal);
@@ -835,6 +869,7 @@ fn tss_solve_verified_impl(
         let tall = SolveCaps {
             node_cap,
             tt_bytes_cap: caps.tt_bytes_cap,
+            mem_bytes_cap: caps.mem_bytes_cap,
             semantic_horizon: state
                 .placements_made()
                 .saturating_add(horizon.horizon.saturating_mul(2)),
@@ -1462,7 +1497,12 @@ impl RustSearch {
     const TSS_DEEP_MEMO_RETAIN_MAX: usize = 4096;
     /// Per-solve transposition-table byte cap handed to the deep solver (its
     /// TT is per-solve; this bounds transient allocation, not retained state).
-    const TSS_SOLVER_TT_BYTES: usize = 256 << 10;
+    pub(crate) const TSS_SOLVER_TT_BYTES: usize = 256 << 10;
+    /// Per-solve working-set byte ceiling for the leaf/root trainer solves
+    /// (`SolveCaps::mem_bytes_cap`). A leaf solve at these node caps peaks in
+    /// the tens of MB, so 512 MiB never binds — it is a runaway backstop, not
+    /// a tuning knob. Interactive callers (`tss_py`) budget their own value.
+    pub(crate) const TSS_SOLVER_MEM_BYTES: usize = 512 << 20;
 
     /// Route a leaf through the deep solver while preserving the historical
     /// `Option<HardValue>` implementation byte-for-byte when parking is off.
@@ -1702,6 +1742,8 @@ impl RustSearch {
                 let solved = tss_solve_verified(
                     state,
                     node_cap,
+                    Self::TSS_SOLVER_MEM_BYTES,
+                    Self::TSS_SOLVER_TT_BYTES,
                     goal,
                     crate::tss_core::ZoneSearchCaps {
                         enabled: self.divergences.tss_zone,
@@ -3830,6 +3872,8 @@ mod tests {
         let solved = tss_solve_verified(
             &state,
             2000,
+            RustSearch::TSS_SOLVER_MEM_BYTES,
+            RustSearch::TSS_SOLVER_TT_BYTES,
             SolveGoal::Both,
             crate::tss_core::ZoneSearchCaps::default(),
             SolverHorizon::DEFAULT,
@@ -3872,6 +3916,8 @@ mod tests {
         let solved = tss_solve_verified(
             &state,
             8000,
+            RustSearch::TSS_SOLVER_MEM_BYTES,
+            RustSearch::TSS_SOLVER_TT_BYTES,
             SolveGoal::Loss,
             crate::tss_core::ZoneSearchCaps::default(),
             SolverHorizon::DEFAULT,
@@ -3885,6 +3931,77 @@ mod tests {
         );
         assert!(solved.hard.is_some(), "decided loss must verify");
         (state, solved.status, solved.hard)
+    }
+
+    /// The working-set ceiling (`SolveCaps::mem_bytes_cap`) must end a wide
+    /// solve through the same exits as the node cap: UNKNOWN with the halt
+    /// attributed in `mem_stops`, never a verdict. The ceiling here is a few
+    /// KB, which a handful of arena entries exhausts; every other test in
+    /// this suite runs the roomy `TSS_SOLVER_MEM_BYTES` backstop and thereby
+    /// pins that an unbinding ceiling changes nothing.
+    #[test]
+    fn solver_memory_ceiling_yields_unknown_with_attribution() {
+        // Game 34e4cb07 ply 25 (the showcase corpus "idx25"): λ¹-undecided
+        // root whose forced win needs ~1600 wide solver nodes — real search,
+        // not an immediate or one-turn verdict, so the ceiling actually binds.
+        let state = replay(&[
+            (0, 0),
+            (1, 2),
+            (0, 1),
+            (3, -1),
+            (2, 2),
+            (2, 0),
+            (2, 6),
+            (1, 6),
+            (4, 1),
+            (7, -2),
+            (5, -1),
+            (7, -1),
+            (-2, 8),
+            (-2, 4),
+            (0, 7),
+            (-3, 9),
+            (-4, 10),
+            (0, 6),
+            (1, 1),
+            (1, 3),
+            (0, 4),
+            (0, 8),
+            (-1, 5),
+            (-1, 3),
+            (0, 10),
+        ]);
+        let mut counters = TssCounters::default();
+        let mut solver = TssSolver::default();
+        // The wide PN engine is the one whose arena grows; the default narrow
+        // profile is structurally bounded and never consults the ceiling.
+        solver.configure_leaf_profile();
+        let solved = tss_solve_verified_with_stats(
+            &state,
+            8000,
+            2048,
+            RustSearch::TSS_SOLVER_TT_BYTES,
+            SolveGoal::Both,
+            crate::tss_core::ZoneSearchCaps::default(),
+            SolverHorizon::DEFAULT,
+            &mut solver,
+            &mut counters,
+        );
+        assert_eq!(
+            solved.solve.status,
+            ProofStatus::Unknown,
+            "a memory-capped solve must stay UNKNOWN, never a verdict"
+        );
+        assert!(solved.solve.hard.is_none());
+        assert!(
+            solved.stats.mem_stops > 0,
+            "the halt must be attributed to the memory ceiling"
+        );
+        assert!(solved.stats.nodes >= 1);
+        assert!(
+            solved.stats.peak_tt_bytes >= 2048,
+            "the accounted peak must show the ceiling was actually reached"
+        );
     }
 
     /// A drained response flips Pending -> Done and the descent-stop then
