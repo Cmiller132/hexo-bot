@@ -6,7 +6,7 @@
 <title>shrimp &mdash; instrument</title>
 <!-- ?v= pins keep html/js/css cache-coherent: bump together with the pins
      in app.js whenever the bundle changes incompatibly -->
-<link rel="stylesheet" href="./style.css?v=23">
+<link rel="stylesheet" href="./style.css?v=24">
 </head>
 <body>
 
@@ -38,10 +38,12 @@
     <button class="tab" data-view="stats" role="tab" aria-selected="false">Stats</button>
     <button class="tab" data-view="api" role="tab" aria-selected="false">API</button>
   </nav>
-  <!-- plain link, deliberately NOT class="tab": the tab click handler in app.js
-       binds every .tab and calls activateView(dataset.view) — a .tab link with
-       no data-view would blank the views on ctrl/middle-click. Styled to match
-       the tabs via .k-btn + inline metric overrides. -->
+  <!-- plain links, deliberately NOT class="tab": the tab click handler in
+       app.js binds every .tab and calls activateView(dataset.view) — a .tab
+       link with no data-view would blank the views on ctrl/middle-click.
+       Styled to match the tabs via .k-btn + inline metric overrides. -->
+  <a class="k-btn" href="./learn/lab.html"
+     style="font-size:11px;letter-spacing:.18em;padding:6px 14px;border-color:transparent;text-decoration:none">Lab</a>
   <a class="k-btn" href="./learn/"
      style="font-size:11px;letter-spacing:.18em;padding:6px 14px;border-color:transparent;text-decoration:none">How it works</a>
 </header>
@@ -74,8 +76,8 @@
           <button data-color="random" class="sel" role="radio" aria-checked="true"
                   title="Coin flip">Random</button>
         </div>
-        <h2 class="k gap">Tactics</h2>
-        <div class="seg" id="tssSeg" role="radiogroup" aria-label="Threat-Space Search">
+        <h2 class="k gap">Forced win solver</h2>
+        <div class="seg" id="tssSeg" role="radiogroup" aria-label="Forced win solver (Threat-Space Search)">
           <button data-tss="1" class="sel" role="radio" aria-checked="true"
                   title="Threat-Space Search: the bot proves forced wins and answers forced threats">On</button>
           <button data-tss="0" role="radio" aria-checked="false"
@@ -172,12 +174,50 @@
           <div class="hz"><div class="hz-v" id="stvNow">&mdash;</div><div class="hz-l">stv</div></div>
           <div class="hz"><div class="hz-v" id="mlNow">&mdash;</div><div class="hz-l">moves left</div></div>
         </div>
+        <!-- critic read of the ply: Q of the move the game played vs the best
+             legal Q, from the whole-game summary; app.js marks the big gaps
+             on the chart as mistakes -->
+        <div class="q-read" id="qRead" hidden>
+          <span id="qReadText"></span>
+        </div>
+        <!-- board overlay: which head paints the cells. Modes beyond the
+             policy prior read the mantis per-cell klent block; app.js disables
+             them for families that do not serve one. -->
+        <div class="seg" id="ovlModeSeg" role="radiogroup" aria-label="Overlay mode">
+          <button data-mode="policy" class="sel" role="radio" aria-checked="true"
+                  title="Policy prior: how likely the net is to play each cell">Policy</button>
+          <button data-mode="q" role="radio" aria-checked="false"
+                  title="Critic Q per move: blue = good for blue, red = good for red">Q map</button>
+          <button data-mode="pi2" role="radio" aria-checked="false"
+                  title="Improved policy &pi;&prime;: the distribution the bot actually acts from">&pi;&prime;</button>
+          <button data-mode="long" role="radio" aria-checked="false"
+                  title="Long-game mass: after this move the model expects a long game">Long</button>
+          <button data-mode="gap" role="radio" aria-checked="false"
+                  title="Where the critic disagrees with the policy prior: green = promoted, amber = demoted">&Delta;</button>
+        </div>
         <div class="ovl">
           <label for="ovlRange">overlay</label>
-          <input type="range" id="ovlRange" min="0" max="100" value="85" aria-label="Policy overlay opacity">
+          <input type="range" id="ovlRange" min="0" max="100" value="85" aria-label="Overlay opacity">
         </div>
         <p class="fineprint" id="anaFine">policy priors &middot; no search</p>
         <button class="line-btn" id="openLabBtn" disabled>Open this position in the lab</button>
+      </div>
+
+      <!-- on-demand deep looks at the current ply: a real search replayed in
+           the live viewer, and the forced-win solver with its proof line -->
+      <div class="sec">
+        <h2 class="k">Deep look</h2>
+        <div class="deep-row">
+          <div class="seg" id="deepSimsSeg" role="radiogroup" aria-label="Search budget">
+            <button data-sims="16" role="radio" aria-checked="false">16</button>
+            <button data-sims="64" class="sel" role="radio" aria-checked="true">64</button>
+            <button data-sims="128" role="radio" aria-checked="false">128</button>
+          </div>
+          <button class="line-btn deep-btn" id="deepSearchBtn" disabled>Search this position</button>
+        </div>
+        <button class="line-btn deep-btn" id="solveBtn" disabled>Run forced win solver</button>
+        <div class="search-phase" id="deepPhase" role="status" aria-live="polite" hidden></div>
+        <div class="deep-note" id="deepNote" hidden></div>
       </div>
 
       <div class="sec">
@@ -384,6 +424,6 @@ print(result["result"])        # {"winner": ..., "termination": ...}</code></pre
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./app.js?v=29"></script>
+<script type="module" src="./app.js?v=30"></script>
 </body>
 </html>

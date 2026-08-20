@@ -8,21 +8,20 @@
  * stale app.js, or the reverse) is exactly the "buttons do nothing" class of
  * field bug. Bump ALL of them together whenever any of the five files
  * changes incompatibly. */
-import * as api from "./api.js?v=14";
+import * as api from "./api.js?v=15";
 import { buildModelPicker, latestCheckpoint, defaultCheckpoint } from "./checkpoints.js?v=13";
-import { createBoard, findWin, key } from "./board.js?v=13";
+import { createBoard, findWin, key } from "./board.js?v=14";
 import { initStats, refreshStats } from "./stats.js?v=21";
+import {
+  H0, H1, H0R, H1R, coordKey,
+  newScene, foldLiveFrame, sceneLeader, sceneVerdict, paintSceneTo,
+} from "./scene.js?v=1";
 
 "use strict";
 
 const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(res => setTimeout(res, ms));
 const clamp = (lo, hi, v) => Math.max(lo, Math.min(hi, v));
-
-/* overlay tone families — deliberately NOT the stone colors: paler and
- * hue-shifted so a tinted empty cell can never be mistaken for a stone */
-const H0 = "#9fd0ff", H1 = "#ffb4aa";
-const H0R = "#d7ebff", H1R = "#ffddd6";
 
 const fmtV = v => (v < 0 ? "−" : "+") + Math.abs(v).toFixed(2);
 const fmtCell = (q, r) => q + "," + r;
@@ -362,37 +361,9 @@ function liveStoneNumber(event) {
   return live.currentStone;
 }
 
-function coordKey(row) {
-  return row && Number.isFinite(row.q) && Number.isFinite(row.r)
-    ? key(row.q, row.r) : null;
-}
-
-/* ---- the live scene ---------------------------------------------------------
- *
- * One scene per stone, updated in place the moment a frame arrives and drawn
- * in the same call: the board mirrors the engine in real time, and the
- * search's own wave cadence is the pacing. Every frame is folded
- * idempotently into the scene, so a replayed or duplicated frame redraws the
- * same picture instead of re-animating it.
- *
- * The scene keeps the two things the old overlay conflated apart. `base` is
- * the net's policy over every legal cell: painted once, never re-scaled,
- * never narrowed -- it stays on the board for the whole search. `cands` is
- * everything the search itself does -- candidacy, visits, running Q, the
- * ranking, elimination -- and renders as border marks OVER the base. */
-function newScene(stoneKey) {
-  return {
-    stoneKey,
-    base: new Map(),      // key -> {q,r,p}: the prior, held for the readout
-    baseScope: "",        // "" unpainted, "board" full prior, "rest" non-candidates
-    cands: new Map(),     // key -> {q,r,visits,value,score,cut}
-    cand0: 0,             // candidate count at the draw; sets the arc scale
-    round: null, rounds: null, visits: null, target: null,
-    chosen: null, complete: false, rootValue: null,
-    tss: false, lcbOverride: false, playPruned: false,
-  };
-}
-
+/* The scene itself — folding, judging, painting — lives in scene.js, shared
+ * with the analysis deep look and the lab replayer. This file owns only the
+ * play view's streaming lifecycle around it. */
 function liveScene(event) {
   const live = play.live;
   const stoneKey = `${event.ply}:${event.stone}`;
@@ -406,166 +377,9 @@ function liveScene(event) {
   return live.scene;
 }
 
-/* Fold one frame into the scene. */
-function foldLiveFrame(scene, event) {
-  for (const field of ["round", "rounds", "visits"]) {
-    if (Number.isInteger(event[field])) scene[field] = event[field];
-  }
-  if (Number.isInteger(event.target_visits)) scene.target = event.target_visits;
-
-  const rows = (Array.isArray(event.policy) ? event.policy : [])
-    .filter(row => coordKey(row) !== null);
-  if (event.kind === "bare_policy") {
-    for (const row of rows) {
-      scene.base.set(key(row.q, row.r), {
-        q: Number(row.q), r: Number(row.r),
-        p: Number.isFinite(row.p) ? Math.max(0, Number(row.p)) : 0,
-      });
-    }
-    return;
-  }
-
-  for (const row of rows) {
-    const k = key(row.q, row.r);
-    let cand = scene.cands.get(k);
-    if (!cand) {
-      cand = {
-        q: Number(row.q), r: Number(row.r),
-        visits: 0, value: null, score: null, cut: false,
-      };
-      scene.cands.set(k, cand);
-    }
-    const rowVisits = Number.isFinite(row.visits) ? Number(row.visits) : null;
-    if (rowVisits !== null && rowVisits > cand.visits) cand.visits = rowVisits;
-    // A frame that reports visit counts also reports a placeholder 0.0 Q for
-    // lines nothing has visited yet; only a visited line's Q is real. Frames
-    // without visit counts (the post-search replay of the non-telemetry
-    // families) carry only real values.
-    if (Number.isFinite(row.value) && (rowVisits === null || rowVisits > 0)) {
-      cand.value = Number(row.value);
-    }
-    if (Number.isFinite(row.p)) cand.score = Math.max(0, Number(row.p));
-  }
-  if (event.kind === "candidate_set") {
-    scene.cand0 = Math.max(scene.cand0, scene.cands.size);
-  }
-
-  // The survivor set is the halving's own report of who is still in the
-  // running. Elimination is one-way within a search: a line a cut dropped
-  // never comes back, so a stale re-listed frame cannot relight it.
-  const survivors = Array.isArray(event.survivors) ? event.survivors : [];
-  if (survivors.length) {
-    const keep = new Set(survivors.map(coordKey).filter(Boolean));
-    for (const [k, cand] of scene.cands) {
-      if (!keep.has(k)) cand.cut = true;
-    }
-  }
-
-  if (event.kind === "search_complete") {
-    scene.complete = true;
-    scene.chosen = coordKey(event.action)
-      ? { q: Number(event.action.q), r: Number(event.action.r) } : null;
-    scene.rootValue = Number.isFinite(event.root_value)
-      ? Number(event.root_value) : null;
-    scene.tss = event.tss === true;
-    scene.lcbOverride = event.lcb_override === true;
-    scene.playPruned = event.play_pruned === true;
-  }
-}
-
-/* The line the search currently favours: the top-scored candidate still in
- * the running. Mid-search it takes the solid ring; on the decision frame it
- * becomes the disagreement marker if the bot played somewhere else. */
-function sceneLeader(scene) {
-  let leader = null;
-  for (const cand of scene.cands.values()) {
-    if (cand.cut || !Number.isFinite(cand.score)) continue;
-    if (!leader || cand.score > leader.score ||
-        (cand.score === leader.score &&
-          (cand.q < leader.q || (cand.q === leader.q && cand.r < leader.r)))) {
-      leader = cand;
-    }
-  }
-  return leader ? { q: leader.q, r: leader.r, score: leader.score } : null;
-}
-
-/* One short clause naming why the played move is the played move, for the
- * decisions the marks alone would not explain. Near-ties get no clause: the
- * board already draws them equally, so there is nothing to explain. A
- * certificate always says so: it means the search result was discarded
- * outright. */
-function sceneVerdict(scene) {
-  if (scene.tss) return "proven win";
-  const played = coordKey(scene.chosen);
-  const leader = sceneLeader(scene);
-  if (!played || !leader || key(leader.q, leader.r) === played) return "";
-  const playedCand = scene.cands.get(played);
-  if (playedCand && Number.isFinite(playedCand.score) &&
-      playedCand.score >= leader.score * 0.9) return "";
-  if (scene.lcbOverride) return "value pick";
-  if (scene.playPruned) return "sampled";
-  return "tie-break";
-}
-
-/* Draw the whole scene. The base is handed to the board at most once per
- * stone -- outside the candidate set the policy fill is constant by design,
- * so there is nothing to re-paint. The marks re-derive every time from
- * candidate state:
- *
- *   fill  the search's CURRENT ranking, the only fill on candidate cells
- *         (the base withdraws there): the favourite is always the visibly
- *         brightest cell, and a cut line's fill sinks with its mark to a
- *         faint remnant.
- *   arc   effort. v/(v+share) of the outline, where share = target/candidates
- *         is one line's fair slice of the budget -- so a half-filled outline
- *         reads "got its fair share" and a full one "got far more", at any
- *         budget, for any family.
- *   tick  judgment, on the site-wide value convention (blue = P0 favoured,
- *         red = P1) -- the engine reports Q from the searching side's view,
- *         so the bot's colour flips it to the absolute frame.
- *   cut   elimination; the mark dims and freezes but stays on the board. */
+/* Draw the play view's scene: scene.js paints, this binds the board + side. */
 function paintScene(scene) {
-  const live = play.live;
-  const tint = live.botColor === 0 ? H0 : H1;
-  const ringTint = live.botColor === 0 ? H0R : H1R;
-  // The base is the prior over every legal cell until the candidate set is
-  // known, then the prior over every NON-candidate cell: on the candidate
-  // cells the mark's live ranking fill is the only fill, so "brightest cell"
-  // can never mean "had a strong prior once" when the search has moved on.
-  // Both paints share the full-board prior maximum as the brightness basis,
-  // so withdrawing the candidates never re-scales the rest of the board.
-  const baseScope = scene.cands.size ? "rest" : "board";
-  if (scene.base.size && scene.baseScope !== baseScope) {
-    scene.baseScope = baseScope;
-    let maxP = 0;
-    for (const row of scene.base.values()) maxP = Math.max(maxP, row.p);
-    const rows = [...scene.base.values()].filter(row =>
-      baseScope === "board" || !scene.cands.has(key(row.q, row.r)));
-    playBoard.setLiveBase(rows, tint, 0.8, maxP);
-  }
-  if (!scene.cands.size) return;
-  const share = Math.max(
-    1, (scene.target || 0) / Math.max(1, scene.cand0 || scene.cands.size)
-  );
-  let maxScore = 0;
-  for (const cand of scene.cands.values()) {
-    if (!cand.cut && Number.isFinite(cand.score)) {
-      maxScore = Math.max(maxScore, cand.score);
-    }
-  }
-  const marks = [];
-  for (const [, cand] of scene.cands) {
-    marks.push({
-      q: cand.q, r: cand.r,
-      fill: maxScore > 0 && Number.isFinite(cand.score)
-        ? Math.min(1, Math.max(0, cand.score) / maxScore) : 0,
-      arc: cand.visits > 0 ? cand.visits / (cand.visits + share) : 0,
-      tick: Number.isFinite(cand.value)
-        ? (live.botColor === 0 ? cand.value : -cand.value) : null,
-      cut: cand.cut,
-    });
-  }
-  playBoard.setSearchMarks(marks, tint, ringTint, scene.chosen, sceneLeader(scene));
+  paintSceneTo(scene, playBoard, play.live.botColor);
 }
 
 function scenePhaseText(scene, event) {
@@ -1309,6 +1123,14 @@ const ana = {
   summary: null, summaryState: "idle", // idle | loading | done | missing
   summaryTimer: null, summaryTries: 0,
   opa: 0.85, autoTimer: null,
+  // Which head paints the board: "policy" | "q" | "pi2" | "long" | "gap".
+  // Modes past "policy" need the mantis per-cell klent block; renderOverlay
+  // falls back to the prior (and disables the buttons) when a payload has
+  // none.
+  mode: "policy",
+  // On-demand deep look at the current ply. `run` tokens every replay so a
+  // ply change or a newer request orphans the old frames mid-animation.
+  deep: { run: 0, busy: false },
   // ckpt: catalogue checkpoint analyzing this game; defaultCkpt: the game's
   // own bot. Equal (or null ckpt) means the server default — the param is
   // omitted, which also keeps requests valid on pre-selector servers.
@@ -1319,15 +1141,38 @@ const anaCursor = $("anaCursor"), anaTag = $("anaTag");
 const valNow = $("valNow"), valWho = $("valWho"), stvNow = $("stvNow"), mlNow = $("mlNow");
 const plyNow = $("plyNow"), plyMax = $("plyMax"), plyRange = $("plyRange");
 const moveListEl = $("moveList"), chartNote = $("chartNote");
+const qRead = $("qRead"), qReadText = $("qReadText");
+const deepPhase = $("deepPhase"), deepNote = $("deepNote");
+const deepSearchBtn = $("deepSearchBtn"), solveBtn = $("solveBtn");
 let curHeat = new Map();
+let curKlent = null; // key -> {prior, improved, q, win, loss, long}, mover POV
+
+/* The cursor readout names whatever the active overlay actually encodes for
+ * the cell — the prior alone in policy mode, the full critic read otherwise. */
+function anaCursorText(q, r) {
+  const parts = [fmtCell(q, r)];
+  const cell = curKlent && curKlent.get(key(q, r));
+  if (cell) {
+    if (ana.mode === "pi2") {
+      parts.push(`π′ ${(cell.improved * 100).toFixed(1)}% · π ${(cell.prior * 100).toFixed(1)}%`);
+    } else {
+      parts.push(`π ${(cell.prior * 100).toFixed(1)}%`);
+    }
+    parts.push(`Q ${fmtV(cell.q)}`);
+    parts.push(
+      `win ${(cell.win * 100).toFixed(0)} · loss ${(cell.loss * 100).toFixed(0)}` +
+      ` · long ${(cell.long * 100).toFixed(0)}`
+    );
+  } else {
+    const p = curHeat.get(key(q, r));
+    if (p !== undefined) parts.push(`${(p * 100).toFixed(1)}%`);
+  }
+  return parts.join(" · ");
+}
 
 const anaBoard = createBoard($("anaBoard"), {
   onHover: (q, r) => {
-    if (q === null) { anaCursor.textContent = "—"; return; }
-    const p = curHeat.get(key(q, r));
-    anaCursor.textContent = p !== undefined
-      ? `${fmtCell(q, r)} · ${(p * 100).toFixed(1)}%`
-      : fmtCell(q, r);
+    anaCursor.textContent = q === null ? "—" : anaCursorText(q, r);
   },
 });
 
@@ -1369,12 +1214,35 @@ const chart = (() => {
   svg.appendChild(dot);
   let values = null; // blue-POV, index = ply-1
 
+  // Mistake ticks under the axis: one per ply whose played move gave up a
+  // real chunk of critic Q against the best legal move, colored by who
+  // played it. Kept as state so a setData (rescale) redraws them.
+  let blunders = [];
+  const blG = document.createElementNS(NS, "g");
+  svg.appendChild(blG);
+  function drawBlunders() {
+    blG.textContent = "";
+    for (const b of blunders) {
+      const x = chX(b.ply - 1);
+      const e = document.createElementNS(NS, "line");
+      e.setAttribute("x1", x); e.setAttribute("x2", x);
+      e.setAttribute("y1", H - B + 3); e.setAttribute("y2", H - B + 9);
+      e.setAttribute("class", "ch-bl " + (b.mover === 0 ? "p0" : "p1"));
+      blG.appendChild(e);
+    }
+  }
+  function setBlunders(list) {
+    blunders = Array.isArray(list) ? list : [];
+    drawBlunders();
+  }
+
   function setData(vals) {
     values = vals;
     n = Math.max(1, vals ? vals.length : ana.n || 1);
     pl.setAttribute("points", vals
       ? vals.map((v, i) => chX(i).toFixed(1) + "," + chY(v).toFixed(1)).join(" ")
       : "");
+    drawBlunders();
     setPlyMark(ana.ply);
   }
   function setPlyMark(p) {
@@ -1403,7 +1271,7 @@ const chart = (() => {
   svg.addEventListener("pointermove", e => { if (dragging) seek(e); });
   svg.addEventListener("pointerup", () => { dragging = false; });
   svg.addEventListener("pointercancel", () => { dragging = false; });
-  return { setData, setPlyMark };
+  return { setData, setPlyMark, setBlunders };
 })();
 
 // ---- summary (per-ply value/stv/moves_left) -------------------------------------
@@ -1419,17 +1287,21 @@ function normalizeSummary(raw, n) {
   for (const k of ["plies", "per_ply", "summary"]) {
     if (!seq && Array.isArray(raw[k])) seq = raw[k];
   }
-  let values, stv, ml, toMove;
+  let values, stv, ml, toMove, playedQ, bestQ;
   if (seq && seq.length && typeof seq[0] === "object" && seq[0] !== null) {
     values = seq.map(x => x.value);
     stv = seq.map(x => x.stv ?? x.short_term_value);
     ml = seq.map(x => x.moves_left ?? x.ml);
     toMove = seq.map(x => x.to_move);
+    playedQ = seq.map(x => x.played_q);
+    bestQ = seq.map(x => x.best_q);
   } else if (Array.isArray(raw.value ?? raw.values)) {
     values = raw.value ?? raw.values;
     stv = Array.isArray(raw.stv) ? raw.stv : null;
     ml = Array.isArray(raw.moves_left) ? raw.moves_left : null;
     toMove = Array.isArray(raw.to_move) ? raw.to_move : null;
+    playedQ = Array.isArray(raw.played_q) ? raw.played_q : null;
+    bestQ = Array.isArray(raw.best_q) ? raw.best_q : null;
   }
   if (!values || !values.length) return null;
   const off = values.length === n + 1 ? 0 : -1;
@@ -1442,8 +1314,17 @@ function normalizeSummary(raw, n) {
     stv: p => at(stv, p),
     ml: p => at(ml, p),
     mover: p => { const m = at(toMove, p); return m === null ? moverAfter(p) : m; },
+    // Critic Q of the move the game played FROM the position after ply p, and
+    // the best legal Q there — both side-to-move POV (mantis only; null else).
+    playedQ: p => at(playedQ, p),
+    bestQ: p => at(bestQ, p),
   };
 }
+
+/* A played move this far below the position's best critic Q gets a mistake
+ * tick on the chart and a "missed" clause in the readout. Q spans [-1, 1], so
+ * 0.25 is a quarter of the whole win/loss scale — noise never reaches it. */
+const BLUNDER_GAP = 0.25;
 
 /* Bounded summary retry: transient failures (5xx / network / 429, after
  * api.js's own short GET retries) reschedule loadSummary with exponential
@@ -1485,6 +1366,17 @@ async function loadSummary() {
         }
       }
       chart.setData(vals);
+      // Mistake ticks: the move played at ply i+1 is judged from the
+      // position after ply i (side-to-move POV, so the gap is POV-free).
+      const blunders = [];
+      for (let i = 0; i < ana.n; i++) {
+        const played = ana.summary.playedQ(i), best = ana.summary.bestQ(i);
+        if (played === null || best === null) continue;
+        if (best - played >= BLUNDER_GAP) {
+          blunders.push({ ply: i + 1, mover: ana.summary.mover(i) });
+        }
+      }
+      chart.setBlunders(blunders);
       chartNote.hidden = true;
       updateValueRead(ana.ply);
     } else {
@@ -1546,12 +1438,100 @@ function ensureAnalysis(p) {
   return prom;
 }
 
-function renderHeat(payload, p) {
+/* Per-cell critic read (the mantis `klent` block) as a map for the hover
+ * text and the non-policy overlays. `q` is the cell's critic Q; `qc`/`rc`
+ * are its coordinates. All values stay mover-POV as served — painters flip
+ * to the site's blue/red frame where the mode calls for it. */
+function klentCells(payload) {
+  const k = payload && payload.klent;
+  if (!k || !Array.isArray(k.coords) || !Array.isArray(k.q)) return null;
+  const arr = (name, i) => {
+    const v = Array.isArray(k[name]) ? k[name][i] : null;
+    return Number.isFinite(v) ? v : 0;
+  };
+  const map = new Map();
+  k.coords.forEach((c, i) => {
+    if (!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) return;
+    map.set(key(c[0], c[1]), {
+      qc: c[0], rc: c[1],
+      q: arr("q", i), prior: arr("prior", i), improved: arr("improved", i),
+      win: arr("win", i), loss: arr("loss", i), long: arr("long", i),
+    });
+  });
+  return map.size ? map : null;
+}
+
+// Overlay tints outside the player frame: the gap map's promoted/demoted
+// pair and the long-game mass, deliberately neither side's color.
+const GAP_POS = "#8fd6a8", GAP_NEG = "#e0aa5e";
+const LONG_TINT = "#b3a1e0";
+
+function setOvlModeButtons() {
+  document.querySelectorAll("#ovlModeSeg button").forEach(b => {
+    const mine = b.dataset.mode === ana.mode;
+    b.classList.toggle("sel", mine);
+    b.setAttribute("aria-checked", mine ? "true" : "false");
+    b.disabled = b.dataset.mode !== "policy" && !curKlent;
+  });
+}
+
+function renderOverlay(payload, p) {
   curHeat = new Map();
-  if (!payload || !Array.isArray(payload.policy)) { anaBoard.clearHeat(); return; }
+  curKlent = null;
+  if (!payload || !Array.isArray(payload.policy)) {
+    anaBoard.clearHeat();
+    setOvlModeButtons();
+    return;
+  }
   for (const h of payload.policy) curHeat.set(key(h.q, h.r), h.p);
+  curKlent = klentCells(payload);
+  // A family without a critic read paints the prior; the selection resets so
+  // the seg never shows a mode the board is not drawing.
+  if (!curKlent && ana.mode !== "policy") ana.mode = "policy";
+  setOvlModeButtons();
+  updateAnaFine();
   const mover = Number.isInteger(payload.to_move) ? payload.to_move : moverAfter(p);
-  anaBoard.setHeat(payload.policy, mover === 0 ? H0 : H1, mover === 0 ? H0R : H1R, ana.opa);
+  const tint = mover === 0 ? H0 : H1, ring = mover === 0 ? H0R : H1R;
+  if (ana.mode === "policy" || !curKlent) {
+    anaBoard.setHeat(payload.policy, tint, ring, ana.opa);
+    return;
+  }
+  const cells = [...curKlent.values()];
+  if (ana.mode === "pi2") {
+    const rows = cells.map(c => ({ q: c.qc, r: c.rc, p: c.improved }))
+      .sort((a, b) => b.p - a.p);
+    anaBoard.setHeat(rows, tint, ring, ana.opa);
+    return;
+  }
+  if (ana.mode === "long") {
+    const rows = cells.map(c => ({ q: c.qc, r: c.rc, p: c.long }))
+      .sort((a, b) => b.p - a.p);
+    anaBoard.setHeat(rows, LONG_TINT, LONG_TINT, ana.opa);
+    return;
+  }
+  if (ana.mode === "q") {
+    // Q is already win-minus-loss mass, so the scale is absolute — a faint
+    // board IS the critic seeing a close game. Blue/red is the site's value
+    // frame; the ring marks the mover's best cell.
+    const flip = mover === 0 ? 1 : -1;
+    const rows = cells.map(c => ({ q: c.qc, r: c.rc, v: flip * c.q }));
+    let best = null;
+    for (const c of cells) if (!best || c.q > best.q) best = c;
+    anaBoard.setSignedHeat(
+      rows, H0, H1, ana.opa,
+      best ? { q: best.qc, r: best.rc } : null, ring,
+    );
+    return;
+  }
+  // gap: where the critic bends the policy. π′ − π per cell, normalized to
+  // the largest shift on the board so the map reads at any sharpness.
+  let scale = 0;
+  for (const c of cells) scale = Math.max(scale, Math.abs(c.improved - c.prior));
+  const rows = cells.map(c => ({
+    q: c.qc, r: c.rc,
+    v: scale > 0 ? (c.improved - c.prior) / scale : 0,
+  }));
+  anaBoard.setSignedHeat(rows, GAP_POS, GAP_NEG, ana.opa, null, ring);
 }
 
 // ---- analysis checkpoint selector -------------------------------------------------
@@ -1569,8 +1549,14 @@ function anaCkptLabel() {
   return ana.botLabel || "net";
 }
 
+const MODE_FINE = {
+  policy: "policy priors", q: "critic Q per move", pi2: "improved policy π′",
+  long: "long-game mass", gap: "critic vs policy",
+};
+
 function updateAnaFine() {
-  $("anaFine").textContent = `policy priors · ${anaCkptLabel()} · no search`;
+  $("anaFine").textContent =
+    `${MODE_FINE[ana.mode] || "policy priors"} · ${anaCkptLabel()} · no search`;
 }
 
 function renderAnaCkpts() {
@@ -1596,6 +1582,7 @@ function setAnalysisCkpt(id) {
   cancelSummaryRetry();
   ana.summaryState = "idle";
   chart.setData(null);
+  chart.setBlunders([]);
   updateAnaFine();
   loadSummary();
   setPly(ana.ply, true);
@@ -1643,6 +1630,27 @@ function updateValueRead(p, payload) {
   setBig(valNow, v, "value-big");
   setBig(stvNow, stv, "hz-v");
   mlNow.textContent = ml === null ? "—" : (terminal ? "0" : "~" + Math.max(0, Math.round(ml)));
+  updateQRead(p);
+}
+
+/* Critic read of the move that REACHED this ply: its Q and the best legal Q
+ * from the position it was played from, blue-POV like every other readout.
+ * The "missed" clause appears exactly when the chart draws a mistake tick. */
+function updateQRead(p) {
+  if (!qRead) return; // cached pre-deep-look index.html
+  let text = "";
+  if (ana.summary && ana.summary.playedQ && p >= 1) {
+    const played = ana.summary.playedQ(p - 1), best = ana.summary.bestQ(p - 1);
+    if (played !== null && best !== null) {
+      const m = ana.summary.mover(p - 1);
+      const flip = v => (m === 0 ? v : -v);
+      const missed = best - played;
+      text = `move Q ${fmtV(flip(played))} · best ${fmtV(flip(best))}`;
+      if (missed >= BLUNDER_GAP) text += ` · missed ${missed.toFixed(2)}`;
+    }
+  }
+  qRead.hidden = !text;
+  if (qReadText) qReadText.textContent = text;
 }
 
 // ---- ply navigation ----------------------------------------------------------------
@@ -1680,12 +1688,14 @@ function setPly(p, fromAuto) {
   }
 
   updateValueRead(p);
+  clearDeepLook();
   anaBoard.clearHeat();
   curHeat = new Map();
+  curKlent = null;
   if (!winCells) {
     ensureAnalysis(p).then(pl => {
       if (!pl || ana.ply !== p) return;
-      renderHeat(pl, p);
+      renderOverlay(pl, p);
       updateValueRead(p, pl);
     });
   }
@@ -1731,8 +1741,221 @@ $("ovlRange").addEventListener("input", function () {
   ana.opa = +this.value / 100;
   const pl = ana.cache.get(ana.ply);
   const terminal = ana.ply === ana.n && ana.termination === "six_in_line";
-  if (pl && !terminal) renderHeat(pl, ana.ply);
+  if (pl && !terminal) renderOverlay(pl, ana.ply);
 });
+
+const ovlModeSeg = $("ovlModeSeg");
+if (ovlModeSeg) ovlModeSeg.addEventListener("click", e => {
+  const b = e.target.closest("button[data-mode]");
+  if (!b || b.disabled || b.dataset.mode === ana.mode) return;
+  ana.mode = b.dataset.mode;
+  setOvlModeButtons();
+  updateAnaFine();
+  const pl = ana.cache.get(ana.ply);
+  const terminal = ana.ply === ana.n && ana.termination === "six_in_line";
+  if (pl && !terminal) renderOverlay(pl, ana.ply);
+});
+
+// ---- deep look: on-demand search + forced-win solver ------------------------
+
+/* Both tools name the position by its placement prefix and run through the
+ * lab endpoints, so they need a real catalogue checkpoint id — the game's own
+ * bot by default, or the analysis selector's pick. */
+const deepCkptId = () => ana.ckpt || ana.defaultCkpt || null;
+
+let deepSimsVal = 64;
+const deepSimsSeg = $("deepSimsSeg");
+if (deepSimsSeg) deepSimsSeg.addEventListener("click", e => {
+  const b = e.target.closest("button[data-sims]");
+  if (!b) return;
+  deepSimsVal = +b.dataset.sims;
+  deepSimsSeg.querySelectorAll("button").forEach(x => {
+    x.classList.toggle("sel", x === b);
+    x.setAttribute("aria-checked", x === b ? "true" : "false");
+  });
+});
+
+function setDeepPhase(text) {
+  if (!deepPhase) return;
+  deepPhase.textContent = text || "";
+  deepPhase.hidden = !text;
+}
+
+function setDeepNote(text) {
+  if (!deepNote) return;
+  deepNote.textContent = text || "";
+  deepNote.hidden = !text;
+}
+
+function updateDeepButtons() {
+  const terminal = ana.ply === ana.n && ana.termination === "six_in_line";
+  const ok = !!ana.id && !terminal && !!deepCkptId() && !ana.deep.busy;
+  if (deepSearchBtn) deepSearchBtn.disabled = !ok;
+  if (solveBtn) solveBtn.disabled = !ok;
+}
+
+/* Drop whatever deep look is on the board. The run token orphans an
+ * in-flight replay; the live layers and proof-line previews clear in the
+ * same paint as whatever navigation triggered this. */
+function clearDeepLook() {
+  ana.deep.run++;
+  ana.deep.busy = false;
+  anaBoard.resetLiveSearch();
+  anaBoard.clearPreviewStones();
+  setDeepPhase("");
+  setDeepNote("");
+  updateDeepButtons();
+}
+
+function deepPhaseTextFor(scene, kind) {
+  if (kind === "bare_policy") return "policy priors";
+  if (kind === "candidate_set") return `${scene.cands.size} candidates drawn`;
+  if (kind === "search_round") {
+    const round = Number.isInteger(scene.round) ? scene.round + 1 : "?";
+    const rounds = Number.isInteger(scene.rounds) ? scene.rounds : "?";
+    let alive = 0;
+    for (const cand of scene.cands.values()) if (!cand.cut) alive++;
+    const visitRead = Number.isFinite(scene.visits) && Number.isFinite(scene.target)
+      ? ` · ${scene.visits}/${scene.target} visits` : "";
+    return `round ${round}/${rounds} · ${alive} of ${scene.cands.size} alive${visitRead}`;
+  }
+  const value = Number.isFinite(scene.rootValue)
+    ? ` · value ${fmtV(scene.rootValue)}` : "";
+  const verdict = sceneVerdict(scene);
+  return `search complete${value}${verdict ? ` · ${verdict}` : ""}`;
+}
+
+/* Replay collected telemetry frames on the analysis board with a fixed
+ * cadence — the live viewer's visual language, paced for watching rather
+ * than by the engine. Families without telemetry paint the final searched
+ * distribution directly. */
+async function replayDeepSearch(res, mover, run) {
+  const frames = Array.isArray(res.frames) ? res.frames : null;
+  if (!frames || !frames.length) {
+    const rows = Array.isArray(res.visit_policy) ? res.visit_policy : [];
+    if (rows.length) {
+      anaBoard.setHeat(rows, mover === 0 ? H0 : H1, mover === 0 ? H0R : H1R, ana.opa);
+    }
+    setDeepPhase("");
+    setDeepNote(
+      `searched ${res.visits} visits · value ${fmtV(res.root_value)}` +
+      (res.best ? ` · best ${fmtCell(res.best.q, res.best.r)}` : "")
+    );
+    return;
+  }
+  const scene = newScene("deep");
+  const reduced = liveReducedMotion();
+  for (const event of frames) {
+    if (ana.deep.run !== run) return;
+    foldLiveFrame(scene, event);
+    if (!reduced) {
+      paintSceneTo(scene, anaBoard, mover);
+      setDeepPhase(deepPhaseTextFor(scene, event.kind));
+      if (event.kind === "bare_policy") await sleep(420);
+      else if (event.kind === "candidate_set") await sleep(280);
+      else if (event.kind === "search_round") await sleep(130);
+    }
+  }
+  if (ana.deep.run !== run) return;
+  if (reduced) paintSceneTo(scene, anaBoard, mover);
+  setDeepPhase(deepPhaseTextFor(scene, "search_complete"));
+}
+
+async function runDeepSearch() {
+  const ckpt = deepCkptId();
+  if (!ckpt || ana.deep.busy || !ana.id) return;
+  const p = ana.ply, sims = deepSimsVal;
+  clearDeepLook();
+  const run = ++ana.deep.run;
+  ana.deep.busy = true;
+  updateDeepButtons();
+  // The static overlay comes off so the replay is the only paint on the
+  // board; stepping the ply brings it back through the normal path.
+  anaBoard.clearHeat();
+  curHeat = new Map();
+  curKlent = null;
+  setDeepPhase(`searching · ${sims} sims`);
+  const actions = ana.moves.slice(0, p).map(m => ({ q: m.q, r: m.r }));
+  const payload = ana.cache.get(p);
+  const mover = payload && Number.isInteger(payload.to_move)
+    ? payload.to_move : moverAfter(p);
+  try {
+    const res = await api.labSearch(ckpt, actions, sims, true);
+    if (ana.deep.run !== run) return;
+    await replayDeepSearch(res, mover, run);
+  } catch (e) {
+    if (ana.deep.run !== run) return;
+    setDeepPhase("");
+    setDeepNote(e && e.status === 429
+      ? "search rate-limited — wait a moment"
+      : "deep search unavailable — try again shortly");
+  } finally {
+    if (ana.deep.run === run) {
+      ana.deep.busy = false;
+      updateDeepButtons();
+    }
+  }
+}
+
+function renderSolve(res, mover, p) {
+  const side = mover === 0 ? "blue" : "red";
+  const nodes = Number.isFinite(res.nodes) && res.nodes > 0
+    ? ` · ${res.nodes.toLocaleString()} nodes` : "";
+  const ms = Number.isFinite(res.ms) ? ` · ${(res.ms / 1000).toFixed(1)}s` : "";
+  if (res.status === "win") {
+    const line = Array.isArray(res.line) ? res.line : [];
+    // The proof line as preview stones: colors follow the real two-stone
+    // turn structure from this ply, and the proven first move pulses.
+    anaBoard.setPreviewStones(line.map((c, i) => ({
+      q: c.q, r: c.r, color: plyColor(p + 1 + i), tss: i === 0,
+    })));
+    const lineRead = line.length > 1
+      ? ` · ${line.length}-ply ${res.line_forced ? "forced line" : "line (defense branches)"}`
+      : "";
+    setDeepNote(`forced win for ${side} — proven${lineRead}${nodes}${ms}`);
+  } else if (res.status === "loss") {
+    setDeepNote(`${side} is lost here — forced threats beat every reply${nodes}${ms}`);
+  } else if (res.status === "timeout") {
+    setDeepNote(`solver hit its clock before an answer${nodes}${ms}`);
+  } else {
+    setDeepNote(`no forced win found for ${side}${nodes}${ms}`);
+  }
+}
+
+async function runSolve() {
+  const ckpt = deepCkptId();
+  if (!ckpt || ana.deep.busy || !ana.id) return;
+  const p = ana.ply;
+  clearDeepLook();
+  const run = ++ana.deep.run;
+  ana.deep.busy = true;
+  updateDeepButtons();
+  setDeepPhase("solver running · threat-space proof search");
+  const actions = ana.moves.slice(0, p).map(m => ({ q: m.q, r: m.r }));
+  const payload = ana.cache.get(p);
+  const mover = payload && Number.isInteger(payload.to_move)
+    ? payload.to_move : moverAfter(p);
+  try {
+    const res = await api.labSolve(ckpt, actions);
+    if (ana.deep.run !== run) return;
+    setDeepPhase("");
+    renderSolve(res, mover, p);
+  } catch (e) {
+    if (ana.deep.run !== run) return;
+    setDeepPhase("");
+    setDeepNote(e && e.status === 429
+      ? "solver rate-limited — wait a moment"
+      : "solver unavailable — try again shortly");
+  } finally {
+    if (ana.deep.run === run) {
+      ana.deep.busy = false;
+      updateDeepButtons();
+    }
+  }
+}
+
+if (deepSearchBtn) deepSearchBtn.addEventListener("click", runDeepSearch);
+if (solveBtn) solveBtn.addEventListener("click", runSolve);
 
 // ---- opening a game in analysis ---------------------------------------------------
 
@@ -1804,6 +2027,7 @@ function openAnalysis(rec) {
   updateAnaFine();
   buildMoveList();
   chart.setData(null);
+  chart.setBlunders([]);
   const copyBtn = $("copyLink");
   copyBtn.disabled = false;
   const labBtn = $("openLabBtn");

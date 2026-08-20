@@ -499,6 +499,37 @@ export function createBoard(svg, opts = {}) {
 
   const clearHeat = hardClearHeat;
 
+  /* Signed analysis overlay: rows carry v in [-1, 1] and each cell paints
+   * tintPos or tintNeg with opacity from |v|. Same immediate/non-animated
+   * contract as setHeat (they share the layer). A small pedestal keeps a
+   * near-zero cell faintly present — "evaluated, judged even" reads
+   * differently from "no data" — and gamma < 1 keeps the middle apart.
+   * `ring`, when given, outlines one cell (the caller's pick of "best"). */
+  function setSignedHeat(rows, tintPos, tintNeg, opa, ring, ringTint) {
+    hardClearHeat();
+    if (!rows || !rows.length || opa <= 0) return;
+    for (const h of rows) {
+      const v = Number.isFinite(h.v) ? Math.max(-1, Math.min(1, h.v)) : 0;
+      const el = document.createElementNS(NS, "polygon");
+      el.setAttribute("points", hexPts(axialX(h.q, h.r), axialY(h.r), S * DRAW));
+      el.setAttribute("class", "heatcell");
+      el.setAttribute("fill", v >= 0 ? tintPos : tintNeg);
+      el.setAttribute(
+        "opacity",
+        (opa * (0.06 + 0.94 * Math.pow(Math.abs(v), HEAT_GAMMA))).toFixed(3),
+      );
+      heat.appendChild(el);
+    }
+    if (ring && Number.isFinite(ring.q) && Number.isFinite(ring.r)) {
+      const el = document.createElementNS(NS, "polygon");
+      el.setAttribute("points", hexPts(axialX(ring.q, ring.r), axialY(ring.r), S * 0.86));
+      el.setAttribute("class", "heattop");
+      el.setAttribute("stroke", ringTint);
+      el.setAttribute("opacity", Math.min(1, opa + 0.1).toFixed(3));
+      heat.appendChild(el);
+    }
+  }
+
   /* Fade out every entry of `map` outside `keep` and drop it once the fade
    * lands; `node` names the entry's fading element. The token check lets a
    * later frame reclaim an entry mid-fade: painting zeroes `fade`, so the
@@ -789,7 +820,7 @@ export function createBoard(svg, opts = {}) {
   updateVirtual();
 
   return {
-    svg, setStones, setLegal, setHeat, clearHeat,
+    svg, setStones, setLegal, setHeat, setSignedHeat, clearHeat,
     setLiveBase, setSearchMarks, clearLiveSearch, resetLiveSearch,
     setPreviewStones, clearPreviewStones,
     stage, clearStage, hideHoverGhost,

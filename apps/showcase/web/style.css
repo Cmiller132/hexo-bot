@@ -520,6 +520,31 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 .hz-l{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
 
 /* overlay opacity control */
+/* critic read of the ply: played-move Q vs best legal Q from the summary */
+.q-read{
+  margin-top:8px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;
+  color:var(--muted);
+}
+.q-read[hidden]{display:none}
+
+/* overlay-mode seg: five narrow buttons; disabled = family serves no critic */
+#ovlModeSeg{margin-top:10px}
+#ovlModeSeg button{font-size:10.5px;padding:6px 0}
+#ovlModeSeg button:disabled{color:var(--dim);cursor:default;background:none;box-shadow:none}
+
+/* deep look: budget seg + the two on-demand tools */
+.deep-row{display:flex;gap:8px;align-items:stretch}
+.deep-row .seg{flex:none;width:108px}
+.deep-row .deep-btn{flex:1;margin-top:0}
+#solveBtn.deep-btn{margin-top:8px}
+.deep-note{
+  margin-top:8px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;
+  line-height:1.6;color:var(--muted);
+}
+.deep-note[hidden]{display:none}
+
 .ovl{
   display:flex;align-items:center;gap:10px;
   margin-top:14px;padding-top:12px;border-top:1px solid var(--line-soft);
@@ -543,6 +568,11 @@ main{max-width:1120px;margin:0 auto;padding:28px}
 .chart{width:100%;height:auto;display:block;cursor:pointer;touch-action:none}
 .ch-grid{stroke:var(--line-soft);stroke-width:1}
 .ch-zero{stroke:var(--line);stroke-width:1}
+/* mistake ticks: plies whose played move gave up >= BLUNDER_GAP of critic Q
+   against the position's best, colored by who played them */
+.ch-bl{stroke-width:2;pointer-events:none}
+.ch-bl.p0{stroke:var(--p0-soft)}
+.ch-bl.p1{stroke:var(--p1-soft)}
 .ch-lab{font-family:var(--mono);font-size:7.5px;fill:var(--dim);pointer-events:none}
 .ch-lab.p0{fill:#54749e}
 .ch-lab.p1{fill:#9c5a56}

@@ -205,3 +205,18 @@ export const getAnalysis = (id, ply, ckpt) =>
 export const getSummary = (id, ckpt) =>
   request(`/api/game/${id}/summary` +
     (ckpt ? `?checkpoint_id=${encodeURIComponent(ckpt)}` : ""));
+
+/* Lab endpoints, shared by the analysis deep-look tools and the lab page.
+ * `actions` is the placement sequence [{q,r},...] naming the position. */
+
+export const labSearch = (ckpt, actions, sims, frames = false) =>
+  request("/api/lab/search", {
+    method: "POST",
+    body: { checkpoint_id: ckpt, actions, sims, frames },
+  });
+
+export const labSolve = (ckpt, actions) =>
+  request("/api/lab/solve", {
+    method: "POST",
+    body: { checkpoint_id: ckpt, actions },
+  });
