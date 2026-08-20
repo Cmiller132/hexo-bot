@@ -4333,19 +4333,35 @@ impl<'store> WidePnSearch<'store> {
         let mut legal = Vec::new();
         state.write_legal_moves(&mut legal);
         let frame = canonical_frame(state);
-        legal.sort_by_key(|coord| canonical_coord_key(frame, *coord));
-        for coord in legal {
-            if seen.contains(&coord) {
-                continue;
-            }
-            let wf = anchors.iter().any(|anchor| {
-                let dq = i32::from(anchor.q) - i32::from(coord.q);
-                let dr = i32::from(anchor.r) - i32::from(coord.r);
-                (dq.abs() + dr.abs() + (dq + dr).abs()) / 2 <= 8
-            });
-            if !wf {
-                continue;
-            }
+        // PROXIMITY order: quiet moves that matter build on (or defend near)
+        // the claimant's formation, so the fallback tries the neighborhood
+        // before sweeping the whole legal radius. Equal-pn selection follows
+        // generation rank, so this order is what the search actually walks.
+        let mut ranked: Vec<((u16, (i32, i32), (i16, i16)), HexCoord)> = legal
+            .into_iter()
+            .filter(|coord| !seen.contains(coord))
+            .filter_map(|coord| {
+                let nearest = anchors
+                    .iter()
+                    .map(|anchor| {
+                        let dq = i32::from(anchor.q) - i32::from(coord.q);
+                        let dr = i32::from(anchor.r) - i32::from(coord.r);
+                        ((dq.abs() + dr.abs() + (dq + dr).abs()) / 2) as u16
+                    })
+                    .min()
+                    .unwrap_or(u16::MAX);
+                // `attacker_placement_wf`: past 8 from every claimant stone
+                // the certificate could not carry the move anyway.
+                (nearest <= 8).then(|| {
+                    (
+                        (nearest, canonical_coord_key(frame, coord), (coord.q, coord.r)),
+                        coord,
+                    )
+                })
+            })
+            .collect();
+        ranked.sort_unstable_by_key(|(rank, _)| *rank);
+        for (_, coord) in ranked {
             children.push(WidePnChild {
                 mv: WidePnMove::One(coord),
                 result: WidePnChildResult::Pending,
@@ -4494,10 +4510,41 @@ impl<'store> WidePnSearch<'store> {
         let mut legal = Vec::new();
         state.write_legal_moves(&mut legal);
         let frame = canonical_frame(state);
-        legal.sort_by_key(|coord| canonical_coord_key(frame, *coord));
-        legal
+        // PROXIMITY order, mirroring the quiet attacker generator: the
+        // defender's refuting replies live near the claimant's formation
+        // (block the attack) far more often than anywhere else, and min-dn
+        // selection over flat priors follows generation rank — so the killer
+        // reply is tried before the far corners, and bad quiet attacker
+        // lines die orders of magnitude sooner.
+        let anchors: Vec<HexCoord> = state
+            .board()
+            .occupied_cells()
+            .iter()
+            .copied()
+            .filter(|stone| state.board().get(*stone) == Some(self.claimant))
+            .collect();
+        let mut ranked: Vec<((u16, (i32, i32), (i16, i16)), HexCoord)> = legal
             .into_iter()
-            .map(|coord| WidePnChild {
+            .map(|coord| {
+                let nearest = anchors
+                    .iter()
+                    .map(|anchor| {
+                        let dq = i32::from(anchor.q) - i32::from(coord.q);
+                        let dr = i32::from(anchor.r) - i32::from(coord.r);
+                        ((dq.abs() + dr.abs() + (dq + dr).abs()) / 2) as u16
+                    })
+                    .min()
+                    .unwrap_or(u16::MAX);
+                (
+                    (nearest, canonical_coord_key(frame, coord), (coord.q, coord.r)),
+                    coord,
+                )
+            })
+            .collect();
+        ranked.sort_unstable_by_key(|(rank, _)| *rank);
+        ranked
+            .into_iter()
+            .map(|(_, coord)| WidePnChild {
                 mv: WidePnMove::One(coord),
                 result: WidePnChildResult::Pending,
                 entry: None,
