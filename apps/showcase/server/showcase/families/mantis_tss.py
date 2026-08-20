@@ -98,7 +98,11 @@ class TssConfig:
     workers: int = 3
     wall_budget_ms: int = 1500
     root_wall_budget_ms: int = 3000
-    solver_mem_bytes: int = 1_610_612_736  # 1.5 GiB
+    # 2 GiB: a quarter sizes the transposition index at 512 MiB — exactly the
+    # profile the hexgt reference gate proved the hardest corpus position
+    # (0l4291i, ~1.9M nodes) at. Below it the index refuses admissions and
+    # duplication inflates the node count.
+    solver_mem_bytes: int = 2_147_483_648
     unforcing: bool = False
 
     def __post_init__(self) -> None:

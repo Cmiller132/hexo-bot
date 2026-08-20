@@ -396,7 +396,7 @@ leaf_gate = "threats"      # "threats": solve leaves with a live >=4 window
 workers = 3                # threads for leaf solves; the root solve has its own
 wall_budget_ms = 1500      # per-move ceiling on waiting for LEAF solves
 root_wall_budget_ms = 3000 # per-move ceiling on waiting for the ROOT solve
-solver_mem_bytes = 1610612736  # HARD ceiling (1.5 GiB) on one solve's
+solver_mem_bytes = 2147483648  # HARD ceiling (2 GiB) on one solve's
                            # accounted Rust working set (PN arena +
                            # transposition index). Reaching it returns
                            # "unknown" with mem_stopped set — never a
