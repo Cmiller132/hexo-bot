@@ -576,3 +576,59 @@ def test_tss_config_refuses_nonsense():
     assert (shipped.wall_budget_ms, shipped.root_wall_budget_ms) == (1500, 3000)
     # the toggle changes `enabled` and nothing else
     assert TssConfig().with_enabled(False) == TssConfig(enabled=False)
+
+
+# --- 8. the solver endpoint (solve_position) ---------------------------------
+
+
+@pytest.mark.parametrize("prefix,proven", _MISSES, ids=["idx25", "idx34"])
+def test_solve_position_proves_the_missed_wins(prefix, proven):
+    from mantisnet import _rust
+    from showcase.families.mantis_tss import TssConfig, solve_position
+
+    out = solve_position(prefix, TssConfig())
+    assert out["status"] == "win"
+    assert out["source"] == "deep"
+    assert (out["proven"]["q"], out["proven"]["r"]) == proven
+    assert out["line"] and (out["line"][0]["q"], out["line"][0]["r"]) == proven
+    assert out["nodes"] > 0
+    assert out["ms"] > 0
+    # A reported line is a prefix of a proof, never a guess: it must replay
+    # as legal plies from the solved position.
+    _rust.Position.replay(list(prefix) + [(c["q"], c["r"]) for c in out["line"]])
+
+
+def test_solve_position_answers_a_win_now_from_lambda1():
+    from showcase.families.mantis_tss import TssConfig, solve_position
+
+    out = solve_position(WIN_NOW_ONE_STONE, TssConfig())
+    assert out["status"] == "win"
+    assert out["source"] == "lambda1"
+    assert (out["proven"]["q"], out["proven"]["r"]) in {(-1, 0), (5, 0)}
+    assert out["guard"] is not None
+    marked = {
+        (row["q"], row["r"]) for row in out["guard"] if row["cls"] == 1
+    }
+    assert (out["proven"]["q"], out["proven"]["r"]) in marked
+
+
+def test_solve_position_reports_unknown_within_a_tiny_cap():
+    """idx25's proof needs 1577 nodes; a 50-node cap must answer honestly."""
+    from showcase.families.mantis_tss import TssConfig, solve_position
+
+    out = solve_position(LOST_GAME_IDX25, TssConfig(root_node_cap=50))
+    assert out["status"] == "unknown"
+    assert out["source"] == "deep"
+    assert out["proven"] is None
+    assert out["line"] == []
+
+
+def test_solve_position_refuses_a_terminal_position():
+    from showcase.families.mantis_tss import TssConfig, solve_position
+
+    win = [
+        (0, 0), (0, 3), (1, 3), (1, 0), (2, 0), (2, 3),
+        (3, 3), (3, 0), (4, 0), (4, 3), (5, 3),
+    ]
+    with pytest.raises(ValueError, match="terminal"):
+        solve_position(win, TssConfig())

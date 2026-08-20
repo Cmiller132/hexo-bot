@@ -106,14 +106,31 @@ POST /api/lab/eval              lab: net eval + optional internals (attention ro
                                 for a query cell, per-block activation norms,
                                 feature planes) on a visitor-built position
 POST /api/lab/search            lab: real search on a legal-sequence position,
-                                sims capped (SHOWCASE_LAB_SEARCH_VISIT_CAP, 256)
+                                sims capped (SHOWCASE_LAB_SEARCH_VISIT_CAP, 256);
+                                `"frames": true` adds a replayable frame list
+POST /api/lab/solve             forced-win solver verdict on a legal-sequence
+                                position (λ¹ + verified deep solve + forced line)
 GET  /healthz                   liveness
 ```
 
 Lab endpoints are rate-limited separately (SHOWCASE_LAB_* in config.py) and run
 in the worker pool without game-key stickiness; free-edit positions get a
 synthesized history (the two last-turn features are zeroed) and cannot be
-searched. app.py documents the request/response schemas.
+searched or solved. app.py documents the request/response schemas.
+
+`/api/lab/search` with `"frames": true` returns `frames`: the search's
+telemetry events in the public live-search schema (`bare_policy`,
+`candidate_set`, `search_round`, `search_complete`) so a client can replay the
+search in the live viewer; only families with live telemetry return them.
+`/api/lab/solve` takes `{checkpoint_id, actions}` and answers
+`{status: win|loss|unknown|timeout, source: lambda1|deep, proven: {q,r}|null,
+line: [{q,r}, …], line_forced, guard: [{q,r,cls}]|null, nodes, ms}` — the
+engine-level Threat-Space solver at the checkpoint's own TSS budgets: λ¹
+first, then the verified deep root solve, then a forced line walked from the
+proven move while the defense has exactly one λ¹-surviving reply (`cls`: 1
+win-now, -1 refuted, else neutral). A terminal position is a 422. An explicit
+solve ignores the profile's `enabled` flag: asking the solver a question
+answers it.
 
 Access model: mutating routes always require the session cookie; reading an
 ACTIVE game requires it too (403 otherwise). FINISHED games are public by
@@ -231,6 +248,13 @@ games only (409 while active), cached per (game, ply):
   `SHOWCASE_ANALYSIS_VISIT_CAP` budget) and upgrades the cached payload.
 - `v` is the payload schema version; bumping it server-side invalidates older
   cached payloads (they are recomputed on first read, never served stale).
+- MantisNet checkpoints add a `klent` block — the KLENT critic read over
+  EVERY legal cell, columnar in engine legal order, 4 decimals, side-to-move
+  perspective: `{"coords": [[q, r], …], "prior": […], "improved": […] (π′),
+  "q": […] (win-minus-loss mass, in (-1, 1)), "win": […], "loss": […],
+  "long": […] (the three categorical masses; each cell's triple sums to 1),
+  "kl": KL(π′‖π), "norm_entropy": H(π′)/log|A|}`. Families without the
+  categorical critic serve no `klent` key.
 
 ### GET /api/game/{id}/summary
 
@@ -253,6 +277,13 @@ Arrays have `ply_count + 1` entries; index i is the position AFTER ply i
 (index 0 = empty board, last index = final position). `value`/`stv` are
 side-to-move perspective at each index — use `to_move` (null at a terminal
 position) to fold into a fixed-color perspective for charting.
+
+MantisNet checkpoints add two more parallel arrays, `played_q` and `best_q`:
+the critic's Q for the move the game actually played from position i, and the
+best legal Q there — both side-to-move perspective at index i, so their gap is
+perspective-free. `played_q` is null where no move follows (the last index)
+and both are null at a terminal row; the analysis chart marks plies whose gap
+crosses its mistake threshold.
 
 ### GET /api/games — public recent-games feed
 

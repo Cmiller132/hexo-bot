@@ -600,7 +600,10 @@ class HexfieldEqFamily:
     def lab_search_payload(
         self, session: Any, evaluator: Any, profile: HexfieldEqSearchProfile, *,
         actions: list[tuple[int, int]], game_key: int, visits: int, seed: int,
+        want_frames: bool = False,
     ) -> dict:
+        # No frame collection here: hexfield's telemetry rides the live game
+        # driver, not the lab search. The payload simply carries no frames.
         return self._search_payload(
             session, evaluator, profile, self._replay_state(actions),
             game_key=game_key, visits=visits, seed=seed,

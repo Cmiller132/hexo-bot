@@ -333,3 +333,102 @@ def test_http_surface_with_per_checkpoint_ladder(tiny_mantis_checkpoint, tmp_pat
             snap = poll_until(client, game["id"])
         if snap["status"] != "finished":
             resign(client, game["id"], headers)
+
+
+def test_mantisnet_serves_the_critic_read(tiny_mantis_checkpoint, tmp_path):
+    """The KLENT critic rides every analysis surface: the per-cell klent
+    block on analyze/lab_eval, played/best Q on the summary, replayable
+    frames on a lab search that asks for them, and the solver seam."""
+    toml = _catalogue(tmp_path, tiny_mantis_checkpoint)
+    settings = _settings(toml, tmp_path)
+    catalogue = load_bots_toml(toml)
+    from showcase.bots import _WorkerRuntime
+
+    runtime = _WorkerRuntime(
+        list(catalogue.checkpoints), settings, device_override="cpu"
+    )
+
+    from hexo_engine.types import AxialCoord, pack_coord_id
+
+    moves = [(0, 0), (0, 3), (1, 3), (1, 0), (2, 0)]
+    ids = [int(pack_coord_id(AxialCoord(q, r))) for q, r in moves]
+
+    # -- analyze: the klent block covers every legal cell -------------------
+    analysis = runtime.analyze(
+        bot_slug="tiny-mantis", actions=list(ids), want_search=False,
+        search_visits=8, seed=1,
+    )
+    k = analysis["klent"]
+    n = analysis["legal_count"]
+    assert len(k["coords"]) == n
+    for name in ("prior", "improved", "q", "win", "loss", "long"):
+        assert len(k[name]) == n
+    # One categorical simplex per cell composes Q (up to 4-decimal rounding).
+    for i in range(n):
+        assert k["win"][i] + k["loss"][i] + k["long"][i] == pytest.approx(
+            1.0, abs=2e-3
+        )
+        assert k["q"][i] == pytest.approx(k["win"][i] - k["loss"][i], abs=2e-3)
+    assert sum(k["prior"]) == pytest.approx(1.0, abs=1e-3 + n * 1e-4)
+    assert sum(k["improved"]) == pytest.approx(1.0, abs=1e-3 + n * 1e-4)
+    assert k["kl"] >= 0.0
+    assert 0.0 <= k["norm_entropy"] <= 1.0
+
+    # -- summary: the critic series; best can never trail played ------------
+    summary = runtime.summary(bot_slug="tiny-mantis", actions=list(ids))
+    played, best = summary["played_q"], summary["best_q"]
+    assert len(played) == len(ids) + 1 and len(best) == len(ids) + 1
+    assert played[-1] is None, "no move follows the final row"
+    assert best[-1] is not None, "the final row is a live position"
+    for i in range(len(ids)):
+        assert played[i] is not None and best[i] is not None
+        # 4-decimal payload rounding can nudge an equal pair by one ulp
+        assert best[i] >= played[i] - 2e-4
+
+    # A finished game's terminal row stays null in both series.
+    win = [
+        (0, 0), (0, 3), (1, 3), (1, 0), (2, 0), (2, 3),
+        (3, 3), (3, 0), (4, 0), (4, 3), (5, 3),
+    ]
+    win_ids = [int(pack_coord_id(AxialCoord(q, r))) for q, r in win]
+    finished = runtime.summary(bot_slug="tiny-mantis", actions=list(win_ids))
+    assert finished["played_q"][-1] is None and finished["best_q"][-1] is None
+    assert finished["played_q"][-2] is not None, (
+        "the position before the winning move reads the winning move's Q"
+    )
+
+    # -- lab_eval: same block; the old improved_policy field is gone --------
+    lab = runtime.lab_eval(
+        bot_slug="tiny-mantis", actions=list(moves), stones=None, to_move=None,
+        attention_cell=None, want_activations=False, want_features=False,
+    )
+    assert "klent" in lab
+    assert "improved_policy" not in lab
+
+    # -- lab_search: raw frames only when asked, expandable web-side --------
+    plain = runtime.lab_search(
+        bot_slug="tiny-mantis", actions=list(moves), visits=8, seed=2,
+    )
+    assert "frames_raw" not in plain
+    framed = runtime.lab_search(
+        bot_slug="tiny-mantis", actions=list(moves), visits=8, seed=2,
+        want_frames=True,
+    )
+    raw = framed["frames_raw"]
+    assert raw and raw[0]["phase"] == "start" and raw[-1]["phase"] == "complete"
+    from showcase.live_search import expand_worker_event
+
+    events = []
+    for frame in raw:
+        events.extend(expand_worker_event({"kind": "search_telemetry", **frame}))
+    kinds = [e["kind"] for e in events]
+    assert kinds[0] == "bare_policy"
+    assert "search_round" in kinds
+    assert kinds[-1] == "search_complete"
+    assert all("policy" in e for e in events if e["kind"] == "bare_policy")
+
+    # -- solve: the worker seam answers, and rejects a terminal position ----
+    solved = runtime.solve(bot_slug="tiny-mantis", actions=list(moves))
+    assert solved["status"] in ("win", "loss", "unknown", "timeout")
+    rejected = runtime.solve(bot_slug="tiny-mantis", actions=list(win))
+    assert "reject" in rejected

@@ -77,6 +77,10 @@ class ModelFamily(Protocol):
         game_key: int,
         visits: int,
         seed: int,
+        # Families with live telemetry may collect the search's frames into
+        # the payload (`frames_raw`) so the caller can replay them; families
+        # without simply return no frames.
+        want_frames: bool = False,
     ) -> dict: ...
     def selfcheck_forward(self, model: Any, state: Any, device: str) -> dict: ...
     def selfcheck_autocast(self, device: str) -> bool: ...

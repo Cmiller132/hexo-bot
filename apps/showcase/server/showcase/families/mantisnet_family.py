@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -602,6 +603,71 @@ def _policy_rows(read: Any, position: Any, *, floor: float) -> list[dict]:
     return rows
 
 
+@contextmanager
+def _critic_capture(model: Any):
+    """Capture the critic head's categorical logits from the next forward.
+
+    ``read_positions`` composes the (N, 3) categorical head into Q before
+    returning, but the analysis views also want the masses themselves
+    (win / loss / long-game). The final linear of the critic decoder runs
+    exactly once per forward, so a hook on it recovers the logits without
+    diverging the vendored model.
+    """
+    captured: list[Any] = []
+    hook = model.mlp_q.out.register_forward_hook(
+        lambda _m, _i, out: captured.append(out.detach())
+    )
+    try:
+        yield captured
+    finally:
+        hook.remove()
+
+
+def _trinomial(captured: list, expected: int) -> Any:
+    """The captured critic logits as (N, 3) fp32 CPU masses (p⁺, p⁻, p°)."""
+    if len(captured) != 1:
+        raise RuntimeError(
+            f"critic capture saw {len(captured)} forwards, expected exactly 1"
+        )
+    masses = captured[0].float().softmax(dim=-1).cpu()
+    if masses.shape[0] != expected:
+        raise RuntimeError(
+            f"critic capture rows {tuple(masses.shape)} do not cover the "
+            f"batch's {expected} legal cells"
+        )
+    return masses
+
+
+def _klent_cells(read: Any, masses: Any, position: Any, row: int = 0) -> dict:
+    """Per-legal-cell KLENT readout, columnar over engine legal order.
+
+    Full coverage, no floor: the board overlays paint every legal cell, and a
+    low-prior cell's Q is exactly what the disagreement view looks for. The
+    masses decode as win / loss / long-game from the side to move (§ appendix
+    B: p⁺, p⁻, and the remaining zero-return mass of the same simplex).
+    """
+    import torch
+
+    sl = read.row(row)
+    prior = torch.softmax(read.logits[sl], dim=0)
+    tri = masses[sl]
+
+    def _r4(values: Any) -> list[float]:
+        return [round(float(v), 4) for v in values.tolist()]
+
+    return {
+        "coords": [[int(q), int(r)] for q, r in position.legal_moves()],
+        "prior": _r4(prior),
+        "improved": _r4(read.improved.probs[sl]),
+        "q": _r4(read.q_values[sl]),
+        "win": _r4(tri[:, 0]),
+        "loss": _r4(tri[:, 1]),
+        "long": _r4(tri[:, 2]),
+        "kl": round(float(read.improved.kl[row]), 4),
+        "norm_entropy": round(float(read.improved.norm_entropy[row]), 4),
+    }
+
+
 class MantisnetFamily:
     name = "mantisnet"
     supports_live_telemetry = True
@@ -658,7 +724,9 @@ class MantisnetFamily:
                 "legal_count": 0, "policy": [], "top_k": [],
             }
         evaluator = MantisnetEvaluator(model, _model_device(model))
-        read = evaluator.read([position])
+        with _critic_capture(model) as captured:
+            read = evaluator.read([position])
+        masses = _trinomial(captured, int(read.offsets[-1]))
         rows = _policy_rows(read, position, floor=policy_floor)
         return {
             "value": _served_value(read, 0),
@@ -669,6 +737,7 @@ class MantisnetFamily:
             "legal_count": position.legal_count,
             "policy": rows,
             "top_k": rows[:5],
+            "klent": _klent_cells(read, masses, position),
         }
 
     def searched_eval(
@@ -683,10 +752,13 @@ class MantisnetFamily:
     def _search_payload(
         self, evaluator: Any, profile: MantisnetSearchProfile,
         moves: list[tuple[int, int]], *, game_key: int, visits: int, seed: int,
-        want_wire: bool,
+        want_wire: bool, want_frames: bool = False,
     ) -> dict:
         import numpy as np
 
+        # `want_frames` collects the same telemetry frames the live-search SSE
+        # streams, so the caller can replay the search in the live viewer.
+        frames: list[dict] = []
         # No per-game toggle reaches analysis or the lab: those readouts follow
         # the profile, so a served analysis matches how the bot plays.
         result = _run_search(
@@ -698,7 +770,7 @@ class MantisnetFamily:
             temperature=0.0,
             game_key=int(game_key),
             tss=profile.tss,
-            telemetry_callback=None,
+            telemetry_callback=frames.append if want_frames else None,
         )
         best_q, best_r = self.decode_action(int(result["action_id"]))
         ids = np.frombuffer(result["visit_policy_action_ids_bytes"], dtype=np.uint32)
@@ -712,12 +784,15 @@ class MantisnetFamily:
                 entry["w"] = float(w)
             rows.append(entry)
         rows.sort(key=lambda item: -item["p"])
-        return {
+        payload = {
             "visits": int(result["visits"]),
             "root_value": float(result["root_value"]),
             "best": {"q": best_q, "r": best_r},
             "visit_policy": rows,
         }
+        if want_frames:
+            payload["frames_raw"] = frames
+        return payload
 
     # -- summary ------------------------------------------------------------
     def summary_row(self, state: Any) -> list[tuple[int, int]]:
@@ -727,6 +802,12 @@ class MantisnetFamily:
         evaluator = MantisnetEvaluator(model, _model_device(model))
         positions = [_replay(moves) for moves in rows]
         values: list[float | None] = [None] * len(positions)
+        # Q of the move the game actually played from row i, and the best
+        # legal Q — both side-to-move POV at row i, both from the critic head
+        # the same forward already computed. The gap is the blunder signal
+        # the analysis chart marks.
+        played_q: list[float | None] = [None] * len(positions)
+        best_q: list[float | None] = [None] * len(positions)
         # The final row of a finished game is terminal; the builder refuses
         # terminal positions (MantisNet only ever evaluates decision states),
         # so that row stays null — the frontend's "no data".
@@ -746,13 +827,27 @@ class MantisnetFamily:
                 total += cost
                 end += 1
             read = evaluator.read([pos for _i, pos in live[start:end]])
-            for j, (i, _pos) in enumerate(live[start:end]):
+            for j, (i, pos) in enumerate(live[start:end]):
                 values[i] = _served_value(read, j)
+                q_row = read.q_values[read.row(j)]
+                best_q[i] = round(float(q_row.max()), 4)
+                if i + 1 < len(rows):
+                    q, r = (int(v) for v in rows[i + 1][-1])
+                    try:
+                        slot = pos.legal_moves().index((q, r))
+                    except ValueError as exc:
+                        raise RuntimeError(
+                            f"summary row {i}: played move ({q}, {r}) is not "
+                            "among the position's legal cells"
+                        ) from exc
+                    played_q[i] = round(float(q_row[slot]), 4)
             start = end
         return {
             "value": values,
             "stv": [None] * len(values),
             "moves_left": [None] * len(values),
+            "played_q": played_q,
+            "best_q": best_q,
         }
 
     # -- lab ----------------------------------------------------------------
@@ -771,16 +866,10 @@ class MantisnetFamily:
         if position.is_terminal:
             raise ValueError("the position is terminal: nothing to evaluate")
         evaluator = MantisnetEvaluator(model, _model_device(model))
-        read = evaluator.read([position])
+        with _critic_capture(model) as captured:
+            read = evaluator.read([position])
+        masses = _trinomial(captured, int(read.offsets[-1]))
         rows = _policy_rows(read, position, floor=policy_floor)
-        improved_rows = [
-            {"q": int(q), "r": int(r), "p": float(p)}
-            for (q, r), p in zip(
-                position.legal_moves(), read.improved.probs[read.row(0)].tolist()
-            )
-            if p >= policy_floor
-        ]
-        improved_rows.sort(key=lambda item: -item["p"])
         stones_list = position.stones()
         support_coords = [
             [int(q), int(r)] for q, r, _p in stones_list
@@ -807,8 +896,8 @@ class MantisnetFamily:
             "stv": None,
             "moves_left": None,
             "policy": rows,
-            "improved_policy": improved_rows,
             "top_k": rows[:5],
+            "klent": _klent_cells(read, masses, position),
         }
         payload.update(
             _lab_internals(
@@ -823,11 +912,13 @@ class MantisnetFamily:
     def lab_search_payload(
         self, session: Any, evaluator: Any, profile: MantisnetSearchProfile, *,
         actions, game_key: int, visits: int, seed: int,
+        want_frames: bool = False,
     ) -> dict:
         moves = [(int(q), int(r)) for q, r in actions]
         return self._search_payload(
             evaluator, profile, moves,
             game_key=game_key, visits=visits, seed=seed, want_wire=True,
+            want_frames=want_frames,
         )
 
     # -- device -------------------------------------------------------------

@@ -789,6 +789,7 @@ class _WorkerRuntime:
 
     def lab_search(
         self, *, bot_slug: str, actions: list[tuple[int, int]], visits: int, seed: int,
+        want_frames: bool = False,
     ) -> dict:
         """One capped lab search from a validated placement sequence, under
         the checkpoint's own as-trained profile. Throwaway tree key (high bit
@@ -799,7 +800,30 @@ class _WorkerRuntime:
             game_key=(1 << 63) | (seed & ((1 << 48) - 1)),
             visits=int(visits),
             seed=seed,
+            want_frames=bool(want_frames),
         )
+
+    def solve(self, *, bot_slug: str, actions: list[tuple[int, int]]) -> dict:
+        """One forced-win solver verdict for a validated placement sequence.
+
+        The solver is engine-level (hexfield_eq's ``TssProbe``) and never
+        touches the model — the bot only contributes its profile's TSS budgets
+        so the verdict runs at the same depth the checkpoint plays with.
+        Profiles without a mantis ``TssConfig`` solve at the defaults. An
+        explicit solve request ignores the config's ``enabled`` flag: asking
+        the solver a question answers it."""
+        from .families.mantis_tss import TssConfig, solve_position
+
+        bot = self.bots[bot_slug]
+        config = getattr(bot.profile, "tss", None)
+        if not isinstance(config, TssConfig):
+            config = TssConfig()
+        try:
+            return solve_position([(int(q), int(r)) for q, r in actions], config)
+        except ValueError as exc:
+            # The one user-reachable error (a terminal position) comes back as
+            # a reject payload so the endpoint can 422 it, mirroring lab_eval.
+            return {"reject": str(exc)}
 
 
 def _worker_main(
@@ -856,6 +880,8 @@ def _worker_main(
                 out = runtime.lab_eval(**kwargs)
             elif kind == "lab_search":
                 out = runtime.lab_search(**kwargs)
+            elif kind == "solve":
+                out = runtime.solve(**kwargs)
             elif kind == "discard":
                 runtime.discard(**kwargs)
                 continue
@@ -1753,13 +1779,29 @@ class BotPool:
 
     async def lab_search(
         self, *, route_key: int, bot_slug: str, actions: list[tuple[int, int]],
-        visits: int, seed: int,
+        visits: int, seed: int, want_frames: bool = False,
     ) -> dict:
         """Lab capped search; the tree key is throwaway, so route_key only
         spreads load."""
         return await self._submit(
             self._route(route_key), "lab_search",
-            {"bot_slug": bot_slug, "actions": actions, "visits": visits, "seed": seed},
+            {
+                "bot_slug": bot_slug, "actions": actions, "visits": visits,
+                "seed": seed, "want_frames": want_frames,
+            },
+            self._settings.bot_timeout_s,
+            recycle_on_hang=True,
+            retries=_JOB_RETRIES,
+        )
+
+    async def solve(
+        self, *, route_key: int, bot_slug: str, actions: list[tuple[int, int]],
+    ) -> dict:
+        """Forced-win solver verdict; engine-level, so route_key only spreads
+        load across workers."""
+        return await self._submit(
+            self._route(route_key), "solve",
+            {"bot_slug": bot_slug, "actions": actions},
             self._settings.bot_timeout_s,
             recycle_on_hang=True,
             retries=_JOB_RETRIES,

@@ -394,3 +394,178 @@ class TssRunner:
         self._counters[f"deep_{status}"] += 1
         self._counters["deep_nodes"] += int(out["nodes"])
         self._counters["verify_failed"] += int(out["verify_failed"])
+
+
+# -- the solver endpoint --------------------------------------------------
+
+
+def _timed_deep_solve(
+    probe: Any, path: list[tuple[int, int]], node_cap: int, remaining_s: float
+) -> dict[str, Any] | None:
+    """One verified deep solve on its own thread, or None past the clock.
+
+    ``deep_solve`` is a blocking Rust call; a timed-out solve is abandoned the
+    same way ``TssRunner`` abandons one — its result was never going to be
+    waited on."""
+    if remaining_s <= 0.0:
+        return None
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tss-solve")
+    try:
+        future = pool.submit(probe.deep_solve, list(path), node_cap)
+        try:
+            return future.result(timeout=remaining_s)
+        except _FutureTimeout:
+            future.cancel()
+            return None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _win_now_move(
+    legal: list[tuple[int, int]], classes: list[int] | None
+) -> tuple[int, int] | None:
+    """The first class-1 (win-now) cell of a λ¹ read, or None."""
+    if classes is None:
+        return None
+    for (q, r), cls in zip(legal, classes):
+        if cls == 1:
+            return (int(q), int(r))
+    return None
+
+
+def _walk_line(
+    probe: Any, replay: Any, winner: int, first: tuple[int, int],
+    config: TssConfig, deadline: float, line_cap: int,
+) -> tuple[list[tuple[int, int]], bool, int]:
+    """Extend a proven root move while the proof stays a single line.
+
+    Hexo turns place two stones, so the walk keys every ply on whose placement
+    it is, not on alternation. On the winner's plies the next move must be
+    certified (λ¹ win-now, else a verified deep solve); on the defender's
+    plies the walk continues only while exactly one reply survives the λ¹
+    guard. Anything else — a branchy defense, an inert guard, the clock, the
+    depth cap — ends the line. A partial line is a prefix of a proof, never a
+    guess.
+    """
+    nodes = 0
+    line = [first]
+    path = [first]
+    forced = True
+    while len(line) < line_cap and time.monotonic() < deadline:
+        position = replay(path)
+        if position.is_terminal:
+            break
+        legal = position.legal_moves()
+        read = probe.lambda1(path, legal)
+        classes = read["move_classes"]
+        if int(position.current_player) == winner:
+            nxt = None
+            if read["verdict"] is not None and float(read["verdict"]) > 0.0:
+                nxt = _win_now_move(legal, classes)
+            if nxt is None:
+                out = _timed_deep_solve(
+                    probe, path, config.root_node_cap,
+                    deadline - time.monotonic(),
+                )
+                if out is not None:
+                    nodes += int(out["nodes"])
+                    if str(out["status"]) == "win" and out["move"] is not None:
+                        q, r = out["move"]
+                        nxt = (int(q), int(r))
+            if nxt is None:
+                break
+            line.append(nxt)
+            path.append(nxt)
+        else:
+            if classes is None or any(cls == 1 for cls in classes):
+                # An inert guard leaves the defense unconstrained; a defender
+                # win-now means this position was never part of the proof.
+                forced = False
+                break
+            keep = [
+                (int(q), int(r))
+                for (q, r), cls in zip(legal, classes)
+                if cls != -1
+            ]
+            if len(keep) != 1:
+                forced = False
+                break
+            line.append(keep[0])
+            path.append(keep[0])
+    return line, forced, nodes
+
+
+def solve_position(
+    moves: list[tuple[int, int]], config: TssConfig, *, line_cap: int = 24
+) -> dict[str, Any]:
+    """One root verdict for the solver view: λ¹, then the verified deep solve.
+
+    Returns the verdict for the side to move, the proven move where one
+    exists, the λ¹ guard classes over every legal move, and a forced line
+    walked from the proven move (see ``_walk_line``). The whole call shares
+    one wall clock (``root_wall_budget_ms``): the root solve takes what it
+    needs and the line walk gets the remainder.
+    """
+    from hexfield_eq import _rust
+    from mantisnet import _rust as mantis
+
+    def replay(path: list[tuple[int, int]]) -> Any:
+        return mantis.Position.replay(list(moves) + path)
+
+    root = replay([])
+    if root.is_terminal:
+        raise ValueError("the position is terminal: nothing to solve")
+    probe = _rust.TssProbe(_engine_state(moves))
+    started = time.monotonic()
+    deadline = started + config.root_wall_budget_ms / 1000.0
+    legal = root.legal_moves()
+    read = probe.lambda1([], legal)
+    classes = read["move_classes"]
+    nodes = 0
+    proven: tuple[int, int] | None = None
+
+    if read["verdict"] is not None:
+        status = "win" if float(read["verdict"]) > 0.0 else "loss"
+        source = "lambda1"
+        if status == "win":
+            proven = _win_now_move(legal, classes)
+    else:
+        out = _timed_deep_solve(
+            probe, [], config.root_node_cap, deadline - time.monotonic()
+        )
+        source = "deep"
+        if out is None:
+            status = "timeout"
+        else:
+            status = str(out["status"])
+            nodes += int(out["nodes"])
+            if status == "win" and out["move"] is not None:
+                q, r = out["move"]
+                proven = (int(q), int(r))
+
+    line: list[tuple[int, int]] = []
+    line_forced = True
+    if proven is not None:
+        line, line_forced, walk_nodes = _walk_line(
+            probe, replay, int(root.current_player), proven,
+            config, deadline, line_cap,
+        )
+        nodes += walk_nodes
+
+    return {
+        "status": status,
+        "source": source,
+        "proven": {"q": proven[0], "r": proven[1]} if proven else None,
+        "line": [{"q": q, "r": r} for q, r in line],
+        "line_forced": line_forced,
+        "guard": (
+            None
+            if classes is None
+            else [
+                {"q": int(q), "r": int(r), "cls": int(cls)}
+                for (q, r), cls in zip(legal, classes)
+            ]
+        ),
+        "nodes": nodes,
+        "ms": round((time.monotonic() - started) * 1000.0, 3),
+    }

@@ -101,8 +101,10 @@ _NICK_MAX = 24
 # payload schema changes: cached entries with a different (or missing) stamp
 # are treated as misses and recomputed. v2 added stv + moves_left; v3
 # scrubbed non-finite floats to null; v4 populates hexfield STV; v5 mantis
-# values became v-hat (the state head it served before is untrained).
-_ANALYSIS_VERSION = 5
+# values became v-hat (the state head it served before is untrained); v6
+# mantis analysis grew the per-cell `klent` block and the summary grew
+# `played_q`/`best_q`.
+_ANALYSIS_VERSION = 6
 
 # analysis_cache "ply" slot for the whole-game summary payload (real plies are
 # always >= 0, so -1 can never collide).
@@ -187,6 +189,15 @@ class LabSearchRequest(BaseModel):
     checkpoint_id: str = Field(max_length=128)
     actions: list[LabCell] = Field(max_length=MAX_ACTIONS)
     sims: int = Field(ge=1)
+    # Collect the search's telemetry frames (the live-search SSE event shapes)
+    # into the response so the client can replay the search in the viewer.
+    # Only families with live telemetry return them.
+    frames: bool = False
+
+
+class LabSolveRequest(BaseModel):
+    checkpoint_id: str = Field(max_length=128)
+    actions: list[LabCell] = Field(max_length=MAX_ACTIONS)
 
 
 def sanitize_nickname(raw: str) -> str | None:
@@ -974,10 +985,46 @@ def create_app(settings: Settings) -> FastAPI:
                     actions=actions,
                     visits=body.sims,
                     seed=route_key * 5003 + len(actions),
+                    want_frames=body.frames,
                 )
         except (BotPoolError, BotPoolTimeout) as exc:
             raise HTTPException(503, "lab backend unavailable") from exc
+        # Raw worker frames carry wire byte buffers; expand them into the
+        # public live-search event schema (bare_policy / candidate_set /
+        # search_round / search_complete) so the client's viewer can replay
+        # them with the exact decoder the SSE stream uses.
+        frames_raw = payload.pop("frames_raw", None)
+        if frames_raw is not None:
+            events: list[dict] = []
+            for frame in frames_raw:
+                events.extend(
+                    expand_worker_event({"kind": "search_telemetry", **frame})
+                )
+            payload["frames"] = sanitize_json(events)
         return {"checkpoint_id": spec.slug, "sims": body.sims, **payload}
+
+    @app.post("/api/lab/solve")
+    async def lab_solve(body: LabSolveRequest, request: Request):
+        """Forced-win solver verdict for a legal-sequence position: λ¹ plus
+        the verified deep solve, with a forced line while the defense stays
+        forced. The solver is engine-level; the checkpoint only sets its
+        budgets, so any catalogue checkpoint answers."""
+        _lab_gate(request, app.state.lab_search_bucket)
+        spec = _lab_checkpoint(body.checkpoint_id)
+        try:
+            actions = validate_actions([(c.q, c.r) for c in body.actions])
+        except LabPositionError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        try:
+            async with _background_job_slot():
+                payload = await app.state.pool.solve(
+                    route_key=_lab_route_key(), bot_slug=spec.slug, actions=actions,
+                )
+        except (BotPoolError, BotPoolTimeout) as exc:
+            raise HTTPException(503, "solver backend unavailable") from exc
+        if "reject" in payload:
+            raise HTTPException(422, payload["reject"])
+        return {"checkpoint_id": spec.slug, **sanitize_json(payload)}
 
     # -- external bot matches (/api/match/*, see matchapi.py) ---------------------------
 

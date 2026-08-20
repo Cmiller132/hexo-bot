@@ -193,9 +193,11 @@ class ShrimpFamily:
     def lab_search_payload(
         self, session: Any, evaluator: Any, profile: SearchProfile, *,
         actions: list[tuple[int, int]], game_key: int, visits: int, seed: int,
+        want_frames: bool = False,
     ) -> dict:
         from .. import lab
 
+        # Shrimp has no live-search telemetry; the payload carries no frames.
         return lab.search_payload(
             session, evaluator, profile, lab.replay_state(actions),
             game_key=game_key, visits=visits, seed=seed,
