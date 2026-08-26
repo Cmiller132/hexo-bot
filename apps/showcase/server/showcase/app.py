@@ -936,9 +936,10 @@ def create_app(settings: Settings) -> FastAPI:
         """Net readout + requested internals for a visitor-built position.
 
         Body carries exactly one of `actions` (a legal placement sequence,
-        replayed and validated here) or `stones` (a free-edit position; the
-        worker synthesizes history and zeroes the history-derived features —
-        the response names them in `zeroed_features`)."""
+        replayed and validated here) or `stones` (a free-edit position with
+        no move history; whatever history-derived features a family's
+        encoding has are zeroed and named in `zeroed_features` — MantisNet
+        has none and evaluates the stone set exactly)."""
         _lab_gate(request, app.state.lab_eval_bucket)
         spec = _lab_checkpoint(body.checkpoint_id)
         if (body.actions is None) == (body.stones is None):

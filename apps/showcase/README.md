@@ -117,9 +117,12 @@ GET  /healthz                   liveness
 ```
 
 Lab endpoints are rate-limited separately (SHOWCASE_LAB_* in config.py) and run
-in the worker pool without game-key stickiness; free-edit positions get a
-synthesized history (the two last-turn features are zeroed) and cannot be
-searched or solved. app.py documents the request/response schemas.
+in the worker pool without game-key stickiness. Free-edit positions evaluate
+without a move history — shrimp/hexfield synthesize one and zero their
+history-derived features; MantisNet's encoding has no history in it and
+evaluates the stone set exactly — but cannot be searched or solved (both need
+an engine state, which an unreachable position does not have). app.py
+documents the request/response schemas.
 
 `/api/lab/search` with `"frames": true` returns `frames`: the search's
 telemetry events in the public live-search schema (`bare_policy`,

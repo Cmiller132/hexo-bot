@@ -739,15 +739,24 @@ def batch_from_arrays(**fields) -> Batch:
 
 
 def collate_positions(positions) -> Batch:
-    """Build and collate positions with the Rust builder.
+    """Build and collate positions.
 
-    ``hexo_py.build_batch`` runs in parallel with the GIL released and returns
-    the same fields as ``collate([from_position(p) ...])`` under
-    ``MODEL_REPR_VERSION``.
+    Engine-backed positions (``mantisnet._rust.Position``) build with
+    ``hexo_py.build_batch``, which runs in parallel with the GIL released and
+    returns the same fields as ``collate([from_position(p) ...])`` under
+    ``MODEL_REPR_VERSION``. Any other object with the same read surface — a
+    history-less lab position — builds through that reference Python path.
+    A batch is one kind or the other; mixing them is an error.
     """
     from . import _rust as hexo_py
 
-    return batch_from_arrays(**hexo_py.build_batch(list(positions)))
+    positions = list(positions)
+    backed = [isinstance(p, hexo_py.Position) for p in positions]
+    if all(backed):
+        return batch_from_arrays(**hexo_py.build_batch(positions))
+    if any(backed):
+        raise ValueError("a batch must not mix engine-backed and free positions")
+    return collate([from_position(p) for p in positions])
 
 
 def collate_prefixes(games, ts) -> Batch:

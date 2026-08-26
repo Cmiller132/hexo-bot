@@ -224,8 +224,12 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     assert attn["available"] is True
     assert len(attn["rows"]) == 1 and len(attn["rows"][0]) == 2
     row = attn["rows"][0][0]
-    assert len(row["tokens"]) == 1 and 0.0 <= row["tokens"][0] <= 1.0
+    # One weight per state-latent row, plus the sparse stone cells: together
+    # they are (up to the floor) the full softmax row.
+    assert len(row["tokens"]) == 4
+    assert all(0.0 <= w <= 1.0 for w in row["tokens"])
     assert all(w >= attn["floor"] for w in row["cells"].values())
+    assert sum(row["tokens"]) + sum(row["cells"].values()) <= 1.0 + 1e-6
     # A non-stone query is refused with the family's reason, not a crash.
     off_stone = runtime.lab_eval(
         bot_slug="tiny-mantis", actions=coords, stones=None, to_move=None,
@@ -240,13 +244,57 @@ def test_mantisnet_worker_serves_every_seam(tiny_mantis_checkpoint, tmp_path):
     n_support = len(lab["support"]["coords"])
     assert all(len(s["norms"]) == n_support for s in stages)
     assert lab["features"]["names"][0] == "is_stone"
+    assert "placement_frac" in lab["features"]["names"]
     assert len(lab["features"]["planes"]) == len(lab["features"]["names"])
     assert all(len(p) == n_support for p in lab["features"]["planes"])
-    rejected = runtime.lab_eval(
-        bot_slug="tiny-mantis", actions=None, stones=([(0, 0)], [(1, 1)]),
-        to_move=0, attention_cell=None, want_activations=False, want_features=False,
+    # Support order is the lab's shared convention: the legal cells lead,
+    # matching the klent block's engine-order coords exactly.
+    legal_n = lab["support"]["legal_count"]
+    assert lab["support"]["coords"][:legal_n] == lab["klent"]["coords"]
+
+    # -- lab eval: free-edit ------------------------------------------------
+    # MantisNet's inputs carry no history, so a free-edit twin of the same
+    # position (same stones, same mover, fresh turn) reads identically.
+    from mantisnet import _rust
+
+    position = _rust.Position.replay(coords)
+    assert position.moves_remaining == 2, "twin test needs a fresh-turn position"
+    p0 = [(q, r) for q, r, p in position.stones() if p == 0]
+    p1 = [(q, r) for q, r, p in position.stones() if p == 1]
+    free = runtime.lab_eval(
+        bot_slug="tiny-mantis", actions=None, stones=(p0, p1),
+        to_move=position.current_player,
+        attention_cell=p1[0], want_activations=False, want_features=True,
     )
-    assert "reject" in rejected and "placement sequence" in rejected["reject"]
+    assert free["mode"] == "free" and free["ply"] == len(coords)
+    assert free["zeroed_features"] == []
+    assert abs(free["value"] - lab["value"]) <= 1e-4
+    seq_policy = {(row["q"], row["r"]): row["p"] for row in lab["policy"]}
+    free_policy = {(row["q"], row["r"]): row["p"] for row in free["policy"]}
+    assert set(free_policy) == set(seq_policy)
+    assert all(abs(free_policy[c] - seq_policy[c]) <= 1e-4 for c in seq_policy)
+    assert sorted(map(tuple, free["klent"]["coords"])) == sorted(
+        map(tuple, lab["klent"]["coords"])
+    )
+    assert free["attention"]["available"] is True
+    # No chronology exists, so the play-order plane is absent in free mode.
+    assert "placement_frac" not in free["features"]["names"]
+
+    # An empty free board is the forced opening.
+    opening = runtime.lab_eval(
+        bot_slug="tiny-mantis", actions=None, stones=([], []), to_move=None,
+        attention_cell=None, want_activations=False, want_features=False,
+    )
+    assert opening["phase"] == "Opening" and opening["legal_count"] == 1
+    assert opening["policy"][0]["q"] == 0 and opening["policy"][0]["r"] == 0
+
+    # A stone set that already completes six in a line is terminal: refused.
+    six = runtime.lab_eval(
+        bot_slug="tiny-mantis", actions=None,
+        stones=([(0, r) for r in range(6)], [(5, 0), (5, 1), (6, 0), (6, 1)]),
+        to_move=1, attention_cell=None, want_activations=False, want_features=False,
+    )
+    assert "reject" in six and "six" in six["reject"]
 
     # -- lab search ----------------------------------------------------------
     searched = runtime.lab_search(

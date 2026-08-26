@@ -43,8 +43,8 @@ _DEFAULT_CANDIDATES = 16
 _DEFAULT_TEMPERATURE = 1.0
 
 _ATTN_QUERY_REASON = (
-    "MantisNet's attention rows run over the placement sequence (a global "
-    "token plus the stones, in play order) — pick a stone as the query"
+    "MantisNet's attention rows run over a global token plus the stones — "
+    "pick a stone as the query"
 )
 _ATTN_FLOOR = 1e-3
 
@@ -58,9 +58,10 @@ def _pack(q: int, r: int) -> int:
 def _moves_from_state(state: Any) -> list[tuple[int, int]]:
     """The placement sequence of a showcase engine state, in play order.
 
-    MantisNet's featurization consumes the move sequence (its attention rows
-    are placement-ordered), so the family replays the history into its own
-    vendored engine rather than reading the stone set.
+    The vendored engine builds positions by replay only (a board-shaped
+    constructor would bypass its rules), so the family carries the history
+    across. The featurization itself is order-free: it reads the resulting
+    position, never the sequence.
     """
     import hexo_engine as engine
 
@@ -856,13 +857,19 @@ class MantisnetFamily:
         attention_cell, want_activations, want_features,
     ) -> dict:
         if stones is not None:
-            raise ValueError(
-                "mantisnet cannot evaluate a free-edit position: its "
-                "featurization consumes the placement sequence, which an "
-                "unordered stone set does not determine"
-            )
-        moves = [(int(q), int(r)) for q, r in (actions or [])]
-        position = _replay(moves)
+            # MantisNet's representation is a function of the stone set, the
+            # mover, and moves_remaining — no history anywhere in it — so a
+            # free-edit position evaluates exactly (see mantis_free).
+            from .mantis_free import FreeLabPosition
+
+            p0, p1 = stones
+            position = FreeLabPosition(p0, p1, 0 if to_move is None else int(to_move))
+            moves = None
+            mode = "free"
+        else:
+            moves = [(int(q), int(r)) for q, r in actions]
+            position = _replay(moves)
+            mode = "sequence"
         if position.is_terminal:
             raise ValueError("the position is terminal: nothing to evaluate")
         evaluator = MantisnetEvaluator(model, _model_device(model))
@@ -871,17 +878,20 @@ class MantisnetFamily:
         masses = _trinomial(captured, int(read.offsets[-1]))
         rows = _policy_rows(read, position, floor=policy_floor)
         stones_list = position.stones()
+        # Support order is the lab's shared convention: legal cells first,
+        # then stones (the client slices coords[:legal_count] as the legal
+        # set). Node indices in the internals payload follow it.
         support_coords = [
-            [int(q), int(r)] for q, r, _p in stones_list
-        ] + [[int(q), int(r)] for q, r in position.legal_moves()]
+            [int(q), int(r)] for q, r in position.legal_moves()
+        ] + [[int(q), int(r)] for q, r, _p in stones_list]
         payload = {
-            "mode": "sequence",
+            "mode": mode,
             "to_move": position.current_player,
             "phase": (
                 "Opening" if position.stone_count == 0
                 else ("FirstStone" if position.moves_remaining == 2 else "SecondStone")
             ),
-            "ply": len(moves),
+            "ply": len(moves) if moves is not None else position.stone_count,
             "legal_count": position.legal_count,
             "support": {
                 "coords": support_coords,
@@ -899,9 +909,14 @@ class MantisnetFamily:
             "top_k": rows[:5],
             "klent": _klent_cells(read, masses, position),
         }
+        if mode == "free":
+            # Nothing in MantisNet's input derives from history, so a
+            # free-edit position zeroes no features (unlike shrimp's).
+            payload["zeroed_features"] = []
         payload.update(
             _lab_internals(
                 model, position, support_coords,
+                moves=moves,
                 attention_cell=attention_cell,
                 want_activations=want_activations,
                 want_features=want_features,
@@ -946,6 +961,7 @@ def _model_device(model: Any) -> str:
 
 def _lab_internals(
     model: Any, position: Any, support_coords: list[list[int]], *,
+    moves: list[tuple[int, int]] | None,
     attention_cell: tuple[int, int] | None,
     want_activations: bool,
     want_features: bool,
@@ -954,9 +970,10 @@ def _lab_internals(
 
     One hooked trunk forward, mirroring the research deck's attention
     inspector: q/k are captured from each block's own projections and the
-    distance-bias logits are rebuilt exactly as the block builds them, so the
+    bias logits are rebuilt with the model's own bucket rule, so the
     displayed rows are the attention the forward actually ran. Support-node
-    indexing: stones in canonical order, then legal cells in engine order.
+    indexing: legal cells in engine order, then stones in canonical order
+    (the lab's shared support convention).
     """
     import math as _math
 
@@ -989,9 +1006,11 @@ def _lab_internals(
             hook.remove()
 
     support_index = {(c[0], c[1]): i for i, c in enumerate(support_coords)}
-    stone_count = position.stone_count
+    # The attention sequence is [four state-latent rows; stones] (model.py
+    # §5.3 hardcodes the same four).
+    global_rows = 4
     length = int(batch.attn_valid[0].sum())
-    seq_coords = batch.coords[0, :length].cpu()  # index 0 = the global token
+    seq_coords = batch.coords[0, :length].cpu()
 
     out: dict[str, Any] = {}
 
@@ -1000,23 +1019,27 @@ def _lab_internals(
         out["attention"] = {"available": True, "blocks": cfg.blocks, "heads": cfg.heads}
     else:
         query_seq = None
-        for i in range(1, length):
+        for i in range(global_rows, length):
             if (int(seq_coords[i, 0]), int(seq_coords[i, 1])) == tuple(attention_cell):
                 query_seq = i
                 break
         if query_seq is None:
             out["attention"] = {"available": False, "reason": _ATTN_QUERY_REASON}
         else:
+            # The model's own bucket rule and bias table (SELF diagonal,
+            # TOKEN on every latent pair, axis rows replacing the distance
+            # row for aligned pairs), so the displayed softmax is exactly
+            # the one the forward ran.
+            from mantisnet.attention import _bias_table, _bucket_index
+
             dim = cfg.h // cfg.heads
-            dq = seq_coords[:, None, 0] - seq_coords[None, :, 0]
-            dr = seq_coords[:, None, 1] - seq_coords[None, :, 1]
-            distance = torch.maximum(
-                torch.maximum(dq.abs(), dr.abs()), (dq + dr).abs()
+            buckets, _valid = _bucket_index(
+                seq_coords[None, :, :],
+                torch.tensor([length]),
+                length,
+                cfg.d_max,
+                global_rows,
             )
-            buckets = (distance - 1).clamp(0, cfg.d_max - 1).long()
-            buckets[distance == 0] = cfg.self_bucket
-            buckets[0, :] = cfg.token_bucket
-            buckets[:, 0] = cfg.token_bucket
             rows: list[list[dict]] = []
             for index, block in enumerate(model.blocks):
                 q = captures[index]["q"][0, :length].float().cpu()
@@ -1024,13 +1047,18 @@ def _lab_internals(
                 q = q.view(length, cfg.heads, dim).transpose(0, 1)
                 k = k.view(length, cfg.heads, dim).transpose(0, 1)
                 logits = q @ k.transpose(-1, -2) / _math.sqrt(dim)
-                logits += block.dist_bias.float().cpu()[:, buckets]
+                table = _bias_table(
+                    q,
+                    block.dist_bias.detach().float().cpu(),
+                    block.axis_bias.detach().float().cpu(),
+                )
+                logits += table[:, buckets[0].long()]
                 weights = torch.softmax(logits[:, query_seq, :], dim=-1)
                 head_rows = []
                 for head in range(cfg.heads):
                     row = weights[head]
                     cells_map = {}
-                    for i in range(1, length):
+                    for i in range(global_rows, length):
                         w_i = float(row[i])
                         if w_i < _ATTN_FLOOR:
                             continue
@@ -1040,7 +1068,10 @@ def _lab_internals(
                         if node is not None:
                             cells_map[str(node)] = w_i
                     head_rows.append(
-                        {"cells": cells_map, "tokens": [float(row[0])]}
+                        {
+                            "cells": cells_map,
+                            "tokens": [float(row[t]) for t in range(global_rows)],
+                        }
                     )
                 rows.append(head_rows)
             out["attention"] = {
@@ -1072,23 +1103,25 @@ def _lab_internals(
             if cell_stream is not None:
                 c_norm = cell_stream.float().norm(dim=-1).cpu()
                 for rank in range(c_norm.shape[0]):
-                    norms[stone_count + rank] = float(c_norm[rank])
+                    norms[rank] = float(c_norm[rank])
             return norms
 
-        stem_cells = None
-        if getattr(model, "cell_occupancy_table", None) is not None:
-            stem_cells = (
-                model.cell_occupancy_table(batch.cell_occupancy)
-                + model.cell_legal_table(batch.cell_is_legal)
-                + model.cell_nearest_table(batch.cell_nearest)
-            )
+        with torch.no_grad():
+            # The stem is the embedding tables the trunk starts from;
+            # recomputing the lookups reproduces it exactly.
+            stem_stones = model.stone_table(batch.stone_own)
+            stem_cells = None
+            if getattr(model, "cell_occupancy_table", None) is not None:
+                stem_cells = (
+                    model.cell_occupancy_table(batch.cell_occupancy)
+                    + model.cell_legal_table(batch.cell_is_legal)
+                    + model.cell_nearest_table(batch.cell_nearest)
+                )
         stages = [
             {
                 "label": "stem",
                 "kind": "stem",
-                # The stem is the embedding tables the trunk starts from;
-                # recomputing the lookups reproduces it exactly.
-                "norms": stage_norms(model.stone_table(batch.stone_own), stem_cells),
+                "norms": stage_norms(stem_stones, stem_cells),
             }
         ]
         for index, (s_stream, cell_stream) in enumerate(block_outputs):
@@ -1113,18 +1146,21 @@ def _lab_internals(
         planes: dict[str, list[float]] = {
             "is_stone": [0.0] * n,
             "stone_own": [0.0] * n,
-            "placement_frac": [0.0] * n,
+            # placement_frac is presentation only — the model never sees play
+            # order (the batch's stone order is canonical, not chronological).
+            # It comes from the request's placement list; a free-edit position
+            # has no chronology, so the plane is absent there.
+            **({"placement_frac": [0.0] * n} if moves is not None else {}),
             "cell_occupancy": [0.0] * n,
             "cell_nearest": [0.0] * n,
         }
         stones = position.stones()
         mover = position.current_player
         total = max(1, len(stones))
-        # Placement order comes from the sequence coords, not stones() (which
-        # is canonical order).
         order = {}
-        for i in range(1, length):
-            order[(int(seq_coords[i, 0]), int(seq_coords[i, 1]))] = i
+        if moves is not None:
+            for i, (mq, mr) in enumerate(moves):
+                order[(int(mq), int(mr))] = i + 1
         for q, r, player in stones:
             node = support_index[(int(q), int(r))]
             planes["is_stone"][node] = 1.0
@@ -1135,8 +1171,8 @@ def _lab_internals(
         occupancy = batch.cell_occupancy.cpu()
         nearest = batch.cell_nearest.cpu()
         for rank in range(occupancy.shape[0]):
-            planes["cell_occupancy"][stone_count + rank] = float(occupancy[rank])
-            planes["cell_nearest"][stone_count + rank] = float(nearest[rank])
+            planes["cell_occupancy"][rank] = float(occupancy[rank])
+            planes["cell_nearest"][rank] = float(nearest[rank])
         out["features"] = {
             "available": True,
             "names": list(planes),

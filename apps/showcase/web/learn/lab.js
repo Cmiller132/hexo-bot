@@ -1536,8 +1536,8 @@ function renderServerFeatures(payload) {
     paintHalo(halo);
     setReadout(
       "support set",
-      `${coords.length} nodes Â· ${sup.legal_count} legal + ${sup.stone_count} stones + ` +
-      `${sup.halo_count} halo Â· ${feat.names.length} ${state.ckptFamily} input planes`,
+      `${coords.length} nodes · ${sup.legal_count} legal + ${sup.stone_count} stones + ` +
+      `${sup.halo_count} halo · ${feat.names.length} ${state.ckptFamily} input planes`,
     );
     return;
   }
@@ -1554,10 +1554,10 @@ function renderServerFeatures(payload) {
   const nonzero = finite.filter(v => v > 0).length;
   const max = Math.max(0, ...finite);
   const zeroNote = payload.mode === "free" &&
-    (payload.zeroed_features || []).includes(state.feature) ? " Â· zeroed in free edit" : "";
+    (payload.zeroed_features || []).includes(state.feature) ? " · zeroed in free edit" : "";
   setReadout(
-    "feature Â· " + state.feature.replace(/_/g, " "),
-    `${nonzero} of ${vals.length} cells nonzero Â· max ${max.toFixed(3)} Â· ` +
+    "feature · " + state.feature.replace(/_/g, " "),
+    `${nonzero} of ${vals.length} cells nonzero · max ${max.toFixed(3)} · ` +
     `own/opp are relative to ${mover === 0 ? "blue" : "red"}${zeroNote}`,
   );
 }

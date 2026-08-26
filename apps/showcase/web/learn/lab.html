@@ -68,7 +68,7 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
         <button data-mode="sequence" class="sel" role="radio" aria-checked="true"
                 title="Stones placed as alternating legal Hexo turns">Legal sequence</button>
         <button data-mode="free" role="radio" aria-checked="false"
-                title="Place or remove arbitrary stones; history is synthesized">Free edit</button>
+                title="Place or remove arbitrary stones; the position evaluates without a move history">Free edit</button>
       </div>
       <div class="seg" id="brushSeg" role="radiogroup" aria-label="Free-edit brush" hidden>
         <button data-brush="0" class="sel" role="radio" aria-checked="true">blue</button>
@@ -112,9 +112,10 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
     <div class="ed-note" id="freeNote" hidden>
       free edit lets you place, recolor, or <b>erase</b> stones, and keeps the
       two colors within 2 stones of each other on every edit. it has no move
-      history: the <b>own/opp recency</b> and <b>opponent-last-turn</b> input
-      features are zeroed, and the search, solver and bot controls are
-      unavailable (the engine cannot replay an unreachable position).
+      history: MantisNet's inputs carry no history and evaluate the stone set
+      exactly; shrimp/hexfield zero their history features (marked &deg; in the
+      feature list). the search, solver and bot controls are unavailable
+      (the engine cannot replay an unreachable position).
     </div>
 
     <div class="tool-strip">
@@ -363,6 +364,6 @@ their <code>?game=&hellip;&amp;ply=&hellip;</code> link.
 
 <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
 
-<script type="module" src="./lab.js?v=14"></script>
+<script type="module" src="./lab.js?v=15"></script>
 </body>
 </html>
