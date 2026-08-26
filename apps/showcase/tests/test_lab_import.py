@@ -16,6 +16,7 @@ from test_showcase_api import fresh_ip
 
 DATA = Path(__file__).resolve().parent
 SANDBOX = json.loads((DATA / "didscience_sandbox_1ciyxmx.json").read_text(encoding="utf-8"))
+SANDBOX_P2 = json.loads((DATA / "didscience_sandbox_e6vxa2d.json").read_text(encoding="utf-8"))
 GAME = json.loads((DATA / "didscience_game_c50b8f05.json").read_text(encoding="utf-8"))
 
 
@@ -28,6 +29,46 @@ def test_sandbox_fixture_imports_as_a_sequence():
     assert len(out["moves"]) == 68
     assert out["moves"][0] == [0, 0]
     assert out["terminal"] is False
+
+
+def test_sandbox_with_player2_opener_imports_as_a_sequence():
+    """Either site label can hold the origin opener; the seat mapping comes
+    from the first record, not from the label (captured replay e6vxa2d)."""
+    out = import_position("sandbox", "e6vxa2d", fetch=lambda k, i: SANDBOX_P2)
+    assert "stones" not in out
+    assert len(out["moves"]) == 29
+    assert out["moves"][0] == [0, 0]
+    assert out["terminal"] is False
+
+
+def test_sandbox_whose_turn_state_contradicts_the_record_falls_back():
+    """A stated mover or placements-remaining that disagrees with the record
+    order means the position was hand-edited past it: free-edit is the honest
+    representation."""
+    doc = json.loads(json.dumps(SANDBOX_P2))
+    doc["gamePosition"]["currentTurnPlayer"] = "player-2"
+    out = import_position("sandbox", "e6vxa2d", fetch=lambda k, i: doc)
+    assert "moves" not in out
+    assert out["to_move"] == 1
+
+    doc = json.loads(json.dumps(SANDBOX_P2))
+    doc["gamePosition"]["placementsRemaining"] = 1
+    out = import_position("sandbox", "e6vxa2d", fetch=lambda k, i: doc)
+    assert "moves" not in out
+    assert out["to_move"] == 0
+
+
+def test_sandbox_that_breaks_replay_falls_back_to_free_edit():
+    """Turn parity can hold while the record does not replay (a hand-placed
+    stone beyond legal reach); a sandbox is a position, not a game record, so
+    that is the free-edit fallback rather than an error."""
+    doc = json.loads(json.dumps(SANDBOX_P2))
+    doc["gamePosition"]["cells"][-1]["x"] = 100
+    doc["gamePosition"]["cells"][-1]["y"] = 100
+    out = import_position("sandbox", "e6vxa2d", fetch=lambda k, i: doc)
+    assert "moves" not in out
+    n = len(out["stones"]["p0"]) + len(out["stones"]["p1"])
+    assert n == 29
 
 
 def test_game_fixture_imports_with_its_winning_move():

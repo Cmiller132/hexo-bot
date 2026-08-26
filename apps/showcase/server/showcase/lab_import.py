@@ -17,9 +17,13 @@ engine-verified against captured fixtures in the tests.
 
 Normalization prefers a legal action sequence: the record order must follow
 the engine's 1-2-2 turn structure and replay clean (a finished game may end
-on the winning placement). A sandbox that breaks turn parity — their editor
-allows hand-built positions — falls back to a free-edit stone set. A game
-record that breaks it is corrupt and an error, never a guess.
+on the winning placement). Either site label may be the origin opener, so the
+seat mapping comes from the first record, never from the label. A sandbox
+whose record does not reconstruct — turn parity broken, an illegal replay, or
+a stated side-to-move that contradicts the record (their editor allows
+hand-built and hand-edited positions) — falls back to a free-edit stone set.
+A game record that breaks the turn structure is corrupt and an error, never a
+guess.
 """
 
 from __future__ import annotations
@@ -117,38 +121,65 @@ def _normalize_sandbox(doc: dict, source_id: str) -> dict:
     if not rows:
         raise LabImportError(f"{HOST} sandbox {source_id!r} is empty")
     cells = [_int_pair(row, "sandbox") for row in rows]
-    owners = []
+    players = []
     for row in rows:
         player = row.get("player")
         if player not in ("player-1", "player-2"):
             raise LabImportError(f"sandbox: unknown owner {player!r}")
-        owners.append(0 if player == "player-1" else 1)
+        players.append(player)
+    turn = position.get("currentTurnPlayer")
+    if turn not in ("player-1", "player-2"):
+        raise LabImportError(f"sandbox: unknown currentTurnPlayer {turn!r}")
+    remaining = position.get("placementsRemaining")
     name = doc.get("name") if isinstance(doc.get("name"), str) else source_id
 
-    if all(_record_owner(i) == o for i, o in enumerate(owners)):
-        terminal = _replay(cells, what="sandbox")
-        return {
-            "name": name,
-            "moves": [[q, r] for q, r in cells],
-            "terminal": terminal,
-        }
+    sequence = _sandbox_sequence(cells, players, turn, remaining)
+    if sequence is not None:
+        return {"name": name, **sequence}
 
-    # Hand-built position outside turn parity: free-edit is the one honest
-    # representation. The side to move comes from the sandbox itself.
-    p0 = [c for c, o in zip(cells, owners) if o == 0]
-    p1 = [c for c, o in zip(cells, owners) if o == 1]
+    # The record does not reconstruct a game: free-edit is the one honest
+    # representation. The side to move comes from the sandbox itself, and the
+    # site labels keep their color slots (there is no opener to anchor them).
+    p0 = [c for c, p in zip(cells, players) if p == "player-1"]
+    p1 = [c for c, p in zip(cells, players) if p == "player-2"]
     try:
         validate_free_stones(p0, p1)
     except LabPositionError as exc:
         raise LabImportError(f"sandbox: {exc}") from exc
-    turn = position.get("currentTurnPlayer")
-    if turn not in ("player-1", "player-2"):
-        raise LabImportError(f"sandbox: unknown currentTurnPlayer {turn!r}")
     return {
         "name": name,
         "stones": {"p0": [[q, r] for q, r in p0], "p1": [[q, r] for q, r in p1]},
         "to_move": 0 if turn == "player-1" else 1,
     }
+
+
+def _sandbox_sequence(
+    cells: list[tuple[int, int]], players: list[str], turn: str, remaining,
+) -> dict | None:
+    """The sequence normalization of a sandbox record, or ``None`` when the
+    record does not reconstruct a game (the free-edit fallback decides then).
+
+    The opener — the owner of the first record — fixes the seat mapping, as in
+    ``_normalize_game``. A non-terminal record must also agree with the
+    sandbox's own turn state: a stated mover or placements-remaining that
+    contradicts the record order means the position was hand-edited past it,
+    and the record order is no longer the position's history.
+    """
+    owners = [0 if p == players[0] else 1 for p in players]
+    if any(_record_owner(i) != o for i, o in enumerate(owners)):
+        return None
+    try:
+        terminal = _replay(cells, what="sandbox")
+    except LabImportError:
+        return None
+    if not terminal:
+        next_owner = _record_owner(len(cells))
+        opener, other = players[0], ("player-1", "player-2")[players[0] == "player-1"]
+        if turn != (opener if next_owner == 0 else other):
+            return None
+        if remaining != (2 if len(cells) % 2 == 1 else 1):
+            return None
+    return {"moves": [[q, r] for q, r in cells], "terminal": terminal}
 
 
 def _normalize_game(doc: dict, source_id: str) -> dict:
